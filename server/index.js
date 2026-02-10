@@ -1,9 +1,9 @@
 /**
  * Local Agent Server
  * - Express
- * - Persistent memory
- * - Multiple conversations
- * - Defensive memory loading
+ * - Persistent memory per conversation
+ * - Calculator tool
+ * - Ollama native endpoint integration
  */
 
 import express from "express";
@@ -15,40 +15,36 @@ import crypto from "crypto";
 const app = express();
 const PORT = 3000;
 
+// Enable CORS and JSON body parsing
 app.use(cors());
 app.use(express.json());
 
 // --------------------
-// Memory storage
+// Persistent memory setup
 // --------------------
 const MEMORY_FILE = path.resolve("./memory.json");
 
 /**
- * Load memory safely.
- * If old format is detected, it upgrades it.
+ * Load memory safely from disk.
+ * If file does not exist or is corrupted, start fresh.
  */
 function loadMemory() {
   if (!fs.existsSync(MEMORY_FILE)) {
     return { conversations: {} };
   }
 
-  let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+
+    // Upgrade old formats
+    if (!raw.conversations || typeof raw.conversations !== "object") {
+      return { conversations: {} };
+    }
+
+    return raw;
   } catch {
     return { conversations: {} };
   }
-
-  // 🔑 UPGRADE old formats automatically
-  if (Array.isArray(raw)) {
-    return { conversations: {} };
-  }
-
-  if (!raw.conversations || typeof raw.conversations !== "object") {
-    return { conversations: {} };
-  }
-
-  return raw;
 }
 
 /**
@@ -56,6 +52,24 @@ function loadMemory() {
  */
 function saveMemory(memory) {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
+
+// --------------------
+// Calculator tool
+// --------------------
+/**
+ * Very simple calculator
+ * - Accepts { expression: "2+2" }
+ * - Returns { result: 4 } or { error: "Invalid expression" }
+ * ⚠️ Never eval untrusted input in production without sandboxing
+ */
+function calculator({ expression }) {
+  try {
+    const result = Function(`"use strict"; return (${expression})`)();
+    return { result };
+  } catch (err) {
+    return { error: "Invalid expression" };
+  }
 }
 
 // --------------------
@@ -69,9 +83,10 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Missing message" });
     }
 
+    // Load memory
     const memory = loadMemory();
 
-    // Create or reuse conversation
+    // Use existing conversation ID or generate a new one
     const id = conversationId || crypto.randomUUID();
 
     if (!memory.conversations[id]) {
@@ -83,12 +98,38 @@ app.post("/chat", async (req, res) => {
     // Add user message
     convo.push({ role: "user", content: message });
 
-    // Build prompt
-    const prompt = convo
-      .map(m => `${m.role}: ${m.content}`)
-      .join("\n");
+    // --------------------
+    // Tool-calling: simple example
+    // If user starts with "calc: " we run the calculator instead of the LLM
+    // --------------------
+    if (message.toLowerCase().startsWith("calc:")) {
+      const expression = message.slice(5).trim();
+      const calcResult = calculator({ expression });
 
-    // Call Ollama
+      const reply = calcResult.error
+        ? `Calculator error: ${calcResult.error}`
+        : `Result: ${calcResult.result}`;
+
+      // Store assistant reply in memory
+      convo.push({ role: "assistant", content: reply });
+      saveMemory(memory);
+
+      return res.json({ reply, conversationId: id });
+    }
+
+    // --------------------
+    // Build messages array for Ollama
+    // --------------------
+    const messages = convo.map(m => ({
+      role: m.role,
+      content: m.content
+    }));
+
+    // Build prompt from conversation memory
+    const prompt = convo.map(m => `${m.role}: ${m.content}`).join("\n");
+    // --------------------
+    // Call Ollama native endpoint
+    // --------------------
     const ollamaRes = await fetch("http://localhost:11434/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -99,24 +140,26 @@ app.post("/chat", async (req, res) => {
       })
     });
 
+    // Parse response
     const data = await ollamaRes.json();
     const reply = data.response ?? "(no response)";
 
-    // Add assistant reply
+    // Store assistant reply
     convo.push({ role: "assistant", content: reply });
 
+    // Save updated memory
     saveMemory(memory);
 
-    res.json({
-      reply,
-      conversationId: id
-    });
+    // Send response
+    res.json({ reply, conversationId: id });
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Agent failure" });
   }
 });
 
+// --------------------
+// Start server
 // --------------------
 app.listen(PORT, () => {
   console.log(`🤖 Agent server running at http://localhost:${PORT}`);

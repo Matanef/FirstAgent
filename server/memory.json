@@ -9,6 +9,56 @@
         "role": "assistant",
         "content": "Hi! What's on your mind? Do you have a specific question or topic you'd like to discuss? I'm here to help with any questions or concerns you may have."
       }
+    ],
+    "22783712-5665-42af-aa1a-7099a462fd43": [
+      {
+        "role": "user",
+        "content": "hey how much is 3*6"
+      },
+      {
+        "role": "assistant",
+        "content": "3 * 6 = 18"
+      }
+    ],
+    "299ddbc8-1715-4752-85d2-f82940bf4988": [
+      {
+        "role": "user",
+        "content": "how much is 4*5"
+      },
+      {
+        "role": "assistant",
+        "content": "(no response)"
+      }
+    ],
+    "1b183597-fb30-41fa-8a25-7fe8ca3ebc46": [
+      {
+        "role": "user",
+        "content": "how much is 4*5"
+      },
+      {
+        "role": "assistant",
+        "content": ""
+      }
+    ],
+    "1bd57677-c8f0-4673-858d-2c657e70b39d": [
+      {
+        "role": "user",
+        "content": "how much is 4*5"
+      },
+      {
+        "role": "assistant",
+        "content": ""
+      }
+    ],
+    "408c1217-0762-488b-980a-794c5e889e5b": [
+      {
+        "role": "user",
+        "content": "how much is 4*5"
+      },
+      {
+        "role": "assistant",
+        "content": "The answer to 4*5 is 20."
+      }
     ]
   }
 }
