@@ -1,7 +1,16 @@
+/**
+ * Local Agent Server
+ * - Express
+ * - Persistent memory
+ * - Multiple conversations
+ * - Defensive memory loading
+ */
+
 import express from "express";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 const app = express();
 const PORT = 3000;
@@ -10,41 +19,76 @@ app.use(cors());
 app.use(express.json());
 
 // --------------------
-// Memory (persistent)
+// Memory storage
 // --------------------
 const MEMORY_FILE = path.resolve("./memory.json");
 
+/**
+ * Load memory safely.
+ * If old format is detected, it upgrades it.
+ */
 function loadMemory() {
   if (!fs.existsSync(MEMORY_FILE)) {
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify([]));
+    return { conversations: {} };
   }
-  return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+  } catch {
+    return { conversations: {} };
+  }
+
+  // 🔑 UPGRADE old formats automatically
+  if (Array.isArray(raw)) {
+    return { conversations: {} };
+  }
+
+  if (!raw.conversations || typeof raw.conversations !== "object") {
+    return { conversations: {} };
+  }
+
+  return raw;
 }
 
+/**
+ * Save memory to disk
+ */
 function saveMemory(memory) {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
 }
 
 // --------------------
-// Chat route
+// Chat endpoint
 // --------------------
 app.post("/chat", async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, conversationId } = req.body;
+
     if (!message) {
       return res.status(400).json({ error: "Missing message" });
     }
 
     const memory = loadMemory();
 
-    // add user message
-    memory.push({ role: "user", content: message });
+    // Create or reuse conversation
+    const id = conversationId || crypto.randomUUID();
 
-    // build prompt from memory
-    const prompt = memory
+    if (!memory.conversations[id]) {
+      memory.conversations[id] = [];
+    }
+
+    const convo = memory.conversations[id];
+
+    // Add user message
+    convo.push({ role: "user", content: message });
+
+    // Build prompt
+    const prompt = convo
       .map(m => `${m.role}: ${m.content}`)
       .join("\n");
 
+    // Call Ollama
     const ollamaRes = await fetch("http://localhost:11434/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -58,16 +102,18 @@ app.post("/chat", async (req, res) => {
     const data = await ollamaRes.json();
     const reply = data.response ?? "(no response)";
 
-    // add assistant reply
-    memory.push({ role: "assistant", content: reply });
+    // Add assistant reply
+    convo.push({ role: "assistant", content: reply });
 
-    // persist memory
     saveMemory(memory);
 
-    res.json({ reply });
+    res.json({
+      reply,
+      conversationId: id
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "LLM server error" });
+    console.error("Chat error:", err);
+    res.status(500).json({ error: "Agent failure" });
   }
 });
 
