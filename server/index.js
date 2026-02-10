@@ -1,75 +1,77 @@
 import express from "express";
 import cors from "cors";
+import fs from "fs";
+import path from "path";
 
 const app = express();
+const PORT = 3000;
+
 app.use(cors());
 app.use(express.json());
 
+// --------------------
+// Memory (persistent)
+// --------------------
+const MEMORY_FILE = path.resolve("./memory.json");
+
+function loadMemory() {
+  if (!fs.existsSync(MEMORY_FILE)) {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify([]));
+  }
+  return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+}
+
+function saveMemory(memory) {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
+
+// --------------------
+// Chat route
+// --------------------
 app.post("/chat", async (req, res) => {
-  const { message } = req.body;
+  try {
+    const { message } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: "Missing message" });
+    }
 
-  const response = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "mat-llm",
-      prompt: message,
-      stream: false
-    })
-  });
+    const memory = loadMemory();
 
-  const data = await response.json();
-  res.json({ reply: data.response });
+    // add user message
+    memory.push({ role: "user", content: message });
+
+    // build prompt from memory
+    const prompt = memory
+      .map(m => `${m.role}: ${m.content}`)
+      .join("\n");
+
+    const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "mat-llm",
+        prompt,
+        stream: false
+      })
+    });
+
+    const data = await ollamaRes.json();
+    const reply = data.response ?? "(no response)";
+
+    // add assistant reply
+    memory.push({ role: "assistant", content: reply });
+
+    // persist memory
+    saveMemory(memory);
+
+    res.json({ reply });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "LLM server error" });
+  }
 });
 
-
-app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
-
-  const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "mat-llm",
-      prompt: userMessage,
-      stream: false
-    })
-  });
-
-  const data = await ollamaRes.json();
-  res.json({ reply: data.response });
-});
-
-let memory = [];
-
-app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
-
-  memory.push({ role: "user", content: userMessage });
-
-  const prompt = memory
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
-  const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "mat-llm",
-      prompt,
-      stream: false
-    })
-  });
-
-  const data = await ollamaRes.json();
-
-  memory.push({ role: "assistant", content: data.response });
-
-  res.json({ reply: data.response });
-});
-
-const PORT = 3000
+// --------------------
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`🤖 Agent server running at http://localhost:${PORT}`);
 });
-
