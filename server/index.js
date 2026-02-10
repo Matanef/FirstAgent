@@ -7,6 +7,7 @@
  * - Internet search tool (SerpAPI)
  * - Search result caching to disk
  * - Automatic tool selection (server-side agent logic)
+ * - VERBOSE CONSOLE LOGGING (for learning/debugging)
  */
 
 import express from "express";
@@ -69,27 +70,38 @@ function saveSearchCache(cache) {
 
 // -------- Calculator --------
 function calculator(expression) {
+  console.log("🔧 TOOL CALLED: calculator");
+  console.log("🔧 TOOL INPUT:", expression);
+
   try {
     const result = Function(`"use strict"; return (${expression})`)();
+    console.log("🔧 TOOL RESULT:", result);
     return { result };
   } catch {
+    console.log("🔧 TOOL ERROR: invalid expression");
     return { error: "Invalid mathematical expression" };
   }
 }
 
 // -------- Internet Search (SerpAPI) --------
-const SERPAPI_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418"; // <-- insert here
+const SERPAPI_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418";
 
 async function searchWeb(query) {
+  console.log("🔧 TOOL CALLED: searchWeb");
+  console.log("🔧 TOOL INPUT:", query);
+
   const cache = loadSearchCache();
   const normalized = query.toLowerCase().trim();
 
-  // 1️⃣ Return cached result if exists
   if (cache[normalized]) {
+    console.log("📁 SEARCH CACHE HIT");
     return { cached: true, results: cache[normalized].results };
   }
 
+  console.log("🌐 SEARCH CACHE MISS – calling SerpAPI");
+
   if (!SERPAPI_KEY) {
+    console.log("🔧 TOOL ERROR: missing API key");
     return { error: "SerpAPI key not configured" };
   }
 
@@ -108,15 +120,16 @@ async function searchWeb(query) {
         link: r.link,
       })) || [];
 
-    // 2️⃣ Save to cache
     cache[normalized] = {
       timestamp: Date.now(),
       results,
     };
     saveSearchCache(cache);
 
+    console.log("🔧 TOOL RESULT COUNT:", results.length);
     return { cached: false, results };
-  } catch {
+  } catch (err) {
+    console.log("🔧 TOOL ERROR:", err.message);
     return { error: "Search request failed" };
   }
 }
@@ -130,7 +143,7 @@ function looksLikeMath(text) {
 }
 
 function looksLikeSearch(text) {
-  return /\b(who|what|when|where|why|how)\b/i.test(text);
+  return /\b(who|what|when|where|why|how|current|now|today)\b/i.test(text);
 }
 
 // ======================================================
@@ -141,6 +154,9 @@ app.post("/chat", async (req, res) => {
   try {
     const { message, conversationId } = req.body;
     if (!message) return res.status(400).json({ error: "Missing message" });
+
+    console.log("\n==============================");
+    console.log("👤 USER MESSAGE:", message);
 
     const memory = loadMemory();
     const id = conversationId || crypto.randomUUID();
@@ -153,6 +169,7 @@ app.post("/chat", async (req, res) => {
 
     // -------- TOOL: Calculator --------
     if (looksLikeMath(message)) {
+      console.log("🤖 DECISION: use calculator tool");
       const calc = calculator(message);
       reply = calc.error
         ? `Calculator error: ${calc.error}`
@@ -161,6 +178,7 @@ app.post("/chat", async (req, res) => {
 
     // -------- TOOL: Internet Search --------
     else if (looksLikeSearch(message)) {
+      console.log("🤖 DECISION: use search tool");
       const search = await searchWeb(message);
 
       if (search.error) {
@@ -180,7 +198,11 @@ app.post("/chat", async (req, res) => {
 
     // -------- FALLBACK: LLM --------
     else {
-      const prompt = convo.map(m => `${m.role}: ${m.content}`).join("\n");
+      console.log("🤖 DECISION: no tool → use LLM");
+
+      const prompt = convo
+        .map((m) => `${m.role}: ${m.content}`)
+        .join("\n");
 
       const ollamaRes = await fetch("http://localhost:11434/api/generate", {
         method: "POST",
@@ -199,9 +221,12 @@ app.post("/chat", async (req, res) => {
     convo.push({ role: "assistant", content: reply });
     saveMemory(memory);
 
+    console.log("🤖 ASSISTANT REPLY:", reply);
+    console.log("==============================\n");
+
     res.json({ reply, conversationId: id });
   } catch (err) {
-    console.error("Chat error:", err);
+    console.error("❌ Agent error:", err);
     res.status(500).json({ error: "Agent failure" });
   }
 });
