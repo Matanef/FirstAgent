@@ -1,5 +1,12 @@
 /**
- * Local Agent Server with Persistent Memory + Tool Calling + SerpAPI
+ * Local Agent Server (Ollama 0.15.6 compatible)
+ *
+ * Features:
+ * - Persistent conversations
+ * - Calculator tool
+ * - Internet search tool (SerpAPI)
+ * - Search result caching to disk
+ * - Automatic tool selection (server-side agent logic)
  */
 
 import express from "express";
@@ -8,97 +15,128 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 
-
 const app = express();
 const PORT = 3000;
 
 app.use(cors());
 app.use(express.json());
 
-// --------------------
-// Memory storage
-// --------------------
-const MEMORY_FILE = path.resolve("./memory.json");
+// ======================================================
+// FILE PATHS
+// ======================================================
 
-/**
- * Load memory safely
- */
+const MEMORY_FILE = path.resolve("./memory.json");
+const SEARCH_CACHE_FILE = path.resolve("./search_cache.json");
+
+// ======================================================
+// MEMORY HELPERS
+// ======================================================
+
 function loadMemory() {
   if (!fs.existsSync(MEMORY_FILE)) return { conversations: {} };
   try {
-    const raw = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
-    if (!raw.conversations || typeof raw.conversations !== "object") {
-      return { conversations: {} };
-    }
-    return raw;
+    const data = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+    return data.conversations ? data : { conversations: {} };
   } catch {
     return { conversations: {} };
   }
 }
 
-/**
- * Save memory to disk
- */
 function saveMemory(memory) {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
 }
 
-// --------------------
-// Tools
-// --------------------
+// ======================================================
+// SEARCH CACHE HELPERS
+// ======================================================
 
-// Calculator tool
-function calculator({ expression }) {
+function loadSearchCache() {
+  if (!fs.existsSync(SEARCH_CACHE_FILE)) return {};
   try {
-    // ⚠️ Only safe for learning! Never eval raw input in production
-    const result = Function(`"use strict"; return (${expression})`)();
-    return { result };
-  } catch (err) {
-    return { error: "Invalid expression" };
+    return JSON.parse(fs.readFileSync(SEARCH_CACHE_FILE, "utf-8"));
+  } catch {
+    return {};
   }
 }
 
-// SerpAPI search tool
-async function searchWeb({ query }) {
-  // ===========================
-  // 🔑 INSERT YOUR API KEY HERE
-  // ===========================
-  const API_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418";
+function saveSearchCache(cache) {
+  fs.writeFileSync(SEARCH_CACHE_FILE, JSON.stringify(cache, null, 2));
+}
 
-  if (!API_KEY) return { error: "SerpAPI key not set" };
+// ======================================================
+// TOOLS
+// ======================================================
 
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-    query
-  )}&api_key=${API_KEY}`;
+// -------- Calculator --------
+function calculator(expression) {
+  try {
+    const result = Function(`"use strict"; return (${expression})`)();
+    return { result };
+  } catch {
+    return { error: "Invalid mathematical expression" };
+  }
+}
+
+// -------- Internet Search (SerpAPI) --------
+const SERPAPI_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418"; // <-- insert here
+
+async function searchWeb(query) {
+  const cache = loadSearchCache();
+  const normalized = query.toLowerCase().trim();
+
+  // 1️⃣ Return cached result if exists
+  if (cache[normalized]) {
+    return { cached: true, results: cache[normalized].results };
+  }
+
+  if (!SERPAPI_KEY) {
+    return { error: "SerpAPI key not configured" };
+  }
 
   try {
+    const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
+      query
+    )}&api_key=${SERPAPI_KEY}`;
+
     const res = await fetch(url);
     const data = await res.json();
 
-    if (data.organic_results && data.organic_results.length > 0) {
-      // Return top 3 results
-      return {
-        results: data.organic_results
-          .slice(0, 3)
-          .map((r) => ({ title: r.title, link: r.link, snippet: r.snippet })),
-      };
-    } else {
-      return { results: [] };
-    }
-  } catch (err) {
-    return { error: "SerpAPI request failed" };
+    const results =
+      data.organic_results?.slice(0, 3).map((r) => ({
+        title: r.title,
+        snippet: r.snippet,
+        link: r.link,
+      })) || [];
+
+    // 2️⃣ Save to cache
+    cache[normalized] = {
+      timestamp: Date.now(),
+      results,
+    };
+    saveSearchCache(cache);
+
+    return { cached: false, results };
+  } catch {
+    return { error: "Search request failed" };
   }
 }
 
-// Define tool functions mapping
-const toolDefinitions = {
-  calculator,
-  searchWeb,
-};
+// ======================================================
+// TOOL SELECTION HEURISTICS
+// ======================================================
 
-// --------------------
-// Chat endpoint
-// --------------------
+function looksLikeMath(text) {
+  return /^[0-9+\-*/().\s]+$/.test(text.trim());
+}
+
+function looksLikeSearch(text) {
+  return /\b(who|what|when|where|why|how)\b/i.test(text);
+}
+
+// ======================================================
+// CHAT ENDPOINT
+// ======================================================
+
 app.post("/chat", async (req, res) => {
   try {
     const { message, conversationId } = req.body;
@@ -106,57 +144,70 @@ app.post("/chat", async (req, res) => {
 
     const memory = loadMemory();
     const id = conversationId || crypto.randomUUID();
-
     if (!memory.conversations[id]) memory.conversations[id] = [];
     const convo = memory.conversations[id];
 
-    // Add user message
     convo.push({ role: "user", content: message });
 
-    // Build messages array for LLM
-    const messages = convo.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    let reply = "";
 
-    // --------------------
-    // Here you would call your LLM (e.g., Ollama)
-    // We'll simulate a tool-calling logic for demo
-    // --------------------
-    let assistantReply = "";
-
-    // Example: detect simple commands
-    if (message.startsWith("calc:")) {
-      const expr = message.replace(/^calc:/, "").trim();
-      const result = calculator({ expression: expr });
-      assistantReply = result.error ? result.error : `Result: ${result.result}`;
-    } else if (message.startsWith("search:")) {
-      const query = message.replace(/^search:/, "").trim();
-      const result = await searchWeb({ query });
-      if (result.error) assistantReply = `Error: ${result.error}`;
-      else if (result.results.length === 0) assistantReply = "(no results)";
-      else {
-        assistantReply = result.results
-          .map((r) => `• ${r.title} - ${r.link}`)
-          .join("\n");
-      }
-    } else {
-      // Default LLM reply placeholder
-      assistantReply = "(assistant would reply here)";
+    // -------- TOOL: Calculator --------
+    if (looksLikeMath(message)) {
+      const calc = calculator(message);
+      reply = calc.error
+        ? `Calculator error: ${calc.error}`
+        : `Result: ${calc.result}`;
     }
 
-    // Save assistant reply to memory
-    convo.push({ role: "assistant", content: assistantReply });
+    // -------- TOOL: Internet Search --------
+    else if (looksLikeSearch(message)) {
+      const search = await searchWeb(message);
+
+      if (search.error) {
+        reply = `Search error: ${search.error}`;
+      } else if (search.results.length === 0) {
+        reply = "(no search results found)";
+      } else {
+        reply =
+          (search.cached ? "📁 Cached result:\n\n" : "🔎 Search result:\n\n") +
+          search.results
+            .map(
+              (r) => `• ${r.title}\n  ${r.snippet}\n  ${r.link}`
+            )
+            .join("\n\n");
+      }
+    }
+
+    // -------- FALLBACK: LLM --------
+    else {
+      const prompt = convo.map(m => `${m.role}: ${m.content}`).join("\n");
+
+      const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "mat-llm",
+          prompt,
+          stream: false,
+        }),
+      });
+
+      const data = await ollamaRes.json();
+      reply = data.response ?? "(no response)";
+    }
+
+    convo.push({ role: "assistant", content: reply });
     saveMemory(memory);
 
-    res.json({ reply: assistantReply, conversationId: id });
+    res.json({ reply, conversationId: id });
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Agent failure" });
   }
 });
 
-// --------------------
+// ======================================================
+
 app.listen(PORT, () => {
-  console.log(`🤖 Agent server running at http://localhost:${PORT}`);
+  console.log(`🤖 Agent running at http://localhost:${PORT}`);
 });

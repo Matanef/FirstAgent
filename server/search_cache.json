@@ -1,0 +1,62 @@
+{
+  "how much is 12/(x+4)=42": {
+    "timestamp": 1770761242111,
+    "results": [
+      {
+        "title": "Fraction Calculator",
+        "snippet": "This free fraction calculator supports fraction addition, subtraction, multiplication, division, and conversion.",
+        "link": "https://www.calculator.net/fraction-calculator.html?c2d1=1.4&ctype=2&x=0&y=0"
+      },
+      {
+        "title": "Multiples Calculator",
+        "snippet": "The multiples of numbers calculator will find 100 multiples of a positive integer. For example, the multiples of 3 are calculated 3x1, 3x2, 3x3, 3x4, 3x5, etc.",
+        "link": "https://www.calculatorsoup.com/calculators/math/multiples.php"
+      },
+      {
+        "title": "Solve inequalities with Step-by-Step Math Problem Solver",
+        "snippet": "Solve linear or quadratic inequalities with our free step-by-step algebra calculator.",
+        "link": "https://quickmath.com/webMathematica3/quickmath/inequalities/solve/basic.jsp"
+      }
+    ]
+  },
+  "who is the current israeli defense minister?": {
+    "timestamp": 1770761461465,
+    "results": [
+      {
+        "title": "Israel Katz",
+        "snippet": "Israel Katz is an Israeli politician and member of the Knesset for Likud currently serving as Minister of Defense and a member of the Security Cabinet of ...",
+        "link": "https://en.wikipedia.org/wiki/Israel_Katz"
+      },
+      {
+        "title": "Ministry of Defense (Israel)",
+        "snippet": "List of ministers ; –, David Ben-Gurion · Mapai ; 3, Levi Eshkol · Mapai, Alignment ; 4, Moshe Dayan · Rafi, Labor Party, Alignment ; 5, Shimon Peres · Alignment ...",
+        "link": "https://en.wikipedia.org/wiki/Ministry_of_Defense_(Israel)"
+      },
+      {
+        "title": "Defense Minister – Israel Katz | Homepage",
+        "snippet": "Defense Minister Israel Katz is the 23rd Defense Minister of the State of Israel. Throughout his political career, he has served in multiple senior cabinet ...",
+        "link": "https://mod.gov.il/en/about-us/defense-minister-israel-katz"
+      }
+    ]
+  },
+  "so who is the current israeli defense minister? treat me like i'm 5": {
+    "timestamp": 1770761516918,
+    "results": [
+      {
+        "title": "Israel Katz",
+        "snippet": "Israel Katz is an Israeli politician and member of the Knesset for Likud currently serving as Minister of Defense and a member of the Security Cabinet of ...",
+        "link": "https://en.wikipedia.org/wiki/Israel_Katz"
+      },
+      {
+        "title": "Who Is Israel Katz, Israel's new defence minister?",
+        "snippet": "A hardline Israeli politician, Katz is a longtime ally of Netanyahu. He has held various ministerial portfolios since 2003.",
+        "link": "https://www.aljazeera.com/news/2024/11/6/who-is-israel-katz-israels-new-defence-minister"
+      },
+      {
+        "title": "Netanyahu-Appointed Israel Katz as Defence Minister 'Sworn ...",
+        "snippet": "Israel's new Defence Minister, Israel Katz, was sworn in after Netanyahu dismissed Yoav Gallant amid a breakdown in trust during the Gaza ...",
+        "link": "https://www.youtube.com/watch?v=dHLIaWfuJwg"
+      }
+    ]
+  }
+}
