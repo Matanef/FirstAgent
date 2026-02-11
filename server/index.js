@@ -65,7 +65,7 @@ function calculator(expr) {
 }
 
 // Search tool (with caching)
-const SERPAPI_KEY = "YOUR_SERPAPI_KEY";
+const SERPAPI_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418";
 
 function extractTopic(text) {
   return text
@@ -119,12 +119,12 @@ function plan(message) {
 // STATE GRAPH + AUDIT HELPERS
 // ======================================================
 
-const MAX_TOOL_CALLS = { search: 3, llm: 2, calculator: 1 };
+const MAX_TOOL_CALLS = { search: 3, llm: 1, calculator: 1 };
 
 function calculateConfidence(stateGraph) {
   let score = 0.4;
 
-  const usedSearch = stateGraph.some(s => s.tool === "search" || s.tool === "llm-fallback");
+  const usedSearch = stateGraph.some(s => s.tool === "search" || s.tool === "search-fallback");
   const reused = stateGraph.some(s => s.cached);
   const contradictions = stateGraph.flatMap(s => s.contradictions || []);
   const citationMisses = stateGraph.flatMap(s => s.citationMiss || []);
@@ -171,19 +171,34 @@ async function executeStep(message, step, stateGraph, memory, toolUsage, convo) 
       const cache = loadJSON(SEARCH_CACHE_FILE, {});
       const topic = extractTopic(message);
       const cachedResults = cache[topic]?.results || [];
+
       if (cachedResults.length > 0) {
-        const reply = cachedResults.map((r, i) => `${i + 1}. ${r.title} (${r.link})`).join("\n");
+        const context = cachedResults.map((r, i) => `${i + 1}. ${r.title}: ${r.snippet} (Link: ${r.link})`).join("\n");
+
+        // Use LLM to summarize cached results
+        const prompt = `Using ONLY the following cached search results, answer the question factually:\n${context}\n\nQuestion: ${message}`;
+        const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "mat-llm", prompt, stream: false })
+        });
+        const data = await ollamaRes.json();
+        const reply = data.response ?? "(no response)";
+        const contradictions = detectContradictions(stateGraph, reply);
+
         stateGraph.push({
           step,
-          tool: "search",
+          tool: "search-fallback",
           input: message,
           output: cachedResults,
           cached: true,
-          contradictions: [],
+          contradictions,
           citationMiss: []
         });
+
         return { reply };
       }
+      return { reply: "(no cached search results)" };
     }
 
     // LLM fallback
@@ -203,7 +218,6 @@ async function executeStep(message, step, stateGraph, memory, toolUsage, convo) 
   toolUsage[decision]++;
 
   let reply = "";
-  let observations = [];
   let contradictions = [];
   let citationMiss = [];
 
@@ -219,7 +233,7 @@ async function executeStep(message, step, stateGraph, memory, toolUsage, convo) 
   if (decision === "search") {
     const force = /check again|verify|according to/i.test(message);
     const search = await searchWeb(message, force);
-    observations = search.results;
+    const observations = search.results;
 
     if (observations.length === 0) citationMiss.push("No sources found");
 
@@ -324,7 +338,7 @@ app.post("/chat", async (req, res) => {
 
       const confidence = calculateConfidence(stateGraph);
 
-      if (confidence >= 0.7 || (reply && reply !== "(no search results)" && reply !== "(tool budget exceeded)")) break;
+      if (confidence >= 0.7 || (reply && !["(no search results)", "(tool budget exceeded)"].includes(reply))) break;
     }
 
     const confidence = calculateConfidence(stateGraph);

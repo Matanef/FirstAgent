@@ -340,5 +340,39 @@
   "what are the 10 top coocking apps on the google app store show your sources": {
     "timestamp": 1770772336171,
     "results": []
+  },
+  "what are the current us based stock market highest earning stock": {
+    "timestamp": 1770775153543,
+    "results": []
+  },
+  "what are the current us based stock market highest stock": {
+    "timestamp": 1770775231575,
+    "results": [
+      {
+        "title": "Most Expensive Stocks: US stocks with the highest ...",
+        "snippet": "Most Expensive Stocks: US stocks with the highest stock price today - Yahoo Finance ... S&P Global Inc. EquityNYQ. U.S. markets close in 2h 31m. US Europe",
+        "link": "https://finance.yahoo.com/markets/stocks/most-expensive-stocks/"
+      },
+      {
+        "title": "Most Expensive US Stocks",
+        "snippet": "US stocks with the highest price ; BLKBlackRock, Inc. D · 1,087.78 USD, +0.73% ; LLYEli Lilly and Company. D · 1,024.58 USD, −1.92% ; PHParker-Hannifin Corporation.",
+        "link": "https://www.tradingview.com/markets/stocks-usa/market-movers-most-expensive/"
+      },
+      {
+        "title": "All U.S. Listed Stocks, Ranked by Market Cap",
+        "snippet": "A list of all stocks listed on the NASDAQ, NYSE and NYSE American in the United States, sorted by market cap and updated daily.",
+        "link": "https://stockanalysis.com/list/biggest-companies/"
+      },
+      {
+        "title": "Most Active Stocks: US stocks with the highest trading ...",
+        "snippet": "Stocks ; F · Ford Motor Company ; BBAI. BigBear.ai Holdings, Inc. ; AMZN. Amazon.com, Inc. ; TSLA. Tesla, Inc.",
+        "link": "https://finance.yahoo.com/markets/stocks/most-active/"
+      },
+      {
+        "title": "United States Stock Market Index - Quote - Chart",
+        "snippet": "The Dow Jones Index went up by 57 points or 0.11 percent on Tuesday to close at 50193 points. The rise was led by Walt Disney (2.72%), Home Depot (2.08%) and ...",
+        "link": "https://tradingeconomics.com/united-states/stock-market"
+      }
+    ]
   }
 }
