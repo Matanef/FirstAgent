@@ -382,5 +382,65 @@
   "could you list the top 10 stocks in the us": {
     "timestamp": 1770776028164,
     "results": []
+  },
+  "so now do that again for all the 10 stocks meaning check which stock are the highest market cap and their spot in the top 10": {
+    "timestamp": 1770778413792,
+    "results": [
+      {
+        "title": "Biggest Companies in the World by Market Cap",
+        "snippet": "With Nvidia, Apple, and Alphabet in the top spots, these are the 10 biggest companies in the world by market capitalization. The majority are technology ...",
+        "link": "https://www.investopedia.com/biggest-companies-in-the-world-by-market-cap-5212784"
+      },
+      {
+        "title": "The Largest Companies by Market Cap in February 2026",
+        "snippet": "Nvidia (NVDA -0.41%) currently tops the list of the largest companies in the world. Alphabet (GOOG -1.86%)(GOOGL -1.88%) and Apple (AAPL ...",
+        "link": "https://www.fool.com/research/largest-companies-by-market-cap/"
+      },
+      {
+        "title": "All U.S. Listed Stocks, Ranked by Market Cap",
+        "snippet": "A list of all stocks listed on the NASDAQ, NYSE and NYSE American in the United States, sorted by market cap and updated daily.",
+        "link": "https://stockanalysis.com/list/biggest-companies/"
+      },
+      {
+        "title": "Trillion-dollar companies: 10 most valuable mega-cap stocks",
+        "snippet": "The top spot has gone back and forth between Microsoft, Apple and Nvidia in recent months, behind a business boom driven by demand for artificial intelligence ...",
+        "link": "https://finance.yahoo.com/news/trillion-dollar-companies-222307746.html"
+      },
+      {
+        "title": "Trillion-Dollar Companies: 10 Most Valuable Mega-Cap ...",
+        "snippet": "Ten publicly traded companies currently have market caps of roughly $1 trillion or more. Here's what to know about the biggest mega-cap ...",
+        "link": "https://www.bankrate.com/investing/trillion-dollar-companies/"
+      }
+    ]
+  },
+  "so again chaeck for all the 10 stocks or less if no information exsit meaning check which stock are the highest market cap and their spot in the top 10": {
+    "timestamp": 1770778578750,
+    "results": [
+      {
+        "title": "Top 25 Companies by Market Cap - Investing",
+        "snippet": "1. Apple (AAPL). Market Cap: $3.19 Trillion. Stock Price: $213.55. Apple is a multinational technology company that designs, manufactures and ...",
+        "link": "https://smartasset.com/investing/top-25-companies-market-cap"
+      },
+      {
+        "title": "Top 10 Stocks Smart Investors Are Buying Like CRAZY Right ...",
+        "snippet": "These are the 10 stocks hedge funds own the most ranked by total dollars invested.",
+        "link": "https://www.youtube.com/watch?v=OptgkGSDj6Y"
+      },
+      {
+        "title": "Best Stocks to Buy Now: Our Picks for February 2026",
+        "snippet": "Discover the top stocks to buy in February 2026, featuring expert picks and market insights to help you make smarter investment decisions this month.",
+        "link": "https://www.fool.com/investing/top-stocks-to-buy-and-hold/"
+      },
+      {
+        "title": "The 10 Best Companies to Invest in Now",
+        "snippet": "Discover the best stocks to invest in 2025! Explore our list of undervalued stocks of high-quality companies that are compelling investments ...",
+        "link": "https://www.morningstar.com/stocks/10-best-companies-invest-now"
+      },
+      {
+        "title": "10 High Potential Stocks to Buy Now!",
+        "snippet": "In this video we're going to take Baron's 10 stocks for 2026 we're going to talk through each one of them and determine a price we would need to buy them at",
+        "link": "https://www.youtube.com/watch?v=6DT0cVMUxdM"
+      }
+    ]
   }
 }
