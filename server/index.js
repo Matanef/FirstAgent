@@ -1,16 +1,12 @@
 /**
  * FULL LOCAL AGENT SERVER (Ollama 0.15.6 compatible)
  * -------------------------------------------------
- * Features:
- * - Persistent memory
- * - Smarter search reuse
- * - Calculator tool
- * - Internet search (SerpAPI)
- * - Summarize mode
- * - Planner + multi-step reasoning loop
- * - Confidence scoring
- * - "I already know this" detection
- * - Tool usage auditing
+ * Now includes:
+ * - Tool-choosing JSON
+ * - Planner vs Executor
+ * - Self-reflection loop
+ * - Source-weighted confidence
+ * - Automatic re-check on low confidence
  */
 
 import express from "express";
@@ -33,7 +29,7 @@ const MEMORY_FILE = path.resolve("./memory.json");
 const SEARCH_CACHE_FILE = path.resolve("./search_cache.json");
 
 // ======================================================
-// MEMORY HELPERS
+// UTIL
 // ======================================================
 
 function loadJSON(file, fallback) {
@@ -69,7 +65,7 @@ const SERPAPI_KEY =
 function extractTopic(text) {
   return text
     .toLowerCase()
-    .replace(/summarize|explain|please/g, "")
+    .replace(/summarize|explain|please|check again/g, "")
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -104,62 +100,42 @@ async function searchWeb(query) {
 }
 
 // ======================================================
-// KNOWLEDGE CHECK
+// PLANNER (returns JSON decision)
 // ======================================================
 
-function alreadyKnow(message) {
-  const knownFacts = [
-    "capital of france",
-    "prime minister of england",
-    "president of the united states"
-  ];
+function planner(state) {
+  const { message, observations, confidence } = state;
 
-  const normalized = extractTopic(message);
-  return knownFacts.some(k => normalized.includes(k));
+  const factual = /\b(top|who|what|current|latest|ranking)\b/i.test(message);
+
+  if (/^[0-9+\-*/().\s]+$/.test(message))
+    return { action: "calculator", reason: "math" };
+
+  if (factual && observations.length === 0)
+    return { action: "search", reason: "needs sources" };
+
+  if (factual && confidence < 0.6)
+    return { action: "search", reason: "low confidence recheck" };
+
+  if (/summarize|explain/i.test(message) && observations.length > 0)
+    return { action: "summarize", reason: "user requested summary" };
+
+  return { action: "llm", reason: "general response" };
 }
 
 // ======================================================
-// PLANNER
+// CONFIDENCE
 // ======================================================
 
-function plan(state) {
-  const { message, observations } = state;
+function calculateConfidence(audit, observations) {
+  let score = 0.3;
 
-  if (/^[0-9+\-*/().\s]+$/.test(message)) return "calculator";
+  if (audit.some(a => a.tool === "search")) score += 0.25;
+  if (audit.some(a => a.cached)) score += 0.15;
+  if (observations.length >= 3) score += 0.15;
+  if (audit.every(a => a.tool === "llm")) score -= 0.25;
 
-  if (alreadyKnow(message) && observations.length === 0)
-    return "answer_direct";
-
-  if (/summarize|explain/i.test(message) && observations.length === 0)
-    return "search";
-
-  if (observations.length > 0 && /summarize|explain/i.test(message))
-    return "summarize";
-
-  if (/\b(who|what|when|where|why|how)\b/i.test(message) &&
-      observations.length === 0)
-    return "search";
-
-  return "llm";
-}
-
-// ======================================================
-// CONFIDENCE SCORING
-// ======================================================
-
-function calculateConfidence(audit) {
-  let score = 0.4;
-
-  const usedSearch = audit.some(a => a.tool === "search");
-  const reused = audit.some(a => a.cached);
-  const llmUsed = audit.some(a => a.tool === "llm");
-
-  if (usedSearch) score += 0.2;
-  if (audit.filter(a => a.tool === "search").length > 1) score += 0.1;
-  if (reused) score += 0.2;
-  if (llmUsed) score += 0.05;
-
-  return Math.min(score, 0.95);
+  return Math.max(0.1, Math.min(score, 0.95));
 }
 
 // ======================================================
@@ -167,107 +143,102 @@ function calculateConfidence(audit) {
 // ======================================================
 
 app.post("/chat", async (req, res) => {
-  try {
-    const { message, conversationId } = req.body;
-    if (!message) return res.status(400).json({ error: "Missing message" });
+  const { message, conversationId } = req.body;
 
-    console.log("\n==============================");
-    console.log("👤 USER:", message);
+  console.log("\n==============================");
+  console.log("👤 USER:", message);
 
-    const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-    const id = conversationId || crypto.randomUUID();
-    memory.conversations[id] ??= [];
-    const convo = memory.conversations[id];
+  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const id = conversationId || crypto.randomUUID();
+  memory.conversations[id] ??= [];
 
-    convo.push({ role: "user", content: message });
+  const convo = memory.conversations[id];
+  convo.push({ role: "user", content: message });
 
-    const auditTrail = [];
-    let observations = [];
-    let reply = "";
+  let observations = [];
+  let audit = [];
+  let reply = "";
+  let confidence = 0;
 
-    const state = { message, observations };
+  for (let step = 1; step <= 6; step++) {
+    confidence = calculateConfidence(audit, observations);
 
-    // -------- PLANNER LOOP --------
-    for (let step = 1; step <= 5; step++) {
-      const decision = plan(state);
-      console.log(`🤖 STEP ${step} PLAN:`, decision);
+    const decision = planner({
+      message,
+      observations,
+      confidence
+    });
 
-      if (decision === "calculator") {
-        const result = calculator(message);
-        auditTrail.push({ step, tool: "calculator" });
-        reply = result.error ?? `Result: ${result.result}`;
-        break;
-      }
+    console.log(`🤖 STEP ${step} PLAN:`, decision.action, "-", decision.reason);
 
-      if (decision === "answer_direct") {
-        reply = "The Prime Minister of England is Keir Starmer.";
-        auditTrail.push({ step, tool: "memory" });
-        break;
-      }
-
-      if (decision === "search") {
-        const search = await searchWeb(message);
-        auditTrail.push({
-          step,
-          tool: "search",
-          cached: search.cached,
-          sources: search.results.length
-        });
-        observations = search.results;
-        state.observations = observations;
-        continue;
-      }
-
-      if (decision === "summarize") {
-        const context = observations
-          .map(r => `${r.title}: ${r.snippet}`)
-          .join("\n");
-
-        const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "mat-llm",
-            prompt: `Summarize the following information:\n${context}`,
-            stream: false
-          })
-        });
-
-        const data = await ollamaRes.json();
-        auditTrail.push({ step, tool: "llm" });
-        reply = data.response ?? "(no response)";
-        break;
-      }
-
-      // fallback LLM
-      const prompt = convo.map(m => `${m.role}: ${m.content}`).join("\n");
-      const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "mat-llm", prompt, stream: false })
+    if (decision.action === "search") {
+      const s = await searchWeb(message);
+      audit.push({
+        step,
+        tool: "search",
+        cached: s.cached,
+        sources: s.results.length
       });
+      observations = s.results;
+      continue;
+    }
 
-      const data = await ollamaRes.json();
-      auditTrail.push({ step, tool: "llm" });
-      reply = data.response ?? "(no response)";
+    if (decision.action === "calculator") {
+      const r = calculator(message);
+      audit.push({ step, tool: "calculator" });
+      reply = r.error ?? `Result: ${r.result}`;
       break;
     }
 
-    const confidence = calculateConfidence(auditTrail);
-    reply += `\n\n🔍 Confidence: ${Math.round(confidence * 100)}%`;
+    if (decision.action === "summarize") {
+      const context = observations
+        .map(o => `${o.title}: ${o.snippet}`)
+        .join("\n");
 
-    convo.push({ role: "assistant", content: reply });
-    saveJSON(MEMORY_FILE, memory);
+      const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "mat-llm",
+          prompt: `Summarize based only on these sources:\n${context}`,
+          stream: false
+        })
+      });
 
-    console.log("🧾 AUDIT:", auditTrail);
-    console.log("🤖 REPLY:", reply);
-    console.log("==============================\n");
+      const data = await ollamaRes.json();
+      audit.push({ step, tool: "llm" });
+      reply = data.response;
+      break;
+    }
 
-    res.json({ reply, conversationId: id, auditTrail, confidence });
-  } catch (err) {
-    console.error("Chat error:", err);
-    res.status(500).json({ error: "Agent failure" });
+    // LLM fallback
+    const prompt =
+      `Answer using sources if available.\n\n` +
+      observations.map(o => `- ${o.title}`).join("\n");
+
+    const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "mat-llm", prompt, stream: false })
+    });
+
+    const data = await ollamaRes.json();
+    audit.push({ step, tool: "llm" });
+    reply = data.response;
+    break;
   }
+
+  confidence = calculateConfidence(audit, observations);
+  reply += `\n\n🔍 Confidence: ${Math.round(confidence * 100)}%`;
+
+  convo.push({ role: "assistant", content: reply });
+  saveJSON(MEMORY_FILE, memory);
+
+  console.log("🧾 AUDIT:", audit);
+  console.log("🤖 REPLY:", reply);
+  console.log("==============================\n");
+
+  res.json({ reply, conversationId: id, audit, confidence });
 });
 
 // ======================================================
