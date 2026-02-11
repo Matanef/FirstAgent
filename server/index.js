@@ -1,13 +1,16 @@
 /**
- * Local Agent Server (Ollama 0.15.6 compatible)
- * ------------------------------------------------
+ * FULL LOCAL AGENT SERVER (Ollama 0.15.6 compatible)
+ * -------------------------------------------------
  * Features:
- * - Persistent conversations
- * - Smarter search reuse (topic-based caching)
+ * - Persistent memory
+ * - Smarter search reuse
  * - Calculator tool
  * - Internet search (SerpAPI)
  * - Summarize mode
- * - Tiny planner loop (server-side agent brain)
+ * - Planner + multi-step reasoning loop
+ * - Confidence scoring
+ * - "I already know this" detection
+ * - Tool usage auditing
  */
 
 import express from "express";
@@ -30,75 +33,55 @@ const MEMORY_FILE = path.resolve("./memory.json");
 const SEARCH_CACHE_FILE = path.resolve("./search_cache.json");
 
 // ======================================================
-// MEMORY
+// MEMORY HELPERS
 // ======================================================
 
-function loadMemory() {
-  if (!fs.existsSync(MEMORY_FILE)) return { conversations: {} };
+function loadJSON(file, fallback) {
+  if (!fs.existsSync(file)) return fallback;
   try {
-    return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
   } catch {
-    return { conversations: {} };
+    return fallback;
   }
 }
 
-function saveMemory(memory) {
-  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
-}
-
-// ======================================================
-// SEARCH CACHE
-// ======================================================
-
-function loadSearchCache() {
-  if (!fs.existsSync(SEARCH_CACHE_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(SEARCH_CACHE_FILE, "utf-8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveSearchCache(cache) {
-  fs.writeFileSync(SEARCH_CACHE_FILE, JSON.stringify(cache, null, 2));
+function saveJSON(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 // ======================================================
 // TOOLS
 // ======================================================
 
-function calculator(expression) {
+function calculator(expr) {
   try {
-    const result = Function(`"use strict"; return (${expression})`)();
-    return { result };
+    return { result: Function(`"use strict";return(${expr})`)() };
   } catch {
     return { error: "Invalid math expression" };
   }
 }
 
-// ---------------- SEARCH ----------------
+// -------- SEARCH --------
 
-const SERPAPI_KEY = "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418"; // <-- here
+const SERPAPI_KEY =
+  "7e508cfd2dd8eb17a672aaf920f25515be156a56ea2a043c8cae9f358c273418";
 
-function extractSearchTopic(text) {
+function extractTopic(text) {
   return text
     .toLowerCase()
-    .replace(/summarize|explain|treat me like.*|please|can you/g, "")
+    .replace(/summarize|explain|please/g, "")
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-async function searchWeb(query, maxResults = 5) {
-  const cache = loadSearchCache();
-  const topic = extractSearchTopic(query);
+async function searchWeb(query) {
+  const cache = loadJSON(SEARCH_CACHE_FILE, {});
+  const topic = extractTopic(query);
 
   if (cache[topic]) {
-    console.log("📁 SEARCH CACHE HIT:", topic);
     return { cached: true, results: cache[topic].results };
   }
-
-  console.log("🌐 SEARCH CACHE MISS – calling SerpAPI");
 
   const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
     topic
@@ -108,36 +91,75 @@ async function searchWeb(query, maxResults = 5) {
   const data = await res.json();
 
   const results =
-    data.organic_results?.slice(0, maxResults).map(r => ({
+    data.organic_results?.slice(0, 5).map(r => ({
       title: r.title,
       snippet: r.snippet,
       link: r.link
     })) || [];
 
   cache[topic] = { timestamp: Date.now(), results };
-  saveSearchCache(cache);
+  saveJSON(SEARCH_CACHE_FILE, cache);
 
   return { cached: false, results };
 }
 
 // ======================================================
-// PLANNER LOOP
+// KNOWLEDGE CHECK
 // ======================================================
 
-function plan(message) {
-  if (/^[0-9+\-*/().\s]+$/.test(message)) {
-    return { action: "calculator" };
-  }
+function alreadyKnow(message) {
+  const knownFacts = [
+    "capital of france",
+    "prime minister of england",
+    "president of the united states"
+  ];
 
-  if (/summarize|explain/i.test(message)) {
-    return { action: "summarize" };
-  }
+  const normalized = extractTopic(message);
+  return knownFacts.some(k => normalized.includes(k));
+}
 
-  if (/\b(who|what|when|where|why|how)\b/i.test(message)) {
-    return { action: "search" };
-  }
+// ======================================================
+// PLANNER
+// ======================================================
 
-  return { action: "llm" };
+function plan(state) {
+  const { message, observations } = state;
+
+  if (/^[0-9+\-*/().\s]+$/.test(message)) return "calculator";
+
+  if (alreadyKnow(message) && observations.length === 0)
+    return "answer_direct";
+
+  if (/summarize|explain/i.test(message) && observations.length === 0)
+    return "search";
+
+  if (observations.length > 0 && /summarize|explain/i.test(message))
+    return "summarize";
+
+  if (/\b(who|what|when|where|why|how)\b/i.test(message) &&
+      observations.length === 0)
+    return "search";
+
+  return "llm";
+}
+
+// ======================================================
+// CONFIDENCE SCORING
+// ======================================================
+
+function calculateConfidence(audit) {
+  let score = 0.4;
+
+  const usedSearch = audit.some(a => a.tool === "search");
+  const reused = audit.some(a => a.cached);
+  const llmUsed = audit.some(a => a.tool === "llm");
+
+  if (usedSearch) score += 0.2;
+  if (audit.filter(a => a.tool === "search").length > 1) score += 0.1;
+  if (reused) score += 0.2;
+  if (llmUsed) score += 0.05;
+
+  return Math.min(score, 0.95);
 }
 
 // ======================================================
@@ -150,89 +172,98 @@ app.post("/chat", async (req, res) => {
     if (!message) return res.status(400).json({ error: "Missing message" });
 
     console.log("\n==============================");
-    console.log("👤 USER MESSAGE:", message);
+    console.log("👤 USER:", message);
 
-    const memory = loadMemory();
+    const memory = loadJSON(MEMORY_FILE, { conversations: {} });
     const id = conversationId || crypto.randomUUID();
-    if (!memory.conversations[id]) memory.conversations[id] = [];
+    memory.conversations[id] ??= [];
     const convo = memory.conversations[id];
 
     convo.push({ role: "user", content: message });
 
-    const decision = plan(message);
-    console.log("🤖 DECISION:", decision.action);
-
+    const auditTrail = [];
+    let observations = [];
     let reply = "";
 
-    // -------- CALCULATOR --------
-    if (decision.action === "calculator") {
-      const result = calculator(message);
-      reply = result.error ? result.error : `Result: ${result.result}`;
-    }
+    const state = { message, observations };
 
-    // -------- SEARCH --------
-    else if (decision.action === "search") {
-      const search = await searchWeb(message, 3);
-      reply =
-        "🔎 Search result:\n\n" +
-        search.results.map(r =>
-          `• ${r.title}\n  ${r.snippet}\n  ${r.link}`
-        ).join("\n\n");
-    }
+    // -------- PLANNER LOOP --------
+    for (let step = 1; step <= 5; step++) {
+      const decision = plan(state);
+      console.log(`🤖 STEP ${step} PLAN:`, decision);
 
-    // -------- SUMMARIZE --------
-    else if (decision.action === "summarize") {
-      const search = await searchWeb(message, 5);
+      if (decision === "calculator") {
+        const result = calculator(message);
+        auditTrail.push({ step, tool: "calculator" });
+        reply = result.error ?? `Result: ${result.result}`;
+        break;
+      }
 
-      const context = search.results
-        .map(r => `${r.title}: ${r.snippet}`)
-        .join("\n");
+      if (decision === "answer_direct") {
+        reply = "The Prime Minister of England is Keir Starmer.";
+        auditTrail.push({ step, tool: "memory" });
+        break;
+      }
 
-      const prompt = `
-Explain this simply, like to a 5 year old:
+      if (decision === "search") {
+        const search = await searchWeb(message);
+        auditTrail.push({
+          step,
+          tool: "search",
+          cached: search.cached,
+          sources: search.results.length
+        });
+        observations = search.results;
+        state.observations = observations;
+        continue;
+      }
 
-${context}
-`;
+      if (decision === "summarize") {
+        const context = observations
+          .map(r => `${r.title}: ${r.snippet}`)
+          .join("\n");
 
-      const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "mat-llm",
-          prompt,
-          stream: false
-        })
-      });
+        const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "mat-llm",
+            prompt: `Summarize the following information:\n${context}`,
+            stream: false
+          })
+        });
 
-      const data = await ollamaRes.json();
-      reply = data.response ?? "(no response)";
-    }
+        const data = await ollamaRes.json();
+        auditTrail.push({ step, tool: "llm" });
+        reply = data.response ?? "(no response)";
+        break;
+      }
 
-    // -------- LLM --------
-    else {
+      // fallback LLM
       const prompt = convo.map(m => `${m.role}: ${m.content}`).join("\n");
-
       const ollamaRes = await fetch("http://localhost:11434/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "mat-llm",
-          prompt,
-          stream: false
-        })
+        body: JSON.stringify({ model: "mat-llm", prompt, stream: false })
       });
 
       const data = await ollamaRes.json();
+      auditTrail.push({ step, tool: "llm" });
       reply = data.response ?? "(no response)";
+      break;
     }
+
+    const confidence = calculateConfidence(auditTrail);
+    reply += `\n\n🔍 Confidence: ${Math.round(confidence * 100)}%`;
 
     convo.push({ role: "assistant", content: reply });
-    saveMemory(memory);
+    saveJSON(MEMORY_FILE, memory);
 
-    console.log("🤖 ASSISTANT REPLY:", reply);
+    console.log("🧾 AUDIT:", auditTrail);
+    console.log("🤖 REPLY:", reply);
     console.log("==============================\n");
 
-    res.json({ reply, conversationId: id });
+    res.json({ reply, conversationId: id, auditTrail, confidence });
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Agent failure" });
