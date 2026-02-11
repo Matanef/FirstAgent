@@ -374,5 +374,13 @@
         "link": "https://tradingeconomics.com/united-states/stock-market"
       }
     ]
+  },
+  "hey there sould you list the 10 most highest stock in the us": {
+    "timestamp": 1770775898604,
+    "results": []
+  },
+  "could you list the top 10 stocks in the us": {
+    "timestamp": 1770776028164,
+    "results": []
   }
 }
