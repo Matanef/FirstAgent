@@ -6,7 +6,9 @@ export async function getTopStocks(limit = 10) {
     return { error: "Missing API key", results: [] };
   }
 
-  const url = `https://financialmodelingprep.com/api/v3/stock_market/actives?apikey=${CONFIG.FMP_API_KEY}`;
+  // Free tier compatible endpoint
+  const url = `https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=${CONFIG.FMP_API_KEY}`;
+  console.log("Using FMP key:", CONFIG.FMP_API_KEY);
 
   const data = await safeFetch(url);
 
@@ -14,12 +16,17 @@ export async function getTopStocks(limit = 10) {
     return { error: "Invalid financial data", results: [] };
   }
 
-  const results = data.slice(0, limit).map(s => ({
-    symbol: s.symbol,
-    name: s.name,
-    price: s.price,
-    change: s.change
-  }));
+  // Sort by market cap descending (if available)
+  const sorted = data
+    .filter(s => s.marketCap)
+    .sort((a, b) => b.marketCap - a.marketCap)
+    .slice(0, limit)
+    .map(s => ({
+      symbol: s.symbol,
+      name: s.name,
+      sector: s.sector,
+      marketCap: s.marketCap
+    }));
 
-  return { results };
+  return { results: sorted };
 }
