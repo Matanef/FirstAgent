@@ -10,7 +10,8 @@ function extractTopic(text) {
     .replace(/please|could you|would you|check again|verify/gi, "")
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .slice(0, 100);
 }
 
 export async function searchWeb(query, forceRefresh = false) {
@@ -21,7 +22,6 @@ export async function searchWeb(query, forceRefresh = false) {
   const cache = loadJSON(SEARCH_CACHE_FILE, {});
   const topic = extractTopic(query);
 
-  // Use cache only if valid and non-empty
   if (
     !forceRefresh &&
     cache[topic] &&
@@ -38,7 +38,7 @@ export async function searchWeb(query, forceRefresh = false) {
   const data = await safeFetch(url);
 
   if (!data || !data.organic_results) {
-    return { results: [] };
+    return { cached: false, results: [] };
   }
 
   const results = data.organic_results.slice(0, 5).map(r => ({
@@ -47,7 +47,6 @@ export async function searchWeb(query, forceRefresh = false) {
     link: r.link
   }));
 
-  // Cache only if results exist
   if (results.length > 0) {
     cache[topic] = {
       timestamp: Date.now(),
