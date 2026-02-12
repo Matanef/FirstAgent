@@ -1,6 +1,6 @@
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
-import { loadJSON, saveJSON } from "../helpers.js";
+import { loadJSON, saveJSON } from "../memory.js";
 
 const SEARCH_CACHE_FILE = "./search_cache.json";
 

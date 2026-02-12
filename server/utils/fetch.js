@@ -9,13 +9,19 @@ export async function safeFetch(url, options = {}) {
       return null;
     }
 
-    const contentType = res.headers.get("content-type");
+    const contentType = res.headers.get("content-type") || "";
 
-    if (contentType && contentType.includes("application/json")) {
+    if (contentType.includes("application/json")) {
       return await res.json();
     }
 
-    return await res.text();
+    const text = await res.text();
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   } catch (err) {
     console.error("Fetch error:", err.message);
     return null;
