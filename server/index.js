@@ -1,10 +1,12 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
-import { loadJSON, saveJSON } from "./helpers.js";
+
+import { loadJSON, saveJSON } from "./memory.js";
 import { executeStep } from "./executor.js";
-import { calculateConfidence, MAX_TOOL_CALLS } from "./audit.js";
+import { calculateConfidence } from "./audit.js";
 import { plan } from "./planner.js";
+
 
 const app = express();
 const PORT = 3000;
@@ -31,18 +33,29 @@ app.post("/chat", async (req, res) => {
 
     const stateGraph = [];
     const toolUsage = {};
-    let reply = "";
+    let reply = null;
 
     const toolType = plan(message);
-    const maxSteps = MAX_TOOL_CALLS[toolType] || 3;
+    const maxSteps = 2;
 
     for (let step = 1; step <= maxSteps; step++) {
-      const result = await executeStep(message, step, stateGraph, memory, toolUsage, convo);
-      reply = result.reply ?? reply;
+      const result = await executeStep(
+        message,
+        step,
+        stateGraph,
+        toolUsage,
+        convo
+      );
 
-      const confidence = calculateConfidence(stateGraph);
-      if (confidence >= 0.7 || (reply && !["(no search results)", "(tool budget exceeded)"].includes(reply))) break;
+      if (result.reply) {
+        reply = result.reply;
+        break;
+      }
     }
+
+    if (!reply) reply = "(unable to generate response)";
+
+    const confidence = calculateConfidence(stateGraph);
 
     convo.push({ role: "assistant", content: reply });
     saveJSON(MEMORY_FILE, memory);
@@ -51,7 +64,7 @@ app.post("/chat", async (req, res) => {
     console.log("🤖 REPLY:", reply);
     console.log("==============================\n");
 
-    res.json({ reply, conversationId: id, stateGraph, confidence: calculateConfidence(stateGraph) });
+    res.json({ reply, stateGraph, confidence, conversationId: id });
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Agent failure" });
