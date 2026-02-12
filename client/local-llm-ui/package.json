@@ -1,27 +1,34 @@
 {
-  "name": "local-llm-ui",
-  "private": true,
-  "version": "0.0.0",
+  "name": "ai-agent-server",
+  "version": "2.0.0",
+  "description": "AI Agent with financial data, web search, and calculation tools",
+  "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "ai",
+    "agent",
+    "ollama",
+    "finance",
+    "search",
+    "llm"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "vite": "^7.3.1"
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

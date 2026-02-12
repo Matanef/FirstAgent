@@ -1,28 +1,56 @@
-import fs from "fs";
+import { safeFetch } from "./utils/fetch.js";
+import { CONFIG } from "./utils/config.js";
+import { loadJSON, saveJSON } from "./memory.js";
 
-export function loadJSON(file, fallback) {
-  if (!fs.existsSync(file)) return fallback;
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf-8"));
-  } catch {
-    return fallback;
-  }
+const SEARCH_CACHE_FILE = "./search_cache.json";
+
+function extractTopic(text) {
+  return text
+    .toLowerCase()
+    .replace(/please|could you|would you|check again|verify/gi, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
 }
 
-export function saveJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-export class Memory {
-  constructor() {
-    this.steps = [];
+export async function searchWeb(query) {
+  if (!CONFIG.SERPAPI_KEY) {
+    return { error: "Missing SERPAPI key", results: [] };
   }
 
-  add(step) {
-    this.steps.push(step);
+  const cache = loadJSON(SEARCH_CACHE_FILE, {});
+  const topic = extractTopic(query);
+
+  if (
+    cache[topic] &&
+    Date.now() - cache[topic].timestamp < CONFIG.SEARCH_CACHE_TTL
+  ) {
+    return { cached: true, results: cache[topic].results };
   }
 
-  getState() {
-    return this.steps;
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
+    topic
+  )}&api_key=${CONFIG.SERPAPI_KEY}`;
+
+  const data = await safeFetch(url);
+
+  if (!data || !data.organic_results) {
+    return { results: [] };
   }
+
+  const results = data.organic_results.slice(0, 5).map(r => ({
+    title: r.title,
+    snippet: r.snippet,
+    link: r.link
+  }));
+
+  cache[topic] = {
+    timestamp: Date.now(),
+    results
+  };
+
+  saveJSON(SEARCH_CACHE_FILE, cache);
+
+  return { results };
 }
