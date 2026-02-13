@@ -1,5 +1,5 @@
 // server/executor.js
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import fetch from "node-fetch";
@@ -48,8 +48,10 @@ export async function executeStep(message, step, stateGraph, toolUsage, conversa
       return await handleStockPrice(params, step, stateGraph, conversationHistory);
     case "search":
       return await handleSearch(message, step, stateGraph, conversationHistory);
-    case "file":
-      return await handleFileOperation(params, step, stateGraph);
+    case "file": {
+      const result = await handleFileOperation(params, step, stateGraph);
+      return result;   // explicitly return structured object
+    };
     case "llm":
     default:
       return await llmFallback(message, stateGraph, conversationHistory, step);
@@ -143,42 +145,75 @@ async function handleSearch(message, step, stateGraph, conversationHistory) {
 /**
  * File operation tool
  */
+
 async function handleFileOperation(params, step, stateGraph) {
-  let { operation, path: folderPath } = params;
+  let targetPath = params.path;
+
+  if (!targetPath) {
+    const reply = "No folder path specified.";
+    stateGraph.push({ step, tool: "file", input: params, output: reply });
+    return { reply };
+  }
+
+  if (!path.isAbsolute(targetPath)) {
+    targetPath = path.resolve(targetPath);
+  }
+
+  let reply;
 
   try {
-    // Resolve absolute path
-    folderPath = path.resolve(folderPath);
+    const stats = await fs.stat(targetPath);
 
-    if (operation === "scan") {
-      const files = await scanDirectoryRecursive(folderPath);
-      stateGraph.push({ step, tool: "file", input: folderPath, output: files });
-
-      const reply = files.length > 0
-        ? `Files scanned successfully:\n${files.map(f => `- ${f}`).join("\n")}`
-        : "The folder is empty.";
-
+    if (!stats.isDirectory()) {
+      reply = `Path exists but is not a folder: ${targetPath}`;
+      stateGraph.push({ step, tool: "file", input: params, output: reply });
       return { reply };
     }
 
-    if (operation === "duplicates") {
-      const files = await scanDirectoryRecursive(folderPath);
-      const duplicates = await findDuplicateFiles(files);
-      stateGraph.push({ step, tool: "file", input: folderPath, output: duplicates });
-
-      const reply = Object.keys(duplicates).length > 0
-        ? `Duplicate files found:\n${Object.entries(duplicates).map(([hash, paths]) => `Hash: ${hash}\n${paths.map(p => `- ${p}`).join("\n")}`).join("\n\n")}`
-        : "No duplicate files found.";
-
-      return { reply };
-    }
-
-    return { reply: "Unknown file operation." };
   } catch (err) {
-    console.error("File operation error:", err);
-    return { reply: `Error during file operation: ${err.message}` };
+    if (err.code === "ENOENT") {
+      reply = `Folder does not exist: ${targetPath}`;
+    } else {
+      reply = `Error accessing folder: ${err.message}`;
+    }
+
+    stateGraph.push({ step, tool: "file", input: params, output: reply });
+    return { reply };
   }
+
+  if (params.operation === "scan") {
+    try {
+      const files = await fs.readdir(targetPath);
+
+      if (files.length === 0) {
+        reply = `Folder exists but is empty: ${targetPath}`;
+      } else {
+        reply =
+          `Files inside ${targetPath}:\n\n` +
+          files.map(f => `- ${f}`).join("\n");
+      }
+
+      stateGraph.push({
+        step,
+        tool: "file",
+        input: params,
+        output: files
+      });
+
+      return { reply };
+
+    } catch (err) {
+      reply = `Error reading folder: ${err.message}`;
+      stateGraph.push({ step, tool: "file", input: params, output: reply });
+      return { reply };
+    }
+  }
+
+  reply = "Unsupported file operation.";
+  stateGraph.push({ step, tool: "file", input: params, output: reply });
+  return { reply };
 }
+
 
 /**
  * Recursively scan a directory

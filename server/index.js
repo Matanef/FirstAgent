@@ -43,7 +43,9 @@ app.post("/chat", async (req, res) => {
     }
 
     if (message.length > 1000) {
-      return res.status(400).json({ error: "Message too long (max 1000 characters)" });
+      return res.status(400).json({
+        error: "Message too long (max 1000 characters)"
+      });
     }
 
     console.log("\n" + "=".repeat(60));
@@ -78,9 +80,27 @@ app.post("/chat", async (req, res) => {
         convo
       );
 
+      // Defensive: ensure stateGraph reflects steps
+      if (result?.stateUpdate) {
+        stateGraph.push(result.stateUpdate);
+      }
+
+      if (result?.toolUsed) {
+        toolUsage[result.toolUsed] =
+          (toolUsage[result.toolUsed] || 0) + 1;
+      }
+
+      // 🔥 CRITICAL: stop immediately if reply is produced
       if (result?.reply) {
         reply = result.reply;
         console.log("✅ Reply generated");
+        break;
+      }
+
+      // 🔥 If executor explicitly says done, stop
+      if (result?.done) {
+        reply = result.reply || "Task completed.";
+        console.log("✅ Task marked done");
         break;
       }
     }
@@ -105,8 +125,14 @@ app.post("/chat", async (req, res) => {
 
     console.log("\n📊 SUMMARY");
     console.log("Steps:", stateGraph.length);
-    console.log("Tools:", Object.keys(toolUsage).join(", ") || "none");
-    console.log("Confidence:", (confidence * 100).toFixed(1) + "%");
+    console.log(
+      "Tools:",
+      Object.keys(toolUsage).join(", ") || "none"
+    );
+    console.log(
+      "Confidence:",
+      (confidence * 100).toFixed(1) + "%"
+    );
     console.log("Time:", elapsed + "ms");
     console.log("=".repeat(60) + "\n");
 
@@ -151,12 +177,14 @@ app.get("/conversation/:id", (req, res) => {
 app.get("/conversations", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
 
-  const conversations = Object.entries(memory.conversations).map(([id, messages]) => ({
-    id,
-    messageCount: messages.length,
-    lastMessage: messages[messages.length - 1]?.timestamp,
-    preview: messages[0]?.content.slice(0, 50)
-  }));
+  const conversations = Object.entries(memory.conversations).map(
+    ([id, messages]) => ({
+      id,
+      messageCount: messages.length,
+      lastMessage: messages[messages.length - 1]?.timestamp,
+      preview: messages[0]?.content.slice(0, 50)
+    })
+  );
 
   res.json({ conversations });
 });
