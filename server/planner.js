@@ -1,74 +1,73 @@
 // server/planner.js
 
 /**
- * Enhanced planner with sector detection and multi-intent support
+ * Enhanced planner with better intent ordering
  */
 
+// ----------------------------
 // Sector keywords mapping
+// ----------------------------
 const SECTOR_KEYWORDS = {
-  "Healthcare": ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
-  "Technology": ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
-  "Energy": ["oil", "gas", "renewable", "solar", "wind", "energy", "utility"],
-  "Financial": ["bank", "insurance", "fintech", "financial services", "investment"],
-  "Consumer": ["retail", "consumer", "ecommerce", "food", "beverage"],
-  "Industrial": ["manufacturing", "aerospace", "defense", "construction"],
-  "Communication": ["telecom", "media", "entertainment", "streaming"],
+  Healthcare: ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
+  Technology: ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
+  Energy: ["oil", "gas", "renewable", "solar", "wind", "energy"],
+  Financial: ["bank", "insurance", "fintech", "financial services", "investment"],
+  Consumer: ["retail", "consumer", "ecommerce", "food", "beverage"],
+  Industrial: ["manufacturing", "aerospace", "defense", "construction"],
+  Communication: ["telecom", "media", "entertainment", "streaming"],
   "Real Estate": ["reit", "real estate", "property"],
-  "Materials": ["mining", "chemicals", "metals", "materials"],
-  "Utilities": ["utility", "electric", "water", "gas utility"]
+  Materials: ["mining", "chemicals", "metals"],
+  Utilities: ["utility", "electric", "water", "gas utility"]
 };
 
-/**
- * Detect sector from user query
- */
+// ----------------------------
+// Detect sector
+// ----------------------------
 function detectSector(message) {
   const msg = message.toLowerCase();
-  
+
   for (const [sector, keywords] of Object.entries(SECTOR_KEYWORDS)) {
     if (keywords.some(keyword => msg.includes(keyword))) {
       return sector;
     }
   }
-  
+
   return null;
 }
 
-/**
- * Extract parameters from finance-related queries
- */
+// ----------------------------
+// Extract finance params
+// ----------------------------
 function extractFinanceParams(message) {
   const msg = message.toLowerCase();
   const params = {};
 
-  // Detect sector
   const sector = detectSector(message);
-  if (sector) {
-    params.sector = sector;
-  }
+  if (sector) params.sector = sector;
 
-  // Extract limit (top N)
+  // Top N detection
   const limitMatch = msg.match(/top (\d+)|(\d+) (?:top|best|largest)/);
   if (limitMatch) {
     params.limit = parseInt(limitMatch[1] || limitMatch[2]);
   }
 
-  // Check if asking for specific stock
+  // Stock symbol detection (FIXED precedence bug)
   const symbolMatch = message.match(/\b([A-Z]{1,5})\b/);
-  if (symbolMatch && msg.includes("price") || msg.includes("quote")) {
+  if (symbolMatch && (msg.includes("price") || msg.includes("quote"))) {
     params.symbol = symbolMatch[1];
   }
 
   return params;
 }
 
-/**
- * Main planning function
- */
+// ----------------------------
+// Main planner
+// ----------------------------
 export function plan(message) {
-  const msg = message.toLowerCase();
+  const msg = message.toLowerCase().trim();
 
-  // Pure calculator expression
-  if (/^[\d+\-*/().\s]+$/.test(message.trim())) {
+  // 1️⃣ Calculator
+  if (/^[\d+\-*/().\s]+$/.test(msg)) {
     return {
       action: "calculator",
       params: {},
@@ -76,13 +75,22 @@ export function plan(message) {
     };
   }
 
-  // Finance-related queries
-  const financeKeywords = /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|biotech|bioengineering|pharma|sector|industry|invest)\b/i;
-  
+  // 2️⃣ Meta / capabilities
+  const metaKeywords = /\b(what can you do|your capabilities|who are you|how can you help|help me)\b/i;
+  if (metaKeywords.test(msg)) {
+    return {
+      action: "capabilities",
+      params: {},
+      confidence: 0.95
+    };
+  }
+
+  // 3️⃣ Finance
+  const financeKeywords = /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|sector|industry|invest)\b/i;
+
   if (financeKeywords.test(msg)) {
     const params = extractFinanceParams(message);
-    
-    // Specific stock price query
+
     if (params.symbol && !params.sector) {
       return {
         action: "stock_price",
@@ -90,8 +98,7 @@ export function plan(message) {
         confidence: 0.9
       };
     }
-    
-    // General finance query (stocks by sector/market cap)
+
     return {
       action: "finance",
       params,
@@ -99,29 +106,24 @@ export function plan(message) {
     };
   }
 
-  // Search queries - informational
-  const searchKeywords = /\b(top|list|who|what|when|where|why|how|history|explain|recent|latest|news|find|search)\b/i;
-  
+  // 4️⃣ True external search
+  const searchKeywords = /\b(latest|recent|news|current|today|find|search|look up)\b/i;
   if (searchKeywords.test(msg)) {
     return {
       action: "search",
       params: {},
-      confidence: 0.7
+      confidence: 0.75
     };
   }
 
-  // Default to LLM for conversational queries
+  // 5️⃣ Default LLM reasoning
   return {
     action: "llm",
     params: {},
-    confidence: 0.5
+    confidence: 0.6
   };
 }
 
-/**
- * Legacy simple plan function for backward compatibility
- */
 export function simplePlan(message) {
-  const result = plan(message);
-  return result.action;
+  return plan(message).action;
 }
