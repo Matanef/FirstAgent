@@ -1,4 +1,6 @@
 // server/tools/search.js
+// Web search tool using SERPAPI
+// Structured deterministic return
 
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
@@ -16,64 +18,81 @@ function extractTopic(text) {
     .slice(0, 100);
 }
 
-function formatSummary(results) {
-  return results
-    .map(
-      (r, i) =>
-        `${i + 1}. ${r.title}\n${r.snippet}\nSource: ${r.link}`
-    )
-    .join("\n\n");
-}
-
-export async function searchWeb(query, forceRefresh = false) {
+export async function search(query, forceRefresh = false) {
   if (!CONFIG.SERPAPI_KEY) {
-    return { error: "Missing SERPAPI key", results: [], summary: "" };
+    return {
+      tool: "search",
+      success: false,
+      final: true,
+      error: "Missing SERPAPI key"
+    };
   }
 
   const cache = loadJSON(SEARCH_CACHE_FILE, {});
   const topic = extractTopic(query);
 
-  // Serve from cache
   if (
     !forceRefresh &&
     cache[topic] &&
-    Array.isArray(cache[topic].results) &&
-    cache[topic].results.length > 0
+    Array.isArray(cache[topic].results)
   ) {
     return {
-      cached: true,
-      results: cache[topic].results,
-      summary: formatSummary(cache[topic].results)
+      tool: "search",
+      success: true,
+      final: true,
+      data: {
+        cached: true,
+        results: cache[topic].results
+      }
     };
   }
 
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-    topic
-  )}&api_key=${CONFIG.SERPAPI_KEY}`;
+  try {
+    const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
+      topic
+    )}&api_key=${CONFIG.SERPAPI_KEY}`;
 
-  const data = await safeFetch(url);
+    const data = await safeFetch(url);
 
-  if (!data || !data.organic_results) {
-    return { cached: false, results: [], summary: "" };
-  }
+    if (!data || !data.organic_results) {
+      return {
+        tool: "search",
+        success: false,
+        final: true,
+        error: "Search API unavailable"
+      };
+    }
 
-  const results = data.organic_results.slice(0, 5).map(r => ({
-    title: r.title,
-    snippet: r.snippet || "",
-    link: r.link
-  }));
+    const results = data.organic_results.slice(0, 5).map(r => ({
+      title: r.title,
+      snippet: r.snippet || "",
+      url: r.link
+    }));
 
-  if (results.length > 0) {
-    cache[topic] = {
-      timestamp: Date.now(),
-      results
+    if (results.length > 0) {
+      cache[topic] = {
+        timestamp: Date.now(),
+        results
+      };
+      saveJSON(SEARCH_CACHE_FILE, cache);
+    }
+
+    return {
+      tool: "search",
+      success: true,
+      final: true,
+      data: {
+        cached: false,
+        results
+      }
     };
-    saveJSON(SEARCH_CACHE_FILE, cache);
-  }
 
-  return {
-    cached: false,
-    results,
-    summary: formatSummary(results)
-  };
+  } catch {
+    return {
+      tool: "search",
+      success: false,
+      final: true,
+      error: "Search request failed"
+    };
+  }
 }
