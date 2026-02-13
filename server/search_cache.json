@@ -1061,5 +1061,165 @@
         "link": "https://www.goodreads.com/quotes/44212-i-meant-what-i-said-and-i-said-what-i"
       }
     ]
+  },
+  "amazing and now what is the content of the file etestfoldertestreadtxt if it is text tell me what it": {
+    "timestamp": 1770992308567,
+    "results": [
+      {
+        "title": "FileReader: readAsText() method - Web APIs | MDN",
+        "snippet": "The readAsText() method of the FileReader interface is used to read the contents of the specified Blob or File.",
+        "link": "https://developer.mozilla.org/en-US/docs/Web/API/FileReader/readAsText"
+      },
+      {
+        "title": "What do files actually contain, and how are they \"read\"? ...",
+        "snippet": "Data is essentially information - a record of some kind of knowledge. The bit is the fundamental unit of information, representing the smallest possible amount ...",
+        "link": "https://stackoverflow.com/questions/75078605/what-do-files-actually-contain-and-how-are-they-read-what-is-a-format-and"
+      }
+    ]
+  },
+  "hey can you tell me whats in etestfolder": {
+    "timestamp": 1770993911636,
+    "results": [
+      {
+        "title": "EST File Extension: What Is It & How To Open It?",
+        "snippet": "Our most recent information indicates that EST files are associated with three unique file types (the most prevalent being the Streets & Trips ...",
+        "link": "https://www.solvusoft.com/en/file-extensions/file-extension-est/"
+      },
+      {
+        "title": "does anyone know what these folders are? : r/computerhelp",
+        "snippet": "I'm in need of help to figure out what this '\"Set-Up\" folder is. I haven't been on this computer in a couple of months, last time I was on I played a game of ...",
+        "link": "https://www.reddit.com/r/computerhelp/comments/1fja3b6/does_anyone_know_what_these_folders_are/"
+      },
+      {
+        "title": "SanctuaryRPG: Black Edition Generelle diskusjoner",
+        "snippet": "What are the folders (/est and /st) in the terminal folders? (under other) :: SanctuaryRPG: Black Edition Generelle diskusjoner.",
+        "link": "https://steamcommunity.com/app/328760/discussions/0/2119355556491467180/?l=norwegian"
+      },
+      {
+        "title": "Program File Folder - Microsoft Q&A",
+        "snippet": "I am using Windows XP Prof SP3. I was reviewing my 'Program File Folders' in WIndows Explorer and noticed a ''ESTsoft' folder.",
+        "link": "https://learn.microsoft.com/en-us/answers/questions/2693752/program-file-folder"
+      },
+      {
+        "title": "what is this folder? : r/techsupport",
+        "snippet": "A folder can be named basically anything. How could strangers on the Internet possibly know what's in it or why?",
+        "link": "https://www.reddit.com/r/techsupport/comments/1i8jj4f/what_is_this_folder/"
+      }
+    ]
+  },
+  "tell me whats inside etestfolder": {
+    "timestamp": 1770993994432,
+    "results": [
+      {
+        "title": "Eset folder Temp\\Eset\\bts.session creates daily new file",
+        "snippet": "Eset seems to create a file every day and now the hard drive is running full. The folder is c:\\Windows\\Temp\\Eset\\bts.session it always create a new folder.",
+        "link": "https://forum.eset.com/topic/35184-eset-folder-tempesetbtssession-creates-daily-new-file-drive-running-full/"
+      },
+      {
+        "title": "what is this folder? : r/techsupport",
+        "snippet": "A folder can be named basically anything. How could strangers on the Internet possibly know what's in it or why?",
+        "link": "https://www.reddit.com/r/techsupport/comments/1i8jj4f/what_is_this_folder/"
+      },
+      {
+        "title": "test folders Collection - ADM Help Centers",
+        "snippet": "The collection of test folders in the project. URL /qcbin/rest/domains/{domain}/projects/{project}/test-folders HTTP Methods GET: Retrieves the list of test ...",
+        "link": "https://admhelp.microfocus.com/alm/api_refs/REST_core/Content/REST_API_Core/REST/test_folders.html"
+      },
+      {
+        "title": "Organize eDiscovery Data with Folder Categories",
+        "snippet": "The new Folder Category function provides you the opportunity to organize folders of similar type and essentially create a new layer of subfolders.",
+        "link": "https://www.nextpoint.com/ediscovery-blog/ediscovery-organization-insight-introducing-folder-categories/"
+      },
+      {
+        "title": "Getting Information About the Contents of a Folder - Win32 ...",
+        "snippet": "The first thing you usually want to do with a folder is to find out what it contains. You must first call the folder's IShellFolder::EnumObjects method.",
+        "link": "https://learn.microsoft.com/en-us/windows/win32/shell/folder-info"
+      }
+    ]
+  },
+  "tell me whats inside folder etestfolder": {
+    "timestamp": 1770994018395,
+    "results": [
+      {
+        "title": "How to view all files inside folders and subfolders in Details",
+        "snippet": "By Windows default, all files inside folders and subfolders are being viewed as Large Icons. Every time I enter a folder I must change view from ...",
+        "link": "https://learn.microsoft.com/en-us/answers/questions/3905598/how-to-view-all-files-inside-folders-and-subfolder"
+      },
+      {
+        "title": "Get list of all files in folder and subfolders | Command Prompt",
+        "snippet": "This is the way we can display list of all files directory subd directory inside Windows operating system by using the command prom.",
+        "link": "https://www.youtube.com/watch?v=ZyGOqu7wIIY"
+      },
+      {
+        "title": "\"View All\" files in multiple folders using the file explorer?",
+        "snippet": "You can search \".\" (Without quotes) and that will show you every folder and file within the folder you are in.",
+        "link": "https://www.reddit.com/r/Windows10/comments/ynhfgx/view_all_files_in_multiple_folders_using_the_file/"
+      },
+      {
+        "title": "How to Search for Files and Folders on Windows 10",
+        "snippet": "In this section I'm going to take a quick look at how to search your files and folders to find particular content.",
+        "link": "https://www.youtube.com/watch?v=Ym8Pzh63WVw"
+      },
+      {
+        "title": "How do I view all the files (including those in subdirectories ...",
+        "snippet": "Enter the main folder you want to see and Ctrl + B . That will list all files within the main folder and all of its subfolders. And then you ...",
+        "link": "https://superuser.com/questions/7783/how-do-i-view-all-the-files-including-those-in-subdirectories-ordered-by-last"
+      }
+    ]
+  },
+  "ok just to check one more time tell me whats inside etestfolder": {
+    "timestamp": 1770994265324,
+    "results": [
+      {
+        "title": "Strange files after OneUI 8 update (you should check!)",
+        "snippet": "Since the last update I have .ect_outputlog.txt, inputlog, release, ectsavedata_1min.txt, 10min.txt in my /Documents folder.",
+        "link": "https://www.reddit.com/r/GalaxyA55/comments/1o2yqb6/strange_files_after_oneui_8_update_you_should/"
+      },
+      {
+        "title": "I'm can folder no more check my everything in my operative ...",
+        "snippet": "Run a full antivirus scan to rule out malware. Clear temporary files and perform disk cleanup to free space. Updating your operating system and drivers can ...",
+        "link": "https://www.justanswer.com/software/oei3a-i-m-folder-no-check-everything-operative.html"
+      },
+      {
+        "title": "I found a HIDDEN folder on my girlfriend's hard drive… full of ...",
+        "snippet": "I found a HIDDEN folder on my girlfriend's hard drive… full of her step sister! ; My wife CAME OUT and left me for her girlfriend! | Reddit ...",
+        "link": "https://www.youtube.com/watch?v=qFite1WsmcQ"
+      },
+      {
+        "title": "Rex Orange County - Pluto Projector (Lyrics)",
+        "snippet": "Rex Orange County - Pluto Projector (Lyrics) Get it here: Follow Rex Orange County http://www.rexorangecounty.com ...",
+        "link": "https://www.youtube.com/watch?v=5hkl5WKAGiw"
+      }
+    ]
+  },
+  "why in your plan in step 1 you used the search tool and not the file tool": {
+    "timestamp": 1770994314641,
+    "results": [
+      {
+        "title": "Do you get the search function on Step 1?? : r/step1",
+        "snippet": "How to create a study schedule for Step 1. Tips for managing test ... Do you get the search function on Step 1?? Like you do on Free120 ...",
+        "link": "https://www.reddit.com/r/step1/comments/147bct6/do_you_get_the_search_function_on_step_1/"
+      },
+      {
+        "title": "'file_search' Tool Broken (Assistants API) - Bugs",
+        "snippet": "The file you provided isn't accessible with the myfiles_browser tool ... You can give a bug report of not using tools as instructed or as ...",
+        "link": "https://community.openai.com/t/file-search-tool-broken-assistants-api/1041727"
+      },
+      {
+        "title": "The Ultimate Step 1 Guide (2026) Best Resources & Study ...",
+        "snippet": "Begin taking self-assessments early in your prep to track progress. Use tools like Free 120, UWSA (especially the latest one), and the newest four NBME STEP 1 ...",
+        "link": "https://thematchguy.com/usmle-step-1-guide-resources-study-tips-plan-schedule-how-to-study/"
+      },
+      {
+        "title": "Dedicated Study Plan – Step 1",
+        "snippet": "- Enough days off to avoid harmful burnout? - Accounted for known life events? - Rest day/light studying day before taking exam to optimize cognitive function?",
+        "link": "https://medicine.tulane.edu/sites/default/files/2024-06/dedicated_study_plan_step_1_class_of_2026.pdf"
+      },
+      {
+        "title": "Unable to download step 1 report?",
+        "snippet": "I am unable to download my step1 report for last 12 hrs! Its giving download error contineously. My anxiety is at peak! I dont k ow what to do.",
+        "link": "https://www.facebook.com/groups/533203374144644/posts/1952071232257844/"
+      }
+    ]
   }
 }

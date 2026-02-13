@@ -20,11 +20,28 @@ function resolveSafePath(relativePath = ".") {
 }
 
 /**
+ * Determine if a path is a file or folder automatically
+ */
+async function detectPathType(relativePath) {
+  const safePath = resolveSafePath(relativePath);
+
+  try {
+    const stats = await fs.promises.stat(safePath);
+    if (stats.isDirectory()) return "directory";
+    if (stats.isFile()) return "file";
+  } catch (err) {
+    if (err.code === "ENOENT") return "not_found";
+    throw err;
+  }
+
+  return "unknown";
+}
+
+/**
  * Scan directory (non-recursive)
  */
 async function scanDirectory(relativePath = ".") {
   const safePath = resolveSafePath(relativePath);
-
   const stats = await fs.promises.stat(safePath);
 
   if (!stats.isDirectory()) {
@@ -48,22 +65,17 @@ async function scanRecursive(relativePath = ".") {
 
   async function walk(dir) {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-
       if (entry.isDirectory()) {
         await walk(fullPath);
       } else {
-        results.push(
-          fullPath.replace(path.resolve(SANDBOX_ROOT), "")
-        );
+        results.push(fullPath.replace(path.resolve(SANDBOX_ROOT), ""));
       }
     }
   }
 
   await walk(safePath);
-
   return { files: results };
 }
 
@@ -76,18 +88,13 @@ async function findDuplicates(relativePath = ".") {
 
   async function walk(dir) {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-
       if (entry.isDirectory()) {
         await walk(fullPath);
       } else {
         const buffer = await fs.promises.readFile(fullPath);
-        const hash = crypto
-          .createHash("sha256")
-          .update(buffer)
-          .digest("hex");
+        const hash = crypto.createHash("sha256").update(buffer).digest("hex");
 
         fileMap[hash] ??= [];
         fileMap[hash].push(fullPath);
@@ -101,59 +108,67 @@ async function findDuplicates(relativePath = ".") {
     .filter(([_, files]) => files.length > 1)
     .map(([hash, files]) => ({
       hash,
-      files: files.map(f =>
-        f.replace(path.resolve(SANDBOX_ROOT), "")
-      )
+      files: files.map(f => f.replace(path.resolve(SANDBOX_ROOT), ""))
     }));
 
   return { duplicates };
 }
 
 /**
+ * Read a file as text
+ */
+async function readFile(relativePath) {
+  const safePath = resolveSafePath(relativePath);
+  const stats = await fs.promises.stat(safePath);
+
+  if (!stats.isFile()) {
+    return "Path exists but is not a file.";
+  }
+
+  const content = await fs.promises.readFile(safePath, "utf-8");
+  return content;
+}
+
+/**
  * Main executor
  */
 export async function execute(params = {}) {
-  const { operation = "scan", path = "." } = params;
+  let { operation, path: p } = params;
 
   try {
+    // Auto-detect if operation not explicitly set
+    if (!operation) {
+      const type = await detectPathType(p);
+      if (type === "directory") operation = "scan";
+      else if (type === "file") operation = "read";
+      else return "Path does not exist.";
+    }
+
     switch (operation) {
       case "scan":
-        const result = await scanDirectory(path);
+        const result = await scanDirectory(p);
         if (result.error) return result.error;
-
-        if (!result.files.length)
-          return "Folder exists but is empty.";
-
-        return (
-          "Files:\n\n" +
-          result.files.map(f => `- ${f}`).join("\n")
-        );
+        if (!result.files.length) return "Folder exists but is empty.";
+        return "Files:\n\n" + result.files.map(f => `- ${f}`).join("\n");
 
       case "scan_recursive":
-        const recursive = await scanRecursive(path);
-        return (
-          "Files:\n\n" +
-          recursive.files.map(f => `- ${f}`).join("\n")
-        );
+        const recursive = await scanRecursive(p);
+        return "Files:\n\n" + recursive.files.map(f => `- ${f}`).join("\n");
 
       case "duplicates":
-        const dup = await findDuplicates(path);
-
-        if (!dup.duplicates.length)
-          return "No duplicate files found.";
-
+        const dup = await findDuplicates(p);
+        if (!dup.duplicates.length) return "No duplicate files found.";
         return JSON.stringify(dup.duplicates, null, 2);
+
+      case "read":
+        return await readFile(p);
 
       default:
         return "Unsupported file operation.";
     }
   } catch (err) {
-    if (err.message.includes("outside sandbox"))
-      return err.message;
-
-    if (err.code === "ENOENT")
-      return "Folder does not exist.";
-
+    if (err.message.includes("outside sandbox")) return err.message;
+    if (err.code === "ENOENT") return "Folder or file does not exist.";
     return "File operation error: " + err.message;
   }
 }

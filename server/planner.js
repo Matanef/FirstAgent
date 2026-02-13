@@ -6,16 +6,16 @@
  */
 
 const SECTOR_KEYWORDS = {
-  "Healthcare": ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
-  "Technology": ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
-  "Energy": ["oil", "gas", "renewable", "solar", "wind", "energy", "utility"],
-  "Financial": ["bank", "insurance", "fintech", "financial services", "investment"],
-  "Consumer": ["retail", "consumer", "ecommerce", "food", "beverage"],
-  "Industrial": ["manufacturing", "aerospace", "defense", "construction"],
-  "Communication": ["telecom", "media", "entertainment", "streaming"],
+  Healthcare: ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
+  Technology: ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
+  Energy: ["oil", "gas", "renewable", "solar", "wind", "energy", "utility"],
+  Financial: ["bank", "insurance", "fintech", "financial services", "investment"],
+  Consumer: ["retail", "consumer", "ecommerce", "food", "beverage"],
+  Industrial: ["manufacturing", "aerospace", "defense", "construction"],
+  Communication: ["telecom", "media", "entertainment", "streaming"],
   "Real Estate": ["reit", "real estate", "property"],
-  "Materials": ["mining", "chemicals", "metals", "materials"],
-  "Utilities": ["utility", "electric", "water", "gas utility"]
+  Materials: ["mining", "chemicals", "metals", "materials"],
+  Utilities: ["utility", "electric", "water", "gas utility"]
 };
 
 /* -----------------------------
@@ -58,9 +58,10 @@ function detectFileIntent(message) {
 
   const operations = {
     scan: ["scan", "list files", "directory contents", "show files"],
+    scan_recursive: ["scan recursive", "list all files", "show all files"],
     duplicates: ["duplicate", "find duplicates", "duplicate files"],
     delete: ["delete file", "remove file"],
-    read: ["read file", "open file"],
+    read: ["read file", "open file", "tell me what it says", "show content"],
     write: ["write file", "save file", "edit file"]
   };
 
@@ -73,25 +74,19 @@ function detectFileIntent(message) {
         return { operation: op, path: absoluteMatch[0] };
       }
 
-      // 2️⃣ "folder testFolder"
-      const folderMatch = message.match(/folder\s+([^\s]+)/i);
-      if (folderMatch) {
-        return { operation: op, path: folderMatch[1] };
+      // 2️⃣ Relative "folder testFolder" or "file testread.txt"
+      const folderOrFileMatch = message.match(/(?:folder|file)\s+([^\s]+)/i);
+      if (folderOrFileMatch) {
+        return { operation: op, path: folderOrFileMatch[1] };
       }
 
-      // 3️⃣ "scan testFolder"
-      const scanMatch = message.match(/scan\s+([^\s]+)/i);
-      if (scanMatch) {
-        return { operation: op, path: scanMatch[1] };
-      }
-
+      // 3️⃣ Fallback: just scan default
       return { operation: op, path: "." };
     }
   }
 
   return null;
 }
-
 
 /* -----------------------------
    Main Planner
@@ -105,8 +100,7 @@ export function plan(message) {
   }
 
   // 2️⃣ Finance
-  const financeKeywords =
-    /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|sector|industry|invest)\b/i;
+  const financeKeywords = /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|sector|industry|invest)\b/i;
 
   if (financeKeywords.test(msg)) {
     const params = extractFinanceParams(message);
@@ -125,9 +119,7 @@ export function plan(message) {
   }
 
   // 4️⃣ Search
-  const searchKeywords =
-    /\b(top|who|what|when|where|why|how|history|explain|recent|latest|news|find|search)\b/i;
-
+  const searchKeywords = /\b(top|who|what|when|where|why|how|history|explain|recent|latest|news|find|search)\b/i;
   if (searchKeywords.test(msg)) {
     return { action: "search", params: {}, confidence: 0.7 };
   }
