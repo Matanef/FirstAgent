@@ -1,16 +1,13 @@
 // server/tools/calculator.js
-
-// Very small safe math evaluator
-// Supports: + - * / ( ) and decimals
+// Deterministic safe calculator tool
+// Structured return system
 
 function sanitizeExpression(input) {
-  // Extract first math-like sequence
   const match = input.match(/[-+*/().\d\s]+/);
   if (!match) return null;
 
   const expr = match[0];
 
-  // Allow only valid characters
   if (!/^[\d+\-*/().\s]+$/.test(expr)) return null;
 
   return expr;
@@ -18,8 +15,6 @@ function sanitizeExpression(input) {
 
 function evaluateExpression(expr) {
   try {
-    // Use Function constructor instead of eval
-    // Still controlled because we sanitized strictly
     const result = Function(`"use strict"; return (${expr})`)();
 
     if (typeof result !== "number" || !isFinite(result)) {
@@ -36,8 +31,32 @@ export function calculator(message) {
   const expr = sanitizeExpression(message);
 
   if (!expr) {
-    return { error: "No valid math expression found" };
+    return {
+      tool: "calculator",
+      success: false,
+      final: true,
+      error: "No valid math expression found"
+    };
   }
 
-  return evaluateExpression(expr);
+  const evaluation = evaluateExpression(expr);
+
+  if (evaluation.error) {
+    return {
+      tool: "calculator",
+      success: false,
+      final: true,
+      error: evaluation.error
+    };
+  }
+
+  return {
+    tool: "calculator",
+    success: true,
+    final: true,
+    data: {
+      expression: expr,
+      result: evaluation.result
+    }
+  };
 }

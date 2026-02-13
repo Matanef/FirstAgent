@@ -1773,6 +1773,45 @@
         "timestamp": "2026-02-13T15:39:20.510Z",
         "confidence": 0.5
       }
+    ],
+    "4881bebe-7904-4fa1-a1db-e5f7cd45ae2c": [
+      {
+        "role": "user",
+        "content": "hey can you access and scan folder E\"//testFolder",
+        "timestamp": "2026-02-13T23:13:54.974Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\hey can you access and scan folder E\"\\testFolder'",
+        "timestamp": "2026-02-13T23:14:04.810Z",
+        "confidence": 0.5
+      }
+    ],
+    "47379ab8-bed2-4893-9c28-2eeaadab94da": [
+      {
+        "role": "user",
+        "content": "scan E://testFolder",
+        "timestamp": "2026-02-13T23:22:56.614Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\scan E:\\testFolder'",
+        "timestamp": "2026-02-13T23:23:01.378Z",
+        "confidence": 0.5
+      }
+    ],
+    "3006e6c6-804f-4cd2-b176-a3f9cbfd47f6": [
+      {
+        "role": "user",
+        "content": "scan E://testFloder",
+        "timestamp": "2026-02-13T23:25:23.345Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\scan E:\\testFloder'",
+        "timestamp": "2026-02-13T23:25:25.524Z",
+        "confidence": 0.5
+      }
     ]
   }
 }

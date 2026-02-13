@@ -1,12 +1,13 @@
+// server/tools/index.js
+
 import { calculator } from "./calculator.js";
-import { getTopStocks, getStockPrice } from "./finance.js";
-import { searchWeb } from "./search.js";
-import * as file from "./file.js";
+import { finance } from "./finance.js";
+import { search } from "./search.js";
+import { fileTool } from "./file.js";
 
 export const TOOLS = {
   calculator: { execute: calculator },
-  finance: { execute: getTopStocks },
-  stock_price: { execute: getStockPrice },
-  search: { execute: searchWeb },
-  file
+  finance: { execute: finance },
+  search: { execute: search },
+  file: { execute: fileTool }
 };
