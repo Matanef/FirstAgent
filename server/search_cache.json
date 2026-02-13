@@ -881,5 +881,95 @@
         "link": "https://www.quora.com/Are-there-any-PC-programs-that-can-scan-a-folder-and-find-common-naming-occurrences"
       }
     ]
+  },
+  "can you scan the folder testfolder and list any files that in there": {
+    "timestamp": 1770979294600,
+    "results": [
+      {
+        "title": "How can I get the list of files in a directory using C or C++?",
+        "snippet": "In C++17 there is now an official way to list files of your file system: std::filesystem. There is an excellent answer from Shreevardhan below with this source ...",
+        "link": "https://stackoverflow.com/questions/612097/how-can-i-get-the-list-of-files-in-a-directory-using-c-or-c"
+      },
+      {
+        "title": "For each file in each subfolder - Studio",
+        "snippet": "How do I run a certain activity (Google vision OCR) on every file within each subfolder, while all the subfolders are within the same folder?",
+        "link": "https://forum.uipath.com/t/for-each-file-in-each-subfolder/338890"
+      },
+      {
+        "title": "Get a list of all files in folder and sub-folder in a file",
+        "snippet": "Just use the find command with the directory name. For example to see the files and all files within folders in your home directory, use find ~",
+        "link": "https://askubuntu.com/questions/188052/get-a-list-of-all-files-in-folder-and-sub-folder-in-a-file"
+      },
+      {
+        "title": "Get a list of files in a folder in Windows : r/TechnologyProTips",
+        "snippet": "Get a list of files in a folder in Windows · Shift + right click on the folder. Select \"Open command window here\". · Type: dir /b > dirlist.txt.",
+        "link": "https://www.reddit.com/r/TechnologyProTips/comments/3297l6/get_a_list_of_files_in_a_folder_in_windows/"
+      },
+      {
+        "title": "How Can I List the Files in a Folder and All Its Subfolders?",
+        "snippet": "WMI, the FileSystemObject, and the Shell object are all capable of listing the files in a folder, as well as listing the subfolders in a folder.",
+        "link": "https://devblogs.microsoft.com/scripting/how-can-i-list-the-files-in-a-folder-and-all-its-subfolders/"
+      }
+    ]
+  },
+  "first of all can you tell me what i need to check and which permissions to allow for you to be able ": {
+    "timestamp": 1770980544490,
+    "results": [
+      {
+        "title": "Change app permissions on your Android phone",
+        "snippet": "On your device, open the Settings app. · Tap Security & Privacy And then Privacy And then Permission manager. · Tap a permission type. If you allowed or denied ...",
+        "link": "https://support.google.com/googleplay/answer/9431959?hl=en"
+      },
+      {
+        "title": "How To Allow Phone Access To Apps On Android Phone",
+        "snippet": "In today's video I'm going to show you how to allow phone access to apps on your Android phone.",
+        "link": "https://www.youtube.com/watch?v=_c69OScJ5rI"
+      },
+      {
+        "title": "Android App Permissions: What They Mean & How to Control ...",
+        "snippet": "I'll show you how to control the permissions on your phone individually for certain apps and also to look at your permissions more generally.",
+        "link": "https://www.youtube.com/watch?v=OQj_OitVmgw"
+      },
+      {
+        "title": "How to Check the App Permissions for Your Android ...",
+        "snippet": "We can still see what the app permissions are if we have an application or game installed on our device and that's what i'm going to show you how to do.",
+        "link": "https://www.youtube.com/watch?v=taz5lPt-ddY"
+      },
+      {
+        "title": "Manage App Permissions on Android Easily",
+        "snippet": "Here's a quick guide on how to check which apps are using which permissions: 1. Open your **Settings**. 2. Tap on the **search bar**, enter “ ...",
+        "link": "https://www.tiktok.com/@droidsavvy/video/7196108249341398314?lang=en"
+      }
+    ]
+  },
+  "try again because this is not what is writen inside the file": {
+    "timestamp": 1770988309283,
+    "results": [
+      {
+        "title": "Fix 'Word Experienced an Error Trying to Open the File'",
+        "snippet": "I have a word document that is messed up and I can't open it. It is in my trash and has some weird symbols in the name.",
+        "link": "https://www.justanswer.com/microsoft-office/nuu1r-word-document-messed-can-t-open.html"
+      },
+      {
+        "title": "Error opening file for writing - Microsoft Q&A",
+        "snippet": "The error \"Error opening file for writing,\" is an example of a compatibility error. Try running the installer in compatibility mode.",
+        "link": "https://learn.microsoft.com/en-us/answers/questions/2793659/error-opening-file-for-writing"
+      },
+      {
+        "title": "That's the message I get when I try to open the file.",
+        "snippet": "Just find the file itself, and double click to open it. It looks like you've been moving stuff around.",
+        "link": "https://www.threads.com/@itsmairilikecalamari/post/DTbvWwejo2Q/thats-the-message-i-get-when-i-try-to-open-the-file"
+      },
+      {
+        "title": "Write Error. The file could not be written - English",
+        "snippet": "Most fixes say to disable Ransomware which I don't have. Every time Windows does an update, this is the message I get when I try to open any documents.",
+        "link": "https://ask.libreoffice.org/t/write-error-the-file-could-not-be-written/99433"
+      },
+      {
+        "title": "This makes me nuts... \"The action cannot be completed ...",
+        "snippet": "Whenever I try to move or edit a folder or file in Share on Windows, at random times, I get this error message and cannot move it.",
+        "link": "https://www.reddit.com/r/unRAID/comments/1431i5w/this_makes_me_nuts_the_action_cannot_be_completed/"
+      }
+    ]
   }
 }
