@@ -276,7 +276,7 @@ async function callLLM(prompt) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "llama3.2",  // Updated to a common model
+        model: "mat-llm:latest",  // Updated to a common model
         prompt,
         stream: false,
         options: {
