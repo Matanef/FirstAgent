@@ -791,5 +791,95 @@
         "link": "https://open.spotify.com/track/0h2c9B8Hw5tyUFJ5ZO8BpO"
       }
     ]
+  },
+  "can you list the files in testfloder": {
+    "timestamp": 1770948587975,
+    "results": [
+      {
+        "title": "How do I run all Python unit tests in a directory?",
+        "snippet": "I am attempting to make a file called all_test.py that will, you guessed it, run all files in the aforementioned test form and return the result.",
+        "link": "https://stackoverflow.com/questions/1732438/how-do-i-run-all-python-unit-tests-in-a-directory"
+      },
+      {
+        "title": "How to get all files names from src/resources in junit test",
+        "snippet": "Do you know how to get a relative path to src/resources from junit test and get all files names in this folder?",
+        "link": "https://www.reddit.com/r/javahelp/comments/7nmsr0/how_to_get_all_files_names_from_srcresources_in/"
+      },
+      {
+        "title": "Find files inside a folder in your automated test",
+        "snippet": "The 'listFiles' method from this class will return a Collection of all the files found inside a specified baseFolder. Specifically, a Collection ...",
+        "link": "https://imalittletester.com/2018/11/08/find-files-inside-a-folder-in-your-automated-test/"
+      },
+      {
+        "title": "Using files in unit tests - DataMiner Dojo",
+        "snippet": "1) Put the files in the directory of the test project and add them to the project via the “Add Existing Item” context menu action in the ...",
+        "link": "https://community.dataminer.services/unit-testing-using-files-in-unit-tests/"
+      },
+      {
+        "title": "How to test file under sub-dir of tests folder?",
+        "snippet": "Place a main.rs file along with the extra modules within a subdirectory of the src/bin, examples, benches, or tests directory.",
+        "link": "https://users.rust-lang.org/t/how-to-test-file-under-sub-dir-of-tests-folder/58584"
+      }
+    ]
+  },
+  "can you scan and list the files in subfolder testfolder": {
+    "timestamp": 1770948652237,
+    "results": [
+      {
+        "title": "Running tests on folders within folders from package.json",
+        "snippet": "The problem is as the test command stands I can only test what is in anotherFolder but I also need the files in someFolder/subFolder/subSubFolder to be tested.",
+        "link": "https://stackoverflow.com/questions/50255839/running-tests-on-folders-within-folders-from-package-json"
+      },
+      {
+        "title": "Get a list of all files in folder and sub-folder in a file",
+        "snippet": "Just use the find command with the directory name. For example to see the files and all files within folders in your home directory, use find ~",
+        "link": "https://askubuntu.com/questions/188052/get-a-list-of-all-files-in-folder-and-sub-folder-in-a-file"
+      },
+      {
+        "title": "How to scan for all files in Folders and Subfolders outside ...",
+        "snippet": "How to scan for all files in Folders and Subfolders outside the Godot Project Directory? (Godot 3.0.4) · Archive · system ...",
+        "link": "https://forum.godotengine.org/t/how-to-scan-for-all-files-in-folders-and-subfolders-outside-the-godot-project-directory-godot-3-0-4/27907"
+      },
+      {
+        "title": "Move files and folders to a subfolder",
+        "snippet": "Hi I have a directory where I have many subfolders. In each subfolder, I have a folder called TEST along with other folders and files.",
+        "link": "https://superuser.com/questions/843446/move-files-and-folders-to-a-subfolder"
+      },
+      {
+        "title": "Read files within folders and subfolders - Studio",
+        "snippet": "I need help to iterate through multiple subfolders and search for a given file by name. I have a root folder (say \"C:\\TestFolder\") and multiple subfolders ...",
+        "link": "https://forum.uipath.com/t/read-files-within-folders-and-subfolders/250902"
+      }
+    ]
+  },
+  "can you scan folder testfolder and list the files here": {
+    "timestamp": 1770949803371,
+    "results": [
+      {
+        "title": "How do I scan a folder so I can list the name of its contents ...",
+        "snippet": "The goal is to go to a folder and be able to scan all of that filder children names. Then I take the names and save them to a text file.",
+        "link": "https://stackoverflow.com/questions/27863871/how-do-i-scan-a-folder-so-i-can-list-the-name-of-its-contents-in-a-text-file-ja"
+      },
+      {
+        "title": "List Files in Folders and Subfolders with PowerShell",
+        "snippet": "I believe you will find the way that Windows PowerShell handles files and folders a welcome change from the work you had to do in VBScript.",
+        "link": "https://devblogs.microsoft.com/scripting/list-files-in-folders-and-subfolders-with-powershell/"
+      },
+      {
+        "title": "Quickly creating a list of files in a folder",
+        "snippet": "This tip explains how to create a list of files that are in a folder. Quickly creating a list of files in a folder. 390K views · 10 years ago",
+        "link": "https://www.youtube.com/watch?v=A9Z8AzSMAvs"
+      },
+      {
+        "title": "Get a list of all files in folder and sub-folder in a file",
+        "snippet": "Just use the find command with the directory name. For example to see the files and all files within folders in your home directory, use find ~",
+        "link": "https://askubuntu.com/questions/188052/get-a-list-of-all-files-in-folder-and-sub-folder-in-a-file"
+      },
+      {
+        "title": "Are there any PC programs that can scan a folder and find ...",
+        "snippet": "Use the find command. This command will find all the file names within a directory that match your criteria.",
+        "link": "https://www.quora.com/Are-there-any-PC-programs-that-can-scan-a-folder-and-find-common-naming-occurrences"
+      }
+    ]
   }
 }
