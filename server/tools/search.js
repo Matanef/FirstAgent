@@ -1,3 +1,5 @@
+// server/tools/search.js
+
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
@@ -14,21 +16,35 @@ function extractTopic(text) {
     .slice(0, 100);
 }
 
+function formatSummary(results) {
+  return results
+    .map(
+      (r, i) =>
+        `${i + 1}. ${r.title}\n${r.snippet}\nSource: ${r.link}`
+    )
+    .join("\n\n");
+}
+
 export async function searchWeb(query, forceRefresh = false) {
   if (!CONFIG.SERPAPI_KEY) {
-    return { error: "Missing SERPAPI key", results: [] };
+    return { error: "Missing SERPAPI key", results: [], summary: "" };
   }
 
   const cache = loadJSON(SEARCH_CACHE_FILE, {});
   const topic = extractTopic(query);
 
+  // Serve from cache
   if (
     !forceRefresh &&
     cache[topic] &&
     Array.isArray(cache[topic].results) &&
     cache[topic].results.length > 0
   ) {
-    return { cached: true, results: cache[topic].results };
+    return {
+      cached: true,
+      results: cache[topic].results,
+      summary: formatSummary(cache[topic].results)
+    };
   }
 
   const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
@@ -38,12 +54,12 @@ export async function searchWeb(query, forceRefresh = false) {
   const data = await safeFetch(url);
 
   if (!data || !data.organic_results) {
-    return { cached: false, results: [] };
+    return { cached: false, results: [], summary: "" };
   }
 
   const results = data.organic_results.slice(0, 5).map(r => ({
     title: r.title,
-    snippet: r.snippet,
+    snippet: r.snippet || "",
     link: r.link
   }));
 
@@ -52,9 +68,12 @@ export async function searchWeb(query, forceRefresh = false) {
       timestamp: Date.now(),
       results
     };
-
     saveJSON(SEARCH_CACHE_FILE, cache);
   }
 
-  return { cached: false, results };
+  return {
+    cached: false,
+    results,
+    summary: formatSummary(results)
+  };
 }
