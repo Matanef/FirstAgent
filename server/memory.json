@@ -1049,6 +1049,69 @@
         "role": "assistant",
         "content": "⚠️ Finance API unavailable (401 or invalid key). Cannot provide verified stock analysis."
       }
+    ],
+    "8bf3cbec-af9b-45f6-84c8-0bdceabe3ad9": [
+      {
+        "role": "user",
+        "content": "hey can you tell me what are your abilities?",
+        "timestamp": "2026-02-12T23:58:48.712Z"
+      },
+      {
+        "role": "assistant",
+        "content": "(LLM unavailable)",
+        "timestamp": "2026-02-12T23:58:51.747Z",
+        "confidence": 0.45
+      }
+    ],
+    "2d949ca1-fc63-4103-a119-317e4bc019e4": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-13T00:12:38.078Z"
+      },
+      {
+        "role": "assistant",
+        "content": "(LLM unavailable)",
+        "timestamp": "2026-02-13T00:12:38.104Z",
+        "confidence": 0.5
+      }
+    ],
+    "8ba47a3b-fbb9-4b17-a352-5b5602ede696": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-13T00:24:47.912Z"
+      },
+      {
+        "role": "assistant",
+        "content": "(LLM unavailable)",
+        "timestamp": "2026-02-13T00:24:47.938Z",
+        "confidence": 0.5
+      }
+    ],
+    "a5a11923-ea6d-4710-82db-8d7cafe15d1c": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-13T00:30:23.736Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hey! How can I assist you today?",
+        "timestamp": "2026-02-13T00:30:33.256Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "can you tell me what you can do?",
+        "timestamp": "2026-02-13T00:30:46.421Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Based on the provided sources, here is what I can do:\n\n* Give me (quintessentially British 80's music) - According to Source [1] \"I-Level - Give Me Quintessentially British 80's\" video.\n* Take you home (in a song) - As mentioned in Source [4] \"Lisa Lisa & Cult Jam, Full Force - I Wonder If I Take You Home\", the official music video features the song with this title.\n\nAdditionally, according to Source [5], What Can U Do is also something that can be done, as per the lyrics of the song by D4L. The lyrics mention various places and people who can do it too, including Bankhead, ATL, and more.\n\nLastly, I can provide you with information on what others have done, such as filming and editing music videos (Source [2]) or building KRS-One's career (Source [3]).",
+        "timestamp": "2026-02-13T00:31:09.458Z",
+        "confidence": 0.45
+      }
     ]
   }
 }
