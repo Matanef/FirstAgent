@@ -1,0 +1,2018 @@
+Client:
+
+App.jsx:
+/**
+ * Enhanced React Chat UI
+ * Features:
+ * - Multiple conversations with preview
+ * - Loading states
+ * - Error handling
+ * - Confidence indicators
+ * - Tool usage display
+ * - Markdown support
+ */
+
+import { useState, useEffect, useRef } from "react";
+import "./App.css";
+
+const API_URL = "http://localhost:3000";
+
+function App() {
+  const [conversations, setConversations] = useState({});
+  const [activeId, setActiveId] = useState(null);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [metadata, setMetadata] = useState(null);
+
+  const messagesEndRef = useRef(null);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversations, activeId]);
+
+  // Create new conversation
+  function newChat() {
+    const id = crypto.randomUUID();
+    setConversations(c => ({ ...c, [id]: [] }));
+    setActiveId(id);
+    setError(null);
+    setMetadata(null);
+  }
+
+  // Delete conversation
+  function deleteChat(id, e) {
+    e.stopPropagation();
+    
+    if (!confirm("Delete this conversation?")) return;
+
+    const newConvos = { ...conversations };
+    delete newConvos[id];
+    setConversations(newConvos);
+
+    if (activeId === id) {
+      setActiveId(null);
+    }
+  }
+
+  // Send message
+  async function sendMessage() {
+    if (!input.trim() || !activeId || loading) return;
+
+    const userMsg = {
+      role: "user",
+      content: input,
+      timestamp: new Date().toISOString()
+    };
+
+    // Update UI immediately
+    setConversations(c => ({
+      ...c,
+      [activeId]: [...c[activeId], userMsg]
+    }));
+
+    setInput("");
+    setLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userMsg.content,
+          conversationId: activeId
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server error: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      const botMsg = {
+        role: "assistant",
+        content: data.reply,
+        timestamp: new Date().toISOString(),
+        confidence: data.confidence,
+        stateGraph: data.stateGraph
+      };
+
+      setConversations(c => ({
+        ...c,
+        [activeId]: [...c[activeId], botMsg]
+      }));
+
+      setMetadata(data.metadata);
+
+    } catch (err) {
+      console.error("Send error:", err);
+      setError(err.message);
+
+      // Add error message to chat
+      const errorMsg = {
+        role: "error",
+        content: `Error: ${err.message}`,
+        timestamp: new Date().toISOString()
+      };
+
+      setConversations(c => ({
+        ...c,
+        [activeId]: [...c[activeId], errorMsg]
+      }));
+
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Handle Enter key
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  const messages = activeId ? conversations[activeId] : [];
+
+  return (
+    <div className="app-container">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <h2>💬 Chats</h2>
+          <button onClick={newChat} className="new-chat-btn" title="New Chat">
+            ➕
+          </button>
+        </div>
+
+        <div className="conversation-list">
+          {Object.keys(conversations).length === 0 ? (
+            <div className="empty-state">No conversations yet</div>
+          ) : (
+            Object.keys(conversations).map(id => {
+              const convo = conversations[id];
+              const preview = convo[0]?.content || "Empty chat";
+
+              return (
+                <div
+                  key={id}
+                  onClick={() => setActiveId(id)}
+                  className={`conversation-item ${id === activeId ? 'active' : ''}`}
+                >
+                  <div className="conversation-preview">
+                    {preview.slice(0, 40)}
+                    {preview.length > 40 ? "..." : ""}
+                  </div>
+                  <div className="conversation-meta">
+                    <span className="message-count">{convo.length} msgs</span>
+                    <button
+                      onClick={(e) => deleteChat(id, e)}
+                      className="delete-btn"
+                      title="Delete"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Chat area */}
+      <div className="chat-container">
+        <div className="chat-header">
+          <h1>🤖 AI Agent</h1>
+          {metadata && (
+            <div className="metadata">
+              <span title="Execution time">⏱️ {metadata.executionTime}ms</span>
+              <span title="Tools used">🔧 {metadata.toolsUsed.join(", ") || "none"}</span>
+              <span title="Steps taken">📊 {metadata.steps} steps</span>
+            </div>
+          )}
+        </div>
+
+        {!activeId ? (
+          <div className="welcome-screen">
+            <h2>Welcome to AI Agent</h2>
+            <p>Start a new conversation to begin</p>
+            <button onClick={newChat} className="start-chat-btn">
+              Start New Chat
+            </button>
+            <div className="capabilities">
+              <h3>I can help with:</h3>
+              <ul>
+                <li>📈 <strong>Stock market data</strong> - Top stocks by sector (e.g., "top 10 bioengineering stocks")</li>
+                <li>🔍 <strong>Web search</strong> - Find information on any topic</li>
+                <li>🧮 <strong>Calculations</strong> - Solve math expressions</li>
+                <li>💬 <strong>General chat</strong> - Answer questions and have conversations</li>
+              </ul>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="messages-container">
+              {messages.length === 0 ? (
+                <div className="empty-chat">
+                  <p>Send a message to start the conversation</p>
+                </div>
+              ) : (
+                messages.map((m, i) => (
+                  <div key={i} className={`message ${m.role}`}>
+                    <div className="message-header">
+                      <span className="role-badge">
+                        {m.role === "user" ? "👤" : m.role === "error" ? "⚠️" : "🤖"}
+                        {m.role}
+                      </span>
+                      {m.confidence !== undefined && (
+                        <span className="confidence" title="Response confidence">
+                          {(m.confidence * 100).toFixed(0)}% confident
+                        </span>
+                      )}
+                    </div>
+                    <div className="message-content">
+                      {m.content}
+                    </div>
+                    {m.stateGraph && m.stateGraph.length > 0 && (
+                      <details className="state-graph">
+                        <summary>🔍 View execution trace ({m.stateGraph.length} steps)</summary>
+                        <pre>{JSON.stringify(m.stateGraph, null, 2)}</pre>
+                      </details>
+                    )}
+                  </div>
+                ))
+              )}
+
+              {loading && (
+                <div className="message assistant loading">
+                  <div className="message-header">
+                    <span className="role-badge">🤖 assistant</span>
+                  </div>
+                  <div className="message-content">
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div className="input-container">
+              {error && (
+                <div className="error-banner">
+                  ⚠️ {error}
+                </div>
+              )}
+
+              <div className="input-wrapper">
+                <textarea
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type your message... (Enter to send, Shift+Enter for new line)"
+                  disabled={loading}
+                  rows={1}
+                  className="message-input"
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={loading || !input.trim()}
+                  className="send-btn"
+                  title="Send message"
+                >
+                  {loading ? "⏳" : "📤"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
+
+
+App.css:
+/* Enhanced App Styling */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #0f1419;
+  --bg-secondary: #192734;
+  --bg-tertiary: #22303c;
+  --bg-hover: #273948;
+  
+  --text-primary: #e7e9ea;
+  --text-secondary: #8b98a5;
+  --text-muted: #6e7d8a;
+  
+  --accent: #1d9bf0;
+  --accent-hover: #1a8cd8;
+  
+  --success: #00ba7c;
+  --error: #f4212e;
+  --warning: #ffd400;
+  
+  --border: #38444d;
+  --shadow: rgba(0, 0, 0, 0.5);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.app-container {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ========== SIDEBAR ========== */
+
+.sidebar {
+  width: 280px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.3s ease;
+}
+
+.sidebar-header {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sidebar-header h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.new-chat-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 1rem;
+}
+
+.new-chat-btn:hover {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+.conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.conversation-item {
+  padding: 0.75rem;
+  margin-bottom: 0.25rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border: 1px solid transparent;
+}
+
+.conversation-item:hover {
+  background: var(--bg-hover);
+}
+
+.conversation-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+}
+
+.conversation-preview {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.message-count {
+  color: var(--text-secondary);
+}
+
+.delete-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.delete-btn:hover {
+  opacity: 1;
+}
+
+.empty-state {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* ========== CHAT CONTAINER ========== */
+
+.chat-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.chat-header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-secondary);
+}
+
+.chat-header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.metadata {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.metadata span {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* ========== WELCOME SCREEN ========== */
+
+.welcome-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.welcome-screen h2 {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, var(--accent), var(--success));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.welcome-screen p {
+  color: var(--text-secondary);
+  margin-bottom: 2rem;
+  font-size: 1.1rem;
+}
+
+.start-chat-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.875rem 2rem;
+  border-radius: 24px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.start-chat-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(29, 155, 240, 0.3);
+}
+
+.capabilities {
+  margin-top: 3rem;
+  max-width: 600px;
+  text-align: left;
+}
+
+.capabilities h3 {
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+.capabilities ul {
+  list-style: none;
+  padding: 0;
+}
+
+.capabilities li {
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-secondary);
+}
+
+.capabilities strong {
+  color: var(--text-primary);
+}
+
+/* ========== MESSAGES ========== */
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.empty-chat {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.message {
+  max-width: 80%;
+  padding: 1rem;
+  border-radius: 12px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: white;
+  margin-left: auto;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.message.error {
+  align-self: flex-start;
+  background: rgba(244, 33, 46, 0.1);
+  border: 1px solid var(--error);
+  color: var(--error);
+}
+
+.message.loading {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.role-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.confidence {
+  background: rgba(0, 186, 124, 0.2);
+  color: var(--success);
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+}
+
+.message-content {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.6;
+}
+
+.message.user .message-content {
+  color: white;
+}
+
+/* ========== TYPING INDICATOR ========== */
+
+.typing-indicator {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.5rem 0;
+}
+
+.typing-indicator span {
+  width: 8px;
+  height: 8px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-10px);
+    opacity: 1;
+  }
+}
+
+/* ========== STATE GRAPH ========== */
+
+.state-graph {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.state-graph summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  user-select: none;
+  padding: 0.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+}
+
+.state-graph summary:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.state-graph pre {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* ========== INPUT ========== */
+
+.input-container {
+  padding: 1rem 1.5rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+}
+
+.error-banner {
+  background: rgba(244, 33, 46, 0.1);
+  border: 1px solid var(--error);
+  color: var(--error);
+  padding: 0.75rem;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.input-wrapper {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.message-input {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.875rem 1rem;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-family: inherit;
+  resize: none;
+  max-height: 150px;
+  transition: border-color 0.2s;
+}
+
+.message-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.message-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.send-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.875rem 1.5rem;
+  border-radius: 12px;
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 60px;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-2px);
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ========== SCROLLBAR ========== */
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ========== RESPONSIVE ========== */
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    z-index: 10;
+    transform: translateX(-100%);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .message {
+    max-width: 90%;
+  }
+
+  .metadata {
+    flex-direction: column;
+    gap: 0.25rem;
+    align-items: flex-end;
+  }
+}
+
+
+Server:
+index.js:
+// server/index.js
+import express from "express";
+import cors from "cors";
+import crypto from "crypto";
+import { loadJSON, saveJSON } from "./memory.js";
+import { executeStep } from "./executor.js";
+import { calculateConfidence } from "./audit.js";
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const MEMORY_FILE = "./memory.json";
+
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
+// ----------------------------
+// Health
+// ----------------------------
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// ----------------------------
+// Chat endpoint
+// ----------------------------
+app.post("/chat", async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { message, conversationId } = req.body;
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Missing or invalid message" });
+    }
+
+    if (message.length > 1000) {
+      return res.status(400).json({
+        error: "Message too long (max 1000 characters)"
+      });
+    }
+
+    console.log("\n" + "=".repeat(60));
+    console.log("👤 USER:", message);
+
+    const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+    const id = conversationId || crypto.randomUUID();
+
+    memory.conversations[id] ??= [];
+    const convo = memory.conversations[id];
+
+    convo.push({
+      role: "user",
+      content: message,
+      timestamp: new Date().toISOString()
+    });
+
+    const stateGraph = [];
+    const toolUsage = {};
+    let reply = null;
+
+    const MAX_STEPS = 3;
+
+    for (let step = 1; step <= MAX_STEPS; step++) {
+      console.log(`🔄 Step ${step}/${MAX_STEPS}`);
+
+      const result = await executeStep(
+        message,
+        step,
+        stateGraph,
+        toolUsage,
+        convo
+      );
+
+      // Defensive: ensure stateGraph reflects steps
+      if (result?.stateUpdate) {
+        stateGraph.push(result.stateUpdate);
+      }
+
+      if (result?.toolUsed) {
+        toolUsage[result.toolUsed] =
+          (toolUsage[result.toolUsed] || 0) + 1;
+      }
+
+      // 🔥 CRITICAL: stop immediately if reply is produced
+      if (result?.reply) {
+        reply = result.reply;
+        console.log("✅ Reply generated");
+        break;
+      }
+
+      // 🔥 If executor explicitly says done, stop
+      if (result?.done) {
+        reply = result.reply || "Task completed.";
+        console.log("✅ Task marked done");
+        break;
+      }
+    }
+
+    if (!reply) {
+      reply = "I couldn't complete that request. Try rephrasing it.";
+      console.warn("⚠️ No reply after max steps");
+    }
+
+    const confidence = calculateConfidence(stateGraph);
+
+    convo.push({
+      role: "assistant",
+      content: reply,
+      timestamp: new Date().toISOString(),
+      confidence
+    });
+
+    saveJSON(MEMORY_FILE, memory);
+
+    const elapsed = Date.now() - startTime;
+
+    console.log("\n📊 SUMMARY");
+    console.log("Steps:", stateGraph.length);
+    console.log(
+      "Tools:",
+      Object.keys(toolUsage).join(", ") || "none"
+    );
+    console.log(
+      "Confidence:",
+      (confidence * 100).toFixed(1) + "%"
+    );
+    console.log("Time:", elapsed + "ms");
+    console.log("=".repeat(60) + "\n");
+
+    res.json({
+      reply,
+      stateGraph,
+      confidence,
+      conversationId: id,
+      metadata: {
+        steps: stateGraph.length,
+        toolsUsed: Object.keys(toolUsage),
+        executionTime: elapsed
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ CHAT ERROR:", err);
+    res.status(500).json({
+      error: "Internal server error",
+      message: err.message
+    });
+  }
+});
+
+// ----------------------------
+// Conversation APIs
+// ----------------------------
+app.get("/conversation/:id", (req, res) => {
+  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const conversation = memory.conversations[req.params.id];
+
+  if (!conversation) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  res.json({
+    conversationId: req.params.id,
+    messages: conversation
+  });
+});
+
+app.get("/conversations", (req, res) => {
+  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+
+  const conversations = Object.entries(memory.conversations).map(
+    ([id, messages]) => ({
+      id,
+      messageCount: messages.length,
+      lastMessage: messages[messages.length - 1]?.timestamp,
+      preview: messages[0]?.content.slice(0, 50)
+    })
+  );
+
+  res.json({ conversations });
+});
+
+app.delete("/conversation/:id", (req, res) => {
+  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+
+  if (!memory.conversations[req.params.id]) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  delete memory.conversations[req.params.id];
+  saveJSON(MEMORY_FILE, memory);
+
+  res.json({ success: true });
+});
+
+// ----------------------------
+// Start server
+// ----------------------------
+app.listen(PORT, () => {
+  console.log("\n" + "=".repeat(60));
+  console.log("🤖 AI AGENT SERVER STARTED");
+  console.log(`📡 http://localhost:${PORT}`);
+  console.log("=".repeat(60) + "\n");
+});
+
+process.on("SIGINT", () => {
+  console.log("\n👋 Shutting down...");
+  process.exit(0);
+});
+
+
+audit,js:
+export function detectContradictions(stateGraph, newOutput) {
+  if (!newOutput) return [];
+
+  const newStr =
+    typeof newOutput === "string"
+      ? newOutput
+      : JSON.stringify(newOutput);
+
+  const last = stateGraph[stateGraph.length - 1];
+
+  if (!last) return [];
+
+  const prevStr =
+    typeof last.output === "string"
+      ? last.output
+      : JSON.stringify(last.output);
+
+  if (prevStr === newStr) return [];
+
+  if (prevStr && newStr && prevStr !== newStr) {
+    return ["Potential contradiction detected"];
+  }
+
+  return [];
+}
+
+export function calculateConfidence(stateGraph) {
+  let score = 0.5;
+
+  const usedFinance = stateGraph.some(s => s.tool === "finance");
+  const usedSearch = stateGraph.some(s => s.tool === "search");
+  const contradictions = stateGraph.flatMap(s => s.contradictions || []);
+  const citationMiss = stateGraph.flatMap(s => s.citationMiss || []);
+
+  if (usedFinance) score += 0.25;
+  if (usedSearch) score += 0.15;
+  if (contradictions.length > 0) score -= 0.2;
+  if (citationMiss.length > 0) score -= 0.2;
+
+  return Math.min(Math.max(score, 0.1), 0.95);
+}
+
+
+executor.js:
+// server/executor.js
+
+import fetch from "node-fetch";
+import { TOOLS } from "./tools/index.js";
+import { plan } from "./planner.js";
+import { detectContradictions } from "./audit.js";
+
+const MAX_TOOL_CALLS = {
+  search: 3,
+  llm: 3,
+  calculator: 1,
+  finance: 2,
+  stock_price: 2,
+  file: 2
+};
+
+/**
+ * Execute a single step in the agent loop
+ */
+export async function executeStep(
+  message,
+  step,
+  stateGraph,
+  toolUsage,
+  conversationHistory
+) {
+  const decision = plan(message);
+  const action = decision.action;
+  const params = decision.params || {};
+
+  console.log(`🤖 STEP ${step} PLAN:`, {
+    action,
+    params,
+    confidence: decision.confidence
+  });
+
+  toolUsage[action] ??= 0;
+
+  if (toolUsage[action] >= MAX_TOOL_CALLS[action]) {
+    console.warn(`⚠️ Tool budget exceeded for: ${action}`);
+    return await llmFallback(
+      message,
+      stateGraph,
+      conversationHistory,
+      step
+    );
+  }
+
+  toolUsage[action]++;
+
+  switch (action) {
+    case "calculator":
+      return await handleCalculator(message, step, stateGraph);
+
+    case "finance":
+      return await handleFinance(
+        message,
+        params,
+        step,
+        stateGraph
+      );
+
+    case "stock_price":
+      return await handleStockPrice(
+        params,
+        step,
+        stateGraph
+      );
+
+    case "search":
+      return await handleSearch(
+        message,
+        step,
+        stateGraph
+      );
+
+    case "file": {
+      const result = await TOOLS.file.execute(params);
+
+      stateGraph.push({
+        step,
+        tool: "file",
+        input: params,
+        output: result
+      });
+
+      return { reply: result };
+    }
+
+    case "llm":
+    default:
+      return await llmFallback(
+        message,
+        stateGraph,
+        conversationHistory,
+        step
+      );
+  }
+}
+
+/**
+ * Calculator tool
+ */
+async function handleCalculator(message, step, stateGraph) {
+  const result = TOOLS.calculator.execute(message);
+  const reply = result.error ?? `Result: ${result.result}`;
+
+  stateGraph.push({
+    step,
+    tool: "calculator",
+    input: message,
+    output: result
+  });
+
+  return { reply };
+}
+
+/**
+ * Finance tool
+ */
+async function handleFinance(message, params, step, stateGraph) {
+  const financeData = await TOOLS.finance.execute(params);
+
+  if (
+    financeData.error ||
+    !financeData.results ||
+    financeData.results.length === 0
+  ) {
+    const errorMsg = financeData.error || "No results found";
+
+    stateGraph.push({
+      step,
+      tool: "finance",
+      input: params,
+      output: errorMsg
+    });
+
+    return { reply: `⚠️ Financial data unavailable.\n${errorMsg}` };
+  }
+
+  const reply = financeData.results
+    .map(
+      (s, i) =>
+        `${i + 1}. ${s.symbol} - ${s.name}\nPrice: $${s.price?.toFixed(
+          2
+        ) || "N/A"}`
+    )
+    .join("\n\n");
+
+  stateGraph.push({
+    step,
+    tool: "finance",
+    input: params,
+    output: financeData.results
+  });
+
+  return { reply };
+}
+
+/**
+ * Stock price tool
+ */
+async function handleStockPrice(params, step, stateGraph) {
+  const { symbol } = params;
+
+  if (!symbol) {
+    return { reply: "Please specify a stock symbol (e.g., AAPL)" };
+  }
+
+  const stockData = await TOOLS.stock_price.execute(symbol);
+
+  if (stockData.error) {
+    stateGraph.push({
+      step,
+      tool: "stock_price",
+      input: symbol,
+      output: stockData.error
+    });
+
+    return {
+      reply: `Unable to fetch price for ${symbol}: ${stockData.error}`
+    };
+  }
+
+  const reply =
+    `${stockData.name} (${stockData.symbol})\n` +
+    `Price: $${stockData.price.toFixed(2)}\n` +
+    `Change: ${stockData.change >= 0 ? "+" : ""}${stockData.change.toFixed(
+      2
+    )} (${stockData.changePercent.toFixed(2)}%)`;
+
+  stateGraph.push({
+    step,
+    tool: "stock_price",
+    input: symbol,
+    output: stockData
+  });
+
+  return { reply };
+}
+
+/**
+ * Web search tool (deterministic version)
+ */
+async function handleSearch(message, step, stateGraph) {
+  const searchResults = await TOOLS.search.execute(message);
+
+  if (!searchResults.results || searchResults.results.length === 0) {
+    stateGraph.push({
+      step,
+      tool: "search",
+      input: message,
+      output: "(no results)"
+    });
+
+    return { reply: "No search results found." };
+  }
+
+  stateGraph.push({
+    step,
+    tool: "search",
+    input: message,
+    output: searchResults.results,
+    cached: searchResults.cached || false
+  });
+
+  return { reply: searchResults.summary };
+}
+
+/**
+ * LLM fallback
+ */
+async function llmFallback(
+  message,
+  stateGraph,
+  conversationHistory,
+  step
+) {
+  const context = conversationHistory
+    .slice(-5)
+    .map(m => `${m.role}: ${m.content}`)
+    .join("\n");
+
+  const prompt =
+    `${context}\n\nuser: ${message}\n\nRespond naturally and helpfully:`;
+
+  const response = await callLLM(prompt);
+  const contradictions = detectContradictions(
+    stateGraph,
+    response
+  );
+
+  stateGraph.push({
+    step,
+    tool: "llm-fallback",
+    input: prompt,
+    output: response,
+    contradictions
+  });
+
+  return { reply: response };
+}
+
+/**
+ * Call local LLM via Ollama
+ */
+async function callLLM(prompt) {
+  try {
+    const res = await fetch(
+      "http://localhost:11434/api/generate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "mat-llm:latest",
+          prompt,
+          stream: false,
+          options: { temperature: 0.7, num_predict: 500 }
+        })
+      }
+    );
+
+    if (!res.ok) return "(LLM unavailable)";
+
+    const data = await res.json();
+    return data.response?.trim() || "(no response)";
+  } catch (err) {
+    console.error("LLM error:", err.message);
+    return "(LLM error)";
+  }
+}
+
+
+memory.js:
+import fs from "fs";
+import path from "path";
+
+export function loadJSON(filePath, defaultValue = {}) {
+  try {
+    const absolutePath = path.resolve(filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+      return defaultValue;
+    }
+
+    const raw = fs.readFileSync(absolutePath, "utf-8");
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("Error loading JSON:", err.message);
+    return defaultValue;
+  }
+}
+
+export function saveJSON(filePath, data) {
+  try {
+    const absolutePath = path.resolve(filePath);
+    fs.writeFileSync(absolutePath, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error("Error saving JSON:", err.message);
+  }
+}
+
+
+planner.js:
+// server/planner.js
+
+/**
+ * Hybrid rule-based planner
+ * Order matters: calculator → finance → file → search → llm
+ */
+
+const SECTOR_KEYWORDS = {
+  Healthcare: ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
+  Technology: ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
+  Energy: ["oil", "gas", "renewable", "solar", "wind", "energy", "utility"],
+  Financial: ["bank", "insurance", "fintech", "financial services", "investment"],
+  Consumer: ["retail", "consumer", "ecommerce", "food", "beverage"],
+  Industrial: ["manufacturing", "aerospace", "defense", "construction"],
+  Communication: ["telecom", "media", "entertainment", "streaming"],
+  "Real Estate": ["reit", "real estate", "property"],
+  Materials: ["mining", "chemicals", "metals", "materials"],
+  Utilities: ["utility", "electric", "water", "gas utility"]
+};
+
+/* -----------------------------
+   Sector Detection
+------------------------------ */
+function detectSector(message) {
+  const msg = message.toLowerCase();
+  for (const [sector, keywords] of Object.entries(SECTOR_KEYWORDS)) {
+    if (keywords.some(k => msg.includes(k))) return sector;
+  }
+  return null;
+}
+
+/* -----------------------------
+   Finance Extraction
+------------------------------ */
+function extractFinanceParams(message) {
+  const msg = message.toLowerCase();
+  const params = {};
+
+  const sector = detectSector(message);
+  if (sector) params.sector = sector;
+
+  const limitMatch = msg.match(/top (\d+)|(\d+) (?:top|best|largest)/);
+  if (limitMatch) params.limit = parseInt(limitMatch[1] || limitMatch[2]);
+
+  const symbolMatch = message.match(/\b([A-Z]{1,5})\b/);
+  if (symbolMatch && (msg.includes("price") || msg.includes("quote"))) {
+    params.symbol = symbolMatch[1];
+  }
+
+  return params;
+}
+
+/* -----------------------------
+   File Intent Detection
+------------------------------ */
+function detectFileIntent(message) {
+  const msg = message.toLowerCase();
+
+  const operations = {
+    scan: ["scan", "list files", "directory contents", "show files"],
+    scan_recursive: ["scan recursive", "list all files", "show all files"],
+    duplicates: ["duplicate", "find duplicates", "duplicate files"],
+    delete: ["delete file", "remove file"],
+    read: ["read file", "open file", "tell me what it says", "show content"],
+    write: ["write file", "save file", "edit file"]
+  };
+
+  for (const [op, keywords] of Object.entries(operations)) {
+    if (keywords.some(k => msg.includes(k))) {
+
+      // 1️⃣ Absolute Windows path (E:\something)
+      const absoluteMatch = message.match(/[A-Za-z]:\\[^\s]+/);
+      if (absoluteMatch) {
+        return { operation: op, path: absoluteMatch[0] };
+      }
+
+      // 2️⃣ Relative "folder testFolder" or "file testread.txt"
+      const folderOrFileMatch = message.match(/(?:folder|file)\s+([^\s]+)/i);
+      if (folderOrFileMatch) {
+        return { operation: op, path: folderOrFileMatch[1] };
+      }
+
+      // 3️⃣ Fallback: just scan default
+      return { operation: op, path: "." };
+    }
+  }
+
+  return null;
+}
+
+/* -----------------------------
+   Main Planner
+------------------------------ */
+export function plan(message) {
+  const msg = message.toLowerCase();
+
+  // 1️⃣ Calculator
+  if (/^[\d+\-*/().\s]+$/.test(message.trim())) {
+    return { action: "calculator", params: {}, confidence: 0.95 };
+  }
+
+  // 2️⃣ Finance
+  const financeKeywords = /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|sector|industry|invest)\b/i;
+
+  if (financeKeywords.test(msg)) {
+    const params = extractFinanceParams(message);
+
+    if (params.symbol && !params.sector) {
+      return { action: "stock_price", params: { symbol: params.symbol }, confidence: 0.9 };
+    }
+
+    return { action: "finance", params, confidence: 0.85 };
+  }
+
+  // 3️⃣ File operations (IMPORTANT: before search)
+  const fileParams = detectFileIntent(message);
+  if (fileParams) {
+    return { action: "file", params: fileParams, confidence: 0.9 };
+  }
+
+  // 4️⃣ Search
+  const searchKeywords = /\b(top|who|what|when|where|why|how|history|explain|recent|latest|news|find|search)\b/i;
+  if (searchKeywords.test(msg)) {
+    return { action: "search", params: {}, confidence: 0.7 };
+  }
+
+  // 5️⃣ Default
+  return { action: "llm", params: {}, confidence: 0.5 };
+}
+
+/* -----------------------------
+   Simple Plan
+------------------------------ */
+export function simplePlan(message) {
+  return plan(message).action;
+}
+
+
+calculator.js:
+// server/tools/calculator.js
+
+// Very small safe math evaluator
+// Supports: + - * / ( ) and decimals
+
+function sanitizeExpression(input) {
+  // Extract first math-like sequence
+  const match = input.match(/[-+*/().\d\s]+/);
+  if (!match) return null;
+
+  const expr = match[0];
+
+  // Allow only valid characters
+  if (!/^[\d+\-*/().\s]+$/.test(expr)) return null;
+
+  return expr;
+}
+
+function evaluateExpression(expr) {
+  try {
+    // Use Function constructor instead of eval
+    // Still controlled because we sanitized strictly
+    const result = Function(`"use strict"; return (${expr})`)();
+
+    if (typeof result !== "number" || !isFinite(result)) {
+      return { error: "Invalid calculation result" };
+    }
+
+    return { result };
+  } catch {
+    return { error: "Invalid mathematical expression" };
+  }
+}
+
+export function calculator(message) {
+  const expr = sanitizeExpression(message);
+
+  if (!expr) {
+    return { error: "No valid math expression found" };
+  }
+
+  return evaluateExpression(expr);
+}
+ file.js:
+ // server/tools/file.js
+
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+
+const SANDBOX_ROOT = "E:\\testFolder";
+
+/**
+ * Resolve path safely inside sandbox
+ */
+function resolveSafePath(relativePath = ".") {
+  const resolved = path.resolve(SANDBOX_ROOT, relativePath);
+
+  if (!resolved.startsWith(path.resolve(SANDBOX_ROOT))) {
+    throw new Error("Access denied: Path outside sandbox");
+  }
+
+  return resolved;
+}
+
+/**
+ * Determine if a path is a file or folder automatically
+ */
+async function detectPathType(relativePath) {
+  const safePath = resolveSafePath(relativePath);
+
+  try {
+    const stats = await fs.promises.stat(safePath);
+    if (stats.isDirectory()) return "directory";
+    if (stats.isFile()) return "file";
+  } catch (err) {
+    if (err.code === "ENOENT") return "not_found";
+    throw err;
+  }
+
+  return "unknown";
+}
+
+/**
+ * Scan directory (non-recursive)
+ */
+async function scanDirectory(relativePath = ".") {
+  const safePath = resolveSafePath(relativePath);
+  const stats = await fs.promises.stat(safePath);
+
+  if (!stats.isDirectory()) {
+    return { error: "Path exists but is not a folder." };
+  }
+
+  const files = await fs.promises.readdir(safePath);
+
+  return {
+    path: safePath,
+    files
+  };
+}
+
+/**
+ * Recursive scan
+ */
+async function scanRecursive(relativePath = ".") {
+  const safePath = resolveSafePath(relativePath);
+  const results = [];
+
+  async function walk(dir) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else {
+        results.push(fullPath.replace(path.resolve(SANDBOX_ROOT), ""));
+      }
+    }
+  }
+
+  await walk(safePath);
+  return { files: results };
+}
+
+/**
+ * Find duplicates
+ */
+async function findDuplicates(relativePath = ".") {
+  const safePath = resolveSafePath(relativePath);
+  const fileMap = {};
+
+  async function walk(dir) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else {
+        const buffer = await fs.promises.readFile(fullPath);
+        const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+        fileMap[hash] ??= [];
+        fileMap[hash].push(fullPath);
+      }
+    }
+  }
+
+  await walk(safePath);
+
+  const duplicates = Object.entries(fileMap)
+    .filter(([_, files]) => files.length > 1)
+    .map(([hash, files]) => ({
+      hash,
+      files: files.map(f => f.replace(path.resolve(SANDBOX_ROOT), ""))
+    }));
+
+  return { duplicates };
+}
+
+/**
+ * Read a file as text
+ */
+async function readFile(relativePath) {
+  const safePath = resolveSafePath(relativePath);
+  const stats = await fs.promises.stat(safePath);
+
+  if (!stats.isFile()) {
+    return "Path exists but is not a file.";
+  }
+
+  const content = await fs.promises.readFile(safePath, "utf-8");
+  return content;
+}
+
+/**
+ * Main executor
+ */
+export async function execute(params = {}) {
+  let { operation, path: p } = params;
+
+  try {
+    // Auto-detect if operation not explicitly set
+    if (!operation) {
+      const type = await detectPathType(p);
+      if (type === "directory") operation = "scan";
+      else if (type === "file") operation = "read";
+      else return "Path does not exist.";
+    }
+
+    switch (operation) {
+      case "scan":
+        const result = await scanDirectory(p);
+        if (result.error) return result.error;
+        if (!result.files.length) return "Folder exists but is empty.";
+        return "Files:\n\n" + result.files.map(f => `- ${f}`).join("\n");
+
+      case "scan_recursive":
+        const recursive = await scanRecursive(p);
+        return "Files:\n\n" + recursive.files.map(f => `- ${f}`).join("\n");
+
+      case "duplicates":
+        const dup = await findDuplicates(p);
+        if (!dup.duplicates.length) return "No duplicate files found.";
+        return JSON.stringify(dup.duplicates, null, 2);
+
+      case "read":
+        return await readFile(p);
+
+      default:
+        return "Unsupported file operation.";
+    }
+  } catch (err) {
+    if (err.message.includes("outside sandbox")) return err.message;
+    if (err.code === "ENOENT") return "Folder or file does not exist.";
+    return "File operation error: " + err.message;
+  }
+}
+
+finance.js:
+import { safeFetch } from "../utils/fetch.js";
+import { CONFIG } from "../utils/config.js";
+
+export async function getTopStocks(params = {}) {
+  const { sector = null, limit = 10 } = params;
+
+  if (!CONFIG.FMP_API_KEY) {
+    return { error: "Missing API key", results: [] };
+  }
+
+  let url = `https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=10000000000&limit=100&apikey=${CONFIG.FMP_API_KEY}`;
+
+  if (sector) {
+    url = `https://financialmodelingprep.com/api/v3/stock-screener?sector=${encodeURIComponent(
+      sector
+    )}&limit=100&apikey=${CONFIG.FMP_API_KEY}`;
+  }
+
+  const data = await safeFetch(url);
+
+  if (!data || !Array.isArray(data)) {
+    return { error: "Finance API unavailable", results: [] };
+  }
+
+  const sorted = data
+    .filter(s => s.marketCap)
+    .sort((a, b) => b.marketCap - a.marketCap)
+    .slice(0, limit)
+    .map(s => ({
+      symbol: s.symbol,
+      name: s.companyName,
+      sector: s.sector,
+      industry: s.industry,
+      marketCap: s.marketCap,
+      price: s.price
+    }));
+
+  return { results: sorted };
+}
+
+export async function getStockPrice(symbol) {
+  if (!CONFIG.FMP_API_KEY) {
+    return { error: "Missing API key" };
+  }
+
+  const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${CONFIG.FMP_API_KEY}`;
+  const data = await safeFetch(url);
+
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    return { error: "No stock data found" };
+  }
+
+  return data[0];
+}
+
+
+server/tools/index.js:
+import { calculator } from "./calculator.js";
+import { getTopStocks, getStockPrice } from "./finance.js";
+import { searchWeb } from "./search.js";
+import * as file from "./file.js";
+
+export const TOOLS = {
+  calculator: { execute: calculator },
+  finance: { execute: getTopStocks },
+  stock_price: { execute: getStockPrice },
+  search: { execute: searchWeb },
+  file
+};
+
+
+search.js:
+// server/tools/search.js
+
+import { safeFetch } from "../utils/fetch.js";
+import { CONFIG } from "../utils/config.js";
+import { loadJSON, saveJSON } from "../memory.js";
+
+const SEARCH_CACHE_FILE = "./search_cache.json";
+
+function extractTopic(text) {
+  return text
+    .toLowerCase()
+    .replace(/please|could you|would you|check again|verify/gi, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+
+function formatSummary(results) {
+  return results
+    .map(
+      (r, i) =>
+        `${i + 1}. ${r.title}\n${r.snippet}\nSource: ${r.link}`
+    )
+    .join("\n\n");
+}
+
+export async function searchWeb(query, forceRefresh = false) {
+  if (!CONFIG.SERPAPI_KEY) {
+    return { error: "Missing SERPAPI key", results: [], summary: "" };
+  }
+
+  const cache = loadJSON(SEARCH_CACHE_FILE, {});
+  const topic = extractTopic(query);
+
+  // Serve from cache
+  if (
+    !forceRefresh &&
+    cache[topic] &&
+    Array.isArray(cache[topic].results) &&
+    cache[topic].results.length > 0
+  ) {
+    return {
+      cached: true,
+      results: cache[topic].results,
+      summary: formatSummary(cache[topic].results)
+    };
+  }
+
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
+    topic
+  )}&api_key=${CONFIG.SERPAPI_KEY}`;
+
+  const data = await safeFetch(url);
+
+  if (!data || !data.organic_results) {
+    return { cached: false, results: [], summary: "" };
+  }
+
+  const results = data.organic_results.slice(0, 5).map(r => ({
+    title: r.title,
+    snippet: r.snippet || "",
+    link: r.link
+  }));
+
+  if (results.length > 0) {
+    cache[topic] = {
+      timestamp: Date.now(),
+      results
+    };
+    saveJSON(SEARCH_CACHE_FILE, cache);
+  }
+
+  return {
+    cached: false,
+    results,
+    summary: formatSummary(results)
+  };
+}
+
+
+config.js:
+// server/utils/config.js
+import 'dotenv/config';
+
+/**
+ * Centralized configuration with validation
+ */
+
+const requiredEnvVars = {
+  FMP_API_KEY: process.env.FMP_API_KEY,
+  SERPAPI_KEY: process.env.SERPAPI_KEY
+};
+
+const warnings = [];
+
+// Validate required environment variables
+for (const [key, value] of Object.entries(requiredEnvVars)) {
+  if (!value) {
+    warnings.push(`⚠️  ${key} not set - ${key.toLowerCase().includes('fmp') ? 'finance' : 'search'} features will be unavailable`);
+  }
+}
+
+export const CONFIG = {
+  // Server
+  PORT: process.env.PORT || 3000,
+  NODE_ENV: process.env.NODE_ENV || 'development',
+
+  // LLM
+  LLM_MODEL: process.env.LLM_MODEL || 'llama3.2',
+  LLM_API_URL: process.env.LLM_API_URL || 'http://localhost:11434',
+
+  // Agent Limits
+  MAX_STEPS: parseInt(process.env.MAX_STEPS || '3'),
+  TOOL_BUDGET_SEARCH: parseInt(process.env.TOOL_BUDGET_SEARCH || '3'),
+  TOOL_BUDGET_FINANCE: parseInt(process.env.TOOL_BUDGET_FINANCE || '2'),
+  TOOL_BUDGET_CALCULATOR: parseInt(process.env.TOOL_BUDGET_CALCULATOR || '1'),
+
+  // API Keys
+  FMP_API_KEY: process.env.FMP_API_KEY,
+  SERPAPI_KEY: process.env.SERPAPI_KEY,
+
+  // Critical Tools (won't fallback to LLM if these fail)
+  CRITICAL_TOOLS: (process.env.CRITICAL_TOOLS || 'finance').split(','),
+
+  // Cache
+  SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'), // 1 hour
+
+  // Validation
+  isValid() {
+    return this.FMP_API_KEY && this.SERPAPI_KEY;
+  },
+
+  getWarnings() {
+    return warnings;
+  }
+};
+
+// Log warnings on startup
+if (warnings.length > 0) {
+  console.warn('\n' + '='.repeat(60));
+  console.warn('⚠️  CONFIGURATION WARNINGS:');
+  warnings.forEach(w => console.warn(w));
+  console.warn('='.repeat(60) + '\n');
+}
+
+// Validate LLM settings
+if (!process.env.LLM_MODEL) {
+  console.info(`ℹ️  Using default LLM model: ${CONFIG.LLM_MODEL}`);
+}
+
