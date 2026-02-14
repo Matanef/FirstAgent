@@ -1,4 +1,6 @@
 // server/planner.js
+import { shouldUseCalculator } from "./tools/math-intent.js";
+
 
 const FILE_REGEX = /[A-Za-z]:[\\/]/;
 function containsMathExpression(text) {
@@ -53,9 +55,11 @@ export async function plan({ message }) {
   }
 
   // 2️⃣ Pure math expressions
-  if (containsMathExpression(trimmed)) {
-    return { tool: "calculator", reason: "Math expression detected" };
-  }
+if (shouldUseCalculator( message )) {
+  return {tool: "calculator", input: message.trim() };
+}
+
+
 
   // 3️⃣ Stock queries
   if (isStockQuery(trimmed)) {
@@ -70,3 +74,4 @@ export async function plan({ message }) {
   // 5️⃣ Default → LLM conversation
   return { tool: "llm", reason: "General conversation" };
 }
+
