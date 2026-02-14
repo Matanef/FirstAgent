@@ -21,7 +21,7 @@ Do NOT include URLs.
 Answer naturally and concisely.
 `;
 
-  const summary = await TOOLS.llm.execute(prompt);
+  const summary = await TOOLS.llm(prompt);
 
   return summary?.data?.text || "Unable to summarize result.";
 }
