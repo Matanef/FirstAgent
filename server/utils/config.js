@@ -5,18 +5,16 @@ import 'dotenv/config';
  * Centralized configuration with validation
  */
 
-const requiredEnvVars = {
-  FMP_API_KEY: process.env.FMP_API_KEY,
-  SERPAPI_KEY: process.env.SERPAPI_KEY
-};
-
 const warnings = [];
 
-// Validate required environment variables
-for (const [key, value] of Object.entries(requiredEnvVars)) {
-  if (!value) {
-    warnings.push(`⚠️  ${key} not set - ${key.toLowerCase().includes('fmp') ? 'finance' : 'search'} features will be unavailable`);
-  }
+// Validate finance providers
+if (!process.env.ALPHA_VANTAGE_KEY && !process.env.FINNHUB_KEY) {
+  warnings.push("⚠️  No finance API keys set - finance tool will be unavailable");
+}
+
+// Validate search
+if (!process.env.SERPAPI_KEY) {
+  warnings.push("⚠️  SERPAPI_KEY not set - search features may be limited");
 }
 
 export const CONFIG = {
@@ -34,19 +32,23 @@ export const CONFIG = {
   TOOL_BUDGET_FINANCE: parseInt(process.env.TOOL_BUDGET_FINANCE || '2'),
   TOOL_BUDGET_CALCULATOR: parseInt(process.env.TOOL_BUDGET_CALCULATOR || '1'),
 
-  // API Keys
-  FMP_API_KEY: process.env.FMP_API_KEY,
+  // Finance Providers
+  FINANCE_PROVIDER: process.env.FINANCE_PROVIDER || 'alpha', // alpha | finnhub
+
+  ALPHA_VANTAGE_KEY: process.env.ALPHA_VANTAGE_KEY,
+  FINNHUB_KEY: process.env.FINNHUB_KEY,
+
+  // Search
   SERPAPI_KEY: process.env.SERPAPI_KEY,
 
-  // Critical Tools (won't fallback to LLM if these fail)
+  // Critical Tools
   CRITICAL_TOOLS: (process.env.CRITICAL_TOOLS || 'finance').split(','),
 
   // Cache
-  SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'), // 1 hour
+  SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'),
 
-  // Validation
-  isValid() {
-    return this.FMP_API_KEY && this.SERPAPI_KEY;
+  isFinanceAvailable() {
+    return !!(this.ALPHA_VANTAGE_KEY || this.FINNHUB_KEY);
   },
 
   getWarnings() {
@@ -54,7 +56,7 @@ export const CONFIG = {
   }
 };
 
-// Log warnings on startup
+// Log warnings
 if (warnings.length > 0) {
   console.warn('\n' + '='.repeat(60));
   console.warn('⚠️  CONFIGURATION WARNINGS:');
@@ -62,8 +64,9 @@ if (warnings.length > 0) {
   console.warn('='.repeat(60) + '\n');
 }
 
-// Validate LLM settings
 if (!process.env.LLM_MODEL) {
   console.info(`ℹ️  Using default LLM model: ${CONFIG.LLM_MODEL}`);
+  console.log("Alpha Vantage Key:", CONFIG.ALPHA_VANTAGE_KEY);
+  console.log("Finnhub Key:", CONFIG.FINNHUB_KEY);
+  console.log("Finance Provider:", CONFIG.FINANCE_PROVIDER);
 }
-
