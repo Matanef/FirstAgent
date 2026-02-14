@@ -5,6 +5,8 @@ import { plan } from "./planner.js";
 import { loadJSON, saveJSON } from "./memory.js";
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
+import { updateProfileMemory } from "./memory.js";
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,7 +71,10 @@ app.post("/chat", async (req, res) => {
       content: message,
       timestamp: new Date().toISOString()
     });
+    // Update long-term profile memory
+    updateProfileMemory(message);
 
+    
     // ----------------------------------------
     // Preprocess message: detect file paths
     // ----------------------------------------
@@ -94,8 +99,10 @@ app.post("/chat", async (req, res) => {
 
     const result = await executeAgent({
       tool,
-      message: input ?? message
+      message: input ?? message,
+      conversationId: id
     });
+
 
     const reply = result.reply;
     const stateGraph = result.stateGraph;
