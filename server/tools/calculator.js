@@ -1,123 +1,113 @@
 // server/tools/calculator.js
-// Scientific calculator using expr-eval
-// Supports: +, -, *, /, %, ^, parentheses, negatives
-// Functions: sin, cos, tan, asin, acos, atan, sqrt, abs, log, ln, round, floor, ceil, pow
-// Constants: pi, e
-// Trig uses DEGREES by default; for simple trig calls, output also shows radian equivalent.
+// Scientific calculator with:
+// - Expression evaluation (expr-eval)
+// - Symbolic equation solving (nerdamer)
+// - Numeric fallback solving
+// - Implicit multiplication insertion
+// - Equation extraction from messy messages
+// - Natural-language output
 
 import { Parser } from "expr-eval";
+import nerdamer from "nerdamer";
+import "nerdamer/Algebra.js";
+import "nerdamer/Solve.js";
 
-function extractExpression(input) {
-  if (!input || typeof input !== "string") return null;
+// ------------------------------------------------------------
+// Utility helpers
+// ------------------------------------------------------------
 
-  // Allow standalone constants
-  if (/^\s*(pi|e)\s*$/i.test(input)) return input.trim();
+// Extract the equation line from a messy message
+function extractEquationLine(message) {
+  if (!message || typeof message !== "string") return null;
 
-  // 1) Function-style expression: sin(30), sqrt(9), etc.
-  const funcMatch = input.match(
-    /(sin|cos|tan|asin|acos|atan|sqrt|abs|log|ln|round|floor|ceil|pow)\s*\([^()]+\)/i
-  );
-  if (funcMatch) return funcMatch[0];
+  const lines = message.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  // 2) Parentheses expressions: (2+2)*3, (1+2)/(3-4)
-  const parenMatch = input.match(/\([^()]+\)[0-9+\-*/^().\s%]*/);
-  if (parenMatch) return parenMatch[0];
+  // Prefer a line that contains '='
+  const eqLine = lines.find(l => l.includes("="));
+  if (eqLine) return eqLine;
 
-  // 3) Arithmetic expressions: 29/4, 2+2*3, 2^8
-  const arithMatch = input.match(/[0-9]+(?:\s*[\+\-\*\/%^]\s*[0-9]+)+/);
-  if (arithMatch) return arithMatch[0];
-
-  // 4) Fallback: whole input looks mathy AND contains at least one digit
-  const fallback = input.match(/[0-9+\-*/^().\s%pie]+/i);
-  if (fallback && /\d/.test(fallback[0])) return fallback[0];
+  // Fallback: whole message contains '='
+  if (message.includes("=")) return message.trim();
 
   return null;
 }
 
+// Insert implicit multiplication: 2x → 2*x, (2)x → (2)*x, x(2) → x*(2)
+function insertImplicitMultiplication(expr) {
+  let out = expr;
+  out = out.replace(/(\d)([a-zA-Z(])/g, "$1*$2");
+  out = out.replace(/(\))(\d|[a-zA-Z])/g, "$1*$2");
+  out = out.replace(/([a-zA-Z])(\()/g, "$1*$2");
+  return out;
+}
+
+// Sanitize math expression BUT KEEP '='
 function sanitizeExpression(raw) {
   if (!raw) return null;
-  let expr = raw.replace(/[^0-9+\-*/^().,a-zA-Z\s%]/g, "");
+  let expr = raw.replace(/[^0-9+\-*/^().,a-zA-Z\s%=]/g, "");
   expr = expr.replace(/\s+/g, " ").trim();
-  if (!expr) return null;
-  return expr;
+  return expr || null;
 }
 
-function toRadians(deg) {
-  return (deg * Math.PI) / 180;
+// Detect a single variable (excluding known functions/constants)
+function detectVariable(expr) {
+  const functions = new Set([
+    "sin","cos","tan","asin","acos","atan",
+    "sqrt","abs","log","ln","round","floor","ceil","pow",
+    "pi","e"
+  ]);
+
+  const vars = new Set();
+  const regex = /[a-zA-Z_]\w*/g;
+  let match;
+
+  while ((match = regex.exec(expr)) !== null) {
+    const name = match[0];
+    if (!functions.has(name.toLowerCase())) {
+      vars.add(name);
+    }
+  }
+
+  return vars.size === 1 ? [...vars][0] : null;
 }
 
-function toDegrees(rad) {
-  return (rad * 180) / Math.PI;
-}
+// ------------------------------------------------------------
+// Expression evaluation (non-equation)
+// ------------------------------------------------------------
 
 function buildEvalEnv() {
-  // expr-eval uses radians by default, so we wrap to use degrees for trig
-  const sin = (deg) => Math.sin(toRadians(deg));
-  const cos = (deg) => Math.cos(toRadians(deg));
-  const tan = (deg) => Math.tan(toRadians(deg));
-
-  const asin = (x) => toDegrees(Math.asin(x));
-  const acos = (x) => toDegrees(Math.acos(x));
-  const atan = (x) => toDegrees(Math.atan(x));
-
-  const sqrt = Math.sqrt;
-  const abs = Math.abs;
-  const log = (x) => Math.log10(x);
-  const ln = (x) => Math.log(x);
-  const round = Math.round;
-  const floor = Math.floor;
-  const ceil = Math.ceil;
-  const pow = Math.pow;
-
-  const pi = Math.PI;
-  const e = Math.E;
+  const toRad = deg => (deg * Math.PI) / 180;
+  const toDeg = rad => (rad * 180) / Math.PI;
 
   return {
-    sin,
-    cos,
-    tan,
-    asin,
-    acos,
-    atan,
-    sqrt,
-    abs,
-    log,
-    ln,
-    round,
-    floor,
-    ceil,
-    pow,
-    pi,
-    e
+    sin: d => Math.sin(toRad(d)),
+    cos: d => Math.cos(toRad(d)),
+    tan: d => Math.tan(toRad(d)),
+    asin: x => toDeg(Math.asin(x)),
+    acos: x => toDeg(Math.acos(x)),
+    atan: x => toDeg(Math.atan(x)),
+    sqrt: Math.sqrt,
+    abs: Math.abs,
+    log: x => Math.log10(x),
+    ln: Math.log,
+    round: Math.round,
+    floor: Math.floor,
+    ceil: Math.ceil,
+    pow: Math.pow,
+    pi: Math.PI,
+    e: Math.E
   };
 }
 
 function normalizeExpression(expr) {
-  let normalized = expr;
-  normalized = normalized.replace(/\^/g, "^"); // expr-eval uses ^ already
-  normalized = normalized.replace(/\bpi\b/gi, "pi");
-  normalized = normalized.replace(/\be\b/gi, "e");
-  return normalized;
+  return expr.replace(/\bpi\b/gi, "pi").replace(/\be\b/gi, "e");
 }
 
 function evaluateExpression(expr) {
   try {
     const env = buildEvalEnv();
-    const normalized = normalizeExpression(expr);
-    const parser = new Parser({
-      operators: {
-        // allow all standard operators
-        add: true,
-        subtract: true,
-        multiply: true,
-        divide: true,
-        modulus: true,
-        power: true,
-        factorial: false
-      }
-    });
-
-    const parsed = parser.parse(normalized);
+    const parser = new Parser();
+    const parsed = parser.parse(normalizeExpression(expr));
     const result = parsed.evaluate(env);
 
     if (typeof result !== "number" || !isFinite(result)) {
@@ -130,36 +120,181 @@ function evaluateExpression(expr) {
   }
 }
 
+function extractExpression(input) {
+  if (!input || typeof input !== "string") return null;
+
+  if (/^\s*(pi|e)\s*$/i.test(input)) return input.trim();
+
+  const funcMatch = input.match(
+    /(sin|cos|tan|asin|acos|atan|sqrt|abs|log|ln|round|floor|ceil|pow)\s*\([^()]+\)/i
+  );
+  if (funcMatch) return funcMatch[0];
+
+  const parenMatch = input.match(/\([^()]+\)[0-9+\-*/^().\s%]*/);
+  if (parenMatch) return parenMatch[0];
+
+  const arithMatch = input.match(/[0-9]+(?:\s*[\+\-\*\/%^]\s*[0-9]+)+/);
+  if (arithMatch) return arithMatch[0];
+
+  const fallback = input.match(/[0-9+\-*/^().\s%pie]+/i);
+  if (fallback && /\d/.test(fallback[0])) return fallback[0];
+
+  return null;
+}
+
 function buildTextOutput(expr, result) {
-  const trigMatch = expr.match(/^\s*(sin|cos|tan)\s*\(\s*([^\)]+)\s*\)\s*$/i);
+  const trigMatch = expr.match(/^\s*(sin|cos|tan)\s*\(\s*([^)]+)\s*\)\s*$/i);
   if (trigMatch) {
-    const argRaw = trigMatch[2];
+    const arg = trigMatch[2];
     try {
       const env = buildEvalEnv();
       const parser = new Parser();
-      const argVal = parser.parse(normalizeExpression(argRaw)).evaluate(env);
-      if (typeof argVal === "number" && isFinite(argVal)) {
-        const rad = toRadians(argVal);
-        return `${expr} = ${result}\nArgument: ${argVal}° (${rad} rad)`;
+      const argVal = parser.parse(normalizeExpression(arg)).evaluate(env);
+      const rad = (argVal * Math.PI) / 180;
+      return `The value of ${expr} is ${result}.\nThe angle is ${argVal}° (${rad} rad).`;
+    } catch {}
+  }
+
+  return `The result of ${expr} is ${result}.`;
+}
+
+// ------------------------------------------------------------
+// Numeric fallback solving
+// ------------------------------------------------------------
+
+function solveEquationNumeric(equation, variable) {
+  try {
+    const [leftRaw, rightRaw] = equation.split("=").map(s => s.trim());
+    const left = sanitizeExpression(leftRaw);
+    const right = sanitizeExpression(rightRaw);
+    if (!left || !right) return null;
+
+    const expr = `${left}-(${right})`;
+    const parser = new Parser();
+    const compiled = parser.parse(normalizeExpression(insertImplicitMultiplication(expr)));
+    const envBase = buildEvalEnv();
+
+    const f = x => {
+      const env = { ...envBase, [variable]: x };
+      const val = compiled.evaluate(env);
+      return typeof val === "number" ? val : NaN;
+    };
+
+    let low = -1e6, high = 1e6;
+    let fLow = f(low), fHigh = f(high);
+
+    if (!isFinite(fLow) || !isFinite(fHigh)) return null;
+    if (fLow === 0) return low;
+    if (fHigh === 0) return high;
+
+    if (fLow * fHigh > 0) {
+      low = -1e3;
+      high = 1e3;
+      fLow = f(low);
+      fHigh = f(high);
+      if (fLow * fHigh > 0) return null;
+    }
+
+    for (let i = 0; i < 100; i++) {
+      const mid = (low + high) / 2;
+      const fMid = f(mid);
+      if (Math.abs(fMid) < 1e-9) return mid;
+      if (fLow * fMid < 0) {
+        high = mid;
+        fHigh = fMid;
+      } else {
+        low = mid;
+        fLow = fMid;
       }
-    } catch {
-      // fall through
+    }
+
+    return (low + high) / 2;
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------
+// Symbolic + numeric fallback equation solving
+// ------------------------------------------------------------
+
+function solveEquation(message) {
+  const eqLine = extractEquationLine(message);
+  if (!eqLine) return null;
+
+  let equation = sanitizeExpression(eqLine);
+  if (!equation || !equation.includes("=")) return null;
+
+  equation = insertImplicitMultiplication(equation);
+
+  const variable = detectVariable(equation);
+  if (!variable) return null;
+
+  // 1️⃣ Try symbolic solving
+  try {
+    const solutions = nerdamer.solve(equation, variable).toArray();
+    if (solutions && solutions.length > 0) {
+      const solExpr = solutions[0].toString();
+
+      let numeric = null;
+      try {
+        const parser = new Parser();
+        numeric = parser
+          .parse(normalizeExpression(insertImplicitMultiplication(solExpr)))
+          .evaluate(buildEvalEnv());
+        if (!isFinite(numeric)) numeric = null;
+      } catch {
+        numeric = null;
+      }
+
+      return { variable, solution: solExpr, numeric };
+    }
+  } catch {}
+
+  // 2️⃣ Numeric fallback
+  const numeric = solveEquationNumeric(equation, variable);
+  if (numeric !== null && isFinite(numeric)) {
+    return { variable, solution: null, numeric };
+  }
+
+  return null;
+}
+
+// ------------------------------------------------------------
+// Main calculator tool
+// ------------------------------------------------------------
+
+export function calculator(message) {
+  // 0️⃣ Equation solving
+  if (message.includes("=")) {
+    const eqResult = solveEquation(message);
+    if (eqResult) {
+      const { variable, solution, numeric } = eqResult;
+
+      let text;
+      if (numeric !== null && solution) {
+        text = `Solving the equation ${message.trim()} for ${variable} gives ${variable} = ${numeric} (exact: ${solution}).`;
+      } else if (numeric !== null) {
+        text = `Solving the equation ${message.trim()} for ${variable} gives approximately ${variable} = ${numeric}.`;
+      } else {
+        text = `Solving the equation ${message.trim()} for ${variable} gives ${variable} = ${solution}.`;
+      }
+
+      return {
+        tool: "calculator",
+        success: true,
+        final: true,
+        data: {
+          expression: message.trim(),
+          result: numeric ?? solution,
+          text
+        }
+      };
     }
   }
 
-  const invTrigMatch = expr.match(/^\s*(asin|acos|atan)\s*\(\s*([^\)]+)\s*\)\s*$/i);
-  if (invTrigMatch) {
-    const resDeg = result;
-    const resRad = toRadians(result);
-    return `${expr} = ${resDeg}° (${resRad} rad)`;
-  }
-
-  return `${expr} = ${result}`;
-}
-
-export function calculator(message) {
+  // 1️⃣ Normal expression evaluation
   const rawExpr = extractExpression(message);
-
   if (!rawExpr) {
     return {
       tool: "calculator",
@@ -170,7 +305,6 @@ export function calculator(message) {
   }
 
   const expr = sanitizeExpression(rawExpr);
-
   if (!expr) {
     return {
       tool: "calculator",
@@ -181,7 +315,6 @@ export function calculator(message) {
   }
 
   const evaluation = evaluateExpression(expr);
-
   if (evaluation.error) {
     return {
       tool: "calculator",

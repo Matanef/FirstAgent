@@ -1,5 +1,3 @@
-// server/index.js
-
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
@@ -89,14 +87,15 @@ app.post("/chat", async (req, res) => {
     }
 
     // ----------------------------------------
-    // Execute Agent
+    // Plan → Execute Agent
     // ----------------------------------------
-    // ----------------------------------------
-// Plan → Execute Agent
-// ----------------------------------------
-const { tool } = await plan({ message });
+    const planResult = await plan({ message });
+    const { tool, input } = planResult;
 
-const result = await executeAgent({ tool, message });
+    const result = await executeAgent({
+      tool,
+      message: input ?? message
+    });
 
     const reply = result.reply;
     const stateGraph = result.stateGraph;

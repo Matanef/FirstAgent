@@ -16,6 +16,7 @@
     "dotenv": "^17.3.1",
     "expr-eval": "^2.0.2",
     "express": "^5.2.1",
+    "nerdamer": "^1.1.13",
     "node-fetch": "^3.3.2"
   }
 }

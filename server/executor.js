@@ -60,11 +60,14 @@ export async function executeAgent({ tool, message }) {
     };
   }
 
-  // 🔥 Summarize search & finance tools
-  if (["search", "finance"].includes(tool)) {
+  // 🔥 Summarize search, finance, AND calculator tools
+  if (["search", "finance", "calculator"].includes(tool)) {
     const summarized = await summarizeWithLLM(message, result);
 
-    stateGraph[0].output.data.text = summarized;
+    // Update stateGraph text for transparency
+    if (stateGraph[0].output?.data) {
+      stateGraph[0].output.data.text = summarized;
+    }
 
     return {
       reply: summarized,
@@ -75,7 +78,7 @@ export async function executeAgent({ tool, message }) {
     };
   }
 
-  // Normal tools (llm, calculator, file)
+  // Normal tools (llm, file, etc.)
   const reply =
     result?.data?.text ||
     result?.output ||
