@@ -1,98 +1,89 @@
 // server/tools/search.js
-// Web search tool using SERPAPI
-// Structured deterministic return
-
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
 
-const SEARCH_CACHE_FILE = "./search_cache.json";
+const CACHE_FILE = "./search_cache.json";
 
 function extractTopic(text) {
-  return text
-    .toLowerCase()
-    .replace(/please|could you|would you|check again|verify/gi, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 100);
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
 }
 
-export async function search(query, forceRefresh = false) {
-  if (!CONFIG.SERPAPI_KEY) {
-    return {
-      tool: "search",
-      success: false,
-      final: true,
-      error: "Missing SERPAPI key"
-    };
+async function fetchWikipedia(query) {
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
+  const data = await safeFetch(url);
+  if (data?.extract) {
+    return [{
+      title: data.title,
+      snippet: data.extract,
+      url: `https://en.wikipedia.org/wiki/${data.title}`
+    }];
   }
+  return [];
+}
 
-  const cache = loadJSON(SEARCH_CACHE_FILE, {});
+async function fetchDuckDuckGo(query) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
+  const data = await safeFetch(url);
+
+  if (!data?.RelatedTopics) return [];
+
+  return data.RelatedTopics.slice(0, 5)
+    .filter(r => r.Text && r.FirstURL)
+    .map(r => ({
+      title: r.Text,
+      snippet: r.Text,
+      url: r.FirstURL
+    }));
+}
+
+async function fetchGoogle(query) {
+  if (!CONFIG.SERPAPI_KEY) return [];
+
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${CONFIG.SERPAPI_KEY}`;
+  const data = await safeFetch(url);
+
+  if (!data?.organic_results) return [];
+
+  return data.organic_results.slice(0, 5).map(r => ({
+    title: r.title,
+    snippet: r.snippet || "",
+    url: r.link
+  }));
+}
+
+export async function search(query) {
+  const cache = loadJSON(CACHE_FILE, {});
   const topic = extractTopic(query);
 
-  if (
-    !forceRefresh &&
-    cache[topic] &&
-    Array.isArray(cache[topic].results)
-  ) {
+  if (cache[topic]) {
     return {
       tool: "search",
       success: true,
       final: true,
-      data: {
-        cached: true,
-        results: cache[topic].results
-      }
+      data: cache[topic]
     };
   }
 
-  try {
-    const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-      topic
-    )}&api_key=${CONFIG.SERPAPI_KEY}`;
+  const [wiki, ddg, google] = await Promise.all([
+    fetchWikipedia(query),
+    fetchDuckDuckGo(query),
+    fetchGoogle(query)
+  ]);
 
-    const data = await safeFetch(url);
+  const results = [...wiki, ...ddg, ...google];
 
-    if (!data || !data.organic_results) {
-      return {
-        tool: "search",
-        success: false,
-        final: true,
-        error: "Search API unavailable"
-      };
-    }
+  const summary = results.map(r => `${r.title}: ${r.snippet}`).join("\n");
 
-    const results = data.organic_results.slice(0, 5).map(r => ({
-      title: r.title,
-      snippet: r.snippet || "",
-      url: r.link
-    }));
+  const data = { results, text: summary };
 
-    if (results.length > 0) {
-      cache[topic] = {
-        timestamp: Date.now(),
-        results
-      };
-      saveJSON(SEARCH_CACHE_FILE, cache);
-    }
+  cache[topic] = data;
+  saveJSON(CACHE_FILE, cache);
 
-    return {
-      tool: "search",
-      success: true,
-      final: true,
-      data: {
-        cached: false,
-        results
-      }
-    };
-
-  } catch {
-    return {
-      tool: "search",
-      success: false,
-      final: true,
-      error: "Search request failed"
-    };
-  }
+  return {
+    tool: "search",
+    success: true,
+    final: true,
+    data
+  };
 }

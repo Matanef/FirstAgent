@@ -1812,6 +1812,602 @@
         "timestamp": "2026-02-13T23:25:25.524Z",
         "confidence": 0.5
       }
+    ],
+    "174bf96e-b00f-4cd1-8581-615ab0b5f12b": [
+      {
+        "role": "user",
+        "content": "hey good morning",
+        "timestamp": "2026-02-14T05:47:11.816Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T05:47:23.431Z",
+        "confidence": 0.5
+      }
+    ],
+    "f4edf705-b919-4c62-9a47-c4bc8146eeb8": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T05:52:26.876Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T05:52:39.305Z",
+        "confidence": 0.65
+      }
+    ],
+    "85cb0c75-cf6d-4c54-8c88-7a87b455e753": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T05:58:20.425Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T05:58:25.874Z",
+        "confidence": 0.65
+      }
+    ],
+    "0d7290cb-e0ea-4066-9dee-a18abf228776": [
+      {
+        "role": "user",
+        "content": "hey'",
+        "timestamp": "2026-02-14T05:58:34.367Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T05:58:36.811Z",
+        "confidence": 0.5
+      }
+    ],
+    "6a8d5940-df88-4e90-8dff-9e9317b35119": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T06:10:19.157Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T06:10:24.893Z",
+        "confidence": 0.65
+      }
+    ],
+    "47c39155-582d-4970-b1f1-88a370b3ee9b": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T06:10:41.111Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Unknown tool: llm",
+        "timestamp": "2026-02-14T06:10:42.449Z",
+        "confidence": 0.5
+      }
+    ],
+    "84fbc3f3-fd87-487b-ae93-90196407dc60": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T06:11:41.085Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Unknown tool: llm",
+        "timestamp": "2026-02-14T06:11:42.372Z",
+        "confidence": 0.5
+      }
+    ],
+    "fdd9a3b1-1603-4411-90ac-0d3fde913ede": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T06:12:54.683Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Unknown tool: llm",
+        "timestamp": "2026-02-14T06:12:56.002Z",
+        "confidence": 0.5
+      }
+    ],
+    "036e3c1c-a689-4f93-b76c-f16d7657b7f7": [
+      {
+        "role": "user",
+        "content": "HEY",
+        "timestamp": "2026-02-14T06:18:22.806Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Unknown tool: llm",
+        "timestamp": "2026-02-14T06:18:27.235Z",
+        "confidence": 0.5
+      }
+    ],
+    "468bf749-f93c-4021-8c00-252ce5d329f9": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T07:09:38.124Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T07:09:44.366Z",
+        "confidence": 0.65
+      }
+    ],
+    "b43c9916-c8bd-4b84-8973-406723483927": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T07:23:40.273Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hey! How can I help you with your problem or question today? Do you have a specific issue you'd like me to assist with?",
+        "timestamp": "2026-02-14T07:23:46.679Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "could you please scan e://testFolder?",
+        "timestamp": "2026-02-14T07:24:16.285Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\could you please scan e:\\testFolder?'",
+        "timestamp": "2026-02-14T07:24:18.271Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "could you please scan E://testFolder",
+        "timestamp": "2026-02-14T07:25:32.566Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\could you please scan E:\\testFolder'",
+        "timestamp": "2026-02-14T07:25:34.526Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "could you please scan E:\\\\testFolder",
+        "timestamp": "2026-02-14T07:25:53.924Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\could you please scan E:\\testFolder'",
+        "timestamp": "2026-02-14T07:25:55.858Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "who is the current prime minister of britain?",
+        "timestamp": "2026-02-14T07:57:14.112Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T07:57:23.502Z",
+        "confidence": 0.65
+      }
+    ],
+    "0d00d900-ce56-4751-8e26-1761c560aff9": [
+      {
+        "role": "user",
+        "content": "who is the priminster of britain?",
+        "timestamp": "2026-02-14T08:19:05.102Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T08:19:12.561Z",
+        "confidence": 0.65
+      }
+    ],
+    "e585c578-c10d-4ab8-8ec0-9130b089c1bc": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T08:22:23.937Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?",
+        "timestamp": "2026-02-14T08:22:23.938Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "who is the prime minister of britain?",
+        "timestamp": "2026-02-14T08:22:39.463Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T08:22:43.884Z",
+        "confidence": 0.65
+      }
+    ],
+    "8c8183a0-9404-4cc3-8af7-d5d5937dd1a7": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T08:30:12.730Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?",
+        "timestamp": "2026-02-14T08:30:12.731Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "who is the current prime minister of britain?",
+        "timestamp": "2026-02-14T08:30:40.928Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Top search results:\nPrime Minister of the United Kingdom: Prime Minister of the United Kingdom ; Incumbent Keir Starmer. since 5 July 2024 ; Government of the United Kingdom · Prime Minister's Office ...\nKeir Starmer: Sir Keir Rodney Starmer (born 2 September 1962) is a British politician and lawyer who has served as Prime Minister of the United Kingdom since 2024 and as ...\nPrime Minister: The Rt Hon Sir Keir Starmer KCB KC MP. Sir Keir Starmer became Prime Minister on 5 July 2024. Education. Keir attended Reigate Grammar School, before studying ...\nKeir Starmer (@Keir_Starmer) / Posts / X: Keir Starmer✓ Prime Minister of the United Kingdom. Labour MP for Holborn and St Pancras and Leader of the Labour Party. Former Director of Public Prosecutions.\nKeir Starmer (@keirstarmer) • Instagram photos and videos: Prime Minister of the United Kingdom. Labour MP for Holborn and St Pancras and Leader of the Labour Party. Former Director of Public Prosecutions.",
+        "timestamp": "2026-02-14T08:30:47.138Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "please scan e://testFolder and tell me its content",
+        "timestamp": "2026-02-14T08:32:29.351Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Access denied",
+        "timestamp": "2026-02-14T08:32:33.005Z",
+        "confidence": 0.5
+      }
+    ],
+    "aae91f2a-dd5c-4d9c-bfed-1d9688307157": [
+      {
+        "role": "user",
+        "content": "hey there",
+        "timestamp": "2026-02-14T08:53:41.830Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! It's nice to meet you. Is there something I can help you with or would you like to chat?",
+        "timestamp": "2026-02-14T08:53:49.778Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "if i'll tell you my name would you remember it?",
+        "timestamp": "2026-02-14T08:54:18.191Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm a large language model, I don't have personal memories or the ability to retain information about individual users. Each time you interact with me, it's a new conversation and I start from scratch. So, even if you tell me your name, I won't be able to remember it afterwards. However, I can store your name in our current conversation and use it within this chat if you'd like!",
+        "timestamp": "2026-02-14T08:54:31.193Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "yes lets try this my name is matan",
+        "timestamp": "2026-02-14T08:55:29.095Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Invalid mathematical expression",
+        "timestamp": "2026-02-14T08:55:31.916Z",
+        "confidence": 0.5
+      }
+    ],
+    "30b5f4e0-1ba3-427b-b6ab-36d8a00a2f30": [
+      {
+        "role": "user",
+        "content": "my name is matan",
+        "timestamp": "2026-02-14T09:12:20.439Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Nice to meet you, Matan! I'm happy to help with any questions or problems you have. How can I assist you today? Do you have a specific topic in mind that you'd like to discuss or a problem you're trying to solve?",
+        "timestamp": "2026-02-14T09:12:28.659Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "do you remember my name?",
+        "timestamp": "2026-02-14T09:12:41.344Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm a large language model, I don't have personal memories or the ability to recall individual names. Each time you interact with me, it's a new conversation and I don't retain any information from previous conversations. However, I can try to remember specific details about our conversation if you'd like to share them with me again!",
+        "timestamp": "2026-02-14T09:12:48.849Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "so yes, like i said my name is Matan and i live in israel",
+        "timestamp": "2026-02-14T09:13:34.409Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Nice to meet you, Matan! Israel, huh? That's a fascinating country with a rich history and culture. What do you think of living there?\n\nBy the way, I'm here to help with any questions or topics you'd like to discuss. If you're looking for suggestions on simple and maintainable solutions, feel free to share what you're working on or struggling with, and I'll do my best to provide some helpful ideas!",
+        "timestamp": "2026-02-14T09:13:43.813Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "for now i would like to talk about you and your capabilities. can you tell me what you can do?",
+        "timestamp": "2026-02-14T09:15:57.543Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'd be happy to chat with you about my abilities.\n\nI'm an AI designed to assist and communicate with humans in a helpful and informative way. Here are some things I can do:\n\n1. **Answer questions**: I can process natural language queries and provide relevant answers based on my training data.\n2. **Generate text**: I can create human-like text responses, including articles, stories, emails, chatbot conversations, and more.\n3. **Translate languages**: I can translate text from one language to another, including popular languages such as Spanish, French, German, Chinese, and many more.\n4. **Summarize content**: I can summarize long pieces of text into concise and easy-to-understand summaries.\n5. **Offer suggestions**: I can provide suggestions for topics, ideas, or solutions based on the context of our conversation.\n6. **Chat and converse**: I can engage in natural-sounding conversations, using context and understanding to respond to questions and statements.\n7. **Generate code snippets**: I can assist with generating code snippets in various programming languages, such as Python, Java, JavaScript, and more.\n8. **Explain concepts**: I can explain complex technical or scientific concepts in simple terms, making them easier to understand.\n9. **Play games and puzzles**: I can play text-based games and solve puzzles, such as Hangman, 20 Questions, and Word Jumble.\n10. **Provide definitions**: I can define words, phrases, and acronyms, helping you better understand their meanings.\n\nThese are just a few examples of what I can do. If there's something specific you'd like me to help with or if you have any questions, feel free to ask!",
+        "timestamp": "2026-02-14T09:16:35.881Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "i introduced a calculator tool to your abilities, can you use it?",
+        "timestamp": "2026-02-14T09:20:01.087Z"
+      },
+      {
+        "role": "assistant",
+        "content": "That's exciting! I'd love to give it a try.\n\nWhat kind of calculations would you like me to perform with the calculator?",
+        "timestamp": "2026-02-14T09:20:06.850Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "let's try with something quite simple, how much is 284*5?",
+        "timestamp": "2026-02-14T09:21:22.452Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Invalid mathematical expression",
+        "timestamp": "2026-02-14T09:21:24.595Z",
+        "confidence": 0.5
+      }
+    ],
+    "b7447e5d-4789-4907-a6e4-cf2dda1807e7": [
+      {
+        "role": "user",
+        "content": "can you tell me who is the current prime minister of britain?",
+        "timestamp": "2026-02-14T09:23:11.352Z"
+      },
+      {
+        "role": "assistant",
+        "content": "The current Prime Minister of the United Kingdom is Sir Keir Starmer, who took office on July 5, 2024. He succeeded in a landslide victory and has become the head of government for the country.",
+        "timestamp": "2026-02-14T09:23:22.197Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "scan e://testFolder",
+        "timestamp": "2026-02-14T09:23:44.938Z"
+      },
+      {
+        "role": "assistant",
+        "content": "It seems like you provided a file path: `e://testFolder`. If you're looking to work with files or folders in Python, I can help you with that! For example, if you want to create a new folder, you could use the `os` module:\n\n```\nimport os\npath = 'e://testFolder'\nos.mkdir(path)\n```\n\nOr, if you want to list all the files and subfolders within that path, you could do this:\n\n```\nimport os\nfor root, dirs, files in os.walk(path):\n    for file in files:\n        print(os.path.join(root, file))\n```\n\nPlease let me know what you're trying to accomplish with this file path!",
+        "timestamp": "2026-02-14T09:24:02.294Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "i implemented some changes and you are now supposed to be able to scan folders. can you tell me what is the content of the folder e://testFolder",
+        "timestamp": "2026-02-14T09:25:25.163Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\server\\i implemented some changes and you are now supposed to be able to scan folders. can you tell me what is the content of the folder e:\\testFolder'",
+        "timestamp": "2026-02-14T09:25:26.947Z",
+        "confidence": 0.5
+      }
+    ],
+    "3add3a60-8b58-496d-b62a-07995fd822a6": [
+      {
+        "role": "user",
+        "content": "scan e://testFolder",
+        "timestamp": "2026-02-14T09:58:56.166Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Access denied",
+        "timestamp": "2026-02-14T09:59:01.015Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "scan E:\\\\testFolder",
+        "timestamp": "2026-02-14T10:00:03.831Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Access denied",
+        "timestamp": "2026-02-14T10:00:05.857Z",
+        "confidence": 0.5
+      }
+    ],
+    "c6dc0615-c6ed-40a5-bdfa-37146e63b0bd": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T11:21:19.991Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?",
+        "timestamp": "2026-02-14T11:21:19.991Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "i'm good, can you please scan E://testFolder and tell me its content?",
+        "timestamp": "2026-02-14T11:21:54.956Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Access outside sandbox denied",
+        "timestamp": "2026-02-14T11:21:54.957Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "can you please scan E:\\\\testFolder and tell me its content?",
+        "timestamp": "2026-02-14T11:22:28.952Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Access outside sandbox denied",
+        "timestamp": "2026-02-14T11:22:28.953Z",
+        "confidence": 0.5
+      }
+    ],
+    "6600a1ff-77b4-40c0-8886-c0872949e507": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T11:30:58.993Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Task completed.",
+        "timestamp": "2026-02-14T11:30:58.995Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "can you speak?",
+        "timestamp": "2026-02-14T11:32:46.843Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Salvatore Ganacci - Can you speak English: Listen to Can you speak English on Spotify. Song · Salvatore Ganacci · 2021.\nSalvatore Ganacci - Can you speak English (Visualizer): \"Can you speak English\" out now Stream & Download: https://salvatoreganacci.lnk.to/canyouspeakenglish If you talk to a man in a language he ...\nSalvatore Ganacci – Can you speak English Lyrics: Can you speak English Lyrics: Can you speak English? Can you speak English? Fuck you Can you speak English? Fuck you Fuck you Can you speak English? Fuck you\nWhich sentence is correct? “do you speak English”, “can you ...: They are all correct but they have very slightly different meanings. “Do you speak English?” asks if you are competent at the language and in the habit of ...\nCan you speak..?: \"Can you speak English?\" and \"Can you speak (your native language eg Spanish, Korean etc.)?\" is one of the most useful phrases for any language learner.",
+        "timestamp": "2026-02-14T11:32:50.608Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "what is the current dollar rate according to israeli shekel?",
+        "timestamp": "2026-02-14T11:33:36.378Z"
+      },
+      {
+        "role": "assistant",
+        "content": "1 USD to ILS - Convert US Dollars to Israeli New Shekels: What is the USD to ILS exchange rate today? As of 02:46 UTC, the mid-market USD to ILS rate is $1 = ₪3.0685. The mid-market rate is the midpoint between buy and ...\nUS dollars to Israeli new sheqels Exchange Rate. Convert ...: The change for USD to ILS was -2.19. The performance of USD to ILS in the last 90 days saw a 90 day high of 3.2841 and a 90 day low of 3.0682. This means the 90 ...\nUSD to ILS Exchange Rate: USD-ILS X-RATE. Following Follow Follow. USDILS:CUR. Following Follow Follow. (ILS). 3.0909. 0.02+0.68%. As of 3:58 PM EST 02/13/26 .\nUSD to ILS: Convert US Dollars to Israeli New Shekels: US Dollars to Israeli New Shekels: exchange rates today ; 1 USD, 3.07 ILS ; 10 USD, 30.71 ILS ; 20 USD, 61.42 ILS ; 50 USD, 153.57 ILS.\nUSD ILS | US Dollar Israeli Shekel: USD/ILS - US Dollar Israeli Shekel ; Prev. Close. 3.0899 ; Open. 3.0762 ; 1-Year Change. -12.5877 ; Bid: 3.0872 ; Ask: 3.0907.",
+        "timestamp": "2026-02-14T11:33:38.161Z",
+        "confidence": 0.65
+      }
+    ],
+    "3765a34f-93d6-4c5e-b3db-093a804f49e8": [
+      {
+        "role": "user",
+        "content": "hey",
+        "timestamp": "2026-02-14T12:00:36.772Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hey! How can I help you today? Do you have a question or topic in mind that you'd like to discuss?",
+        "timestamp": "2026-02-14T12:00:43.228Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "can you speak?",
+        "timestamp": "2026-02-14T12:00:50.987Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Yes, I can! I'm a text-based AI assistant, so I communicate through written text. I can respond to questions, provide information, and engage in conversations with you.",
+        "timestamp": "2026-02-14T12:00:54.855Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "tell me a joke",
+        "timestamp": "2026-02-14T12:01:15.572Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Here's one:\n\nWhy don't scientists trust atoms?\n\nBecause they make up everything!\n\nHope that brought a smile to your face!",
+        "timestamp": "2026-02-14T12:01:18.325Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "what is the current price of AAPL stock?",
+        "timestamp": "2026-02-14T12:01:59.266Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Apple Inc. (AAPL) Stock Price, News, Quote & History: Find the latest Apple Inc. (AAPL) stock quote, history, news and other vital information to help you with your stock trading and investing.\nStock Price - Apple - Investor Relations: Stock Quote: NASDAQ: AAPL ; Day's Open262.01 ; Closing Price255.78 ; Volume56.3 ; Intraday High262.23 ; Intraday Low255.45.\nAAPL: Apple Inc - Stock Price, Quote and News: Apple Inc AAPL:NASDAQ ; Close. 255.78 quote price arrow down -5.95 (-2.27%) ; Volume. 46,136,966 ; 52 week range. 169.21 - 288.62.\nAAPL Stock Quote Price and Forecast: 1-year stock price forecast. High $350.00 27.89% Median $305.00 11.44% Low $205.00 25.10% Current Price 273.68 past 12 months next 12 months ...\nBuy or Sell Apple Stock - AAPL Stock Price Quote & News: Shares are currently priced at $255.30, which is +0.1% above the low and -3.4% below the high. Apple(AAPL) shares are trading with a volume of 56.29M, against a ...",
+        "timestamp": "2026-02-14T12:02:01.266Z",
+        "confidence": 0.65
+      }
+    ],
+    "4e31c259-5ce6-48a2-a9ff-1d7fd870d4f5": [
+      {
+        "role": "user",
+        "content": "hey there how are you doing?",
+        "timestamp": "2026-02-14T12:30:55.033Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Tool not found.",
+        "timestamp": "2026-02-14T12:30:55.034Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "what is the current AAPL stock price?",
+        "timestamp": "2026-02-14T12:31:12.506Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Tool not found.",
+        "timestamp": "2026-02-14T12:31:12.507Z",
+        "confidence": 0.5
+      }
+    ],
+    "c6b9496b-5656-4919-98ba-b7932c79da92": [
+      {
+        "role": "user",
+        "content": "hey there how are you doing?",
+        "timestamp": "2026-02-14T12:43:10.587Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm doing well, thanks for asking! I'm a large language model, so I don't have feelings or emotions like humans do, but I'm always happy to chat with you and help with any questions or topics you'd like to discuss. How about you? What's on your mind today?",
+        "timestamp": "2026-02-14T12:43:20.387Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "what is the current AAPL stock price?",
+        "timestamp": "2026-02-14T12:43:38.234Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm not able to provide you with the current AAPL stock price. The data provided doesn't contain the current stock price. You can try searching for the latest stock prices online or through a financial news website.",
+        "timestamp": "2026-02-14T12:43:44.104Z",
+        "confidence": 0.75
+      },
+      {
+        "role": "user",
+        "content": "can you please suggest some free API keys for getting stock market information?",
+        "timestamp": "2026-02-14T13:42:26.129Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Here are some free API keys for getting stock market information:\n\nAlpha Vantage: Offers historical and real-time data on stocks, forex, and cryptocurrencies. Registration is required.\n\nYahoo Finance: Provides access to real-time and historical stock prices, as well as financial statements and other data. No registration needed.\n\nQuandl: Offers a wide range of free and paid APIs for financial and economic data, including stock prices and indices. Registration is required.\n\nKeep in mind that these API keys may have usage limits or require registration. Be sure to check the terms and conditions before using them.",
+        "timestamp": "2026-02-14T13:42:44.287Z",
+        "confidence": 0.75
+      }
     ]
   }
 }

@@ -3,6 +3,7 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import { plan } from "./planner.js";
 import { loadJSON, saveJSON } from "./memory.js";
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
@@ -34,13 +35,13 @@ app.get("/health", (req, res) => {
 });
 
 // ----------------------------------------
-// Chat Endpoint (NEW ARCHITECTURE)
+// Chat Endpoint
 // ----------------------------------------
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { message, conversationId } = req.body;
+    let { message, conversationId } = req.body;
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Missing or invalid message" });
@@ -72,9 +73,30 @@ app.post("/chat", async (req, res) => {
     });
 
     // ----------------------------------------
-    // Execute Agent (NEW deterministic flow)
+    // Preprocess message: detect file paths
     // ----------------------------------------
-    const result = await executeAgent(message, convo);
+    function extractPath(text) {
+      const match = text.match(/[A-Za-z]:[\\/]{1,2}[^?\s]+/);
+      return match ? match[0] : null;
+    }
+
+    if (/scan\s+[A-Za-z]:[\\/]/i.test(message)) {
+      const path = extractPath(message);
+      if (path) {
+        message = path;
+        console.log("🛠 Detected file scan path:", message);
+      }
+    }
+
+    // ----------------------------------------
+    // Execute Agent
+    // ----------------------------------------
+    // ----------------------------------------
+// Plan → Execute Agent
+// ----------------------------------------
+const { tool } = await plan({ message });
+
+const result = await executeAgent({ tool, message });
 
     const reply = result.reply;
     const stateGraph = result.stateGraph;
@@ -102,19 +124,13 @@ app.post("/chat", async (req, res) => {
 
     console.log("\n📊 SUMMARY");
     console.log("Steps:", stateGraph.length);
-    console.log(
-      "Tool Used:",
-      result.tool || "none"
-    );
-    console.log(
-      "Confidence:",
-      (confidence * 100).toFixed(1) + "%"
-    );
+    console.log("Tool Used:", result.tool || "none");
+    console.log("Confidence:", (confidence * 100).toFixed(1) + "%");
     console.log("Time:", elapsed + "ms");
     console.log("=".repeat(60) + "\n");
 
     // ----------------------------------------
-    // Final Response
+    // Response
     // ----------------------------------------
     res.json({
       reply,
@@ -159,7 +175,6 @@ app.get("/conversation/:id", (req, res) => {
 
 app.get("/conversations", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-
   const conversations = Object.entries(memory.conversations).map(
     ([id, messages]) => ({
       id,
@@ -168,20 +183,16 @@ app.get("/conversations", (req, res) => {
       preview: messages[0]?.content.slice(0, 50)
     })
   );
-
   res.json({ conversations });
 });
 
 app.delete("/conversation/:id", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-
   if (!memory.conversations[req.params.id]) {
     return res.status(404).json({ error: "Conversation not found" });
   }
-
   delete memory.conversations[req.params.id];
   saveJSON(MEMORY_FILE, memory);
-
   res.json({ success: true });
 });
 
