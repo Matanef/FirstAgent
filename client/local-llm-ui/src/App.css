@@ -294,27 +294,27 @@ body {
   }
 }
 
-.message.user {
+.message-user {
   align-self: flex-end;
   background: var(--accent);
   color: white;
   margin-left: auto;
 }
 
-.message.assistant {
+.message-assistant {
   align-self: flex-start;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
 }
 
-.message.error {
+.message-error {
   align-self: flex-start;
   background: rgba(244, 33, 46, 0.1);
   border: 1px solid var(--error);
   color: var(--error);
 }
 
-.message.loading {
+.message-loading {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
 }
@@ -349,7 +349,7 @@ body {
   line-height: 1.6;
 }
 
-.message.user .message-content {
+.message-user .message-content {
   color: white;
 }
 

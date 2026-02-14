@@ -1,71 +1,48 @@
-// file.js
-import fs from "fs";
+// server/tools/file.js
+// File system tool (sandboxed)
+
+import fs from "fs/promises";
 import path from "path";
 
-const ROOT_DIR = process.cwd(); // restrict to project root
+const SANDBOX_ROOT = "E:/sandbox"; // adjust your sandbox path
 
-function sanitizePath(userPath) {
-  const resolved = path.resolve(ROOT_DIR, userPath);
-  if (!resolved.startsWith(ROOT_DIR)) {
-    throw new Error("Access denied");
-  }
+/**
+ * Ensure the given path is inside sandbox
+ */
+function sanitizePath(requestedPath) {
+  const resolved = path.resolve(SANDBOX_ROOT, requestedPath);
+  if (!resolved.startsWith(SANDBOX_ROOT)) throw new Error("Access outside sandbox denied");
   return resolved;
 }
 
-function scanDirectory(dirPath) {
-  const items = fs.readdirSync(dirPath);
-
-  return items.map(item => {
-    const fullPath = path.join(dirPath, item);
-    const stat = fs.statSync(fullPath);
-
-    if (stat.isDirectory()) {
-      return {
-        type: "folder",
-        name: item,
-        children: scanDirectory(fullPath)
-      };
-    } else {
-      return {
-        type: "file",
-        name: item,
-        size: stat.size
-      };
-    }
-  });
-}
-
-export async function fileTool(inputPath) {
+export async function file(request) {
   try {
-    const safePath = sanitizePath(inputPath);
-    const stat = fs.statSync(safePath);
+    const sanitizedPath = sanitizePath(request);
+
+    const stat = await fs.stat(sanitizedPath);
+    let data = {};
 
     if (stat.isDirectory()) {
-      return {
-        tool: "file",
-        success: true,
-        final: true,
-        data: {
-          type: "directory",
-          path: inputPath,
-          structure: scanDirectory(safePath)
-        }
-      };
+      const items = await fs.readdir(sanitizedPath, { withFileTypes: true });
+      data.items = items.map(i => ({
+        name: i.name,
+        type: i.isDirectory() ? "folder" : "file"
+      }));
+      data.text = `Folder contents:\n${data.items.map(i => `${i.type}: ${i.name}`).join("\n")}`;
+    } else if (stat.isFile()) {
+      const content = await fs.readFile(sanitizedPath, "utf-8");
+      data.items = [{ name: path.basename(sanitizedPath), type: "file", size: stat.size }];
+      data.text = `File: ${path.basename(sanitizedPath)} (${stat.size} bytes)\nPreview:\n${content.slice(0, 500)}`;
     } else {
-      const content = fs.readFileSync(safePath, "utf-8");
-
-      return {
-        tool: "file",
-        success: true,
-        final: true,
-        data: {
-          type: "file",
-          path: inputPath,
-          content
-        }
-      };
+      data.text = "Unknown file type.";
     }
 
+    return {
+      tool: "file",
+      success: true,
+      final: true,
+      data
+    };
   } catch (err) {
     return {
       tool: "file",

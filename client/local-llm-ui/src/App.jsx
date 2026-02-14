@@ -187,9 +187,19 @@ function App() {
           <h1>🤖 AI Agent</h1>
           {metadata && (
             <div className="metadata">
-              <span title="Execution time">⏱️ {metadata.executionTime}ms</span>
-              <span title="Tools used">🔧 {metadata.toolsUsed.join(", ") || "none"}</span>
-              <span title="Steps taken">📊 {metadata.steps} steps</span>
+              <span title="Execution time">
+                ⏱️ {metadata.executionTime ?? 0}ms
+              </span>
+                    
+              <span title="Tools used">
+                🔧 {Array.isArray(metadata.toolsUsed) && metadata.toolsUsed.length > 0
+                  ? metadata.toolsUsed.join(", ")
+                  : "none"}
+              </span>
+                
+              <span title="Steps taken">
+                📊 {metadata.steps ?? 0} steps
+              </span>
             </div>
           )}
         </div>
@@ -220,7 +230,7 @@ function App() {
                 </div>
               ) : (
                 messages.map((m, i) => (
-                  <div key={i} className={`message ${m.role}`}>
+                  <div key={i} className={`message message-${m.role}`}>
                     <div className="message-header">
                       <span className="role-badge">
                         {m.role === "user" ? "👤" : m.role === "error" ? "⚠️" : "🤖"}
@@ -245,20 +255,21 @@ function App() {
                 ))
               )}
 
-              {loading && (
-                <div className="message assistant loading">
-                  <div className="message-header">
-                    <span className="role-badge">🤖 assistant</span>
-                  </div>
-                  <div className="message-content">
-                    <div className="typing-indicator">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
+            {loading && (
+              <div className="message message-assistant message-loading">
+                <div className="message-header">
+                  <span className="role-badge">🤖 assistant</span>
+                </div>
+                <div className="message-content">
+                  <div className="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
+
 
               <div ref={messagesEndRef} />
             </div>

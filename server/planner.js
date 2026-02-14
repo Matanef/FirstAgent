@@ -1,92 +1,69 @@
 // server/planner.js
 
-import fetch from "node-fetch";
+const FILE_REGEX = /[A-Za-z]:[\\/]/;
+const PURE_MATH_REGEX = /^[0-9+\-*/().\s]+$/;
+
+const REALTIME_KEYWORDS = [
+  "current",
+  "today",
+  "latest",
+  "rate",
+  "price",
+  "news",
+  "weather",
+  "exchange"
+];
 
 /**
- * Deterministic Power Planner (Path A)
- *
- * This planner:
- * - Sees message
- * - Sees stateGraph
- * - Sees conversation history
- * - Asks LLM to choose tool STRICTLY via JSON
- * - Remains controlled (we validate tool name)
+ * Detect stock-related queries like:
+ * - AAPL price
+ * - what is AAPL stock price?
+ * - TSLA share price
  */
+function isStockQuery(message) {
+  const lower = message.toLowerCase();
 
-const ALLOWED_TOOLS = ["calculator", "finance", "file", "search", "llm", "done"];
-
-export async function plan({ message, stateGraph, conversationHistory }) {
-  const lastNode = stateGraph[stateGraph.length - 1];
-
-  // If last step already marked final → stop
-  if (lastNode?.final) {
-    return { tool: "done", reason: "Final step reached" };
-  }
-
-  const recentHistory = conversationHistory
-    .slice(-5)
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
-  const prompt = `
-You are a deterministic tool selection engine.
-
-Choose ONE tool:
-calculator
-finance
-file
-search
-llm
-done
-
-Rules:
-- Pure math → calculator
-- Stocks / sector / market → finance
-- Local files → file
-- Internet info → search
-- General reasoning → llm
-- If fully answered → done
-
-Return STRICT JSON:
-{
-  "tool": "tool_name",
-  "reason": "short explanation"
+  return (
+    /\b[A-Z]{1,5}\b/.test(message) &&
+    (
+      lower.includes("stock") ||
+      lower.includes("price") ||
+      lower.includes("share")
+    )
+  );
 }
 
-Conversation:
-${recentHistory}
+/**
+ * Detect if real-time external info is needed
+ */
+function needsSearch(message) {
+  const lower = message.toLowerCase();
+  return REALTIME_KEYWORDS.some(word => lower.includes(word));
+}
 
-StateGraph:
-${JSON.stringify(stateGraph)}
+export async function plan({ message }) {
+  const trimmed = message.trim();
 
-User:
-${message}
-`;
-
-  try {
-    const res = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "mat-llm:latest",
-        prompt,
-        stream: false,
-        options: { temperature: 0 }
-      })
-    });
-
-    const data = await res.json();
-    const text = data.response?.trim();
-
-    const parsed = JSON.parse(text);
-
-    if (!ALLOWED_TOOLS.includes(parsed.tool)) {
-      return { tool: "llm", reason: "Invalid tool fallback" };
-    }
-
-    return parsed;
-
-  } catch {
-    return { tool: "llm", reason: "Planner fallback" };
+  // 1️⃣ File paths
+  if (FILE_REGEX.test(trimmed)) {
+    return { tool: "file", reason: "File path detected" };
   }
+
+  // 2️⃣ Pure math expressions
+  if (PURE_MATH_REGEX.test(trimmed)) {
+    return { tool: "calculator", reason: "Math expression detected" };
+  }
+
+  // 3️⃣ Stock queries
+  if (isStockQuery(trimmed)) {
+    return { tool: "finance", reason: "Stock query detected" };
+  }
+
+  // 4️⃣ Real-time info
+  if (needsSearch(trimmed)) {
+    return { tool: "search", reason: "Real-time info requested" };
+  }
+
+  // 5️⃣ Default → LLM conversation
+  return { tool: "llm", reason: "General conversation" };
 }
