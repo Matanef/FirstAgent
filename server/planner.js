@@ -1,12 +1,6 @@
-// server/planner.js
 import { shouldUseCalculator } from "./tools/math-intent.js";
 
-
 const FILE_REGEX = /[A-Za-z]:[\\/]/;
-function containsMathExpression(text) {
-  return /(\d+\s*[\+\-\*\/]\s*\d+)/.test(text);
-}
-
 
 const REALTIME_KEYWORDS = [
   "current",
@@ -54,12 +48,13 @@ export async function plan({ message }) {
     return { tool: "file", reason: "File path detected" };
   }
 
-  // 2️⃣ Pure math expressions
-if (shouldUseCalculator( message )) {
-  return {tool: "calculator", input: message.trim() };
-}
-
-
+  // 2️⃣ Math / calculator
+  if (shouldUseCalculator(trimmed)) {
+    return {
+      tool: "calculator",
+      input: trimmed
+    };
+  }
 
   // 3️⃣ Stock queries
   if (isStockQuery(trimmed)) {
@@ -74,4 +69,3 @@ if (shouldUseCalculator( message )) {
   // 5️⃣ Default → LLM conversation
   return { tool: "llm", reason: "General conversation" };
 }
-
