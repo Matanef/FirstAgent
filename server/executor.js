@@ -19,6 +19,8 @@ Provide a clear, direct answer to the user.
 Do NOT list search results.
 Do NOT include URLs.
 Answer naturally and concisely.
+Include a list of cources,
+Be kind,
 `;
 
   const summary = await TOOLS.llm(prompt);
