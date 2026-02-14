@@ -40,7 +40,7 @@ export async function executeAgent({ tool, message }) {
     };
   }
 
-  const result = await TOOLS[tool].execute(message);
+  const result = await TOOLS[tool](message);
 
   stateGraph.push({
     step: 1,
@@ -55,7 +55,8 @@ export async function executeAgent({ tool, message }) {
     return {
       reply: result?.error || "Tool execution failed.",
       stateGraph,
-      success: false
+      success: false,
+      tool
     };
   }
 

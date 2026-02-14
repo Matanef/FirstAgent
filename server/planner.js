@@ -1,7 +1,10 @@
 // server/planner.js
 
 const FILE_REGEX = /[A-Za-z]:[\\/]/;
-const PURE_MATH_REGEX = /^[0-9+\-*/().\s]+$/;
+function containsMathExpression(text) {
+  return /(\d+\s*[\+\-\*\/]\s*\d+)/.test(text);
+}
+
 
 const REALTIME_KEYWORDS = [
   "current",
@@ -50,7 +53,7 @@ export async function plan({ message }) {
   }
 
   // 2️⃣ Pure math expressions
-  if (PURE_MATH_REGEX.test(trimmed)) {
+  if (containsMathExpression(trimmed)) {
     return { tool: "calculator", reason: "Math expression detected" };
   }
 

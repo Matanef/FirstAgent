@@ -846,11 +846,13 @@ body {
 Server:
 index.js:
 // server/index.js
+
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import { plan } from "./planner.js";
 import { loadJSON, saveJSON } from "./memory.js";
-import { executeStep } from "./executor.js";
+import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
 
 const app = express();
@@ -860,14 +862,17 @@ const MEMORY_FILE = "./memory.json";
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// ----------------------------------------
+// Logging Middleware
+// ----------------------------------------
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
-// ----------------------------
-// Health
-// ----------------------------
+// ----------------------------------------
+// Health Check
+// ----------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     status: "healthy",
@@ -876,14 +881,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ----------------------------
-// Chat endpoint
-// ----------------------------
+// ----------------------------------------
+// Chat Endpoint
+// ----------------------------------------
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { message, conversationId } = req.body;
+    let { message, conversationId } = req.body;
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Missing or invalid message" });
@@ -898,67 +903,61 @@ app.post("/chat", async (req, res) => {
     console.log("\n" + "=".repeat(60));
     console.log("👤 USER:", message);
 
+    // ----------------------------------------
+    // Load Memory
+    // ----------------------------------------
     const memory = loadJSON(MEMORY_FILE, { conversations: {} });
     const id = conversationId || crypto.randomUUID();
 
     memory.conversations[id] ??= [];
     const convo = memory.conversations[id];
 
+    // Save user message
     convo.push({
       role: "user",
       content: message,
       timestamp: new Date().toISOString()
     });
 
-    const stateGraph = [];
-    const toolUsage = {};
-    let reply = null;
+    // ----------------------------------------
+    // Preprocess message: detect file paths
+    // ----------------------------------------
+    function extractPath(text) {
+      const match = text.match(/[A-Za-z]:[\\/]{1,2}[^?\s]+/);
+      return match ? match[0] : null;
+    }
 
-    const MAX_STEPS = 3;
-
-    for (let step = 1; step <= MAX_STEPS; step++) {
-      console.log(`🔄 Step ${step}/${MAX_STEPS}`);
-
-      const result = await executeStep(
-        message,
-        step,
-        stateGraph,
-        toolUsage,
-        convo
-      );
-
-      // Defensive: ensure stateGraph reflects steps
-      if (result?.stateUpdate) {
-        stateGraph.push(result.stateUpdate);
-      }
-
-      if (result?.toolUsed) {
-        toolUsage[result.toolUsed] =
-          (toolUsage[result.toolUsed] || 0) + 1;
-      }
-
-      // 🔥 CRITICAL: stop immediately if reply is produced
-      if (result?.reply) {
-        reply = result.reply;
-        console.log("✅ Reply generated");
-        break;
-      }
-
-      // 🔥 If executor explicitly says done, stop
-      if (result?.done) {
-        reply = result.reply || "Task completed.";
-        console.log("✅ Task marked done");
-        break;
+    if (/scan\s+[A-Za-z]:[\\/]/i.test(message)) {
+      const path = extractPath(message);
+      if (path) {
+        message = path;
+        console.log("🛠 Detected file scan path:", message);
       }
     }
+
+    // ----------------------------------------
+    // Execute Agent
+    // ----------------------------------------
+    // ----------------------------------------
+// Plan → Execute Agent
+// ----------------------------------------
+const { tool } = await plan({ message });
+
+const result = await executeAgent({ tool, message });
+
+    const reply = result.reply;
+    const stateGraph = result.stateGraph;
 
     if (!reply) {
-      reply = "I couldn't complete that request. Try rephrasing it.";
-      console.warn("⚠️ No reply after max steps");
+      throw new Error("Executor returned no reply");
     }
 
+    // ----------------------------------------
+    // Confidence Calculation
+    // ----------------------------------------
     const confidence = calculateConfidence(stateGraph);
 
+    // Save assistant reply
     convo.push({
       role: "assistant",
       content: reply,
@@ -972,31 +971,31 @@ app.post("/chat", async (req, res) => {
 
     console.log("\n📊 SUMMARY");
     console.log("Steps:", stateGraph.length);
-    console.log(
-      "Tools:",
-      Object.keys(toolUsage).join(", ") || "none"
-    );
-    console.log(
-      "Confidence:",
-      (confidence * 100).toFixed(1) + "%"
-    );
+    console.log("Tool Used:", result.tool || "none");
+    console.log("Confidence:", (confidence * 100).toFixed(1) + "%");
     console.log("Time:", elapsed + "ms");
     console.log("=".repeat(60) + "\n");
 
+    // ----------------------------------------
+    // Response
+    // ----------------------------------------
     res.json({
       reply,
       stateGraph,
+      tool: result.tool,
+      data: result.data,
+      success: result.success,
       confidence,
       conversationId: id,
       metadata: {
         steps: stateGraph.length,
-        toolsUsed: Object.keys(toolUsage),
         executionTime: elapsed
       }
     });
 
   } catch (err) {
     console.error("❌ CHAT ERROR:", err);
+
     res.status(500).json({
       error: "Internal server error",
       message: err.message
@@ -1004,9 +1003,9 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ----------------------------
+// ----------------------------------------
 // Conversation APIs
-// ----------------------------
+// ----------------------------------------
 app.get("/conversation/:id", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
   const conversation = memory.conversations[req.params.id];
@@ -1023,7 +1022,6 @@ app.get("/conversation/:id", (req, res) => {
 
 app.get("/conversations", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-
   const conversations = Object.entries(memory.conversations).map(
     ([id, messages]) => ({
       id,
@@ -1032,26 +1030,22 @@ app.get("/conversations", (req, res) => {
       preview: messages[0]?.content.slice(0, 50)
     })
   );
-
   res.json({ conversations });
 });
 
 app.delete("/conversation/:id", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-
   if (!memory.conversations[req.params.id]) {
     return res.status(404).json({ error: "Conversation not found" });
   }
-
   delete memory.conversations[req.params.id];
   saveJSON(MEMORY_FILE, memory);
-
   res.json({ success: true });
 });
 
-// ----------------------------
-// Start server
-// ----------------------------
+// ----------------------------------------
+// Start Server
+// ----------------------------------------
 app.listen(PORT, () => {
   console.log("\n" + "=".repeat(60));
   console.log("🤖 AI AGENT SERVER STARTED");
@@ -1109,301 +1103,104 @@ export function calculateConfidence(stateGraph) {
 }
 
 
+
 executor.js:
 // server/executor.js
 
-import fetch from "node-fetch";
 import { TOOLS } from "./tools/index.js";
-import { plan } from "./planner.js";
-import { detectContradictions } from "./audit.js";
-
-const MAX_TOOL_CALLS = {
-  search: 3,
-  llm: 3,
-  calculator: 1,
-  finance: 2,
-  stock_price: 2,
-  file: 2
-};
 
 /**
- * Execute a single step in the agent loop
+ * Use LLM to summarize tool output
  */
-export async function executeStep(
-  message,
-  step,
-  stateGraph,
-  toolUsage,
-  conversationHistory
-) {
-  const decision = plan(message);
-  const action = decision.action;
-  const params = decision.params || {};
+async function summarizeWithLLM(userQuestion, toolResult) {
+  const structuredData = JSON.stringify(toolResult.data, null, 2);
 
-  console.log(`🤖 STEP ${step} PLAN:`, {
-    action,
-    params,
-    confidence: decision.confidence
-  });
+  const prompt = `
+User question:
+${userQuestion}
 
-  toolUsage[action] ??= 0;
+Tool returned this structured data:
+${structuredData}
 
-  if (toolUsage[action] >= MAX_TOOL_CALLS[action]) {
-    console.warn(`⚠️ Tool budget exceeded for: ${action}`);
-    return await llmFallback(
-      message,
-      stateGraph,
-      conversationHistory,
-      step
-    );
-  }
+Provide a clear, direct answer to the user.
+Do NOT list search results.
+Do NOT include URLs.
+Answer naturally and concisely.
+`;
 
-  toolUsage[action]++;
+  const summary = await TOOLS.llm.execute(prompt);
 
-  switch (action) {
-    case "calculator":
-      return await handleCalculator(message, step, stateGraph);
-
-    case "finance":
-      return await handleFinance(
-        message,
-        params,
-        step,
-        stateGraph
-      );
-
-    case "stock_price":
-      return await handleStockPrice(
-        params,
-        step,
-        stateGraph
-      );
-
-    case "search":
-      return await handleSearch(
-        message,
-        step,
-        stateGraph
-      );
-
-    case "file": {
-      const result = await TOOLS.file.execute(params);
-
-      stateGraph.push({
-        step,
-        tool: "file",
-        input: params,
-        output: result
-      });
-
-      return { reply: result };
-    }
-
-    case "llm":
-    default:
-      return await llmFallback(
-        message,
-        stateGraph,
-        conversationHistory,
-        step
-      );
-  }
+  return summary?.data?.text || "Unable to summarize result.";
 }
 
 /**
- * Calculator tool
+ * Execute planned tool
  */
-async function handleCalculator(message, step, stateGraph) {
-  const result = TOOLS.calculator.execute(message);
-  const reply = result.error ?? `Result: ${result.result}`;
+export async function executeAgent({ tool, message }) {
+  const stateGraph = [];
 
-  stateGraph.push({
-    step,
-    tool: "calculator",
-    input: message,
-    output: result
-  });
-
-  return { reply };
-}
-
-/**
- * Finance tool
- */
-async function handleFinance(message, params, step, stateGraph) {
-  const financeData = await TOOLS.finance.execute(params);
-
-  if (
-    financeData.error ||
-    !financeData.results ||
-    financeData.results.length === 0
-  ) {
-    const errorMsg = financeData.error || "No results found";
-
-    stateGraph.push({
-      step,
-      tool: "finance",
-      input: params,
-      output: errorMsg
-    });
-
-    return { reply: `⚠️ Financial data unavailable.\n${errorMsg}` };
-  }
-
-  const reply = financeData.results
-    .map(
-      (s, i) =>
-        `${i + 1}. ${s.symbol} - ${s.name}\nPrice: $${s.price?.toFixed(
-          2
-        ) || "N/A"}`
-    )
-    .join("\n\n");
-
-  stateGraph.push({
-    step,
-    tool: "finance",
-    input: params,
-    output: financeData.results
-  });
-
-  return { reply };
-}
-
-/**
- * Stock price tool
- */
-async function handleStockPrice(params, step, stateGraph) {
-  const { symbol } = params;
-
-  if (!symbol) {
-    return { reply: "Please specify a stock symbol (e.g., AAPL)" };
-  }
-
-  const stockData = await TOOLS.stock_price.execute(symbol);
-
-  if (stockData.error) {
-    stateGraph.push({
-      step,
-      tool: "stock_price",
-      input: symbol,
-      output: stockData.error
-    });
-
+  if (!TOOLS[tool]) {
     return {
-      reply: `Unable to fetch price for ${symbol}: ${stockData.error}`
+      reply: "Tool not found.",
+      stateGraph,
+      success: false
     };
   }
 
-  const reply =
-    `${stockData.name} (${stockData.symbol})\n` +
-    `Price: $${stockData.price.toFixed(2)}\n` +
-    `Change: ${stockData.change >= 0 ? "+" : ""}${stockData.change.toFixed(
-      2
-    )} (${stockData.changePercent.toFixed(2)}%)`;
+  const result = await TOOLS[tool].execute(message);
 
   stateGraph.push({
-    step,
-    tool: "stock_price",
-    input: symbol,
-    output: stockData
-  });
-
-  return { reply };
-}
-
-/**
- * Web search tool (deterministic version)
- */
-async function handleSearch(message, step, stateGraph) {
-  const searchResults = await TOOLS.search.execute(message);
-
-  if (!searchResults.results || searchResults.results.length === 0) {
-    stateGraph.push({
-      step,
-      tool: "search",
-      input: message,
-      output: "(no results)"
-    });
-
-    return { reply: "No search results found." };
-  }
-
-  stateGraph.push({
-    step,
-    tool: "search",
+    step: 1,
+    tool,
     input: message,
-    output: searchResults.results,
-    cached: searchResults.cached || false
+    output: result,
+    final: result?.final ?? true
   });
 
-  return { reply: searchResults.summary };
-}
-
-/**
- * LLM fallback
- */
-async function llmFallback(
-  message,
-  stateGraph,
-  conversationHistory,
-  step
-) {
-  const context = conversationHistory
-    .slice(-5)
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
-  const prompt =
-    `${context}\n\nuser: ${message}\n\nRespond naturally and helpfully:`;
-
-  const response = await callLLM(prompt);
-  const contradictions = detectContradictions(
-    stateGraph,
-    response
-  );
-
-  stateGraph.push({
-    step,
-    tool: "llm-fallback",
-    input: prompt,
-    output: response,
-    contradictions
-  });
-
-  return { reply: response };
-}
-
-/**
- * Call local LLM via Ollama
- */
-async function callLLM(prompt) {
-  try {
-    const res = await fetch(
-      "http://localhost:11434/api/generate",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "mat-llm:latest",
-          prompt,
-          stream: false,
-          options: { temperature: 0.7, num_predict: 500 }
-        })
-      }
-    );
-
-    if (!res.ok) return "(LLM unavailable)";
-
-    const data = await res.json();
-    return data.response?.trim() || "(no response)";
-  } catch (err) {
-    console.error("LLM error:", err.message);
-    return "(LLM error)";
+  // If tool failed
+  if (!result?.success) {
+    return {
+      reply: result?.error || "Tool execution failed.",
+      stateGraph,
+      success: false
+    };
   }
+
+  // 🔥 Summarize search & finance tools
+  if (["search", "finance"].includes(tool)) {
+    const summarized = await summarizeWithLLM(message, result);
+
+    stateGraph[0].output.data.text = summarized;
+
+    return {
+      reply: summarized,
+      stateGraph,
+      tool,
+      data: result.data,
+      success: true
+    };
+  }
+
+  // Normal tools (llm, calculator, file)
+  const reply =
+    result?.data?.text ||
+    result?.output ||
+    JSON.stringify(result?.data) ||
+    "Task completed.";
+
+  return {
+    reply,
+    stateGraph,
+    tool,
+    data: result.data,
+    success: true
+  };
 }
+
 
 
 memory.js:
+
 import fs from "fs";
 import path from "path";
 
@@ -1436,156 +1233,143 @@ export function saveJSON(filePath, data) {
 planner.js:
 // server/planner.js
 
+const FILE_REGEX = /[A-Za-z]:[\\/]/;
+const PURE_MATH_REGEX = /^[0-9+\-*/().\s]+$/;
+
+const REALTIME_KEYWORDS = [
+  "current",
+  "today",
+  "latest",
+  "rate",
+  "price",
+  "news",
+  "weather",
+  "exchange"
+];
+
 /**
- * Hybrid rule-based planner
- * Order matters: calculator → finance → file → search → llm
+ * Detect stock-related queries like:
+ * - AAPL price
+ * - what is AAPL stock price?
+ * - TSLA share price
  */
+function isStockQuery(message) {
+  const lower = message.toLowerCase();
 
-const SECTOR_KEYWORDS = {
-  Healthcare: ["biotech", "bioengineering", "pharmaceutical", "medical", "drug", "healthcare", "biopharma", "medicine"],
-  Technology: ["tech", "software", "ai", "cloud", "semiconductor", "cybersecurity", "saas"],
-  Energy: ["oil", "gas", "renewable", "solar", "wind", "energy", "utility"],
-  Financial: ["bank", "insurance", "fintech", "financial services", "investment"],
-  Consumer: ["retail", "consumer", "ecommerce", "food", "beverage"],
-  Industrial: ["manufacturing", "aerospace", "defense", "construction"],
-  Communication: ["telecom", "media", "entertainment", "streaming"],
-  "Real Estate": ["reit", "real estate", "property"],
-  Materials: ["mining", "chemicals", "metals", "materials"],
-  Utilities: ["utility", "electric", "water", "gas utility"]
-};
-
-/* -----------------------------
-   Sector Detection
------------------------------- */
-function detectSector(message) {
-  const msg = message.toLowerCase();
-  for (const [sector, keywords] of Object.entries(SECTOR_KEYWORDS)) {
-    if (keywords.some(k => msg.includes(k))) return sector;
-  }
-  return null;
+  return (
+    /\b[A-Z]{1,5}\b/.test(message) &&
+    (
+      lower.includes("stock") ||
+      lower.includes("price") ||
+      lower.includes("share")
+    )
+  );
 }
 
-/* -----------------------------
-   Finance Extraction
------------------------------- */
-function extractFinanceParams(message) {
-  const msg = message.toLowerCase();
-  const params = {};
-
-  const sector = detectSector(message);
-  if (sector) params.sector = sector;
-
-  const limitMatch = msg.match(/top (\d+)|(\d+) (?:top|best|largest)/);
-  if (limitMatch) params.limit = parseInt(limitMatch[1] || limitMatch[2]);
-
-  const symbolMatch = message.match(/\b([A-Z]{1,5})\b/);
-  if (symbolMatch && (msg.includes("price") || msg.includes("quote"))) {
-    params.symbol = symbolMatch[1];
-  }
-
-  return params;
+/**
+ * Detect if real-time external info is needed
+ */
+function needsSearch(message) {
+  const lower = message.toLowerCase();
+  return REALTIME_KEYWORDS.some(word => lower.includes(word));
 }
 
-/* -----------------------------
-   File Intent Detection
------------------------------- */
-function detectFileIntent(message) {
-  const msg = message.toLowerCase();
+export async function plan({ message }) {
+  const trimmed = message.trim();
 
-  const operations = {
-    scan: ["scan", "list files", "directory contents", "show files"],
-    scan_recursive: ["scan recursive", "list all files", "show all files"],
-    duplicates: ["duplicate", "find duplicates", "duplicate files"],
-    delete: ["delete file", "remove file"],
-    read: ["read file", "open file", "tell me what it says", "show content"],
-    write: ["write file", "save file", "edit file"]
-  };
-
-  for (const [op, keywords] of Object.entries(operations)) {
-    if (keywords.some(k => msg.includes(k))) {
-
-      // 1️⃣ Absolute Windows path (E:\something)
-      const absoluteMatch = message.match(/[A-Za-z]:\\[^\s]+/);
-      if (absoluteMatch) {
-        return { operation: op, path: absoluteMatch[0] };
-      }
-
-      // 2️⃣ Relative "folder testFolder" or "file testread.txt"
-      const folderOrFileMatch = message.match(/(?:folder|file)\s+([^\s]+)/i);
-      if (folderOrFileMatch) {
-        return { operation: op, path: folderOrFileMatch[1] };
-      }
-
-      // 3️⃣ Fallback: just scan default
-      return { operation: op, path: "." };
-    }
+  // 1️⃣ File paths
+  if (FILE_REGEX.test(trimmed)) {
+    return { tool: "file", reason: "File path detected" };
   }
 
-  return null;
+  // 2️⃣ Pure math expressions
+  if (PURE_MATH_REGEX.test(trimmed)) {
+    return { tool: "calculator", reason: "Math expression detected" };
+  }
+
+  // 3️⃣ Stock queries
+  if (isStockQuery(trimmed)) {
+    return { tool: "finance", reason: "Stock query detected" };
+  }
+
+  // 4️⃣ Real-time info
+  if (needsSearch(trimmed)) {
+    return { tool: "search", reason: "Real-time info requested" };
+  }
+
+  // 5️⃣ Default → LLM conversation
+  return { tool: "llm", reason: "General conversation" };
 }
 
-/* -----------------------------
-   Main Planner
------------------------------- */
-export function plan(message) {
-  const msg = message.toLowerCase();
 
-  // 1️⃣ Calculator
-  if (/^[\d+\-*/().\s]+$/.test(message.trim())) {
-    return { action: "calculator", params: {}, confidence: 0.95 };
-  }
 
-  // 2️⃣ Finance
-  const financeKeywords = /\b(stock|market|market cap|nasdaq|dow|s&p|share|trading|etf|portfolio|earning|analysis|sector|industry|invest)\b/i;
+tools/file.js:
+// server/tools/file.js
+// File system tool (sandboxed)
 
-  if (financeKeywords.test(msg)) {
-    const params = extractFinanceParams(message);
+import fs from "fs/promises";
+import path from "path";
 
-    if (params.symbol && !params.sector) {
-      return { action: "stock_price", params: { symbol: params.symbol }, confidence: 0.9 };
+const SANDBOX_ROOT = "E:/sandbox"; // adjust your sandbox path
+
+/**
+ * Ensure the given path is inside sandbox
+ */
+function sanitizePath(requestedPath) {
+  const resolved = path.resolve(SANDBOX_ROOT, requestedPath);
+  if (!resolved.startsWith(SANDBOX_ROOT)) throw new Error("Access outside sandbox denied");
+  return resolved;
+}
+
+export async function file(request) {
+  try {
+    const sanitizedPath = sanitizePath(request);
+
+    const stat = await fs.stat(sanitizedPath);
+    let data = {};
+
+    if (stat.isDirectory()) {
+      const items = await fs.readdir(sanitizedPath, { withFileTypes: true });
+      data.items = items.map(i => ({
+        name: i.name,
+        type: i.isDirectory() ? "folder" : "file"
+      }));
+      data.text = `Folder contents:\n${data.items.map(i => `${i.type}: ${i.name}`).join("\n")}`;
+    } else if (stat.isFile()) {
+      const content = await fs.readFile(sanitizedPath, "utf-8");
+      data.items = [{ name: path.basename(sanitizedPath), type: "file", size: stat.size }];
+      data.text = `File: ${path.basename(sanitizedPath)} (${stat.size} bytes)\nPreview:\n${content.slice(0, 500)}`;
+    } else {
+      data.text = "Unknown file type.";
     }
 
-    return { action: "finance", params, confidence: 0.85 };
+    return {
+      tool: "file",
+      success: true,
+      final: true,
+      data
+    };
+  } catch (err) {
+    return {
+      tool: "file",
+      success: false,
+      final: true,
+      error: err.message
+    };
   }
-
-  // 3️⃣ File operations (IMPORTANT: before search)
-  const fileParams = detectFileIntent(message);
-  if (fileParams) {
-    return { action: "file", params: fileParams, confidence: 0.9 };
-  }
-
-  // 4️⃣ Search
-  const searchKeywords = /\b(top|who|what|when|where|why|how|history|explain|recent|latest|news|find|search)\b/i;
-  if (searchKeywords.test(msg)) {
-    return { action: "search", params: {}, confidence: 0.7 };
-  }
-
-  // 5️⃣ Default
-  return { action: "llm", params: {}, confidence: 0.5 };
 }
 
-/* -----------------------------
-   Simple Plan
------------------------------- */
-export function simplePlan(message) {
-  return plan(message).action;
-}
-
-
-calculator.js:
+tools/calculator.js:
 // server/tools/calculator.js
-
-// Very small safe math evaluator
-// Supports: + - * / ( ) and decimals
+// Deterministic safe calculator tool
+// Structured return system
 
 function sanitizeExpression(input) {
-  // Extract first math-like sequence
   const match = input.match(/[-+*/().\d\s]+/);
   if (!match) return null;
 
   const expr = match[0];
 
-  // Allow only valid characters
   if (!/^[\d+\-*/().\s]+$/.test(expr)) return null;
 
   return expr;
@@ -1593,8 +1377,6 @@ function sanitizeExpression(input) {
 
 function evaluateExpression(expr) {
   try {
-    // Use Function constructor instead of eval
-    // Still controlled because we sanitized strictly
     const result = Function(`"use strict"; return (${expr})`)();
 
     if (typeof result !== "number" || !isFinite(result)) {
@@ -1611,342 +1393,360 @@ export function calculator(message) {
   const expr = sanitizeExpression(message);
 
   if (!expr) {
-    return { error: "No valid math expression found" };
+    return {
+      tool: "calculator",
+      success: false,
+      final: true,
+      error: "No valid math expression found"
+    };
   }
 
-  return evaluateExpression(expr);
-}
- file.js:
- // server/tools/file.js
+  const evaluation = evaluateExpression(expr);
 
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
-
-const SANDBOX_ROOT = "E:\\testFolder";
-
-/**
- * Resolve path safely inside sandbox
- */
-function resolveSafePath(relativePath = ".") {
-  const resolved = path.resolve(SANDBOX_ROOT, relativePath);
-
-  if (!resolved.startsWith(path.resolve(SANDBOX_ROOT))) {
-    throw new Error("Access denied: Path outside sandbox");
+  if (evaluation.error) {
+    return {
+      tool: "calculator",
+      success: false,
+      final: true,
+      error: evaluation.error
+    };
   }
-
-  return resolved;
-}
-
-/**
- * Determine if a path is a file or folder automatically
- */
-async function detectPathType(relativePath) {
-  const safePath = resolveSafePath(relativePath);
-
-  try {
-    const stats = await fs.promises.stat(safePath);
-    if (stats.isDirectory()) return "directory";
-    if (stats.isFile()) return "file";
-  } catch (err) {
-    if (err.code === "ENOENT") return "not_found";
-    throw err;
-  }
-
-  return "unknown";
-}
-
-/**
- * Scan directory (non-recursive)
- */
-async function scanDirectory(relativePath = ".") {
-  const safePath = resolveSafePath(relativePath);
-  const stats = await fs.promises.stat(safePath);
-
-  if (!stats.isDirectory()) {
-    return { error: "Path exists but is not a folder." };
-  }
-
-  const files = await fs.promises.readdir(safePath);
 
   return {
-    path: safePath,
-    files
+    tool: "calculator",
+    success: true,
+    final: true,
+    data: {
+      expression: expr,
+      result: evaluation.result
+    }
   };
 }
 
-/**
- * Recursive scan
- */
-async function scanRecursive(relativePath = ".") {
-  const safePath = resolveSafePath(relativePath);
-  const results = [];
 
-  async function walk(dir) {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else {
-        results.push(fullPath.replace(path.resolve(SANDBOX_ROOT), ""));
-      }
-    }
-  }
-
-  await walk(safePath);
-  return { files: results };
-}
-
-/**
- * Find duplicates
- */
-async function findDuplicates(relativePath = ".") {
-  const safePath = resolveSafePath(relativePath);
-  const fileMap = {};
-
-  async function walk(dir) {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else {
-        const buffer = await fs.promises.readFile(fullPath);
-        const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-
-        fileMap[hash] ??= [];
-        fileMap[hash].push(fullPath);
-      }
-    }
-  }
-
-  await walk(safePath);
-
-  const duplicates = Object.entries(fileMap)
-    .filter(([_, files]) => files.length > 1)
-    .map(([hash, files]) => ({
-      hash,
-      files: files.map(f => f.replace(path.resolve(SANDBOX_ROOT), ""))
-    }));
-
-  return { duplicates };
-}
-
-/**
- * Read a file as text
- */
-async function readFile(relativePath) {
-  const safePath = resolveSafePath(relativePath);
-  const stats = await fs.promises.stat(safePath);
-
-  if (!stats.isFile()) {
-    return "Path exists but is not a file.";
-  }
-
-  const content = await fs.promises.readFile(safePath, "utf-8");
-  return content;
-}
-
-/**
- * Main executor
- */
-export async function execute(params = {}) {
-  let { operation, path: p } = params;
-
-  try {
-    // Auto-detect if operation not explicitly set
-    if (!operation) {
-      const type = await detectPathType(p);
-      if (type === "directory") operation = "scan";
-      else if (type === "file") operation = "read";
-      else return "Path does not exist.";
-    }
-
-    switch (operation) {
-      case "scan":
-        const result = await scanDirectory(p);
-        if (result.error) return result.error;
-        if (!result.files.length) return "Folder exists but is empty.";
-        return "Files:\n\n" + result.files.map(f => `- ${f}`).join("\n");
-
-      case "scan_recursive":
-        const recursive = await scanRecursive(p);
-        return "Files:\n\n" + recursive.files.map(f => `- ${f}`).join("\n");
-
-      case "duplicates":
-        const dup = await findDuplicates(p);
-        if (!dup.duplicates.length) return "No duplicate files found.";
-        return JSON.stringify(dup.duplicates, null, 2);
-
-      case "read":
-        return await readFile(p);
-
-      default:
-        return "Unsupported file operation.";
-    }
-  } catch (err) {
-    if (err.message.includes("outside sandbox")) return err.message;
-    if (err.code === "ENOENT") return "Folder or file does not exist.";
-    return "File operation error: " + err.message;
-  }
-}
-
-finance.js:
+tools/finance.js:
+// server/tools/finance.js
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 
-export async function getTopStocks(params = {}) {
-  const { sector = null, limit = 10 } = params;
+function extractTickers(text) {
+  const matches = text.match(/\b[A-Z]{1,5}\b/g);
+  return matches || [];
+}
 
-  if (!CONFIG.FMP_API_KEY) {
-    return { error: "Missing API key", results: [] };
-  }
+async function fetchAlpha(symbol) {
+  if (!CONFIG.ALPHA_VANTAGE_KEY) return null;
 
-  let url = `https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=10000000000&limit=100&apikey=${CONFIG.FMP_API_KEY}`;
-
-  if (sector) {
-    url = `https://financialmodelingprep.com/api/v3/stock-screener?sector=${encodeURIComponent(
-      sector
-    )}&limit=100&apikey=${CONFIG.FMP_API_KEY}`;
-  }
+  const url =
+    `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${CONFIG.ALPHA_VANTAGE_KEY}`;
 
   const data = await safeFetch(url);
 
-  if (!data || !Array.isArray(data)) {
-    return { error: "Finance API unavailable", results: [] };
-  }
+  if (!data || !data["Global Quote"]) return null;
 
-  const sorted = data
-    .filter(s => s.marketCap)
-    .sort((a, b) => b.marketCap - a.marketCap)
-    .slice(0, limit)
-    .map(s => ({
-      symbol: s.symbol,
-      name: s.companyName,
-      sector: s.sector,
-      industry: s.industry,
-      marketCap: s.marketCap,
-      price: s.price
-    }));
-
-  return { results: sorted };
+  return {
+    symbol,
+    price: data["Global Quote"]["05. price"],
+    change_percent: data["Global Quote"]["10. change percent"]
+  };
 }
 
-export async function getStockPrice(symbol) {
-  if (!CONFIG.FMP_API_KEY) {
-    return { error: "Missing API key" };
-  }
+async function fetchFinnhub(symbol) {
+  if (!CONFIG.FINNHUB_KEY) return null;
 
-  const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${CONFIG.FMP_API_KEY}`;
+  const url =
+    `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`;
+
   const data = await safeFetch(url);
 
-  if (!data || !Array.isArray(data) || data.length === 0) {
-    return { error: "No stock data found" };
+  if (!data || data.c === undefined) return null;
+
+  return {
+    symbol,
+    price: data.c,
+    change_percent: data.dp + "%"
+  };
+}
+
+export async function finance(query) {
+  if (!CONFIG.isFinanceAvailable()) {
+    return {
+      tool: "finance",
+      success: false,
+      final: true,
+      error: "No finance API keys configured"
+    };
   }
 
-  return data[0];
+  try {
+    const tickers = extractTickers(query);
+
+    if (!tickers.length) {
+      return {
+        tool: "finance",
+        success: false,
+        final: true,
+        error: "No stock ticker found"
+      };
+    }
+
+    const results = [];
+
+    for (const symbol of tickers) {
+      let data = null;
+
+      if (CONFIG.FINANCE_PROVIDER === "alpha") {
+        data = await fetchAlpha(symbol);
+        if (!data) data = await fetchFinnhub(symbol);
+      } else {
+        data = await fetchFinnhub(symbol);
+        if (!data) data = await fetchAlpha(symbol);
+      }
+
+      if (data) results.push(data);
+    }
+
+    if (!results.length) {
+      return {
+        tool: "finance",
+        success: false,
+        final: true,
+        error: "Failed to fetch stock data"
+      };
+    }
+
+    const summary = results
+      .map(r => `${r.symbol}: $${r.price} (${r.change_percent})`)
+      .join("\n");
+
+    return {
+      tool: "finance",
+      success: true,
+      final: true,
+      data: {
+        stocks: results,
+        text: `Stock information:\n${summary}`
+      }
+    };
+
+  } catch (err) {
+    return {
+      tool: "finance",
+      success: false,
+      final: true,
+      error: err.message
+    };
+  }
 }
 
 
-server/tools/index.js:
+tools/index.js:
+// server/tools/index.js
+
 import { calculator } from "./calculator.js";
-import { getTopStocks, getStockPrice } from "./finance.js";
-import { searchWeb } from "./search.js";
-import * as file from "./file.js";
+import { file } from "./file.js";
+import { finance } from "./finance.js";
+import { search } from "./search.js";
+import { llm } from "./llm.js";
+import { weather } from "./weather.js";
 
 export const TOOLS = {
-  calculator: { execute: calculator },
-  finance: { execute: getTopStocks },
-  stock_price: { execute: getStockPrice },
-  search: { execute: searchWeb },
-  file
+  calculator,
+  file,
+  finance,
+  search,
+  llm,
+  weather
 };
 
+tools/llm.js:
 
-search.js:
+// server/tools/llm.js
+
+import fetch from "node-fetch";
+
+export async function llm(input) {
+  try {
+    const res = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "mat-llm:latest",
+        prompt: input,
+        stream: false
+      })
+    });
+
+    const data = await res.json();
+
+    const text = data.response?.trim();
+
+    if (!text) {
+      return {
+        success: false,
+        error: "LLM returned empty response",
+        final: true
+      };
+    }
+
+    return {
+      success: true,
+      data: { text },
+      final: true,
+      output: text
+    };
+
+  } catch (err) {
+    return {
+      success: false,
+      error: "LLM execution failed",
+      final: true
+    };
+  }
+}
+
+
+tools/search.js:
+
 // server/tools/search.js
-
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
 
-const SEARCH_CACHE_FILE = "./search_cache.json";
+const CACHE_FILE = "./search_cache.json";
 
 function extractTopic(text) {
-  return text
-    .toLowerCase()
-    .replace(/please|could you|would you|check again|verify/gi, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 100);
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
 }
 
-function formatSummary(results) {
-  return results
-    .map(
-      (r, i) =>
-        `${i + 1}. ${r.title}\n${r.snippet}\nSource: ${r.link}`
-    )
-    .join("\n\n");
+async function fetchWikipedia(query) {
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
+  const data = await safeFetch(url);
+  if (data?.extract) {
+    return [{
+      title: data.title,
+      snippet: data.extract,
+      url: `https://en.wikipedia.org/wiki/${data.title}`
+    }];
+  }
+  return [];
 }
 
-export async function searchWeb(query, forceRefresh = false) {
-  if (!CONFIG.SERPAPI_KEY) {
-    return { error: "Missing SERPAPI key", results: [], summary: "" };
-  }
-
-  const cache = loadJSON(SEARCH_CACHE_FILE, {});
-  const topic = extractTopic(query);
-
-  // Serve from cache
-  if (
-    !forceRefresh &&
-    cache[topic] &&
-    Array.isArray(cache[topic].results) &&
-    cache[topic].results.length > 0
-  ) {
-    return {
-      cached: true,
-      results: cache[topic].results,
-      summary: formatSummary(cache[topic].results)
-    };
-  }
-
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-    topic
-  )}&api_key=${CONFIG.SERPAPI_KEY}`;
-
+async function fetchDuckDuckGo(query) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
   const data = await safeFetch(url);
 
-  if (!data || !data.organic_results) {
-    return { cached: false, results: [], summary: "" };
-  }
+  if (!data?.RelatedTopics) return [];
 
-  const results = data.organic_results.slice(0, 5).map(r => ({
+  return data.RelatedTopics.slice(0, 5)
+    .filter(r => r.Text && r.FirstURL)
+    .map(r => ({
+      title: r.Text,
+      snippet: r.Text,
+      url: r.FirstURL
+    }));
+}
+
+async function fetchGoogle(query) {
+  if (!CONFIG.SERPAPI_KEY) return [];
+
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${CONFIG.SERPAPI_KEY}`;
+  const data = await safeFetch(url);
+
+  if (!data?.organic_results) return [];
+
+  return data.organic_results.slice(0, 5).map(r => ({
     title: r.title,
     snippet: r.snippet || "",
-    link: r.link
+    url: r.link
   }));
+}
 
-  if (results.length > 0) {
-    cache[topic] = {
-      timestamp: Date.now(),
-      results
+export async function search(query) {
+  const cache = loadJSON(CACHE_FILE, {});
+  const topic = extractTopic(query);
+
+  if (cache[topic]) {
+    return {
+      tool: "search",
+      success: true,
+      final: true,
+      data: cache[topic]
     };
-    saveJSON(SEARCH_CACHE_FILE, cache);
   }
 
+  const [wiki, ddg, google] = await Promise.all([
+    fetchWikipedia(query),
+    fetchDuckDuckGo(query),
+    fetchGoogle(query)
+  ]);
+
+  const results = [...wiki, ...ddg, ...google];
+
+  const summary = results.map(r => `${r.title}: ${r.snippet}`).join("\n");
+
+  const data = { results, text: summary };
+
+  cache[topic] = data;
+  saveJSON(CACHE_FILE, cache);
+
   return {
-    cached: false,
-    results,
-    summary: formatSummary(results)
+    tool: "search",
+    success: true,
+    final: true,
+    data
   };
 }
 
+tools/weather.js:
 
-config.js:
+import { safeFetch } from "../utils/fetch.js";
+
+export async function weather(query) {
+  try {
+    const cityMatch = query.match(/in\s+([A-Za-z\s]+)/i);
+    const city = cityMatch ? cityMatch[1].trim() : "London";
+
+    const geo = await safeFetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${city}`
+    );
+
+    if (!geo.results?.length) {
+      return {
+        tool: "weather",
+        success: false,
+        final: true,
+        error: "City not found"
+      };
+    }
+
+    const { latitude, longitude } = geo.results[0];
+
+    const weatherData = await safeFetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`
+    );
+
+    return {
+      tool: "weather",
+      success: true,
+      final: true,
+      data: {
+        text: `Current temperature in ${city}: ${weatherData.current_weather.temperature}°C`
+      }
+    };
+
+  } catch (err) {
+    return {
+      tool: "weather",
+      success: false,
+      final: true,
+      error: err.message
+    };
+  }
+}
+
+
+util/config.js:
 // server/utils/config.js
 import 'dotenv/config';
 
@@ -1954,18 +1754,16 @@ import 'dotenv/config';
  * Centralized configuration with validation
  */
 
-const requiredEnvVars = {
-  FMP_API_KEY: process.env.FMP_API_KEY,
-  SERPAPI_KEY: process.env.SERPAPI_KEY
-};
-
 const warnings = [];
 
-// Validate required environment variables
-for (const [key, value] of Object.entries(requiredEnvVars)) {
-  if (!value) {
-    warnings.push(`⚠️  ${key} not set - ${key.toLowerCase().includes('fmp') ? 'finance' : 'search'} features will be unavailable`);
-  }
+// Validate finance providers
+if (!process.env.ALPHA_VANTAGE_KEY && !process.env.FINNHUB_KEY) {
+  warnings.push("⚠️  No finance API keys set - finance tool will be unavailable");
+}
+
+// Validate search
+if (!process.env.SERPAPI_KEY) {
+  warnings.push("⚠️  SERPAPI_KEY not set - search features may be limited");
 }
 
 export const CONFIG = {
@@ -1983,19 +1781,23 @@ export const CONFIG = {
   TOOL_BUDGET_FINANCE: parseInt(process.env.TOOL_BUDGET_FINANCE || '2'),
   TOOL_BUDGET_CALCULATOR: parseInt(process.env.TOOL_BUDGET_CALCULATOR || '1'),
 
-  // API Keys
-  FMP_API_KEY: process.env.FMP_API_KEY,
+  // Finance Providers
+  FINANCE_PROVIDER: process.env.FINANCE_PROVIDER || 'alpha', // alpha | finnhub
+
+  ALPHA_VANTAGE_KEY: process.env.ALPHA_VANTAGE_KEY,
+  FINNHUB_KEY: process.env.FINNHUB_KEY,
+
+  // Search
   SERPAPI_KEY: process.env.SERPAPI_KEY,
 
-  // Critical Tools (won't fallback to LLM if these fail)
+  // Critical Tools
   CRITICAL_TOOLS: (process.env.CRITICAL_TOOLS || 'finance').split(','),
 
   // Cache
-  SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'), // 1 hour
+  SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'),
 
-  // Validation
-  isValid() {
-    return this.FMP_API_KEY && this.SERPAPI_KEY;
+  isFinanceAvailable() {
+    return !!(this.ALPHA_VANTAGE_KEY || this.FINNHUB_KEY);
   },
 
   getWarnings() {
@@ -2003,7 +1805,7 @@ export const CONFIG = {
   }
 };
 
-// Log warnings on startup
+// Log warnings
 if (warnings.length > 0) {
   console.warn('\n' + '='.repeat(60));
   console.warn('⚠️  CONFIGURATION WARNINGS:');
@@ -2011,12 +1813,16 @@ if (warnings.length > 0) {
   console.warn('='.repeat(60) + '\n');
 }
 
-// Validate LLM settings
 if (!process.env.LLM_MODEL) {
   console.info(`ℹ️  Using default LLM model: ${CONFIG.LLM_MODEL}`);
+  console.log("Alpha Vantage Key:", CONFIG.ALPHA_VANTAGE_KEY);
+  console.log("Finnhub Key:", CONFIG.FINNHUB_KEY);
+  console.log("Finance Provider:", CONFIG.FINANCE_PROVIDER);
 }
 
-fetch.js:
+
+util/ fetch.js:
+
 import fetch from "node-fetch";
 
 export async function safeFetch(url, options = {}) {
@@ -2047,5 +1853,30 @@ export async function safeFetch(url, options = {}) {
   }
 }
 
-
-
+local-llm-ui/
+│
+├── client/
+│   └── local-llm-ui/
+│       └── src/
+│           ├── App.jsx
+│           └── App.css
+│
+└── server/
+    ├── index.js
+    ├── executor.js
+    ├── planner.js
+    ├── memory.js
+    ├── audit.js
+    │
+    ├── tools/
+    │   ├── calculator.js
+    │   ├── file.js
+    │   ├── finance.js
+    │   ├── search.js
+    │   ├── llm.js
+    |   ├── weather.js
+    │   └── index.js
+    │
+    └── utils/
+        ├── fetch.js
+        └── config.js
