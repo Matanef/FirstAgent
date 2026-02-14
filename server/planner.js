@@ -1,54 +1,79 @@
-import { shouldUseCalculator } from "./tools/math-intent.js";
+// server/planner.js
 
-const FILE_REGEX = /[A-Za-z]:[\\/]/;
-
-const REALTIME_KEYWORDS = [
-  "current",
-  "today",
-  "latest",
-  "rate",
-  "price",
-  "news",
-  "weather",
-  "exchange"
-];
-
-/**
- * Detect stock-related queries like:
- * - AAPL price
- * - what is AAPL stock price?
- * - TSLA share price
- */
-function isStockQuery(message) {
+function isFinanceFundamentalsIntent(message) {
   const lower = message.toLowerCase();
 
-  return (
-    /\b[A-Z]{1,5}\b/.test(message) &&
-    (
-      lower.includes("stock") ||
-      lower.includes("price") ||
-      lower.includes("share")
-    )
-  );
-}
+  const financeKeywords = [
+    "fundamentals",
+    "market cap",
+    "market capitalization",
+    "p/e",
+    "pe ratio",
+    "price to earnings",
+    "dividend",
+    "dividend yield",
+    "52 week",
+    "52-week",
+    "valuation",
+    "metrics",
+    "financials",
+    "key stats",
+    "key statistics"
+  ];
 
-/**
- * Detect if real-time external info is needed
- */
-function needsSearch(message) {
-  const lower = message.toLowerCase();
-  return REALTIME_KEYWORDS.some(word => lower.includes(word));
-}
-
-export async function plan({ message }) {
-  const trimmed = message.trim();
-
-  // 1️⃣ File paths
-  if (FILE_REGEX.test(trimmed)) {
-    return { tool: "file", reason: "File path detected" };
+  if (financeKeywords.some(k => lower.includes(k))) {
+    return true;
   }
 
-  // 2️⃣ Math / calculator
+  return false;
+}
+
+function isFinancePriceIntent(message) {
+  const lower = message.toLowerCase();
+  const priceKeywords = [
+    "stock price",
+    "share price",
+    "current price",
+    "quote",
+    "last price",
+    "trading at"
+  ];
+
+  return priceKeywords.some(k => lower.includes(k));
+}
+
+function shouldUseCalculator(message) {
+  const trimmed = message.trim();
+
+  if (!/[0-9]/.test(trimmed)) return false;
+
+  if (/[+\-*/^=]/.test(trimmed)) return true;
+
+  if (/^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed)) return true;
+
+  return false;
+}
+
+export function plan({ message }) {
+  const trimmed = message.trim();
+
+  // 1️⃣ Finance fundamentals
+  if (isFinanceFundamentalsIntent(trimmed)) {
+    return {
+      tool: "finance-fundamentals",
+      input: trimmed
+    };
+  }
+
+  // 2️⃣ Finance price
+  if (isFinancePriceIntent(trimmed)) {
+    return {
+      tool: "finance",
+      input: trimmed
+    };
+  }
+
+  // 3️⃣ Calculator
   if (shouldUseCalculator(trimmed)) {
     return {
       tool: "calculator",
@@ -56,16 +81,17 @@ export async function plan({ message }) {
     };
   }
 
-  // 3️⃣ Stock queries
-  if (isStockQuery(trimmed)) {
-    return { tool: "finance", reason: "Stock query detected" };
+  // 4️⃣ Web search for factual questions
+  if (/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/i.test(trimmed)) {
+    return {
+      tool: "search",
+      input: trimmed
+    };
   }
 
-  // 4️⃣ Real-time info
-  if (needsSearch(trimmed)) {
-    return { tool: "search", reason: "Real-time info requested" };
-  }
-
-  // 5️⃣ Default → LLM conversation
-  return { tool: "llm", reason: "General conversation" };
+  // 5️⃣ Default to LLM
+  return {
+    tool: "llm",
+    input: trimmed
+  };
 }
