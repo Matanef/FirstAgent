@@ -2666,6 +2666,19 @@
         "timestamp": "2026-02-14T19:51:01.566Z",
         "confidence": 0.5
       }
+    ],
+    "5c1e2628-d5b5-4cda-a2c4-b9276e2b1600": [
+      {
+        "role": "user",
+        "content": "perfect, can you tell me the price of AAPL stock?",
+        "timestamp": "2026-02-14T20:00:35.176Z"
+      },
+      {
+        "role": "assistant",
+        "content": "The current price of AAPL stock is $255.78.",
+        "timestamp": "2026-02-14T20:00:40.576Z",
+        "confidence": 0.75
+      }
     ]
   }
 }
