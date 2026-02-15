@@ -3,9 +3,12 @@ import fetch from "node-fetch";
 export async function safeFetch(url, options = {}) {
   try {
     const res = await fetch(url, options);
+    console.log("safeFetch URL:", url);
 
     if (!res.ok) {
       console.error(`Fetch error: HTTP ${res.status}`);
+      console.log("safeFetch status:", res.status);
+
       return null;
     }
 
@@ -24,6 +27,8 @@ export async function safeFetch(url, options = {}) {
     }
   } catch (err) {
     console.error("Fetch error:", err.message);
+    console.log("safeFetch body:", text);
+
     return null;
   }
 }

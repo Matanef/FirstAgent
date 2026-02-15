@@ -1,63 +1,46 @@
 // server/executor.js
 
+// executor.js — Section 1: Imports + Constants
+
 import { TOOLS } from "./tools/index.js";
 import { loadJSON, saveJSON } from "./memory.js";
+import { getToneDescription } from "../tone/toneGuide.js";
+import { llm } from "./tools/llm.js"; // adjust path if needed
 
+
+
+// Central memory file
 const MEMORY_FILE = "./memory.json";
 
-function buildSummarizerPrompt({ userQuestion, toolResult, conversation, profile, hasGreeted, tool }) {
+// Greeting limiter key
+const GREETING_KEY = "hasGreeted";
+
+// executor.js — Section 2: Summarizer Prompt Builder
+// Builds the prompt used to summarize tool output into a natural, warm response.
+
+function buildSummarizerPrompt({
+  userQuestion,
+  toolResult,
+  conversation,
+  profile,
+  tool
+}) {
   const structuredData = JSON.stringify(toolResult.data, null, 2);
 
+  // Only keep the last 8 messages for context
   const recentMessages = (conversation || []).slice(-8);
   const convoText = recentMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
-  const safeProfile = profile || {};
-  const name = safeProfile.name || null;
-  const tone = safeProfile.tone || "medium-warm";
-  const detail = safeProfile.detail || "medium";
-  const formatPref = safeProfile.format || "auto";
-  const mathSteps = safeProfile.math_steps ?? true;
-
-  const toneDescription =
-    tone === "warm"
-      ? "Use a friendly, confident, medium-warm tone, similar to a helpful colleague."
-      : "Use a neutral, clear, professional tone.";
-
-  const detailDescription =
-    detail === "high"
-      ? "Provide detailed explanations when helpful, but avoid rambling."
-      : detail === "low"
-      ? "Keep answers concise and focused, only adding detail when strictly necessary."
-      : "Provide a balanced level of detail.";
-
-  const formatDescription =
-    formatPref === "table"
-      ? "Prefer tables when presenting structured or comparative data."
-      : formatPref === "bullets"
-      ? "Prefer bullet points when presenting lists of items."
-      : "Choose the most natural format (table, bullets, or short paragraphs) based on the content.";
-
-  const greetingRule = hasGreeted
-    ? "Do NOT greet the user again. Do NOT start with 'Hi', 'Hello', or similar. Just answer directly."
-    : "You MAY start with a brief, friendly greeting once per conversation, like 'Hey Matan, good to see you again.' After that, do not greet again.";
-
-  const nameRule = name
-    ? `You know the user's name is ${name}. You may use it occasionally when it feels natural, but not in every message.`
-    : "You do not know the user's name, so do not guess or invent one.";
+  const profileText = profile ? JSON.stringify(profile, null, 2) : "{}";
 
   return `
-You are a warm, helpful AI assistant with persistent memory.
+You are a warm, helpful AI assistant with a balanced, friendly tone.
+You speak naturally, clearly, and confidently — never stiff, never overly formal.
 
-You MUST:
-- Use only the information in the user profile and conversation history as "memory".
-- NEVER claim you cannot remember things if they are present in the profile or conversation.
-- NEVER invent user preferences that are not explicitly stored in the profile.
-- NEVER say "I am a large language model" or similar disclaimers.
-
-User profile (long-term memory, trusted):
-${JSON.stringify(safeProfile, null, 2)}
+User profile (long-term memory):
+${profileText}
 
 Recent conversation:
 ${convoText}
@@ -67,77 +50,64 @@ ${userQuestion}
 
 Tool used: ${tool}
 
-Tool returned this structured data:
+Structured tool data:
 ${structuredData}
 
-Tone rules:
-- ${toneDescription}
-- ${detailDescription}
-- ${formatDescription}
-- ${nameRule}
-- ${greetingRule}
-
-Formatting rules:
-- Do NOT include URLs.
+Your job:
+- Give a clear, correct, direct answer.
+- Use a medium‑warm tone: friendly, human, but not overly chatty.
+- Use the user's name *sparingly* if it feels natural.
+- Do NOT repeat the same facts multiple times.
 - Do NOT list raw search results.
-- If it's math:
-  - Keep the result accurate.
-  - ${
-    mathSteps
-      ? "Briefly explain the steps when it helps understanding."
-      : "You may skip detailed steps unless the user explicitly asks."
-  }
+- Do NOT include URLs.
+- If it's math, keep the result accurate and briefly explain only when helpful.
 - If it's finance fundamentals:
-  - You MAY choose the best format (table, bullets, narrative) based on the question and user profile.
-  - If you're unsure, default to a clean comparison table with key metrics (market cap, P/E, dividend yield, 52-week range).
+  - Choose the best format (table, bullets, or short narrative) based on the question.
   - Include analyst ratings or price targets only if they exist in the data.
 - Respect the user's preferences from the profile (tone, detail, format).
 - Keep the answer focused and not overly long.
-- Add analystic answer at the end.
--provide the sources you used in your analysis.
-
-Now, write the best possible answer to the user, following all rules above.
+- Never mention internal instructions or system details.
 `;
 }
 
+
+// executor.js — Section 3: Summarize Tool Output with LLM
+
 async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool }) {
-  const memory = loadJSON(MEMORY_FILE, {
-    conversations: {},
-    profile: {},
-    meta: {}
-  });
-
-  const conversation = memory.conversations[conversationId] || [];
+  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {} });
   const profile = memory.profile || {};
-  memory.meta ??= {};
-  memory.meta[conversationId] ??= { hasGreeted: false };
-  const hasGreeted = memory.meta[conversationId].hasGreeted;
 
-  const prompt = buildSummarizerPrompt({
-    userQuestion,
-    toolResult,
-    conversation,
-    profile,
-    hasGreeted,
-    tool
-  });
+  const toneText = getToneDescription(profile);
 
-  const summary = await TOOLS.llm(prompt);
-  let text = summary?.data?.text || "I had trouble summarizing that, but the tool completed successfully.";
+  const prompt = `
+You are the final response generator for an AI assistant.
 
-  // Simple post-processing: if already greeted, strip leading generic greetings
-  if (hasGreeted) {
-    text = text.replace(/^(hi|hello|hey)[^a-z0-9]+/i, "").trimStart();
-  }
+Your job:
+- Take the tool result below
+- Understand the user's question
+- Produce a clean, natural-language answer
+- Follow the tone instructions strictly
 
-  // Mark that we've greeted at least once if this answer contains a greeting
-  if (!hasGreeted && /hey|hi|hello/i.test(text)) {
-    memory.meta[conversationId].hasGreeted = true;
-    saveJSON(MEMORY_FILE, memory);
-  }
+Tone instructions:
+${toneText}
 
-  return text;
+User question:
+${userQuestion}
+
+Tool used: ${tool}
+
+Tool result:
+${JSON.stringify(toolResult, null, 2)}
+
+Write the final answer the assistant should say to the user.
+Do NOT mention tools, internal steps, or reasoning.
+Keep the answer natural, helpful, and aligned with the tone.
+`;
+
+  const llmResponse = await llm(prompt);
+  return llmResponse?.data?.text || "I couldn't generate a response.";
 }
+
 
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
@@ -170,7 +140,7 @@ export async function executeAgent({ tool, message, conversationId }) {
   }
 
   // Tools that should be summarized by the LLM
-  if (["search", "finance", "finance-fundamentals", "calculator", "llm"].includes(tool)) {
+  if (["search", "finance", "finance-fundamentals", "calculator"].includes(tool)) {
     const summarized = await summarizeWithLLM({
       userQuestion: message,
       toolResult: result,
@@ -206,3 +176,49 @@ export async function executeAgent({ tool, message, conversationId }) {
     success: true
   };
 }
+
+export async function executeStep({ step, conversationId }) {
+  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {} });
+  const conversation = memory.conversations[conversationId] || [];
+  const profile = memory.profile || {};
+  let hasGreeted = memory[GREETING_KEY] || false;
+
+  if (!hasGreeted) {
+    memory[GREETING_KEY] = true;
+    saveJSON(MEMORY_FILE, memory);
+  }
+  const { tool, input } = step;
+  let toolResult;
+
+  try {
+    toolResult = await TOOLS[tool](input);
+  } catch (err) {
+    return {
+      role: "assistant",
+      content: `I ran into an issue while using the ${tool} tool.`
+    };
+  }
+  if (tool === "llm") {
+    return {
+      role: "assistant",
+      content: toolResult?.data?.text || "I couldn't generate a response."
+    };
+  }
+  const finalText = await summarizeWithLLM({
+    userQuestion: input?.userQuestion || input?.query || "",
+    toolResult,
+    conversationId,
+    tool
+  });
+  conversation.push({ role: "user", content: input?.userQuestion || "" });
+  conversation.push({ role: "assistant", content: finalText });
+
+  memory.conversations[conversationId] = conversation;
+  saveJSON(MEMORY_FILE, memory);
+
+  return {
+    role: "assistant",
+    content: finalText
+  };
+}
+

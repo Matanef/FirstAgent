@@ -1,48 +1,62 @@
-export function shouldUseCalculator(message) {
-  if (!message || typeof message !== "string") return false;
+// server/tools/math-intent.js
 
-  const lower = message.toLowerCase().trim();
+/**
+ * Detect whether a user message contains math,
+ * and classify the type of math so the planner
+ * can route it to the correct tool.
+ */
 
-  // 0️⃣ Conversational follow-ups should NOT trigger calculator
-  if (/^(so|ok|right|then|and|but)\b/.test(lower)) return false;
-  if (/^(is it|is that|so it's|so it is|so x|so y|so the result)/.test(lower)) return false;
+function detectMathType(text) {
+  const trimmed = text.trim();
 
-  // If message ends with a question but contains no operators, skip calculator
-  if (/\?$/.test(lower) && !/[+\-*/^()=]/.test(lower)) return false;
+  // Pure arithmetic: 2+2, 5 * 7, 10 / 3, etc.
+  if (/^[0-9\.\s\+\-\*\/\(\)]+$/.test(trimmed)) {
+    return { isMath: true, type: "arithmetic", expression: trimmed };
+  }
 
-  // 1️⃣ Natural-language math triggers
-  const mathPhrases = [
-    "how much is",
-    "calculate",
-    "what is",
-    "what's",
-    "solve",
-    "evaluate",
-    "compute",
-    "give me the result",
-    "find the value",
-    "result of",
-    "equals"
-  ];
-  if (mathPhrases.some(p => lower.includes(p))) return true;
+  // Algebra: x + 2 = 5, solve for x, etc.
+  if (/[a-zA-Z]/.test(trimmed) && /=/.test(trimmed)) {
+    return { isMath: true, type: "algebra", expression: trimmed };
+  }
 
-  // 2️⃣ Contains an equation
-  if (/=/.test(message)) return true;
+  // Trigonometry: sin(), cos(), tan(), radians, degrees
+  if (/sin|cos|tan|cot|sec|csc/i.test(trimmed)) {
+    return { isMath: true, type: "trig", expression: trimmed };
+  }
 
-  // 3️⃣ Contains a math operator
-  if (/[+\-*/^%]/.test(message)) return true;
+  // Symbolic math: integrals, derivatives, limits
+  if (/∫|integral|derivative|d\/dx|limit/i.test(trimmed)) {
+    return { isMath: true, type: "symbolic", expression: trimmed };
+  }
 
-  // 4️⃣ Contains parentheses (likely math)
-  if (/\([^()]+\)/.test(message)) return true;
+  // Word problems that contain numbers and math verbs
+  if (
+    /\d/.test(trimmed) &&
+    /(total|difference|sum|product|increase|decrease|split|share|ratio)/i.test(trimmed)
+  ) {
+    return { isMath: true, type: "word-problem", expression: trimmed };
+  }
 
-  // 5️⃣ Contains a number + function
-  if (/(sin|cos|tan|asin|acos|atan|sqrt|log|ln)\s*\(/i.test(message)) return true;
+  // Not math
+  return { isMath: false, type: null, expression: null };
+}
 
-  // 6️⃣ Standalone constants
-  if (/^\s*(pi|e)\s*$/i.test(message)) return true;
+export async function mathIntent(message) {
+  try {
+    const result = detectMathType(message);
 
-  // 7️⃣ Pure numbers should NOT trigger calculator
-  if (/^\d+(\.\d+)?$/.test(lower)) return false;
-
-  return false;
+    return {
+      tool: "math-intent",
+      success: true,
+      final: true,
+      data: result
+    };
+  } catch (err) {
+    return {
+      tool: "math-intent",
+      success: false,
+      final: true,
+      error: err.message
+    };
+  }
 }

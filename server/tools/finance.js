@@ -2,11 +2,17 @@
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 
+/**
+ * Extract uppercase tickers (1–5 letters)
+ */
 function extractTickers(text) {
   const matches = text.match(/\b[A-Z]{1,5}\b/g);
   return matches || [];
 }
 
+/**
+ * Alpha Vantage fetcher
+ */
 async function fetchAlpha(symbol) {
   if (!CONFIG.ALPHA_VANTAGE_KEY) return null;
 
@@ -24,6 +30,9 @@ async function fetchAlpha(symbol) {
   };
 }
 
+/**
+ * Finnhub fetcher
+ */
 async function fetchFinnhub(symbol) {
   if (!CONFIG.FINNHUB_KEY) return null;
 
@@ -41,6 +50,10 @@ async function fetchFinnhub(symbol) {
   };
 }
 
+/**
+ * Main finance tool
+ * Accepts a raw query string, extracts tickers, fetches data, returns summary.
+ */
 export async function finance(query) {
   if (!CONFIG.isFinanceAvailable()) {
     return {
@@ -68,6 +81,7 @@ export async function finance(query) {
     for (const symbol of tickers) {
       let data = null;
 
+      // Primary provider
       if (CONFIG.FINANCE_PROVIDER === "alpha") {
         data = await fetchAlpha(symbol);
         if (!data) data = await fetchFinnhub(symbol);

@@ -1,11 +1,6 @@
 // server/tools/calculator.js
-// Scientific calculator with:
-// - Expression evaluation (expr-eval)
-// - Symbolic equation solving (nerdamer)
-// - Numeric fallback solving
-// - Implicit multiplication insertion
-// - Equation extraction from messy messages
-// - Natural-language output
+// Scientific + symbolic + numeric hybrid calculator
+// Fully aligned with executor + summarizer + planner
 
 import { Parser } from "expr-eval";
 import nerdamer from "nerdamer";
@@ -16,23 +11,22 @@ import "nerdamer/Solve.js";
 // Utility helpers
 // ------------------------------------------------------------
 
-// Extract the equation line from a messy message
 function extractEquationLine(message) {
   if (!message || typeof message !== "string") return null;
 
-  const lines = message.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const lines = message
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
 
-  // Prefer a line that contains '='
   const eqLine = lines.find(l => l.includes("="));
   if (eqLine) return eqLine;
 
-  // Fallback: whole message contains '='
   if (message.includes("=")) return message.trim();
 
   return null;
 }
 
-// Insert implicit multiplication: 2x → 2*x, (2)x → (2)*x, x(2) → x*(2)
 function insertImplicitMultiplication(expr) {
   let out = expr;
   out = out.replace(/(\d)([a-zA-Z(])/g, "$1*$2");
@@ -41,7 +35,6 @@ function insertImplicitMultiplication(expr) {
   return out;
 }
 
-// Sanitize math expression BUT KEEP '='
 function sanitizeExpression(raw) {
   if (!raw) return null;
   let expr = raw.replace(/[^0-9+\-*/^().,a-zA-Z\s%=]/g, "");
@@ -49,7 +42,6 @@ function sanitizeExpression(raw) {
   return expr || null;
 }
 
-// Detect a single variable (excluding known functions/constants)
 function detectVariable(expr) {
   const functions = new Set([
     "sin","cos","tan","asin","acos","atan",
@@ -72,7 +64,7 @@ function detectVariable(expr) {
 }
 
 // ------------------------------------------------------------
-// Expression evaluation (non-equation)
+// Expression evaluation
 // ------------------------------------------------------------
 
 function buildEvalEnv() {
@@ -151,7 +143,7 @@ function buildTextOutput(expr, result) {
       const parser = new Parser();
       const argVal = parser.parse(normalizeExpression(arg)).evaluate(env);
       const rad = (argVal * Math.PI) / 180;
-      return `The value of ${expr} is ${result}.\nThe angle is ${argVal}° (${rad} rad).`;
+      return `The value of ${expr} is ${result}. The angle is ${argVal}° (${rad} rad).`;
     } catch {}
   }
 
@@ -230,7 +222,7 @@ function solveEquation(message) {
   const variable = detectVariable(equation);
   if (!variable) return null;
 
-  // 1️⃣ Try symbolic solving
+  // 1️⃣ Symbolic solving
   try {
     const solutions = nerdamer.solve(equation, variable).toArray();
     if (solutions && solutions.length > 0) {

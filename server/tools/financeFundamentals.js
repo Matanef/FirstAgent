@@ -1,5 +1,7 @@
 // server/tools/financeFundamentals.js
 
+import { safeFetch } from "../utils/fetch.js";
+import { CONFIG } from "../utils/config.js";
 import { search } from "./search.js";
 
 /**
@@ -7,7 +9,7 @@ import { search } from "./search.js";
  * Wire this to your real Bing/finance endpoint when ready.
  */
 async function fetchFromBingFinance(tickers) {
-  // TODO: Implement real Bing Finance call here.
+  // TODO: Implement real Bing Finance call here using safeFetch + CONFIG
   // For now, return null so we always use the fallback.
   return null;
 }
@@ -32,16 +34,18 @@ function normalizeNumber(str) {
 }
 
 /**
- * Extract 52-week range as [low, high].
+ * Extract 52-week range as { low, high }.
  */
 function extractRange(text) {
   if (!text) return { low: null, high: null };
+
   const m = text.match(/([0-9]+\.[0-9]+|[0-9]+)\s*[-–]\s*([0-9]+\.[0-9]+|[0-9]+)/);
   if (!m) {
     const single = text.match(/([0-9]+\.[0-9]+|[0-9]+)/);
     if (!single) return { low: null, high: null };
     return { low: single[1], high: single[1] };
   }
+
   return { low: m[1], high: m[2] };
 }
 
@@ -69,7 +73,9 @@ async function fetchFromSearchFallback(tickers) {
     }
 
     const marketCapRaw = extract(/market cap[^0-9$]*([\$€£]?[0-9\.,]+\s*(?:[MBT]|billion|million|trillion)?)/i);
-    const peRaw = extract(/P\/E[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i) || extract(/PE ratio[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i);
+    const peRaw =
+      extract(/P\/E[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i) ||
+      extract(/PE ratio[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i);
     const divRaw = extract(/dividend yield[^0-9]*([0-9]+\.[0-9]+%|[0-9]+%)/i);
     const epsRaw = extract(/EPS[^0-9\-]*(-?[0-9]+\.[0-9]+|-?[0-9]+)/i);
     const rangeRaw = extract(/52[-\s]?week (?:range|high|low)[^0-9]*([0-9\.\s\-–]+)/i);
@@ -81,7 +87,7 @@ async function fetchFromSearchFallback(tickers) {
     const range = extractRange(rangeRaw || "");
 
     fundamentals[ticker] = {
-      marketCap: marketCapRaw ? marketCapRaw : null,
+      marketCap: marketCapRaw || null,
       marketCapNormalized: marketCapRaw ? normalizeNumber(marketCapRaw) : null,
       peRatio: peRaw,
       dividendYield: divRaw,
@@ -118,6 +124,9 @@ function extractTickers(message) {
   return [...tickers];
 }
 
+/**
+ * Main fundamentals tool
+ */
 export async function financeFundamentals(message) {
   const tickers = extractTickers(message);
 
