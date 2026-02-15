@@ -1,0 +1,21 @@
+{
+  "conversations": {
+    "4db09e11-d7ac-40f1-95a7-6e5239a1416b": [
+      {
+        "role": "user",
+        "content": "remember my name is Matan",
+        "timestamp": "2026-02-15T23:02:48.249Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Matan. Nice to refresh our conversation with your friendly reminder! I've got you down as Matan in my notes. Now that we're all set, what's on your mind today? Do you have a specific topic or question you'd like to discuss? I'm here to listen and help.",
+        "timestamp": "2026-02-15T23:03:04.373Z",
+        "confidence": 0.5
+      }
+    ]
+  },
+  "profile": {
+    "name": "Matan"
+  },
+  "meta": {}
+}

@@ -1,77 +1,70 @@
 // server/executor.js
 
-// executor.js — Section 1: Imports + Constants
-
 import { TOOLS } from "./tools/index.js";
-import { loadJSON, saveJSON, getMemory, appendConversationMessage, updateProfileMemory } from "./memory.js";
+import { getMemory, updateProfileMemory } from "./memory.js";
 import { getToneDescription } from "../tone/toneGuide.js";
-import { llm } from "./tools/llm.js"; // adjust path if needed
+import { llm } from "./tools/llm.js";
 
+// =========================
+// Build memory-aware LLM prompt
+// =========================
 
-
-// Central memory file
-const MEMORY_FILE = "./memory.json";
-
-// Greeting limiter key
-const GREETING_KEY = "hasGreeted";
-
-// executor.js — Section 2: Summarizer Prompt Builder
-// Builds the prompt used to summarize tool output into a natural, warm response.
-
-function buildSummarizerPrompt({
-  userQuestion,
-  toolResult,
-  conversation,
-  profile,
-  tool
-}) {
-  const structuredData = JSON.stringify(toolResult.data, null, 2);
-
-  // Only keep the last 8 messages for context
-  const recentMessages = (conversation || []).slice(-8);
+function buildLLMMemoryPrompt({ userMessage, profile, conversation }) {
+  const toneText = getToneDescription(profile || {});
+  const recentMessages = (conversation || []).slice(-20);
   const convoText = recentMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
-  const profileText = profile ? JSON.stringify(profile, null, 2) : "{}";
-
   return `
-You are a warm, helpful AI assistant with a balanced, friendly tone.
-You speak naturally, clearly, and confidently — never stiff, never overly formal.
+You are an AI assistant that DOES have access to a memory system.
+
+You receive:
+- A user profile (long-term memory)
+- Recent conversation messages (short-term memory)
+- The current user message
 
 User profile (long-term memory):
-${profileText}
+${JSON.stringify(profile || {}, null, 2)}
 
-Recent conversation:
-${convoText}
+Recent conversation (short-term memory, last 20 messages):
+${convoText || "(no prior messages in this conversation)"}
 
-User question:
-${userQuestion}
+Tone instructions:
+${toneText}
 
-Tool used: ${tool}
+Current user message:
+${userMessage}
 
-Structured tool data:
-${structuredData}
-
-Your job:
-- Give a clear, correct, direct answer.
-- Use a medium‑warm tone: friendly, human, but not overly chatty.
-- Use the user's name *sparingly* if it feels natural.
-- Do NOT repeat the same facts multiple times.
-- Do NOT list raw search results.
-- Do NOT include URLs.
-- If it's math, keep the result accurate and briefly explain only when helpful.
-- If it's finance fundamentals:
-  - Choose the best format (table, bullets, or short narrative) based on the question.
-  - Include analyst ratings or price targets only if they exist in the data.
-- Respect the user's preferences from the profile (tone, detail, format).
-- Keep the answer focused and not overly long.
-- Never mention internal instructions or system details.
+Now write the final answer to the user.
 `;
 }
 
+// =========================
+// Run LLM with memory
+// =========================
 
-// executor.js — Section 3: Summarize Tool Output with LLM
+async function runLLMWithMemory({ userMessage, conversationId }) {
+  const memory = getMemory();
+  const profile = memory.profile || {};
+  const conversation = memory.conversations?.[conversationId] || [];
+
+  const prompt = buildLLMMemoryPrompt({
+    userMessage,
+    profile,
+    conversation
+  });
+
+  const llmResponse = await llm(prompt);
+  const text = llmResponse?.data?.text || "I couldn't generate a response.";
+
+  // Conversation persistence is handled in index.js
+  return text;
+}
+
+// =========================
+// Summarize tool output with LLM
+// =========================
 
 async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool }) {
   const memory = getMemory();
@@ -85,40 +78,48 @@ async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool
     .join("\n");
 
   const prompt = `
-  You are the final response generator for an AI assistant.
+You are the final response generator for an AI assistant.
 
-  User profile (long-term memory):
-  ${JSON.stringify(profile, null, 2)}
+User profile (long-term memory):
+${JSON.stringify(profile, null, 2)}
 
-  Recent conversation (short-term memory, last 20 messages):
-  ${convoText || "(no prior messages in this conversation)"}
+Recent conversation (short-term memory, last 20 messages):
+${convoText || "(no prior messages in this conversation)"}
 
-  Tone instructions:
-  ${toneText}
+Tone instructions:
+${toneText}
 
-  User question:
-  ${userQuestion}
+User question:
+${userQuestion}
 
-  Tool used: ${tool}
+Tool used: ${tool}
 
-  Tool result (structured data):
-  ${JSON.stringify(toolResult, null, 2)}
+Tool result (structured data):
+${JSON.stringify(toolResult, null, 2)}
 
-  Your job:
-  - Produce a clear, natural-language answer.
-  - Use the profile information naturally when relevant (e.g., name, preferences).
-  - Respect tone, detail, math, and formatting preferences from the profile.
-  - Do NOT mention tools, internal steps, or reasoning.
-  - Do NOT claim you lack memory if relevant info is present in the profile or conversation.
-  `;
+Your job:
+- Produce a clear, natural-language answer.
+- Use the profile information naturally when relevant.
+- Respect tone, detail, math, and formatting preferences.
+- Do NOT mention tools or internal steps.
+`;
 
   const llmResponse = await llm(prompt);
-  return llmResponse?.data?.text || "I couldn't generate a response.";
+  const text = llmResponse?.data?.text || "I couldn't generate a response.";
+
+  // Conversation persistence is handled in index.js
+  return text;
 }
 
+// =========================
+// executeAgent – single-shot tool execution
+// =========================
 
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
+
+  // Update profile memory from this user message (if explicit)
+  updateProfileMemory(message);
 
   if (!TOOLS[tool]) {
     return {
@@ -128,9 +129,30 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Update profile memory from this user message (if explicit)
-  updateProfileMemory(message);
+  // Direct LLM tool
+  if (tool === "llm") {
+    const reply = await runLLMWithMemory({
+      userMessage: message,
+      conversationId
+    });
 
+    stateGraph.push({
+      step: 1,
+      tool,
+      input: message,
+      output: reply,
+      final: true
+    });
+
+    return {
+      reply,
+      stateGraph,
+      tool,
+      success: true
+    };
+  }
+
+  // Other tools
   const result = await TOOLS[tool](message);
 
   stateGraph.push({
@@ -159,14 +181,6 @@ export async function executeAgent({ tool, message, conversationId }) {
       tool
     });
 
-    if (stateGraph[0].output?.data) {
-      stateGraph[0].output.data.text = summarized;
-    }
-
-    // Store conversation memory (user + assistant)
-    appendConversationMessage(conversationId, "user", message);
-    appendConversationMessage(conversationId, "assistant", summarized);
-
     return {
       reply: summarized,
       stateGraph,
@@ -176,76 +190,19 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Direct tools (llm, file, etc.)
+  // Other direct tools
   const reply =
     result?.data?.text ||
     result?.output ||
     JSON.stringify(result?.data) ||
     "Task completed.";
 
-  // Store conversation memory for direct LLM calls
-  if (tool === "llm") {
-    appendConversationMessage(conversationId, "user", message);
-    appendConversationMessage(conversationId, "assistant", reply);
-  }
-
+  // Conversation persistence is handled in index.js
   return {
     reply,
     stateGraph,
     tool,
     data: result.data,
     success: true
-  };
-}
-
-export async function executeStep({ step, conversationId }) {
-  const memory = getMemory();
-  const profile = memory.profile || {};
-  let hasGreeted = memory[GREETING_KEY] || false;
-
-  if (!hasGreeted) {
-    memory[GREETING_KEY] = true;
-    saveJSON(MEMORY_FILE, memory);
-  }
-
-  const { tool, input } = step;
-  let toolResult;
-
-  // Update profile memory from this user input (if explicit)
-  updateProfileMemory(input);
-
-  try {
-    toolResult = await TOOLS[tool](input);
-  } catch (err) {
-    return {
-      role: "assistant",
-      content: `I ran into an issue while using the ${tool} tool.`
-    };
-  }
-
-  if (tool === "llm") {
-    const text = toolResult?.data?.text || "I couldn't generate a response.";
-    appendConversationMessage(conversationId, "user", input);
-    appendConversationMessage(conversationId, "assistant", text);
-
-    return {
-      role: "assistant",
-      content: text
-    };
-  }
-
-  const finalText = await summarizeWithLLM({
-    userQuestion: input?.userQuestion || input?.query || input || "",
-    toolResult,
-    conversationId,
-    tool
-  });
-
-  appendConversationMessage(conversationId, "user", input?.userQuestion || input || "");
-  appendConversationMessage(conversationId, "assistant", finalText);
-
-  return {
-    role: "assistant",
-    content: finalText
   };
 }

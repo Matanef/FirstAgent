@@ -21,7 +21,12 @@ function isAIMetaQuestion(message) {
     "how do you think",
     "how do you generate",
     "how do you create",
-    "how do you respond"
+    "how do you respond",
+    "describe yourself",
+    "how would you describe yourself",
+    "tell me about yourself",
+    "what are you like",
+    "what is your personality"
   ];
 
   return patterns.some(p => lower.includes(p));
@@ -34,18 +39,10 @@ function isAIMetaQuestion(message) {
 function isMemoryQueryIntent(message) {
   const lower = message.toLowerCase();
 
-  const patterns = [
-    "do you remember my name",
-    "do you remember me",
-    "what do you remember about me",
-    "what do you know about me",
-    "what's my name",
-    "whats my name",
-    "do you remember anything about me",
-    "what is my name"
-  ];
-
-  return patterns.some(p => lower.includes(p));
+  return /what('?s| is) my name/.test(lower) ||
+         /do you remember.*name/.test(lower) ||
+         /what do you remember about me/.test(lower) ||
+         /what do you know about me/.test(lower);
 }
 
 /**

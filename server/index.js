@@ -1,31 +1,32 @@
+// server/index.js
+
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+
 import { plan } from "./planner.js";
-import { loadJSON, saveJSON } from "./memory.js";
+import {
+  loadJSON,
+  saveJSON,
+  MEMORY_FILE,
+  DEFAULT_MEMORY
+} from "./memory.js";
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
-import { updateProfileMemory } from "./memory.js";
-
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MEMORY_FILE = "./memory.json";
 
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-// ----------------------------------------
-// Logging Middleware
-// ----------------------------------------
+// Logging middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
-// ----------------------------------------
-// Health Check
-// ----------------------------------------
+// Health check
 app.get("/health", (req, res) => {
   res.json({
     status: "healthy",
@@ -34,9 +35,9 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ----------------------------------------
-// Chat Endpoint
-// ----------------------------------------
+// ===============================
+// CHAT ENDPOINT
+// ===============================
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
@@ -56,44 +57,30 @@ app.post("/chat", async (req, res) => {
     console.log("\n" + "=".repeat(60));
     console.log("👤 USER:", message);
 
-    // ----------------------------------------
-    // Load Memory
-    // ----------------------------------------
-    const memory = loadJSON(MEMORY_FILE, { conversations: {} });
-    const id = conversationId || crypto.randomUUID();
+    // Load memory
+    const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
 
+    // Ensure conversation exists
+    const id = conversationId || crypto.randomUUID();
     memory.conversations[id] ??= [];
-    const convo = memory.conversations[id];
 
     // Save user message
-    convo.push({
+    memory.conversations[id].push({
       role: "user",
       content: message,
       timestamp: new Date().toISOString()
     });
-    // Update long-term profile memory
-    updateProfileMemory(message);
 
-    
-    // ----------------------------------------
-    // Preprocess message: detect file paths
-    // ----------------------------------------
-    function extractPath(text) {
-      const match = text.match(/[A-Za-z]:[\\/]{1,2}[^?\s]+/);
-      return match ? match[0] : null;
+    // INLINE PROFILE MEMORY UPDATE (no more updateProfileMemory())
+    const lower = message.toLowerCase();
+    if (lower.startsWith("remember my name is ")) {
+      memory.profile.name = message.substring("remember my name is ".length).trim();
+    }
+    if (lower.startsWith("remember that my name is ")) {
+      memory.profile.name = message.substring("remember that my name is ".length).trim();
     }
 
-    if (/scan\s+[A-Za-z]:[\\/]/i.test(message)) {
-      const path = extractPath(message);
-      if (path) {
-        message = path;
-        console.log("🛠 Detected file scan path:", message);
-      }
-    }
-
-    // ----------------------------------------
-    // Plan → Execute Agent
-    // ----------------------------------------
+    // PLAN → EXECUTE
     const planResult = await plan({ message });
     const { tool, input } = planResult;
 
@@ -103,7 +90,6 @@ app.post("/chat", async (req, res) => {
       conversationId: id
     });
 
-
     const reply = result.reply;
     const stateGraph = result.stateGraph;
 
@@ -111,20 +97,21 @@ app.post("/chat", async (req, res) => {
       throw new Error("Executor returned no reply");
     }
 
-    // ----------------------------------------
-    // Confidence Calculation
-    // ----------------------------------------
+    // Confidence score
     const confidence = calculateConfidence(stateGraph);
 
     // Save assistant reply
-    convo.push({
+    memory.conversations[id].push({
       role: "assistant",
       content: reply,
       timestamp: new Date().toISOString(),
       confidence
     });
 
+    // SAVE MEMORY (single write, no overwrites)
+    console.log("💾 BEFORE SAVE:", JSON.stringify(memory, null, 2));
     saveJSON(MEMORY_FILE, memory);
+    console.log("💾 AFTER SAVE");
 
     const elapsed = Date.now() - startTime;
 
@@ -135,9 +122,6 @@ app.post("/chat", async (req, res) => {
     console.log("Time:", elapsed + "ms");
     console.log("=".repeat(60) + "\n");
 
-    // ----------------------------------------
-    // Response
-    // ----------------------------------------
     res.json({
       reply,
       stateGraph,
@@ -162,11 +146,11 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ----------------------------------------
-// Conversation APIs
-// ----------------------------------------
+// ===============================
+// CONVERSATION APIs
+// ===============================
 app.get("/conversation/:id", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
   const conversation = memory.conversations[req.params.id];
 
   if (!conversation) {
@@ -180,7 +164,8 @@ app.get("/conversation/:id", (req, res) => {
 });
 
 app.get("/conversations", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+
   const conversations = Object.entries(memory.conversations).map(
     ([id, messages]) => ({
       id,
@@ -189,22 +174,26 @@ app.get("/conversations", (req, res) => {
       preview: messages[0]?.content.slice(0, 50)
     })
   );
+
   res.json({ conversations });
 });
 
 app.delete("/conversation/:id", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+
   if (!memory.conversations[req.params.id]) {
     return res.status(404).json({ error: "Conversation not found" });
   }
+
   delete memory.conversations[req.params.id];
   saveJSON(MEMORY_FILE, memory);
+
   res.json({ success: true });
 });
 
-// ----------------------------------------
-// Start Server
-// ----------------------------------------
+// ===============================
+// START SERVER
+// ===============================
 app.listen(PORT, () => {
   console.log("\n" + "=".repeat(60));
   console.log("🤖 AI AGENT SERVER STARTED");
