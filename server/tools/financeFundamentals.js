@@ -13,13 +13,46 @@ async function fetchFromBingFinance(tickers) {
 }
 
 /**
+ * Normalize numeric strings like "4.442T", "1.2B", "500M", "51,268,269".
+ */
+function normalizeNumber(str) {
+  if (!str) return null;
+  const s = str.replace(/[, ]/g, "");
+  const m = s.match(/^([\$€£]?)([0-9]*\.?[0-9]+)([MBT]|billion|million|trillion)?/i);
+  if (!m) return str.trim();
+
+  let value = parseFloat(m[2]);
+  const unit = m[3]?.toLowerCase();
+
+  if (unit === "m" || unit === "million") value *= 1e6;
+  if (unit === "b" || unit === "billion") value *= 1e9;
+  if (unit === "t" || unit === "trillion") value *= 1e12;
+
+  return value.toString();
+}
+
+/**
+ * Extract 52-week range as [low, high].
+ */
+function extractRange(text) {
+  if (!text) return { low: null, high: null };
+  const m = text.match(/([0-9]+\.[0-9]+|[0-9]+)\s*[-–]\s*([0-9]+\.[0-9]+|[0-9]+)/);
+  if (!m) {
+    const single = text.match(/([0-9]+\.[0-9]+|[0-9]+)/);
+    if (!single) return { low: null, high: null };
+    return { low: single[1], high: single[1] };
+  }
+  return { low: m[1], high: m[2] };
+}
+
+/**
  * Fallback: extract fundamentals from web search results using your existing search tool.
  */
 async function fetchFromSearchFallback(tickers) {
   const fundamentals = {};
 
   for (const ticker of tickers) {
-    const query = `${ticker} stock key statistics market cap pe ratio dividend yield 52 week range`;
+    const query = `${ticker} stock key statistics market cap pe ratio dividend yield 52 week range volume beta`;
     const result = await search(query);
 
     const data = result?.data || {};
@@ -35,17 +68,30 @@ async function fetchFromSearchFallback(tickers) {
       return m ? m[1].trim() : null;
     }
 
+    const marketCapRaw = extract(/market cap[^0-9$]*([\$€£]?[0-9\.,]+\s*(?:[MBT]|billion|million|trillion)?)/i);
+    const peRaw = extract(/P\/E[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i) || extract(/PE ratio[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i);
+    const divRaw = extract(/dividend yield[^0-9]*([0-9]+\.[0-9]+%|[0-9]+%)/i);
+    const epsRaw = extract(/EPS[^0-9\-]*(-?[0-9]+\.[0-9]+|-?[0-9]+)/i);
+    const rangeRaw = extract(/52[-\s]?week (?:range|high|low)[^0-9]*([0-9\.\s\-–]+)/i);
+    const volRaw = extract(/volume[^0-9]*([0-9,]+\s*(?:[MBT]|million|billion|trillion)?)/i);
+    const betaRaw = extract(/beta[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i);
+    const ratingRaw = extract(/(strong buy|buy|hold|sell|strong sell)/i);
+    const targetRaw = extract(/price target[^0-9]*([\$€£]?[0-9\.,]+)/i);
+
+    const range = extractRange(rangeRaw || "");
+
     fundamentals[ticker] = {
-      marketCap: extract(/market cap[^0-9$]*([\$€£]?[0-9\.,]+\s*(?:[MBT]|billion|million|trillion)?)/i),
-      peRatio: extract(/P\/E[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i),
-      dividendYield: extract(/dividend yield[^0-9]*([0-9]+\.[0-9]+%|[0-9]+%)/i),
-      eps: extract(/EPS[^0-9\-]*(-?[0-9]+\.[0-9]+|-?[0-9]+)/i),
-      week52High: extract(/52[-\s]?week (?:high|range)[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i),
-      week52Low: extract(/52[-\s]?week (?:low|range)[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i),
-      volume: extract(/volume[^0-9]*([0-9,]+\s*(?:[MBT]|million|billion|trillion)?)/i),
-      beta: extract(/beta[^0-9]*([0-9]+\.[0-9]+|[0-9]+)/i),
-      analystRating: extract(/(strong buy|buy|hold|sell|strong sell)/i),
-      analystTarget: extract(/price target[^0-9]*([\$€£]?[0-9\.,]+)/i)
+      marketCap: marketCapRaw ? marketCapRaw : null,
+      marketCapNormalized: marketCapRaw ? normalizeNumber(marketCapRaw) : null,
+      peRatio: peRaw,
+      dividendYield: divRaw,
+      eps: epsRaw,
+      week52High: range.high,
+      week52Low: range.low,
+      volume: volRaw,
+      beta: betaRaw,
+      analystRating: ratingRaw,
+      analystTarget: targetRaw
     };
   }
 

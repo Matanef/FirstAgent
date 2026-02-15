@@ -1,6 +1,11 @@
+// server/memory.js
+
 import fs from "fs";
 import path from "path";
 
+/**
+ * Load JSON from disk safely.
+ */
 export function loadJSON(filePath, defaultValue = {}) {
   try {
     const absolutePath = path.resolve(filePath);
@@ -17,6 +22,9 @@ export function loadJSON(filePath, defaultValue = {}) {
   }
 }
 
+/**
+ * Save JSON to disk safely.
+ */
 export function saveJSON(filePath, data) {
   try {
     const absolutePath = path.resolve(filePath);
@@ -26,23 +34,17 @@ export function saveJSON(filePath, data) {
   }
 }
 
-
-export function loadJSON(path, fallback = {}) {
-  try {
-    return JSON.parse(fs.readFileSync(path, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-export function saveJSON(path, data) {
-  fs.writeFileSync(path, JSON.stringify(data, null, 2));
-}
-
-// NEW: update profile memory
+/**
+ * Update long-term user profile memory.
+ */
 export function updateProfileMemory(message) {
-  const memory = loadJSON("./memory.json", { conversations: {}, profile: {} });
+  const memory = loadJSON("./memory.json", {
+    conversations: {},
+    profile: {},
+    meta: {}
+  });
 
+  memory.profile ??= {};
   const lower = message.toLowerCase();
 
   // Tone preferences
@@ -70,6 +72,13 @@ export function updateProfileMemory(message) {
     memory.profile.math_steps = false;
   }
 
+  // Formatting preferences
+  if (lower.includes("i prefer tables")) {
+    memory.profile.format = "table";
+  }
+  if (lower.includes("i prefer bullet points") || lower.includes("i prefer bullets")) {
+    memory.profile.format = "bullets";
+  }
+
   saveJSON("./memory.json", memory);
 }
-
