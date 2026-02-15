@@ -3,7 +3,7 @@
 // executor.js — Section 1: Imports + Constants
 
 import { TOOLS } from "./tools/index.js";
-import { loadJSON, saveJSON } from "./memory.js";
+import { loadJSON, saveJSON, getMemory, appendConversationMessage, updateProfileMemory } from "./memory.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { llm } from "./tools/llm.js"; // adjust path if needed
 
@@ -74,35 +74,43 @@ Your job:
 // executor.js — Section 3: Summarize Tool Output with LLM
 
 async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool }) {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {} });
+  const memory = getMemory();
   const profile = memory.profile || {};
-
   const toneText = getToneDescription(profile);
 
+  const conversation = memory.conversations?.[conversationId] || [];
+  const recentMessages = conversation.slice(-20);
+  const convoText = recentMessages
+    .map(m => `${m.role}: ${m.content}`)
+    .join("\n");
+
   const prompt = `
-You are the final response generator for an AI assistant.
+  You are the final response generator for an AI assistant.
 
-Your job:
-- Take the tool result below
-- Understand the user's question
-- Produce a clean, natural-language answer
-- Follow the tone instructions strictly
+  User profile (long-term memory):
+  ${JSON.stringify(profile, null, 2)}
 
-Tone instructions:
-${toneText}
+  Recent conversation (short-term memory, last 20 messages):
+  ${convoText || "(no prior messages in this conversation)"}
 
-User question:
-${userQuestion}
+  Tone instructions:
+  ${toneText}
 
-Tool used: ${tool}
+  User question:
+  ${userQuestion}
 
-Tool result:
-${JSON.stringify(toolResult, null, 2)}
+  Tool used: ${tool}
 
-Write the final answer the assistant should say to the user.
-Do NOT mention tools, internal steps, or reasoning.
-Keep the answer natural, helpful, and aligned with the tone.
-`;
+  Tool result (structured data):
+  ${JSON.stringify(toolResult, null, 2)}
+
+  Your job:
+  - Produce a clear, natural-language answer.
+  - Use the profile information naturally when relevant (e.g., name, preferences).
+  - Respect tone, detail, math, and formatting preferences from the profile.
+  - Do NOT mention tools, internal steps, or reasoning.
+  - Do NOT claim you lack memory if relevant info is present in the profile or conversation.
+  `;
 
   const llmResponse = await llm(prompt);
   return llmResponse?.data?.text || "I couldn't generate a response.";
@@ -119,6 +127,9 @@ export async function executeAgent({ tool, message, conversationId }) {
       success: false
     };
   }
+
+  // Update profile memory from this user message (if explicit)
+  updateProfileMemory(message);
 
   const result = await TOOLS[tool](message);
 
@@ -152,6 +163,10 @@ export async function executeAgent({ tool, message, conversationId }) {
       stateGraph[0].output.data.text = summarized;
     }
 
+    // Store conversation memory (user + assistant)
+    appendConversationMessage(conversationId, "user", message);
+    appendConversationMessage(conversationId, "assistant", summarized);
+
     return {
       reply: summarized,
       stateGraph,
@@ -161,12 +176,18 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Direct tools (llm, file, weather, etc.)
+  // Direct tools (llm, file, etc.)
   const reply =
     result?.data?.text ||
     result?.output ||
     JSON.stringify(result?.data) ||
     "Task completed.";
+
+  // Store conversation memory for direct LLM calls
+  if (tool === "llm") {
+    appendConversationMessage(conversationId, "user", message);
+    appendConversationMessage(conversationId, "assistant", reply);
+  }
 
   return {
     reply,
@@ -178,8 +199,7 @@ export async function executeAgent({ tool, message, conversationId }) {
 }
 
 export async function executeStep({ step, conversationId }) {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {} });
-  const conversation = memory.conversations[conversationId] || [];
+  const memory = getMemory();
   const profile = memory.profile || {};
   let hasGreeted = memory[GREETING_KEY] || false;
 
@@ -187,8 +207,12 @@ export async function executeStep({ step, conversationId }) {
     memory[GREETING_KEY] = true;
     saveJSON(MEMORY_FILE, memory);
   }
+
   const { tool, input } = step;
   let toolResult;
+
+  // Update profile memory from this user input (if explicit)
+  updateProfileMemory(input);
 
   try {
     toolResult = await TOOLS[tool](input);
@@ -198,27 +222,30 @@ export async function executeStep({ step, conversationId }) {
       content: `I ran into an issue while using the ${tool} tool.`
     };
   }
+
   if (tool === "llm") {
+    const text = toolResult?.data?.text || "I couldn't generate a response.";
+    appendConversationMessage(conversationId, "user", input);
+    appendConversationMessage(conversationId, "assistant", text);
+
     return {
       role: "assistant",
-      content: toolResult?.data?.text || "I couldn't generate a response."
+      content: text
     };
   }
+
   const finalText = await summarizeWithLLM({
-    userQuestion: input?.userQuestion || input?.query || "",
+    userQuestion: input?.userQuestion || input?.query || input || "",
     toolResult,
     conversationId,
     tool
   });
-  conversation.push({ role: "user", content: input?.userQuestion || "" });
-  conversation.push({ role: "assistant", content: finalText });
 
-  memory.conversations[conversationId] = conversation;
-  saveJSON(MEMORY_FILE, memory);
+  appendConversationMessage(conversationId, "user", input?.userQuestion || input || "");
+  appendConversationMessage(conversationId, "assistant", finalText);
 
   return {
     role: "assistant",
     content: finalText
   };
 }
-

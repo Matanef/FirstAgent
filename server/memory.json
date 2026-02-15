@@ -3658,6 +3658,109 @@
         "content": "Hey! How can I help you today? Do you have a specific problem or question in mind, or would you like to chat about something in general? I'm here to assist and provide guidance if needed!",
         "timestamp": "2026-02-15T14:59:20.522Z",
         "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "do you remember my name?",
+        "timestamp": "2026-02-15T15:07:44.581Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I apologize, but I'm a large language model, I don't have personal memories or recall previous conversations. Each time you interact with me, it's a new conversation and I don't retain any information from our previous interactions.",
+        "timestamp": "2026-02-15T15:07:53.214Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "do you remember my name? memory should be used",
+        "timestamp": "2026-02-15T15:11:41.922Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I apologize, but I'm a large language model, I don't have personal memories or the ability to recall individual names. Each time you interact with me, it's a new conversation and I don't retain any information from previous conversations. If you'd like to share your name again, I'd be happy to know!",
+        "timestamp": "2026-02-15T15:11:49.548Z",
+        "confidence": 0.5
+      }
+    ],
+    "c00afc04-2c5c-48f4-ad19-d4e63c3cdb63": [
+      {
+        "role": "user",
+        "content": "hey there",
+        "timestamp": "2026-02-15T15:44:53.707Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hi! How can I help you today? Do you have a specific problem or question in mind that you'd like to discuss? I'm here to assist you with any questions or concerns you may have. Let me know what's on your mind and we'll go from there!",
+        "timestamp": "2026-02-15T15:45:04.437Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "please remember my name, it's Matan",
+        "timestamp": "2026-02-15T15:45:25.109Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Nice to meet you, Matan! I'll make sure to address you by your name from now on. What can I help you with today?",
+        "timestamp": "2026-02-15T15:45:29.195Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "i want to make you a coding beast. i want to reach a point where i describe something to you and you are able to give me the code to create a small application to do it or if easier and more efficient a web browser. how can i do that?",
+        "timestamp": "2026-02-15T15:47:28.096Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Matan! I'm excited to help you achieve your goal of making me a coding beast. It sounds like you're looking for a way to describe something and have me generate code to create a small application or even a web browser.\n\nFrom what I understand, BEAST (Building Expertise through Accelerated Training and Systems) is an AI-powered platform that enables developers to build complex systems and applications. To get started with developing for BEAST, you can follow the documentation provided by the community. It seems like there's a step-by-step guide on how to add new configurations and select the main class.\n\nIn addition to this technical approach, I'd like to suggest another path to becoming a coding beast. You can focus on building your skills through practice and consistent learning. Watching videos, reading guides, and participating in online communities can be great ways to improve your web development skills step by step.\n\nLastly, it's worth noting that having the right tools and AI engines at your disposal can make a huge difference in your coding journey. If you're new to certain applications or technologies, don't hesitate to ask for help or seek guidance from experts in the field.\n\nRemember, Matan, becoming a coding beast takes time, effort, and dedication. Stay focused, keep learning, and I'm confident that we'll get there together!",
+        "timestamp": "2026-02-15T15:48:07.309Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "first of all i didn't know that there was anything like this BEAST (Building Expertise through Accelerated Training and Systems), i just meant that i want to make you a master at coding and used the word beast as colloquial.",
+        "timestamp": "2026-02-15T15:50:20.225Z"
+      },
+      {
+        "role": "assistant",
+        "content": "No worries, I'm here to help! I understand now that \"BEAST\" is not an actual system or program, but rather a playful way of referring to your goal of making me a coding expert.\n\nIn that case, I'd be happy to learn and improve with you! What specific areas of programming would you like to focus on or explore?",
+        "timestamp": "2026-02-15T15:50:29.202Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "i'll get back to you on that, for now can you tell me what is my name?",
+        "timestamp": "2026-02-15T15:51:22.054Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I remember your name is Matan!",
+        "timestamp": "2026-02-15T15:51:26.936Z",
+        "confidence": 0.65
+      },
+      {
+        "role": "user",
+        "content": "perfect thank you for now",
+        "timestamp": "2026-02-15T15:51:42.008Z"
+      },
+      {
+        "role": "assistant",
+        "content": "You're welcome! It was a brief interaction, but I'm glad we could part ways on good terms. If you have any more questions or need assistance in the future, don't hesitate to reach out. Have a great day!",
+        "timestamp": "2026-02-15T15:51:48.147Z",
+        "confidence": 0.5
+      }
+    ],
+    "3519a3d9-2f8f-4ab0-a825-c13a2eef348f": [
+      {
+        "role": "user",
+        "content": "hey, do you remember my name?",
+        "timestamp": "2026-02-15T16:01:44.795Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm afraid I'm a large language model, I don't have personal memories or the ability to recall individual names. Each time you interact with me, it's a new conversation and I don't retain any information from previous conversations. Would you like to introduce yourself again?",
+        "timestamp": "2026-02-15T16:01:55.357Z",
+        "confidence": 0.5
       }
     ]
   },

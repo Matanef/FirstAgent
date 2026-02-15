@@ -1,5 +1,77 @@
 // server/planner.js
 
+/**
+ * Detects if the user is asking about the AI itself.
+ * These should NOT trigger search.
+ */
+function isAIMetaQuestion(message) {
+  const lower = message.toLowerCase();
+
+  const patterns = [
+    "how can i make you",
+    "how can i improve you",
+    "how can i use you",
+    "how do i use you",
+    "how do you work",
+    "what can you do",
+    "what are you capable of",
+    "why did you answer",
+    "why did you say",
+    "how do you decide",
+    "how do you think",
+    "how do you generate",
+    "how do you create",
+    "how do you respond"
+  ];
+
+  return patterns.some(p => lower.includes(p));
+}
+
+/**
+ * Detects memory-related questions.
+ * These should go to LLM, not search.
+ */
+function isMemoryQueryIntent(message) {
+  const lower = message.toLowerCase();
+
+  const patterns = [
+    "do you remember my name",
+    "do you remember me",
+    "what do you remember about me",
+    "what do you know about me",
+    "what's my name",
+    "whats my name",
+    "do you remember anything about me",
+    "what is my name"
+  ];
+
+  return patterns.some(p => lower.includes(p));
+}
+
+/**
+ * Detects explicit memory-writing instructions.
+ * The actual write happens in updateProfileMemory().
+ */
+function isMemoryWriteIntent(message) {
+  const lower = message.toLowerCase();
+
+  const patterns = [
+    "remember my name",
+    "remember that my name is",
+    "store my name",
+    "save my name",
+    "remember that i like",
+    "remember that i prefer",
+    "remember i like",
+    "remember i prefer"
+  ];
+
+  return patterns.some(p => lower.includes(p));
+}
+
+/**
+ * Finance fundamentals intent
+ */
 function isFinanceFundamentalsIntent(message) {
   const lower = message.toLowerCase();
 
@@ -21,13 +93,12 @@ function isFinanceFundamentalsIntent(message) {
     "key statistics"
   ];
 
-  if (financeKeywords.some(k => lower.includes(k))) {
-    return true;
-  }
-
-  return false;
+  return financeKeywords.some(k => lower.includes(k));
 }
 
+/**
+ * Finance price intent
+ */
 function isFinancePriceIntent(message) {
   const lower = message.toLowerCase();
   const priceKeywords = [
@@ -42,6 +113,9 @@ function isFinancePriceIntent(message) {
   return priceKeywords.some(k => lower.includes(k));
 }
 
+/**
+ * Calculator intent
+ */
 function shouldUseCalculator(message) {
   const trimmed = message.trim();
 
@@ -54,44 +128,56 @@ function shouldUseCalculator(message) {
   return false;
 }
 
+/**
+ * Detects factual questions that SHOULD use search.
+ * But only if they are NOT about the AI or the user.
+ */
+function isGeneralFactualQuestion(message) {
+  const lower = message.toLowerCase();
+
+  // If it's about the AI or memory, do NOT treat as factual
+  if (isAIMetaQuestion(lower)) return false;
+  if (isMemoryQueryIntent(lower)) return false;
+
+  return /\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower);
+}
+
+/**
+ * MAIN PLANNER
+ */
 export function plan({ message }) {
   const trimmed = message.trim();
 
-  // 1️⃣ Finance fundamentals
+  // 0️⃣ Memory write or memory query → LLM
+  if (isMemoryWriteIntent(trimmed) || isMemoryQueryIntent(trimmed)) {
+    return { tool: "llm", input: trimmed };
+  }
+
+  // 1️⃣ AI meta questions → LLM
+  if (isAIMetaQuestion(trimmed)) {
+    return { tool: "llm", input: trimmed };
+  }
+
+  // 2️⃣ Finance fundamentals
   if (isFinanceFundamentalsIntent(trimmed)) {
-    return {
-      tool: "finance-fundamentals",
-      input: trimmed
-    };
+    return { tool: "finance-fundamentals", input: trimmed };
   }
 
-  // 2️⃣ Finance price
+  // 3️⃣ Finance price
   if (isFinancePriceIntent(trimmed)) {
-    return {
-      tool: "finance",
-      input: trimmed
-    };
+    return { tool: "finance", input: trimmed };
   }
 
-  // 3️⃣ Calculator
+  // 4️⃣ Calculator
   if (shouldUseCalculator(trimmed)) {
-    return {
-      tool: "calculator",
-      input: trimmed
-    };
+    return { tool: "calculator", input: trimmed };
   }
 
-  // 4️⃣ Web search for factual questions
-  if (/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/i.test(trimmed)) {
-    return {
-      tool: "search",
-      input: trimmed
-    };
+  // 5️⃣ General factual questions → search
+  if (isGeneralFactualQuestion(trimmed)) {
+    return { tool: "search", input: trimmed };
   }
 
-  // 5️⃣ Default to LLM
-  return {
-    tool: "llm",
-    input: trimmed
-  };
+  // 6️⃣ Default → LLM
+  return { tool: "llm", input: trimmed };
 }
