@@ -1,3 +1,5 @@
+// server/index.js
+
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
@@ -6,7 +8,6 @@ import { loadJSON, saveJSON } from "./memory.js";
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
 import { updateProfileMemory } from "./memory.js";
-
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,10 +60,13 @@ app.post("/chat", async (req, res) => {
     // ----------------------------------------
     // Load Memory
     // ----------------------------------------
-    const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+    const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {}, meta: {} });
     const id = conversationId || crypto.randomUUID();
 
     memory.conversations[id] ??= [];
+    memory.meta ??= {};
+    memory.meta[id] ??= { hasGreeted: false };
+
     const convo = memory.conversations[id];
 
     // Save user message
@@ -74,7 +78,6 @@ app.post("/chat", async (req, res) => {
     // Update long-term profile memory
     updateProfileMemory(message);
 
-    
     // ----------------------------------------
     // Preprocess message: detect file paths
     // ----------------------------------------
@@ -102,7 +105,6 @@ app.post("/chat", async (req, res) => {
       message: input ?? message,
       conversationId: id
     });
-
 
     const reply = result.reply;
     const stateGraph = result.stateGraph;
@@ -166,7 +168,7 @@ app.post("/chat", async (req, res) => {
 // Conversation APIs
 // ----------------------------------------
 app.get("/conversation/:id", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {}, meta: {} });
   const conversation = memory.conversations[req.params.id];
 
   if (!conversation) {
@@ -180,7 +182,7 @@ app.get("/conversation/:id", (req, res) => {
 });
 
 app.get("/conversations", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {}, meta: {} });
   const conversations = Object.entries(memory.conversations).map(
     ([id, messages]) => ({
       id,
@@ -193,11 +195,14 @@ app.get("/conversations", (req, res) => {
 });
 
 app.delete("/conversation/:id", (req, res) => {
-  const memory = loadJSON(MEMORY_FILE, { conversations: {} });
+  const memory = loadJSON(MEMORY_FILE, { conversations: {}, profile: {}, meta: {} });
   if (!memory.conversations[req.params.id]) {
     return res.status(404).json({ error: "Conversation not found" });
   }
   delete memory.conversations[req.params.id];
+  if (memory.meta) {
+    delete memory.meta[req.params.id];
+  }
   saveJSON(MEMORY_FILE, memory);
   res.json({ success: true });
 });
