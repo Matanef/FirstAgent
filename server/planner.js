@@ -1,4 +1,5 @@
 // server/planner.js
+// Clean, improved, future‑proof planner with natural‑language intent detection
 
 // ------------------------------
 // AI meta questions (about the assistant itself)
@@ -37,10 +38,12 @@ function isAIMetaQuestion(message) {
 function isMemoryQueryIntent(message) {
   const lower = message.toLowerCase();
 
-  return /what('?s| is) my name/.test(lower) ||
-         /do you remember.*name/.test(lower) ||
-         /what do you remember about me/.test(lower) ||
-         /what do you know about me/.test(lower);
+  return (
+    /what('?s| is) my name/.test(lower) ||
+    /do you remember.*name/.test(lower) ||
+    /what do you remember about me/.test(lower) ||
+    /what do you know about me/.test(lower)
+  );
 }
 
 // ------------------------------
@@ -64,6 +67,28 @@ function isMemoryWriteIntent(message) {
 }
 
 // ------------------------------
+// File system intent
+// ------------------------------
+function isFileIntent(message) {
+  const lower = message.toLowerCase();
+
+  return (
+    lower.includes("scan") ||
+    lower.includes("list folder") ||
+    lower.includes("show folder") ||
+    lower.includes("open folder") ||
+    lower.includes("read file") ||
+    lower.includes("show contents") ||
+    lower.includes("scan subfolder") ||
+    lower.includes("folder") ||
+    lower.includes("directory") ||
+    lower.includes("list files") ||
+    lower.includes("show me what's inside") ||
+    lower.includes("show me the contents")
+  );
+}
+
+// ------------------------------
 // Finance fundamentals intent
 // ------------------------------
 function isFinanceFundamentalsIntent(message) {
@@ -71,20 +96,23 @@ function isFinanceFundamentalsIntent(message) {
 
   const financeKeywords = [
     "fundamentals",
+    "fundamental metrics",
+    "valuation",
+    "financial metrics",
+    "key statistics",
+    "key stats",
     "market cap",
     "market capitalization",
     "p/e",
     "pe ratio",
     "price to earnings",
+    "eps",
     "dividend",
     "dividend yield",
     "52 week",
     "52-week",
-    "valuation",
     "metrics",
-    "financials",
-    "key stats",
-    "key statistics"
+    "financials"
   ];
 
   return financeKeywords.some(k => lower.includes(k));
@@ -95,13 +123,15 @@ function isFinanceFundamentalsIntent(message) {
 // ------------------------------
 function isFinancePriceIntent(message) {
   const lower = message.toLowerCase();
+
   const priceKeywords = [
     "stock price",
     "share price",
     "current price",
     "quote",
     "last price",
-    "trading at"
+    "trading at",
+    "price of"
   ];
 
   return priceKeywords.some(k => lower.includes(k));
@@ -114,9 +144,7 @@ function shouldUseCalculator(message) {
   const trimmed = message.trim();
 
   if (!/[0-9]/.test(trimmed)) return false;
-
   if (/[+\-*/^=]/.test(trimmed)) return true;
-
   if (/^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed)) return true;
 
   return false;
@@ -124,7 +152,6 @@ function shouldUseCalculator(message) {
 
 // ------------------------------
 // General factual questions → search
-// but NOT about AI or memory
 // ------------------------------
 function isGeneralFactualQuestion(message) {
   const lower = message.toLowerCase();
@@ -133,13 +160,13 @@ function isGeneralFactualQuestion(message) {
   if (isMemoryQueryIntent(lower)) return false;
   if (isMemoryWriteIntent(lower)) return false;
 
-  // Simple heuristic: question words
-  if (!/[?]/.test(lower) &&
-      !/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower)) {
+  if (
+    !/[?]/.test(lower) &&
+    !/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower)
+  ) {
     return false;
   }
 
-  // Avoid "what is my name" etc. (already handled)
   if (/\bmy name\b/.test(lower)) return false;
 
   return true;
@@ -151,36 +178,41 @@ function isGeneralFactualQuestion(message) {
 export function plan({ message }) {
   const trimmed = message.trim();
 
-  // 0️⃣ Memory write or memory query → LLM
+  // 0️⃣ File system access
+  if (isFileIntent(trimmed)) {
+    return { tool: "file", input: trimmed };
+  }
+
+  // 1️⃣ Memory write or memory query → LLM
   if (isMemoryWriteIntent(trimmed) || isMemoryQueryIntent(trimmed)) {
     return { tool: "llm", input: trimmed };
   }
 
-  // 1️⃣ AI meta questions → LLM
+  // 2️⃣ AI meta questions → LLM
   if (isAIMetaQuestion(trimmed)) {
     return { tool: "llm", input: trimmed };
   }
 
-  // 2️⃣ Finance fundamentals
+  // 3️⃣ Finance fundamentals
   if (isFinanceFundamentalsIntent(trimmed)) {
-    return { tool: "finance-fundamentals", input: trimmed };
+    return { tool: "financeFundamentals", input: trimmed };
   }
 
-  // 3️⃣ Finance price
+  // 4️⃣ Finance price
   if (isFinancePriceIntent(trimmed)) {
     return { tool: "finance", input: trimmed };
   }
 
-  // 4️⃣ Calculator
+  // 5️⃣ Calculator
   if (shouldUseCalculator(trimmed)) {
     return { tool: "calculator", input: trimmed };
   }
 
-  // 5️⃣ General factual questions → search
+  // 6️⃣ General factual questions → search
   if (isGeneralFactualQuestion(trimmed)) {
     return { tool: "search", input: trimmed };
   }
 
-  // 6️⃣ Default → LLM
+  // 7️⃣ Default → LLM
   return { tool: "llm", input: trimmed };
 }

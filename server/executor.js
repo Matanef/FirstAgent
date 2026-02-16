@@ -1,23 +1,24 @@
 // server/executor.js
+// Clean, corrected, future‑proof executor with HTML support + reasoning
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { llm } from "./tools/llm.js";
 
-// =========================
-// Build memory-aware LLM prompt
-// =========================
-
+/**
+ * Build memory-aware LLM prompt
+ */
 function buildLLMMemoryPrompt({ userMessage, profile, conversation }) {
   const toneText = getToneDescription(profile || {});
   const recentMessages = (conversation || []).slice(-20);
+
   const convoText = recentMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
   return `
-You are an AI assistant that DOES have access to a memory system.
+You are an AI assistant with access to a memory system.
 
 You receive:
 - A user profile (long-term memory)
@@ -40,10 +41,9 @@ Now write the final answer to the user.
 `;
 }
 
-// =========================
-// Run LLM with memory
-// =========================
-
+/**
+ * Run LLM with memory
+ */
 async function runLLMWithMemory({ userMessage, conversationId }) {
   const memory = getMemory();
   const profile = memory.profile || {};
@@ -61,10 +61,9 @@ async function runLLMWithMemory({ userMessage, conversationId }) {
   return text;
 }
 
-// =========================
-// Summarize tool output with LLM
-// =========================
-
+/**
+ * Summarize tool output with LLM
+ */
 async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool }) {
   const memory = getMemory();
   const profile = memory.profile || {};
@@ -72,9 +71,19 @@ async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool
 
   const conversation = memory.conversations?.[conversationId] || [];
   const recentMessages = conversation.slice(-20);
+
   const convoText = recentMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
+
+  // If tool returned HTML, return it directly
+  if (toolResult?.data?.html) {
+    return {
+      reply: toolResult.data.html,
+      success: true,
+      reasoning: toolResult.reasoning || null
+    };
+  }
 
   const prompt = `
 You are the final response generator for an AI assistant.
@@ -106,16 +115,20 @@ Your job:
   const llmResponse = await llm(prompt);
   const text = llmResponse?.data?.text || "I couldn't generate a response.";
 
-  return text;
+  return {
+    reply: text,
+    success: true,
+    reasoning: toolResult.reasoning || null
+  };
 }
 
-// =========================
-// executeAgent – single-shot tool execution
-// =========================
-
+/**
+ * executeAgent – single-shot tool execution
+ */
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
 
+  // Unknown tool
   if (!TOOLS[tool]) {
     return {
       reply: "Tool not found.",
@@ -124,7 +137,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Direct LLM tool
+  // Direct LLM
   if (tool === "llm") {
     const reply = await runLLMWithMemory({
       userMessage: message,
@@ -147,7 +160,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Other tools
+  // Execute tool
   const result = await TOOLS[tool](message);
 
   stateGraph.push({
@@ -167,9 +180,16 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Tools that should be summarized by the LLM
-  if (["search", "finance", "finance-fundamentals", "calculator"].includes(tool)) {
-    const summarized = await summarizeWithLLM({
+  // Tools that should be summarized by LLM
+  const summarizeTools = [
+    "search",
+    "finance",
+    "financeFundamentals",
+    "calculator"
+  ];
+
+  if (summarizeTools.includes(tool)) {
+    const summary = await summarizeWithLLM({
       userQuestion: message,
       toolResult: result,
       conversationId,
@@ -177,16 +197,18 @@ export async function executeAgent({ tool, message, conversationId }) {
     });
 
     return {
-      reply: summarized,
+      reply: summary.reply,
       stateGraph,
       tool,
       data: result.data,
+      reasoning: summary.reasoning,
       success: true
     };
   }
 
-  // Other direct tools
+  // Direct tools (file, etc.)
   const reply =
+    result?.data?.html ||
     result?.data?.text ||
     result?.output ||
     JSON.stringify(result?.data) ||
@@ -197,6 +219,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     stateGraph,
     tool,
     data: result.data,
+    reasoning: result.reasoning || null,
     success: true
   };
 }

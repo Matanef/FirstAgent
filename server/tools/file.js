@@ -1,54 +1,94 @@
 // server/tools/file.js
-// File system tool (sandboxed)
+// Natural-language file system tool
 
 import fs from "fs/promises";
 import path from "path";
 
-const SANDBOX_ROOT = "E:/sandbox"; // adjust your sandbox path
+// Root folder the agent is allowed to explore
+const SANDBOX_ROOT = "D:/local-llm-ui";
 
 /**
- * Ensure the given path is inside sandbox
+ * Normalize and sanitize a requested path
  */
-function sanitizePath(requestedPath) {
-  const resolved = path.resolve(SANDBOX_ROOT, requestedPath);
-  if (!resolved.startsWith(SANDBOX_ROOT)) throw new Error("Access outside sandbox denied");
-  return resolved;
+function resolveUserPath(request) {
+  // Natural language cleanup
+  let cleaned = request
+    .replace(/scan|show|list|open|read|please|folder|directory/gi, "")
+    .replace(/the|a|an|subfolder|contents|content/gi, "")
+    .trim();
+
+  if (cleaned === "" || cleaned === "/") cleaned = ".";
+
+  const resolved = path.resolve(SANDBOX_ROOT, cleaned);
+
+  if (!resolved.startsWith(SANDBOX_ROOT)) {
+    throw new Error("Access outside allowed root folder denied");
+  }
+
+  return { cleaned, resolved };
 }
 
 export async function file(request) {
   try {
-    const sanitizedPath = sanitizePath(request);
+    const { cleaned, resolved } = resolveUserPath(request);
 
-    const stat = await fs.stat(sanitizedPath);
+    const stat = await fs.stat(resolved);
     let data = {};
 
     if (stat.isDirectory()) {
-      const items = await fs.readdir(sanitizedPath, { withFileTypes: true });
+      const items = await fs.readdir(resolved, { withFileTypes: true });
+
       data.items = items.map(i => ({
         name: i.name,
         type: i.isDirectory() ? "folder" : "file"
       }));
-      data.text = `Folder contents:\n${data.items.map(i => `${i.type}: ${i.name}`).join("\n")}`;
-    } else if (stat.isFile()) {
-      const content = await fs.readFile(sanitizedPath, "utf-8");
-      data.items = [{ name: path.basename(sanitizedPath), type: "file", size: stat.size }];
-      data.text = `File: ${path.basename(sanitizedPath)} (${stat.size} bytes)\nPreview:\n${content.slice(0, 500)}`;
-    } else {
-      data.text = "Unknown file type.";
+
+      data.html = `
+        <div class="ai-table-wrapper">
+          <table class="ai-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th></tr>
+            </thead>
+            <tbody>
+              ${data.items
+                .map(i => `<tr><td>${i.name}</td><td>${i.type}</td></tr>`)
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      data.text = `Folder: ${cleaned}\n${data.items
+        .map(i => `${i.type}: ${i.name}`)
+        .join("\n")}`;
+    }
+
+    else if (stat.isFile()) {
+      const content = await fs.readFile(resolved, "utf-8");
+
+      data.items = [
+        { name: path.basename(resolved), type: "file", size: stat.size }
+      ];
+
+      data.text = `File: ${path.basename(resolved)} (${stat.size} bytes)\n\n${content.slice(0, 500)}`;
+      data.html = `<pre>${content.slice(0, 500)}</pre>`;
     }
 
     return {
       tool: "file",
       success: true,
       final: true,
+      reasoning: `Interpreted your request as scanning: "${cleaned}"`,
       data
     };
+
   } catch (err) {
     return {
       tool: "file",
       success: false,
       final: true,
-      error: err.message
+      error: err.message,
+      reasoning: "The request could not be resolved to a valid path"
     };
   }
 }

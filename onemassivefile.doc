@@ -1855,6 +1855,8 @@ export async function safeFetch(url, options = {}) {
 
 local-llm-ui/
 │
+├──utils/
+|   └──memory.jason
 ├── client/
 │   └── local-llm-ui/
 │       └── src/
@@ -1872,13 +1874,18 @@ local-llm-ui/
     │   ├── calculator.js
     │   ├── file.js
     │   ├── finance.js
+    |   ├── financeFundementals.js
     │   ├── search.js
     │   ├── llm.js
+    |   ├── math-intent.js
     |   ├── weather.js
     │   └── index.js
     │
     └── utils/
         ├── fetch.js
+        ├── yahoo.js
+        ├── tradingciew.js
+        ├──cache.js
         └── config.js
 
 
