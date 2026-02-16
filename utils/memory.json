@@ -222,6 +222,41 @@
         "timestamp": "2026-02-16T02:44:31.519Z",
         "confidence": 0.5
       }
+    ],
+    "898098a5-9235-45be-b61a-b819c909476f": [
+      {
+        "role": "user",
+        "content": "do you have access to local-llm-ui folder",
+        "timestamp": "2026-02-16T02:49:07.598Z"
+      },
+      {
+        "role": "assistant",
+        "content": "ENOENT: no such file or directory, stat 'D:\\local-llm-ui\\do you have access to local-llm-ui'",
+        "timestamp": "2026-02-16T02:49:07.599Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "list client fl=older",
+        "timestamp": "2026-02-16T02:49:55.661Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Hey Matan! It seems like you're looking for a list of clients associated with a specific folder. Am I right? If that's the case, I'd be happy to help you out.\n\nBefore we dive into it, can you please confirm what kind of folder you're referring to? Is it a local directory or something else entirely?\n\nAlso, just to clarify, are you looking for a list of all clients linked to this folder, or perhaps only those with specific characteristics (e.g., active, archived, etc.)?\n\nLet me know and I'll do my best to provide you with the information you need!",
+        "timestamp": "2026-02-16T02:50:13.622Z",
+        "confidence": 0.5
+      },
+      {
+        "role": "user",
+        "content": "client folder list content",
+        "timestamp": "2026-02-16T02:50:34.669Z"
+      },
+      {
+        "role": "assistant",
+        "content": "\n        <div class=\"ai-table-wrapper\">\n          <table class=\"ai-table\">\n            <thead>\n              <tr><th>Name</th><th>Type</th></tr>\n            </thead>\n            <tbody>\n              <tr><td>local-llm-ui</td><td>folder</td></tr>\n            </tbody>\n          </table>\n        </div>\n      ",
+        "timestamp": "2026-02-16T02:50:34.669Z",
+        "confidence": 0.5
+      }
     ]
   },
   "profile": {

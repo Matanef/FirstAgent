@@ -1,26 +1,40 @@
 // server/tools/file.js
-// Natural-language file system tool
+// Natural-language file system tool with safer path handling
 
 import fs from "fs/promises";
 import path from "path";
 
 // Root folder the agent is allowed to explore
-const SANDBOX_ROOT = "D:/local-llm-ui";
+const SANDBOX_ROOT = path.resolve("D:/local-llm-ui");
 
 /**
  * Normalize and sanitize a requested path
  */
 function resolveUserPath(request) {
+  if (!request || typeof request !== "string") {
+    throw new Error("Invalid file request");
+  }
+
   // Natural language cleanup
   let cleaned = request
-    .replace(/scan|show|list|open|read|please|folder|directory/gi, "")
-    .replace(/the|a|an|subfolder|contents|content/gi, "")
+    .replace(/\b(scan|show|list|open|read|please|folder|directory|explore|look|into)\b/gi, "")
+    .replace(/\b(the|a|an|subfolder|contents|content|file|files)\b/gi, "")
     .trim();
 
-  if (cleaned === "" || cleaned === "/") cleaned = ".";
+  // If user says something like "local-llm-ui folder"
+  // we avoid duplicating the root path
+  if (cleaned === "" || cleaned === "/" || cleaned === ".") {
+    cleaned = ".";
+  }
+
+  // Prevent accidental double-root resolution
+  if (cleaned.startsWith("local-llm-ui")) {
+    cleaned = cleaned.replace(/^local-llm-ui[\/\\]?/, "");
+  }
 
   const resolved = path.resolve(SANDBOX_ROOT, cleaned);
 
+  // Security check: ensure resolved path stays inside sandbox
   if (!resolved.startsWith(SANDBOX_ROOT)) {
     throw new Error("Access outside allowed root folder denied");
   }
