@@ -11,10 +11,13 @@
 
 import { useState, useEffect, useRef } from "react";
 import "./App.css";
+import MemoryPanel from "./MemoryPanel";
+
 
 const API_URL = "http://localhost:3000";
 
 function App() {
+
   const [conversations, setConversations] = useState({});
   const [activeId, setActiveId] = useState(null);
   const [input, setInput] = useState("");
@@ -136,7 +139,14 @@ function App() {
   const messages = activeId ? conversations[activeId] : [];
 
   return (
+    <>
+    <MemoryPanel />
     <div className="app-container">
+      <div style={{ position: "fixed", top: 0, left: 0, color: "red", zIndex: 999999 }}>
+      MEMORY PANEL SHOULD BE HERE
+      </div>
+
+      
       {/* Sidebar */}
       <div className="sidebar">
         <div className="sidebar-header">
@@ -305,6 +315,7 @@ function App() {
         )}
       </div>
     </div>
+    </>
   );
 }
 

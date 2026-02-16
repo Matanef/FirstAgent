@@ -26,18 +26,39 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check
-app.get("/health", (req, res) => {
+
+// ============================================================
+// DEBUG ROUTES — must be placed BEFORE conversation routes
+// ============================================================
+
+// View memory
+app.get("/debug/memory", (req, res) => {
+  const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+
   res.json({
-    status: "healthy",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    memory,
+    location: MEMORY_FILE,
+    lastUpdated: new Date().toISOString()
   });
 });
 
-// ===============================
+// Reset memory
+app.post("/debug/memory/reset", (req, res) => {
+  saveJSON(MEMORY_FILE, DEFAULT_MEMORY);
+
+  res.json({
+    success: true,
+    message: "Memory has been reset.",
+    memory: DEFAULT_MEMORY
+  });
+});
+
+console.log("DEBUG ROUTES REGISTERED: /debug/memory, /debug/memory/reset");
+
+
+// ============================================================
 // CHAT ENDPOINT
-// ===============================
+// ============================================================
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
@@ -71,7 +92,7 @@ app.post("/chat", async (req, res) => {
       timestamp: new Date().toISOString()
     });
 
-    // INLINE PROFILE MEMORY UPDATE (no more updateProfileMemory())
+    // INLINE PROFILE MEMORY UPDATE
     const lower = message.toLowerCase();
     if (lower.startsWith("remember my name is ")) {
       memory.profile.name = message.substring("remember my name is ".length).trim();
@@ -108,7 +129,7 @@ app.post("/chat", async (req, res) => {
       confidence
     });
 
-    // SAVE MEMORY (single write, no overwrites)
+    // SAVE MEMORY
     console.log("💾 BEFORE SAVE:", JSON.stringify(memory, null, 2));
     saveJSON(MEMORY_FILE, memory);
     console.log("💾 AFTER SAVE");
@@ -146,9 +167,10 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ===============================
+
+// ============================================================
 // CONVERSATION APIs
-// ===============================
+// ============================================================
 app.get("/conversation/:id", (req, res) => {
   const memory = loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
   const conversation = memory.conversations[req.params.id];
@@ -191,9 +213,10 @@ app.delete("/conversation/:id", (req, res) => {
   res.json({ success: true });
 });
 
-// ===============================
+
+// ============================================================
 // START SERVER
-// ===============================
+// ============================================================
 app.listen(PORT, () => {
   console.log("\n" + "=".repeat(60));
   console.log("🤖 AI AGENT SERVER STARTED");

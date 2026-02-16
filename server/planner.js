@@ -1,9 +1,8 @@
 // server/planner.js
 
-/**
- * Detects if the user is asking about the AI itself.
- * These should NOT trigger search.
- */
+// ------------------------------
+// AI meta questions (about the assistant itself)
+// ------------------------------
 function isAIMetaQuestion(message) {
   const lower = message.toLowerCase();
 
@@ -32,10 +31,9 @@ function isAIMetaQuestion(message) {
   return patterns.some(p => lower.includes(p));
 }
 
-/**
- * Detects memory-related questions.
- * These should go to LLM, not search.
- */
+// ------------------------------
+// Memory query intent
+// ------------------------------
 function isMemoryQueryIntent(message) {
   const lower = message.toLowerCase();
 
@@ -45,10 +43,9 @@ function isMemoryQueryIntent(message) {
          /what do you know about me/.test(lower);
 }
 
-/**
- * Detects explicit memory-writing instructions.
- * The actual write happens in updateProfileMemory().
- */
+// ------------------------------
+// Memory write intent
+// ------------------------------
 function isMemoryWriteIntent(message) {
   const lower = message.toLowerCase();
 
@@ -66,9 +63,9 @@ function isMemoryWriteIntent(message) {
   return patterns.some(p => lower.includes(p));
 }
 
-/**
- * Finance fundamentals intent
- */
+// ------------------------------
+// Finance fundamentals intent
+// ------------------------------
 function isFinanceFundamentalsIntent(message) {
   const lower = message.toLowerCase();
 
@@ -93,9 +90,9 @@ function isFinanceFundamentalsIntent(message) {
   return financeKeywords.some(k => lower.includes(k));
 }
 
-/**
- * Finance price intent
- */
+// ------------------------------
+// Finance price intent
+// ------------------------------
 function isFinancePriceIntent(message) {
   const lower = message.toLowerCase();
   const priceKeywords = [
@@ -110,9 +107,9 @@ function isFinancePriceIntent(message) {
   return priceKeywords.some(k => lower.includes(k));
 }
 
-/**
- * Calculator intent
- */
+// ------------------------------
+// Calculator intent
+// ------------------------------
 function shouldUseCalculator(message) {
   const trimmed = message.trim();
 
@@ -125,23 +122,32 @@ function shouldUseCalculator(message) {
   return false;
 }
 
-/**
- * Detects factual questions that SHOULD use search.
- * But only if they are NOT about the AI or the user.
- */
+// ------------------------------
+// General factual questions → search
+// but NOT about AI or memory
+// ------------------------------
 function isGeneralFactualQuestion(message) {
   const lower = message.toLowerCase();
 
-  // If it's about the AI or memory, do NOT treat as factual
   if (isAIMetaQuestion(lower)) return false;
   if (isMemoryQueryIntent(lower)) return false;
+  if (isMemoryWriteIntent(lower)) return false;
 
-  return /\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower);
+  // Simple heuristic: question words
+  if (!/[?]/.test(lower) &&
+      !/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower)) {
+    return false;
+  }
+
+  // Avoid "what is my name" etc. (already handled)
+  if (/\bmy name\b/.test(lower)) return false;
+
+  return true;
 }
 
-/**
- * MAIN PLANNER
- */
+// ------------------------------
+// MAIN PLANNER
+// ------------------------------
 export function plan({ message }) {
   const trimmed = message.trim();
 

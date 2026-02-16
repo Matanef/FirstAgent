@@ -1,7 +1,7 @@
 // server/executor.js
 
 import { TOOLS } from "./tools/index.js";
-import { getMemory, updateProfileMemory } from "./memory.js";
+import { getMemory } from "./memory.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { llm } from "./tools/llm.js";
 
@@ -58,7 +58,6 @@ async function runLLMWithMemory({ userMessage, conversationId }) {
   const llmResponse = await llm(prompt);
   const text = llmResponse?.data?.text || "I couldn't generate a response.";
 
-  // Conversation persistence is handled in index.js
   return text;
 }
 
@@ -107,7 +106,6 @@ Your job:
   const llmResponse = await llm(prompt);
   const text = llmResponse?.data?.text || "I couldn't generate a response.";
 
-  // Conversation persistence is handled in index.js
   return text;
 }
 
@@ -117,9 +115,6 @@ Your job:
 
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
-
-  // Update profile memory from this user message (if explicit)
-  updateProfileMemory(message);
 
   if (!TOOLS[tool]) {
     return {
@@ -197,7 +192,6 @@ export async function executeAgent({ tool, message, conversationId }) {
     JSON.stringify(result?.data) ||
     "Task completed.";
 
-  // Conversation persistence is handled in index.js
   return {
     reply,
     stateGraph,

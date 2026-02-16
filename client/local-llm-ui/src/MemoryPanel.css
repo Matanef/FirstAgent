@@ -1,0 +1,33 @@
+.memory-panel {
+  position: fixed;
+  top: 0;
+  right: -380px; /* hidden by default */
+  width: 380px;
+  height: 100vh;
+  background: #1e1e1e;
+  color: #fff;
+  border-left: 2px solid #444;
+  padding: 20px;
+  overflow-y: auto;
+  transition: right 0.3s ease;
+  z-index: 99999;
+  font-family: sans-serif;
+}
+
+.memory-panel.open {
+  right: 0;
+}
+
+/* FIX: make toggle button visible on the right edge of the screen */
+.toggle-btn {
+  position: fixed;
+  right: 0;
+  top: 20px;
+  padding: 10px 15px;
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+  cursor: pointer;
+  border-radius: 4px;
+  z-index: 100000;
+}

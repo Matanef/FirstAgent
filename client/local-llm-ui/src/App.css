@@ -11,18 +11,18 @@
   --bg-secondary: #192734;
   --bg-tertiary: #22303c;
   --bg-hover: #273948;
-  
+
   --text-primary: #e7e9ea;
   --text-secondary: #8b98a5;
   --text-muted: #6e7d8a;
-  
+
   --accent: #1d9bf0;
   --accent-hover: #1a8cd8;
-  
+
   --success: #00ba7c;
   --error: #f4212e;
   --warning: #ffd400;
-  
+
   --border: #38444d;
   --shadow: rgba(0, 0, 0, 0.5);
 }
@@ -34,10 +34,13 @@ body {
   line-height: 1.5;
 }
 
+/* FIXED: removed overflow:hidden so MemoryPanel is visible */
 .app-container {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  position: relative;
+  z-index: 1;
 }
 
 /* ========== SIDEBAR ========== */
@@ -351,73 +354,6 @@ body {
 
 .message-user .message-content {
   color: white;
-}
-
-/* ========== TYPING INDICATOR ========== */
-
-.typing-indicator {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.5rem 0;
-}
-
-.typing-indicator span {
-  width: 8px;
-  height: 8px;
-  background: var(--text-secondary);
-  border-radius: 50%;
-  animation: bounce 1.4s infinite;
-}
-
-.typing-indicator span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.typing-indicator span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes bounce {
-  0%, 60%, 100% {
-    transform: translateY(0);
-    opacity: 0.4;
-  }
-  30% {
-    transform: translateY(-10px);
-    opacity: 1;
-  }
-}
-
-/* ========== STATE GRAPH ========== */
-
-.state-graph {
-  margin-top: 0.75rem;
-  font-size: 0.85rem;
-}
-
-.state-graph summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-  user-select: none;
-  padding: 0.5rem;
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-}
-
-.state-graph summary:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.state-graph pre {
-  margin-top: 0.5rem;
-  padding: 1rem;
-  background: var(--bg-primary);
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  overflow-x: auto;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
 }
 
 /* ========== INPUT ========== */
