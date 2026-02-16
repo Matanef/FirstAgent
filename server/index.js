@@ -59,6 +59,9 @@ console.log("DEBUG ROUTES REGISTERED: /debug/memory, /debug/memory/reset");
 // ============================================================
 // CHAT ENDPOINT
 // ============================================================
+// ============================================================
+// CHAT ENDPOINT
+// ============================================================
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
@@ -101,15 +104,40 @@ app.post("/chat", async (req, res) => {
       memory.profile.name = message.substring("remember that my name is ".length).trim();
     }
 
-    // PLAN → EXECUTE
+    // PLAN
     const planResult = await plan({ message });
-    const { tool, input } = planResult;
+    const { tool, input, context } = planResult;
 
+    // -----------------------------------------
+    // NEW: Handle "weather here" via geolocation
+    // -----------------------------------------
+    let finalContext = context || {};
+
+    if (tool === "weather" && finalContext.city === "__USE_GEOLOCATION__") {
+      const ip = req.ip;
+      const { resolveCityFromIp } = await import("./utils/geo.js");
+
+      const city = await resolveCityFromIp(ip);
+
+      if (city) {
+        finalContext.city = city;
+        console.log("🌍 GEOLOCATION CITY:", city);
+      } else {
+        console.log("🌍 GEOLOCATION FAILED — falling back to extraction");
+        delete finalContext.city;
+      }
+    }
+
+    // EXECUTE
     const result = await executeAgent({
       tool,
-      message: input ?? message,
+      message: {
+        text: input ?? message,
+        context: finalContext
+      },
       conversationId: id
     });
+
 
     const reply = result.reply;
     const stateGraph = result.stateGraph;

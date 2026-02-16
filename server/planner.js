@@ -2,12 +2,11 @@
 // Clean, improved, future‑proof planner with natural‑language intent detection
 
 // ------------------------------
-// AI meta questions (about the assistant itself)
+// 1. AI META QUESTIONS
 // ------------------------------
 function isAIMetaQuestion(message) {
   const lower = message.toLowerCase();
-
-  const patterns = [
+  return [
     "how can i make you",
     "how can i improve you",
     "how can i use you",
@@ -27,17 +26,14 @@ function isAIMetaQuestion(message) {
     "tell me about yourself",
     "what are you like",
     "what is your personality"
-  ];
-
-  return patterns.some(p => lower.includes(p));
+  ].some(p => lower.includes(p));
 }
 
 // ------------------------------
-// Memory query intent
+// 2. MEMORY INTENTS
 // ------------------------------
 function isMemoryQueryIntent(message) {
   const lower = message.toLowerCase();
-
   return (
     /what('?s| is) my name/.test(lower) ||
     /do you remember.*name/.test(lower) ||
@@ -46,13 +42,9 @@ function isMemoryQueryIntent(message) {
   );
 }
 
-// ------------------------------
-// Memory write intent
-// ------------------------------
 function isMemoryWriteIntent(message) {
   const lower = message.toLowerCase();
-
-  const patterns = [
+  return [
     "remember my name",
     "remember that my name is",
     "store my name",
@@ -61,40 +53,202 @@ function isMemoryWriteIntent(message) {
     "remember that i prefer",
     "remember i like",
     "remember i prefer"
-  ];
-
-  return patterns.some(p => lower.includes(p));
+  ].some(p => lower.includes(p));
 }
 
 // ------------------------------
-// File system intent
+// 3. DATE / TIME QUESTIONS
+// ------------------------------
+function isDateQuestion(msg) {
+  const lower = msg.toLowerCase().trim();
+  return lower.includes("today") &&
+    (lower.includes("date") || lower.includes("day")) &&
+    !lower.includes("week");
+}
+
+function isTimeQuestion(msg) {
+  const lower = msg.toLowerCase().trim();
+  return lower.includes("time") &&
+    (lower.includes("now") || lower.includes("current"));
+}
+
+function isDayOfWeekQuestion(msg) {
+  const lower = msg.toLowerCase().trim();
+  return lower.includes("today") &&
+    (lower.includes("day of the week") || lower.includes("weekday"));
+}
+
+function isMonthOrYearQuestion(msg) {
+  const lower = msg.toLowerCase().trim();
+  return lower.includes("today") &&
+    (lower.includes("month") || lower.includes("year"));
+}
+
+// ------------------------------
+// 4. NEWS INTENT
+// ------------------------------
+function isNewsIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "news",
+    "headlines",
+    "latest news",
+    "today's news",
+    "today news",
+    "ynet",
+    "kan",
+    "n12",
+    "haaretz",
+    "jpost",
+    "jerusalem post",
+    "times of israel",
+    "breaking news",
+    "scan news",
+    "scan websites",
+    "scan the web for news",
+    "latest updates",
+    "top stories"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 5. WEATHER INTENT
+// ------------------------------
+function isWeatherIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "weather",
+    "forecast",
+    "temperature",
+    "rain",
+    "snow",
+    "wind",
+    "humidity"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 6. SPORTS INTENT
+// ------------------------------
+function isSportsIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "score",
+    "scores",
+    "result",
+    "results",
+    "match",
+    "game",
+    "fixture",
+    "fixtures",
+    "standings",
+    "league",
+    "premier league",
+    "nba",
+    "nfl",
+    "champions league",
+    "football",
+    "soccer",
+    "basketball",
+    "tennis"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 7. YOUTUBE INTENT
+// ------------------------------
+function isYouTubeIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "youtube",
+    "video",
+    "videos",
+    "watch on youtube",
+    "find a video",
+    "show me a video"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 8. SHOPPING INTENT
+// ------------------------------
+function isShoppingIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "buy",
+    "purchase",
+    "order",
+    "shopping",
+    "price comparison",
+    "compare prices",
+    "best laptop",
+    "best phone",
+    "recommend a phone",
+    "recommend a laptop"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 9. EMAIL INTENT
+// ------------------------------
+function isEmailIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "send an email",
+    "email my",
+    "compose an email",
+    "draft an email",
+    "write an email"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 10. TASK INTENT
+// ------------------------------
+function isTaskIntent(message) {
+  const lower = message.toLowerCase();
+  return [
+    "add a task",
+    "create a task",
+    "todo",
+    "to-do",
+    "remind me to",
+    "reminder",
+    "task list"
+  ].some(w => lower.includes(w));
+}
+
+// ------------------------------
+// 11. FILE SYSTEM INTENT
 // ------------------------------
 function isFileIntent(message) {
   const lower = message.toLowerCase();
+  if (isNewsIntent(lower)) return false;
 
-  return (
-    lower.includes("scan") ||
-    lower.includes("list folder") ||
-    lower.includes("show folder") ||
-    lower.includes("open folder") ||
-    lower.includes("read file") ||
-    lower.includes("show contents") ||
-    lower.includes("scan subfolder") ||
-    lower.includes("folder") ||
-    lower.includes("directory") ||
-    lower.includes("list files") ||
-    lower.includes("show me what's inside") ||
-    lower.includes("show me the contents")
-  );
+  return [
+    "list folder",
+    "show folder",
+    "open folder",
+    "read file",
+    "open file",
+    "show contents",
+    "list files",
+    "directory",
+    "folder",
+    "scan folder",
+    "scan directory",
+    "scan subfolder",
+    "what's inside",
+    "show me the contents of"
+  ].some(k => lower.includes(k));
 }
 
 // ------------------------------
-// Finance fundamentals intent
+// 12. FINANCE INTENTS
 // ------------------------------
 function isFinanceFundamentalsIntent(message) {
   const lower = message.toLowerCase();
-
-  const financeKeywords = [
+  return [
     "fundamentals",
     "fundamental metrics",
     "valuation",
@@ -113,18 +267,12 @@ function isFinanceFundamentalsIntent(message) {
     "52-week",
     "metrics",
     "financials"
-  ];
-
-  return financeKeywords.some(k => lower.includes(k));
+  ].some(k => lower.includes(k));
 }
 
-// ------------------------------
-// Finance price intent
-// ------------------------------
 function isFinancePriceIntent(message) {
   const lower = message.toLowerCase();
-
-  const priceKeywords = [
+  return [
     "stock price",
     "share price",
     "current price",
@@ -132,26 +280,21 @@ function isFinancePriceIntent(message) {
     "last price",
     "trading at",
     "price of"
-  ];
-
-  return priceKeywords.some(k => lower.includes(k));
+  ].some(k => lower.includes(k));
 }
 
 // ------------------------------
-// Calculator intent
+// 13. CALCULATOR INTENT
 // ------------------------------
 function shouldUseCalculator(message) {
   const trimmed = message.trim();
-
   if (!/[0-9]/.test(trimmed)) return false;
   if (/[+\-*/^=]/.test(trimmed)) return true;
-  if (/^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed)) return true;
-
-  return false;
+  return /^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed);
 }
 
 // ------------------------------
-// General factual questions → search
+// 14. GENERAL FACTUAL → SEARCH
 // ------------------------------
 function isGeneralFactualQuestion(message) {
   const lower = message.toLowerCase();
@@ -160,59 +303,110 @@ function isGeneralFactualQuestion(message) {
   if (isMemoryQueryIntent(lower)) return false;
   if (isMemoryWriteIntent(lower)) return false;
 
-  if (
-    !/[?]/.test(lower) &&
-    !/\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower)
-  ) {
-    return false;
-  }
+  const hasQuestionWord = /\bwho\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b/.test(lower);
+  const hasQuestionMark = /[?]/.test(lower);
 
+  if (!hasQuestionWord && !hasQuestionMark) return false;
   if (/\bmy name\b/.test(lower)) return false;
 
   return true;
 }
 
 // ------------------------------
-// MAIN PLANNER
+// 15. CITY EXTRACTION (for weather)
+// ------------------------------
+function extractCityFromMessage(message) {
+  const lower = message.toLowerCase().trim();
+
+  const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
+  if (inMatch) return formatCity(inMatch[1]);
+
+  const forMatch = lower.match(/\bfor\s+([a-zA-Z\s\-]+)$/);
+  if (forMatch) return formatCity(forMatch[1]);
+
+  const words = lower.split(/\s+/);
+  if (words.length >= 2) {
+    const lastTwo = words.slice(-2).join(" ");
+    if (/^[a-zA-Z\s\-]+$/.test(lastTwo)) return formatCity(lastTwo);
+  }
+
+  const last = words[words.length - 1];
+  if (/^[a-zA-Z\-]+$/.test(last)) return formatCity(last);
+
+  return null;
+}
+
+function formatCity(city) {
+  return city
+    .trim()
+    .split(/\s+/)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+// ------------------------------
+// 16. MAIN PLANNER
 // ------------------------------
 export function plan({ message }) {
   const trimmed = message.trim();
 
-  // 0️⃣ File system access
-  if (isFileIntent(trimmed)) {
-    return { tool: "file", input: trimmed };
-  }
-
-  // 1️⃣ Memory write or memory query → LLM
-  if (isMemoryWriteIntent(trimmed) || isMemoryQueryIntent(trimmed)) {
+  // Date/time → LLM
+  if (
+    isDateQuestion(trimmed) ||
+    isTimeQuestion(trimmed) ||
+    isDayOfWeekQuestion(trimmed) ||
+    isMonthOrYearQuestion(trimmed)
+  ) {
     return { tool: "llm", input: trimmed };
   }
 
-  // 2️⃣ AI meta questions → LLM
-  if (isAIMetaQuestion(trimmed)) {
-    return { tool: "llm", input: trimmed };
+  // Weather (with city context + "here")
+  if (isWeatherIntent(trimmed)) {
+    if (/\bhere\b/i.test(trimmed)) {
+      return {
+        tool: "weather",
+        input: trimmed,
+        context: { city: "__USE_GEOLOCATION__" }
+      };
+    }
+
+    const city = extractCityFromMessage(trimmed);
+
+    if (city) {
+      return {
+        tool: "weather",
+        input: trimmed,
+        context: { city }
+      };
+    }
+
+    return { tool: "weather", input: trimmed };
   }
 
-  // 3️⃣ Finance fundamentals
-  if (isFinanceFundamentalsIntent(trimmed)) {
+  if (isSportsIntent(trimmed)) return { tool: "sports", input: trimmed };
+  if (isYouTubeIntent(trimmed)) return { tool: "youtube", input: trimmed };
+  if (isShoppingIntent(trimmed)) return { tool: "shopping", input: trimmed };
+  if (isEmailIntent(trimmed)) return { tool: "email", input: trimmed };
+  if (isTaskIntent(trimmed)) return { tool: "tasks", input: trimmed };
+  if (isNewsIntent(trimmed)) return { tool: "news", input: trimmed };
+  if (isFileIntent(trimmed)) return { tool: "file", input: trimmed };
+
+  if (isMemoryWriteIntent(trimmed) || isMemoryQueryIntent(trimmed))
+    return { tool: "llm", input: trimmed };
+
+  if (isAIMetaQuestion(trimmed)) return { tool: "llm", input: trimmed };
+
+  if (isFinanceFundamentalsIntent(trimmed))
     return { tool: "financeFundamentals", input: trimmed };
-  }
 
-  // 4️⃣ Finance price
-  if (isFinancePriceIntent(trimmed)) {
+  if (isFinancePriceIntent(trimmed))
     return { tool: "finance", input: trimmed };
-  }
 
-  // 5️⃣ Calculator
-  if (shouldUseCalculator(trimmed)) {
+  if (shouldUseCalculator(trimmed))
     return { tool: "calculator", input: trimmed };
-  }
 
-  // 6️⃣ General factual questions → search
-  if (isGeneralFactualQuestion(trimmed)) {
+  if (isGeneralFactualQuestion(trimmed))
     return { tool: "search", input: trimmed };
-  }
 
-  // 7️⃣ Default → LLM
   return { tool: "llm", input: trimmed };
 }

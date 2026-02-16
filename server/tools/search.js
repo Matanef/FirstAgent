@@ -18,7 +18,9 @@ export function extractTopic(text) {
  * Wikipedia summary fetch
  */
 async function fetchWikipedia(query) {
-  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(
+    query
+  )}`;
   const data = await safeFetch(url);
 
   if (!data || !data.extract) return [];
@@ -27,7 +29,9 @@ async function fetchWikipedia(query) {
     {
       title: data.title || query,
       snippet: data.extract,
-      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(data.title || query)}`
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(
+        data.title || query
+      )}`
     }
   ];
 }
@@ -36,7 +40,9 @@ async function fetchWikipedia(query) {
  * DuckDuckGo fallback
  */
 async function fetchDuckDuckGo(query) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(
+    query
+  )}&format=json`;
   const data = await safeFetch(url);
 
   if (!data || !data.RelatedTopics) return [];
@@ -56,9 +62,11 @@ async function fetchDuckDuckGo(query) {
  */
 async function fetchGoogle(query) {
   const apiKey = CONFIG.SERPAPI_KEY;
-  if (!apiKey) return []; // graceful fallback
+  if (!apiKey) return [];
 
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${apiKey}`;
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
+    query
+  )}&api_key=${apiKey}`;
   const data = await safeFetch(url);
 
   if (!data || !data.organic_results) return [];
@@ -76,7 +84,6 @@ async function fetchGoogle(query) {
 export async function search(query) {
   const topic = normalizeQuery(query);
 
-  // Load cache
   const cache = loadJSON(CACHE_FILE, {});
   if (cache[topic]) {
     return {
@@ -87,26 +94,25 @@ export async function search(query) {
     };
   }
 
-  // Fetch from all providers
   const [wiki, ddg, google] = await Promise.all([
     fetchWikipedia(query),
     fetchDuckDuckGo(query),
-    fetchGoogle(query) // now uses CONFIG internally
+    fetchGoogle(query)
   ]);
 
   const results = [...wiki, ...ddg, ...google];
 
-  // Build summary text
   const summary = results
     .map(r => `${r.title}: ${r.snippet}`)
     .join("\n");
 
   const data = {
     results,
-    text: summary || "No results found."
+    text:
+      summary ||
+      "No reliable results were found for this query from the sources I checked."
   };
 
-  // Cache it
   cache[topic] = data;
   saveJSON(CACHE_FILE, cache);
 

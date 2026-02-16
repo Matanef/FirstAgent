@@ -1,22 +1,29 @@
-// tools/index.js — Section 5: Tool Registry
+// server/tools/index.js
 
-import { calculator } from "./calculator.js";
+import { file } from "./file.js";
 import { search } from "./search.js";
+import { news } from "./news.js";
 import { finance } from "./finance.js";
 import { financeFundamentals } from "./financeFundamentals.js";
+import { calculator } from "./calculator.js";
 import { weather } from "./weather.js";
-import { llm } from "./llm.js";
-import { file } from "./file.js";
-import { mathIntent } from "./math-intent.js";
+import { sports } from "./sports.js";
+import { youtube } from "./youtube.js";
+import { shopping } from "./shopping.js";
+import { email } from "./email.js";
+import { tasks } from "./tasks.js";
 
-// Export a unified tool registry
 export const TOOLS = {
-  calculator,
+  file,
   search,
+  news,
   finance,
   financeFundamentals,
+  calculator,
   weather,
-  llm,
-  file,
-  mathIntent
+  sports,
+  youtube,
+  shopping,
+  email,
+  tasks
 };

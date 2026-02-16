@@ -6,9 +6,25 @@ import { getMemory } from "./memory.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { llm } from "./tools/llm.js";
 
-/**
+/* -------------------------------------------------------
+ * Helper: detect if the user wants a table
+ * ----------------------------------------------------- */
+function wantsTableFormat(userQuestion) {
+  const lower = (userQuestion || "").toLowerCase();
+  return (
+    lower.includes("show in a table") ||
+    lower.includes("show it in a table") ||
+    lower.includes("display in a table") ||
+    lower.includes("table format") ||
+    lower.includes("as a table") ||
+    lower.includes("in table form") ||
+    lower.includes("tabular")
+  );
+}
+
+/* -------------------------------------------------------
  * Build memory-aware LLM prompt
- */
+ * ----------------------------------------------------- */
 function buildLLMMemoryPrompt({ userMessage, profile, conversation }) {
   const toneText = getToneDescription(profile || {});
   const recentMessages = (conversation || []).slice(-20);
@@ -17,8 +33,11 @@ function buildLLMMemoryPrompt({ userMessage, profile, conversation }) {
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
+  const today = new Date().toLocaleDateString("en-GB");
+
   return `
 You are an AI assistant with access to a memory system.
+The current date is ${today}.
 
 You receive:
 - A user profile (long-term memory)
@@ -41,9 +60,9 @@ Now write the final answer to the user.
 `;
 }
 
-/**
+/* -------------------------------------------------------
  * Run LLM with memory
- */
+ * ----------------------------------------------------- */
 async function runLLMWithMemory({ userMessage, conversationId }) {
   const memory = getMemory();
   const profile = memory.profile || {};
@@ -61,10 +80,15 @@ async function runLLMWithMemory({ userMessage, conversationId }) {
   return text;
 }
 
-/**
- * Summarize tool output with LLM
- */
-async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool }) {
+/* -------------------------------------------------------
+ * Summarize tool output with LLM (with table support)
+ * ----------------------------------------------------- */
+async function summarizeWithLLM({
+  userQuestion,
+  toolResult,
+  conversationId,
+  tool
+}) {
   const memory = getMemory();
   const profile = memory.profile || {};
   const toneText = getToneDescription(profile);
@@ -76,17 +100,12 @@ async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
-  // If tool returned HTML, return it directly
-  if (toolResult?.data?.html) {
-    return {
-      reply: toolResult.data.html,
-      success: true,
-      reasoning: toolResult.reasoning || null
-    };
-  }
+  const today = new Date().toLocaleDateString("en-GB");
+  const tableRequested = wantsTableFormat(userQuestion);
 
   const prompt = `
 You are the final response generator for an AI assistant.
+The current date is ${today}.
 
 User profile (long-term memory):
 ${JSON.stringify(profile, null, 2)}
@@ -105,10 +124,12 @@ Tool used: ${tool}
 Tool result (structured data):
 ${JSON.stringify(toolResult, null, 2)}
 
-Your job:
+Formatting instructions:
 - Produce a clear, natural-language answer.
 - Use the profile information naturally when relevant.
 - Respect tone, detail, math, and formatting preferences.
+${tableRequested ? "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly." : "- Use normal paragraph formatting unless a different structure is clearly better."}
+- If the tool results indicate no reliable information, say so clearly and do NOT invent facts.
 - Do NOT mention tools or internal steps.
 `;
 
@@ -122,13 +143,45 @@ Your job:
   };
 }
 
-/**
+/* -------------------------------------------------------
+ * Helper: normalize message for tools
+ * ----------------------------------------------------- */
+function getMessageText(message) {
+  return typeof message === "string" ? message : message?.text;
+}
+
+/* -------------------------------------------------------
+ * City aliasing (OpenWeather quirks)
+ * ----------------------------------------------------- */
+function normalizeCityAliases(message) {
+  if (!message || typeof message !== "object") return message;
+
+  if (message.context?.city) {
+    const c = message.context.city.toLowerCase();
+
+    const aliases = {
+      "givataim": "Givatayim",
+      "giv'atayim": "Givatayim",
+      "givatayim": "Givatayim"
+    };
+
+    if (aliases[c]) {
+      message.context.city = aliases[c];
+    }
+  }
+
+  return message;
+}
+
+/* -------------------------------------------------------
  * executeAgent – single-shot tool execution
- */
+ * ----------------------------------------------------- */
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
 
-  // Unknown tool
+  // Normalize city aliases
+  message = normalizeCityAliases(message);
+
   if (!TOOLS[tool]) {
     return {
       reply: "Tool not found.",
@@ -137,10 +190,12 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Direct LLM
+  /* ------------------------------
+   * Direct LLM
+   * ---------------------------- */
   if (tool === "llm") {
     const reply = await runLLMWithMemory({
-      userMessage: message,
+      userMessage: getMessageText(message),
       conversationId
     });
 
@@ -160,17 +215,33 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Execute tool
-  const result = await TOOLS[tool](message);
+  /* ------------------------------
+   * WEATHER — ONLY tool that receives full object
+   * ---------------------------- */
+  let toolInput;
+
+  if (tool === "weather") {
+    toolInput = message; // full object { text, context }
+  } else {
+    toolInput = getMessageText(message); // string only
+  }
+
+  /* ------------------------------
+   * Execute tool
+   * ---------------------------- */
+  const result = await TOOLS[tool](toolInput);
 
   stateGraph.push({
     step: 1,
     tool,
-    input: message,
+    input: toolInput,
     output: result,
     final: result?.final ?? true
   });
 
+  /* ------------------------------
+   * Do NOT summarize failed tools
+   * ---------------------------- */
   if (!result?.success) {
     return {
       reply: result?.error || "Tool execution failed.",
@@ -180,17 +251,25 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Tools that should be summarized by LLM
+  /* ------------------------------
+   * Tools that should be summarized
+   * ---------------------------- */
   const summarizeTools = [
     "search",
     "finance",
     "financeFundamentals",
-    "calculator"
+    "calculator",
+    "weather",
+    "sports",
+    "youtube",
+    "shopping",
+    "email",
+    "tasks"
   ];
 
   if (summarizeTools.includes(tool)) {
     const summary = await summarizeWithLLM({
-      userQuestion: message,
+      userQuestion: getMessageText(message),
       toolResult: result,
       conversationId,
       tool
@@ -206,7 +285,9 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // Direct tools (file, etc.)
+  /* ------------------------------
+   * Default: return raw tool output
+   * ---------------------------- */
   const reply =
     result?.data?.html ||
     result?.data?.text ||
