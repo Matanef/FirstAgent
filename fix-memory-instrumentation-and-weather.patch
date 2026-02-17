@@ -1,0 +1,479 @@
+*** Begin Patch
+*** Add File: scripts/collect-memory-trace.js
++// scripts/collect-memory-trace.js
++const fs = require('fs');
++const path = require('path');
++const MEM = path.resolve(process.cwd(), 'utils', 'memory.json');
++const LOG = path.resolve(process.cwd(), 'memory-trace.log');
++
++function snapshot(tag) {
++  try {
++    const content = fs.readFileSync(MEM, 'utf8');
++    fs.appendFileSync(LOG, `\n=== SNAPSHOT ${tag} ${new Date().toISOString()} ===\n`);
++    fs.appendFileSync(LOG, content + '\n');
++  } catch (e) {
++    fs.appendFileSync(LOG, `\n=== SNAPSHOT ${tag} FAILED: ${e.message} ===\n`);
++  }
++}
++
++console.log('Collecting memory trace to', LOG);
++snapshot('before');
++console.log('Now send the message: "please forget my saved location" from the client');
++setTimeout(() => {
++  snapshot('immediate');
++  setTimeout(() => {
++    snapshot('after2s');
++    console.log('Done. Check', LOG);
++  }, 2000);
++}, 5000);
++
+*** End Patch
+*** Begin Patch
+*** Update File: server/memory.js
+@@
+-import fs from "fs";
+-import path from "path";
+-import { fileURLToPath } from "url";
+-
+-const __filename = fileURLToPath(import.meta.url);
+-const __dirname = path.dirname(__filename);
+-
+-// Single source of truth for memory file
+-export const MEMORY_FILE = path.resolve(__dirname, "..", "utils", "memory.json");
+-
+-export const DEFAULT_MEMORY = {
+-  conversations: {},
+-  profile: {},
+-  meta: {}
+-};
+-
+-function clone(obj) {
+-  return JSON.parse(JSON.stringify(obj));
+-}
+-
+-function ensureMemoryDirAndFile() {
+-  const dir = path.dirname(MEMORY_FILE);
+-
+-  if (!fs.existsSync(dir)) {
+-    fs.mkdirSync(dir, { recursive: true });
+-  }
+-
+-  if (!fs.existsSync(MEMORY_FILE)) {
+-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2));
+-  }
+-}
+-
+-function validateMemoryShape(raw) {
+-  const safe = clone(DEFAULT_MEMORY);
+-
+-  if (raw && typeof raw === "object") {
+-    if (raw.conversations && typeof raw.conversations === "object") {
+-      safe.conversations = raw.conversations;
+-    }
+-    if (raw.profile && typeof raw.profile === "object") {
+-      safe.profile = raw.profile;
+-    }
+-    if (raw.meta && typeof raw.meta === "object") {
+-      safe.meta = raw.meta;
+-    }
+-  }
+-
+-  return safe;
+-}
+-
+-// ------------------------------
+-// Safe loader
+-// ------------------------------
+-export function loadJSON(filePath = MEMORY_FILE, defaultValue = DEFAULT_MEMORY) {
+-  try {
+-    ensureMemoryDirAndFile();
+-
+-    const raw = fs.readFileSync(filePath, "utf8");
+-    const parsed = JSON.parse(raw);
+-
+-    return validateMemoryShape(parsed);
+-  } catch (err) {
+-    console.error("Error loading JSON:", err.message);
+-    return clone(defaultValue);
+-  }
+-}
+-
+-// ------------------------------
+-// Safe saver
+-// ------------------------------
+-export function saveJSON(filePath = MEMORY_FILE, data) {
+-  try {
+-    ensureMemoryDirAndFile();
+-
+-    const safeData = validateMemoryShape(data);
+-    fs.writeFileSync(filePath, JSON.stringify(safeData, null, 2));
+-  } catch (err) {
+-    console.error("Error saving JSON:", err.message);
+-  }
+-}
+-
+-// ------------------------------
+-// Get memory (safe)
+-// ------------------------------
+-export function getMemory() {
+-  return loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+-}
+-
+-// ------------------------------
+-// Optional helper: append message
+-// ------------------------------
+-export function appendConversationMessage(conversationId, role, content) {
+-  const memory = getMemory();
+-
+-  memory.conversations[conversationId] ??= [];
+-
+-  memory.conversations[conversationId].push({
+-    role,
+-    content,
+-    ts: Date.now()
+-  });
+-
+-  saveJSON(MEMORY_FILE, memory);
+-}
+-
+-// ------------------------------
+-// Optional helper: profile update
+-// (not used by index.js anymore, but kept for tools)
+-// ------------------------------
+-export function updateProfileMemory(message) {
+-  const memory = getMemory();
+-  const lower = message.toLowerCase();
+-
+-  if (lower.startsWith("remember my name is ")) {
+-    memory.profile.name = message.substring("remember my name is ".length).trim();
+-  }
+-
+-  if (lower.startsWith("remember that my name is ")) {
+-    memory.profile.name = message.substring("remember that my name is ".length).trim();
+-  }
+-
+-  saveJSON(MEMORY_FILE, memory);
+-}
+-// Clear only location from profile
+-export function clearLocation() {
+-  const memory = getMemory();
+-  if (memory.profile && memory.profile.location) {
+-    delete memory.profile.location;
+-    saveJSON(MEMORY_FILE, memory);
+-    console.log("🧹 Cleared profile.location from memory");
+-  }
+-}
++import fs from "fs";
++import path from "path";
++import { fileURLToPath } from "url";
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++
++// Single source of truth for memory file
++export const MEMORY_FILE = path.resolve(__dirname, "..", "utils", "memory.json");
++
++export const DEFAULT_MEMORY = {
++  conversations: {},
++  profile: {},
++  meta: {}
++};
++
++function clone(obj) {
++  return JSON.parse(JSON.stringify(obj));
++}
++
++function ensureMemoryDirAndFile() {
++  const dir = path.dirname(MEMORY_FILE);
++
++  if (!fs.existsSync(dir)) {
++    fs.mkdirSync(dir, { recursive: true });
++  }
++
++  if (!fs.existsSync(MEMORY_FILE)) {
++    fs.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2));
++  }
++}
++
++function validateMemoryShape(raw) {
++  const safe = clone(DEFAULT_MEMORY);
++
++  if (raw && typeof raw === "object") {
++    if (raw.conversations && typeof raw.conversations === "object") {
++      safe.conversations = raw.conversations;
++    }
++    if (raw.profile && typeof raw.profile === "object") {
++      safe.profile = raw.profile;
++    }
++    if (raw.meta && typeof raw.meta === "object") {
++      safe.meta = raw.meta;
++    }
++  }
++
++  return safe;
++}
++
++// ------------------------------
++// Instrumented loader
++// ------------------------------
++export function loadJSON(filePath = MEMORY_FILE, defaultValue = DEFAULT_MEMORY) {
++  try {
++    ensureMemoryDirAndFile();
++    console.log("MEMORY: loadJSON reading", filePath, new Date().toISOString());
++    const raw = fs.readFileSync(filePath, "utf8");
++    const parsed = JSON.parse(raw || "{}");
++    console.log("MEMORY: loadJSON parsed keys:", Object.keys(parsed), "profileKeys:", parsed.profile ? Object.keys(parsed.profile) : null);
++    return validateMemoryShape(parsed);
++  } catch (err) {
++    console.error("MEMORY: loadJSON error:", err.message);
++    return clone(defaultValue);
++  }
++}
++
++// ------------------------------
++// Instrumented saver
++// ------------------------------
++export function saveJSON(filePath = MEMORY_FILE, data) {
++  try {
++    ensureMemoryDirAndFile();
++    const safeData = validateMemoryShape(data);
++    const tmp = filePath + ".tmp." + Date.now();
++    console.log("MEMORY: saveJSON writing tmp:", tmp, new Date().toISOString());
++    fs.writeFileSync(tmp, JSON.stringify(safeData, null, 2), "utf8");
++    fs.renameSync(tmp, filePath);
++    console.log("MEMORY: saveJSON renamed tmp ->", filePath, new Date().toISOString());
++    // verification read
++    try {
++      const verify = JSON.parse(fs.readFileSync(filePath, "utf8") || "{}");
++      console.log("MEMORY: saveJSON verify keys:", Object.keys(verify), "profileKeys:", verify.profile ? Object.keys(verify.profile) : null);
++    } catch (ve) {
++      console.error("MEMORY: saveJSON verify failed:", ve.message);
++    }
++  } catch (err) {
++    console.error("MEMORY: saveJSON error:", err.message);
++  }
++}
++
++// ------------------------------
++// Get memory (safe)
++// ------------------------------
++export function getMemory() {
++  return loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
++}
++
++// ------------------------------
++// Optional helper: append message
++// ------------------------------
++export function appendConversationMessage(conversationId, role, content) {
++  const memory = getMemory();
++
++  memory.conversations[conversationId] ??= [];
++
++  memory.conversations[conversationId].push({
++    role,
++    content,
++    ts: Date.now()
++  });
++
++  saveJSON(MEMORY_FILE, memory);
++}
++
++// ------------------------------
++// Optional helper: profile update
++// (not used by index.js anymore, but kept for tools)
++// ------------------------------
++export function updateProfileMemory(message) {
++  const memory = getMemory();
++  const lower = message.toLowerCase();
++
++  if (lower.startsWith("remember my name is ")) {
++    memory.profile.name = message.substring("remember my name is ".length).trim();
++  }
++
++  if (lower.startsWith("remember that my name is ")) {
++    memory.profile.name = message.substring("remember that my name is ".length).trim();
++  }
++
++  saveJSON(MEMORY_FILE, memory);
++}
++// Clear only location from profile
++export function clearLocation() {
++  const memory = getMemory();
++  if (memory.profile && memory.profile.location) {
++    delete memory.profile.location;
++    saveJSON(MEMORY_FILE, memory);
++    console.log("🧹 Cleared profile.location from memory");
++  }
++}
+*** End Patch
+*** Begin Patch
+*** Update File: server/tools/memoryTool.js
+@@
+-import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
++import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
+@@
+ export async function memorytool(request) {
+   const text = request?.text || request || "";
+   const lower = text.toLowerCase();
+   const context = request?.context || {};
+   const memory = getMemory();
+ 
+   // --- FORGET LOCATION ---
+   if (
+     lower.includes("forget my location") ||
+     lower.includes("forget my saved location") ||
+     lower.includes("clear my location") ||
+     lower.includes("remove my location") ||
+     context.raw === "forget_location"
+   ) {
+-    if (memory.profile?.location) {
+-      console.log("Before delete:", memory.profile);
+-      delete memory.profile.location;
+-      console.log("After delete:", memory.profile);
+-      saveJSON(MEMORY_FILE, memory);
+-      console.log("Saved memory:", getMemory().profile);
+-
+-
+-      return {
+-        tool: "memorytool",
+-        success: true,
+-        final: true,
+-        data: { message: "I've forgotten your saved location." }
+-      };
+-    }
++    console.log("MEMORYTOOL: invoked with context:", context, "text:", text);
++    if (memory.profile?.location) {
++      console.log("MEMORYTOOL: Before delete:", JSON.stringify(memory.profile));
++      delete memory.profile.location;
++      console.log("MEMORYTOOL: After delete:", JSON.stringify(memory.profile));
++      console.trace("MEMORYTOOL: saving memory now");
++      saveJSON(MEMORY_FILE, memory);
++      console.log("MEMORYTOOL: Saved memory now reads:", JSON.stringify(getMemory().profile));
++
++      return {
++        tool: "memorytool",
++        success: true,
++        final: true,
++        data: { message: "I've forgotten your saved location." }
++      };
++    }
+*** End Patch
+*** Begin Patch
+*** Update File: server/tools/weather.js
+@@
+ function extractCity(query) {
+   const text = typeof query === "string" ? query : query?.text || "";
+   const lower = text.toLowerCase().trim();
+-  console.log("WEATHER TOOL TRIGGERED:", request);
++  // Note: 'request' is not available in this helper; top-level weather() logs invocation.
+   // 1. Look for "in <city>"
+   const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
+   if (inMatch) return formatCity(inMatch[1]);
+@@
+ export async function weather(query) {
+   if (!CONFIG.OPENWEATHER_KEY) {
+@@
+   try {
+     // 1. Determine city from multiple sources
+     let city = query?.context?.city || null;
+     const wasGeolocationAttempt = query?.context?.wasGeolocationAttempt;
+ 
+-    console.log("🌤️ Weather tool received:", { city, wasGeolocationAttempt });
++    console.log("WEATHER TOOL INVOKED:", { text: query?.text, context: query?.context, city, wasGeolocationAttempt, time: new Date().toISOString() });
+@@
+     // Final check: do we have a city?
+     if (!city) {
+       return {
+         tool: "weather",
+         success: false,
+         final: true,
+         error: "No city detected. Please specify a location (e.g., 'weather in Paris') or set your location with 'remember my location is [City]'."
+       };
+     }
+ 
+-// Only save location when planner explicitly indicated a weather request
+-// (context.city present or context.raw === "weather")
+-    const isPlannerWeather = !!(query?.context?.city || query?.context?.raw === "weather" || query?.context?.city === "__USE_GEOLOCATION__");
+-      
+-    if (isPlannerWeather && isLikelyCity(city)) {
+-      const memory = getMemory();
+-      if (!memory.profile) memory.profile = {};
+-      if (!memory.profile.location || memory.profile.location !== city) {
+-        memory.profile.location = city;
+-        saveJSON(MEMORY_FILE, memory);
+-        console.log("💾 Saved location to profile:", city);
+-      }
+-    }
++    // Only save location when the planner explicitly indicated a weather request
++    // or when the user explicitly provided a city in the context.
++    const isPlannerWeather =
++      !!(query?.context?.city) || query?.context?.raw === "weather" || query?.context?.city === "__USE_GEOLOCATION__";
++
++    console.log("WEATHER: plannerContext:", query?.context, "extractedCity:", city, "isPlannerWeather:", isPlannerWeather);
++
++    if (isPlannerWeather && isLikelyCity(city)) {
++      console.trace("WEATHER: about to save location");
++      const memory = getMemory();
++      console.log("WEATHER: memory before save profile:", JSON.stringify(memory.profile));
++      if (!memory.profile) memory.profile = {};
++      if (!memory.profile.location || memory.profile.location !== city) {
++        memory.profile.location = city;
++        saveJSON(MEMORY_FILE, memory);
++        console.log("WEATHER: memory after save profile:", JSON.stringify(getMemory().profile));
++      } else {
++        console.log("WEATHER: location already matches profile; no save needed");
++      }
++    } else {
++      console.log("WEATHER: not saving location; plannerContext:", query?.context, "extractedCity:", city);
++    }
+*** End Patch
+*** Begin Patch
+*** Update File: server/executor.js
+@@
+ import { TOOLS } from "./tools/index.js";
+ import { getMemory } from "./memory.js";
+ import { llm } from "./tools/llm.js";
+@@
+ async function runLLMWithFullMemory({ userMessage, conversationId }) {
+   const memory = getMemory();
+@@
+   const llmResponse = await llm(prompt);
+   const text = llmResponse?.data?.text || "I couldn't generate a response.";
+ 
+   return text;
+ }
+*** End Patch
+*** Begin Patch
+*** Update File: server/executor.js
+@@
+ export async function executeAgent({ tool, message, conversationId }) {
+   const stateGraph = [];
+ 
+   // Special case: reformat previous response as table
+   if (tool === "reformat_table") {
+     return await reformatAsTable({
+       userMessage: getMessageText(message),
+       conversationId
+     });
+   }
+@@
+   // Normalize city aliases
+   message = normalizeCityAliases(message);
+ 
+   if (!TOOLS[tool]) {
+     return {
+       reply: "Tool not found.",
+       stateGraph,
+       success: false
+     };
+   }
+ 
+@@
+   /* ------------------------------
+    * Execute tool
+    * ---------------------------- */
+-  const result = await TOOLS[tool](toolInput);
++  console.log("EXECUTOR: calling tool", tool, "with input:", JSON.stringify(toolInput), "time:", new Date().toISOString());
++  const result = await TOOLS[tool](toolInput);
++  console.log("EXECUTOR: tool result for", tool, ":", JSON.stringify(result), "time:", new Date().toISOString());
+*** End Patch

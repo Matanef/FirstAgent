@@ -160,13 +160,13 @@ export async function weather(query) {
 // Only save location when planner explicitly indicated a weather request
 // (context.city present or context.raw === "weather")
     const isPlannerWeather = !!(query?.context?.city || query?.context?.raw === "weather" || query?.context?.city === "__USE_GEOLOCATION__");
-      
+
     if (isPlannerWeather && isLikelyCity(city)) {
       const memory = getMemory();
       if (!memory.profile) memory.profile = {};
       if (!memory.profile.location || memory.profile.location !== city) {
         memory.profile.location = city;
-        saveJSON(MEMORY_FILE, memory);
+        // saveJSON(MEMORY_FILE, memory);
         console.log("💾 Saved location to profile:", city);
       }
     }

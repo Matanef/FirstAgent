@@ -1928,6 +1928,23 @@
           "steps": 1
         }
       }
+    ],
+    "b94d0175-ae39-47cf-af6d-49658cd9b51b": [
+      {
+        "role": "user",
+        "content": "please delete my location",
+        "timestamp": "2026-02-17T17:58:07.448Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I've forgotten your saved location.",
+        "timestamp": "2026-02-17T17:58:07.453Z",
+        "confidence": 0.5,
+        "tool": "memorytool",
+        "metadata": {
+          "steps": 1
+        }
+      }
     ]
   },
   "profile": {
