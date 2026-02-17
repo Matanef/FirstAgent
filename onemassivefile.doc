@@ -1877,6 +1877,11 @@ local-llm-ui/
     |   ├── financeFundementals.js
     │   ├── search.js
     │   ├── llm.js
+    │   ├── news.js
+    │   ├── shopping.js
+    │   ├── sports.js
+    │   ├── tasks.js
+    │   ├── youtube.js
     |   ├── math-intent.js
     |   ├── weather.js
     │   └── index.js
@@ -1885,7 +1890,10 @@ local-llm-ui/
         ├── fetch.js
         ├── yahoo.js
         ├── tradingciew.js
-        ├──cache.js
+        ├── cache.js
+        ├── geo.js
+        ├── googleOAuth.js
+        ├── yahoo.js
         └── config.js
 
 

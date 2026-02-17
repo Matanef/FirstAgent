@@ -1,13 +1,16 @@
-// server/executor.js
-// Clean, corrected, future‑proof executor with HTML support + reasoning
+// server/executor.js (CORRECTED for your actual LLM implementation)
+// Enhanced executor with full memory, table reformatting, and deep agent awareness
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
-import { getToneDescription } from "../tone/toneGuide.js";
 import { llm } from "./tools/llm.js";
 
+// Note: getToneDescription import - adjust if you have tone functionality
+// If not, comment out the import and the toneText usage below
+// import { getToneDescription } from "../tone/toneGuide.js";
+
 /* -------------------------------------------------------
- * Helper: detect if the user wants a table
+ * Helper: detect if user wants table format
  * ----------------------------------------------------- */
 function wantsTableFormat(userQuestion) {
   const lower = (userQuestion || "").toLowerCase();
@@ -18,36 +21,58 @@ function wantsTableFormat(userQuestion) {
     lower.includes("table format") ||
     lower.includes("as a table") ||
     lower.includes("in table form") ||
-    lower.includes("tabular")
+    lower.includes("tabular") ||
+    lower.includes("make a table") ||
+    lower.includes("create a table")
   );
 }
 
 /* -------------------------------------------------------
- * Build memory-aware LLM prompt
+ * Build comprehensive context for LLM with FULL memory
  * ----------------------------------------------------- */
-function buildLLMMemoryPrompt({ userMessage, profile, conversation }) {
-  const toneText = getToneDescription(profile || {});
-  const recentMessages = (conversation || []).slice(-20);
-
-  const convoText = recentMessages
+function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
+  // If you have tone functionality, uncomment this:
+  // const toneText = getToneDescription(profile || {});
+  const toneText = "Be helpful, clear, and concise."; // Default if no tone system
+  
+  // Use ALL messages instead of just 20
+  const allMessages = (conversation || []);
+  
+  const convoText = allMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
   const today = new Date().toLocaleDateString("en-GB");
+  const now = new Date().toLocaleTimeString("en-GB");
 
-  return `
-You are an AI assistant with access to a memory system.
-The current date is ${today}.
+  // Enhanced agent awareness section
+  const awarenessContext = `
+AGENT CAPABILITIES & AWARENESS:
+- I can search the web for current information
+- I can get weather forecasts (including "here" for your location)
+- I can access news from multiple sources
+- I can look up stock prices and company fundamentals
+- I can perform calculations
+- I can read and list files in allowed directories: D:/local-llm-ui and E:/testFolder
+- I can remember user preferences and information across conversations
+- I can reformat information into tables when requested
+- I have access to the FULL conversation history (${allMessages.length} messages in this conversation)
+- Current date: ${today}
+- Current time: ${now}
 
-You receive:
-- A user profile (long-term memory)
-- Recent conversation messages (short-term memory)
-- The current user message
+CONVERSATION STATISTICS:
+- Total messages in this conversation: ${allMessages.length}
+- User messages: ${allMessages.filter(m => m.role === 'user').length}
+- Assistant messages: ${allMessages.filter(m => m.role === 'assistant').length}
+${capabilities ? `- Tools available: ${capabilities.join(', ')}` : ''}
+`;
+
+  return `${awarenessContext}
 
 User profile (long-term memory):
 ${JSON.stringify(profile || {}, null, 2)}
 
-Recent conversation (short-term memory, last 20 messages):
+Full conversation history (${allMessages.length} messages):
 ${convoText || "(no prior messages in this conversation)"}
 
 Tone instructions:
@@ -56,22 +81,26 @@ ${toneText}
 Current user message:
 ${userMessage}
 
-Now write the final answer to the user.
+Now write the final answer to the user. Be aware of the full conversation context and your capabilities.
 `;
 }
 
 /* -------------------------------------------------------
- * Run LLM with memory
+ * Run LLM with full memory and awareness
  * ----------------------------------------------------- */
-async function runLLMWithMemory({ userMessage, conversationId }) {
+async function runLLMWithFullMemory({ userMessage, conversationId }) {
   const memory = getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
+  
+  // List of available tools for awareness
+  const capabilities = Object.keys(TOOLS);
 
-  const prompt = buildLLMMemoryPrompt({
+  const prompt = buildLLMContext({
     userMessage,
     profile,
-    conversation
+    conversation,
+    capabilities
   });
 
   const llmResponse = await llm(prompt);
@@ -81,7 +110,7 @@ async function runLLMWithMemory({ userMessage, conversationId }) {
 }
 
 /* -------------------------------------------------------
- * Summarize tool output with LLM (with table support)
+ * Summarize tool output with LLM (with full context and table support)
  * ----------------------------------------------------- */
 async function summarizeWithLLM({
   userQuestion,
@@ -91,26 +120,33 @@ async function summarizeWithLLM({
 }) {
   const memory = getMemory();
   const profile = memory.profile || {};
-  const toneText = getToneDescription(profile);
+  // const toneText = getToneDescription(profile);
+  const toneText = "Be helpful, clear, and concise."; // Default if no tone system
 
+  // Use ALL messages for full context
   const conversation = memory.conversations?.[conversationId] || [];
-  const recentMessages = conversation.slice(-20);
-
-  const convoText = recentMessages
+  const allMessages = conversation; // No slicing - full history
+  
+  const convoText = allMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
 
   const today = new Date().toLocaleDateString("en-GB");
   const tableRequested = wantsTableFormat(userQuestion);
 
+  // Enhanced summarization prompt with awareness
   const prompt = `
-You are the final response generator for an AI assistant.
+You are the final response generator for an AI assistant with deep awareness of context.
 The current date is ${today}.
+
+CONVERSATION CONTEXT:
+- Total messages in this conversation: ${allMessages.length}
+- You have access to the FULL conversation history below
 
 User profile (long-term memory):
 ${JSON.stringify(profile, null, 2)}
 
-Recent conversation (short-term memory, last 20 messages):
+Full conversation history (${allMessages.length} messages):
 ${convoText || "(no prior messages in this conversation)"}
 
 Tone instructions:
@@ -125,12 +161,17 @@ Tool result (structured data):
 ${JSON.stringify(toolResult, null, 2)}
 
 Formatting instructions:
-- Produce a clear, natural-language answer.
-- Use the profile information naturally when relevant.
-- Respect tone, detail, math, and formatting preferences.
-${tableRequested ? "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly." : "- Use normal paragraph formatting unless a different structure is clearly better."}
-- If the tool results indicate no reliable information, say so clearly and do NOT invent facts.
-- Do NOT mention tools or internal steps.
+- Produce a clear, natural-language answer
+- Use the profile information naturally when relevant
+- Respect tone, detail, math, and formatting preferences
+${tableRequested ? 
+  "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly.\n- Use class='ai-table-wrapper' and class='ai-table' for proper styling" : 
+  "- Use normal paragraph formatting unless a different structure is clearly better"}
+- If the tool results indicate no reliable information, say so clearly and do NOT invent facts
+- Do NOT mention tools or internal steps
+- Be aware of the full conversation context and reference previous messages if relevant
+
+Generate the response:
 `;
 
   const llmResponse = await llm(prompt);
@@ -140,6 +181,74 @@ ${tableRequested ? "- Convert the structured data into an HTML table with header
     reply: text,
     success: true,
     reasoning: toolResult.reasoning || null
+  };
+}
+
+/* -------------------------------------------------------
+ * Reformat previous response as table
+ * ----------------------------------------------------- */
+async function reformatAsTable({ userMessage, conversationId }) {
+  const memory = getMemory();
+  const conversation = memory.conversations?.[conversationId] || [];
+  
+  // Get the last assistant message
+  const lastAssistantMessage = [...conversation]
+    .reverse()
+    .find(m => m.role === 'assistant');
+  
+  if (!lastAssistantMessage) {
+    return {
+      reply: "I don't have a previous response to reformat.",
+      success: false,
+      stateGraph: []
+    };
+  }
+
+  const prompt = `
+You are helping reformat a previous response into an HTML table.
+
+Previous response:
+${lastAssistantMessage.content}
+
+User request:
+${userMessage}
+
+INSTRUCTIONS:
+- Convert the information from the previous response into a well-structured HTML table
+- Use class="ai-table-wrapper" for the wrapper div
+- Use class="ai-table" for the table element
+- Include appropriate headers
+- Keep the data accurate - don't add or remove information
+- Add a brief introduction before the table
+
+Example format:
+<div class="ai-table-wrapper">
+  <table class="ai-table">
+    <thead>
+      <tr><th>Column 1</th><th>Column 2</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Data 1</td><td>Data 2</td></tr>
+    </tbody>
+  </table>
+</div>
+
+Generate the reformatted response:
+`;
+
+  const llmResponse = await llm(prompt);
+  const text = llmResponse?.data?.text || "I couldn't reformat the response.";
+
+  return {
+    reply: text,
+    success: true,
+    stateGraph: [{
+      step: 1,
+      tool: "reformat_table",
+      input: userMessage,
+      output: text,
+      final: true
+    }]
   };
 }
 
@@ -174,10 +283,18 @@ function normalizeCityAliases(message) {
 }
 
 /* -------------------------------------------------------
- * executeAgent – single-shot tool execution
+ * executeAgent – enhanced with full memory and awareness
  * ----------------------------------------------------- */
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
+
+  // Special case: reformat previous response as table
+  if (tool === "reformat_table") {
+    return await reformatAsTable({
+      userMessage: getMessageText(message),
+      conversationId
+    });
+  }
 
   // Normalize city aliases
   message = normalizeCityAliases(message);
@@ -191,10 +308,10 @@ export async function executeAgent({ tool, message, conversationId }) {
   }
 
   /* ------------------------------
-   * Direct LLM
+   * Direct LLM - with FULL memory
    * ---------------------------- */
   if (tool === "llm") {
-    const reply = await runLLMWithMemory({
+    const reply = await runLLMWithFullMemory({
       userMessage: getMessageText(message),
       conversationId
     });
@@ -216,7 +333,7 @@ export async function executeAgent({ tool, message, conversationId }) {
   }
 
   /* ------------------------------
-   * WEATHER — ONLY tool that receives full object
+   * WEATHER – ONLY tool that receives full object
    * ---------------------------- */
   let toolInput;
 
@@ -252,7 +369,7 @@ export async function executeAgent({ tool, message, conversationId }) {
   }
 
   /* ------------------------------
-   * Tools that should be summarized
+   * Tools that should be summarized (with full context)
    * ---------------------------- */
   const summarizeTools = [
     "search",
@@ -264,7 +381,9 @@ export async function executeAgent({ tool, message, conversationId }) {
     "youtube",
     "shopping",
     "email",
-    "tasks"
+    "tasks",
+    "news",
+    "file"
   ];
 
   if (summarizeTools.includes(tool)) {
