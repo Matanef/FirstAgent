@@ -12,6 +12,9 @@ import { youtube } from "./youtube.js";
 import { shopping } from "./shopping.js";
 import { email } from "./email.js";
 import { tasks } from "./tasks.js";
+import { fileWrite } from "./fileWrite.js";
+import { webDownload } from "./webDownload.js";
+import { packageManager } from "./packageManager.js";
 
 export const TOOLS = {
   file,
@@ -25,5 +28,8 @@ export const TOOLS = {
   youtube,
   shopping,
   email,
-  tasks
+  tasks,
+  fileWrite,        // ADD
+  webDownload,      // ADD
+  packageManager,   // ADD
 };
