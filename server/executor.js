@@ -1,12 +1,12 @@
-// server/executor.js (CORRECTED for your actual LLM implementation)
+// server/executor.js
 // Enhanced executor with full memory, table reformatting, and deep agent awareness
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
 import { llm } from "./tools/llm.js";
+import { getToneDescription } from "../tone/toneGuide.js";
 
-// Note: getToneDescription import - adjust if you have tone functionality
-// If not, comment out the import and the toneText usage below
+// If you add tone later, wire it here
 // import { getToneDescription } from "../tone/toneGuide.js";
 
 /* -------------------------------------------------------
@@ -31,13 +31,11 @@ function wantsTableFormat(userQuestion) {
  * Build comprehensive context for LLM with FULL memory
  * ----------------------------------------------------- */
 function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
-  // If you have tone functionality, uncomment this:
   // const toneText = getToneDescription(profile || {});
-  const toneText = "Be helpful, clear, and concise."; // Default if no tone system
-  
-  // Use ALL messages instead of just 20
-  const allMessages = (conversation || []);
-  
+  const toneText = getToneDescription(profile || {});
+
+  const allMessages = conversation || [];
+
   const convoText = allMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
@@ -45,7 +43,6 @@ function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
   const today = new Date().toLocaleDateString("en-GB");
   const now = new Date().toLocaleTimeString("en-GB");
 
-  // Enhanced agent awareness section
   const awarenessContext = `
 AGENT CAPABILITIES & AWARENESS:
 - I can search the web for current information
@@ -62,9 +59,9 @@ AGENT CAPABILITIES & AWARENESS:
 
 CONVERSATION STATISTICS:
 - Total messages in this conversation: ${allMessages.length}
-- User messages: ${allMessages.filter(m => m.role === 'user').length}
-- Assistant messages: ${allMessages.filter(m => m.role === 'assistant').length}
-${capabilities ? `- Tools available: ${capabilities.join(', ')}` : ''}
+- User messages: ${allMessages.filter(m => m.role === "user").length}
+- Assistant messages: ${allMessages.filter(m => m.role === "assistant").length}
+${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
 `;
 
   return `${awarenessContext}
@@ -92,8 +89,7 @@ async function runLLMWithFullMemory({ userMessage, conversationId }) {
   const memory = getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
-  
-  // List of available tools for awareness
+
   const capabilities = Object.keys(TOOLS);
 
   const prompt = buildLLMContext({
@@ -121,12 +117,11 @@ async function summarizeWithLLM({
   const memory = getMemory();
   const profile = memory.profile || {};
   // const toneText = getToneDescription(profile);
-  const toneText = "Be helpful, clear, and concise."; // Default if no tone system
+  const toneText = getToneDescription(profile || {});
 
-  // Use ALL messages for full context
   const conversation = memory.conversations?.[conversationId] || [];
-  const allMessages = conversation; // No slicing - full history
-  
+  const allMessages = conversation;
+
   const convoText = allMessages
     .map(m => `${m.role}: ${m.content}`)
     .join("\n");
@@ -134,7 +129,6 @@ async function summarizeWithLLM({
   const today = new Date().toLocaleDateString("en-GB");
   const tableRequested = wantsTableFormat(userQuestion);
 
-  // Enhanced summarization prompt with awareness
   const prompt = `
 You are the final response generator for an AI assistant with deep awareness of context.
 The current date is ${today}.
@@ -164,9 +158,11 @@ Formatting instructions:
 - Produce a clear, natural-language answer
 - Use the profile information naturally when relevant
 - Respect tone, detail, math, and formatting preferences
-${tableRequested ? 
-  "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly.\n- Use class='ai-table-wrapper' and class='ai-table' for proper styling" : 
-  "- Use normal paragraph formatting unless a different structure is clearly better"}
+${
+  tableRequested
+    ? "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly.\n- Use class='ai-table-wrapper' and class='ai-table' for proper styling"
+    : "- Use normal paragraph formatting unless a different structure is clearly better"
+}
 - If the tool results indicate no reliable information, say so clearly and do NOT invent facts
 - Do NOT mention tools or internal steps
 - Be aware of the full conversation context and reference previous messages if relevant
@@ -190,12 +186,11 @@ Generate the response:
 async function reformatAsTable({ userMessage, conversationId }) {
   const memory = getMemory();
   const conversation = memory.conversations?.[conversationId] || [];
-  
-  // Get the last assistant message
+
   const lastAssistantMessage = [...conversation]
     .reverse()
-    .find(m => m.role === 'assistant');
-  
+    .find(m => m.role === "assistant");
+
   if (!lastAssistantMessage) {
     return {
       reply: "I don't have a previous response to reformat.",
@@ -242,13 +237,15 @@ Generate the reformatted response:
   return {
     reply: text,
     success: true,
-    stateGraph: [{
-      step: 1,
-      tool: "reformat_table",
-      input: userMessage,
-      output: text,
-      final: true
-    }]
+    stateGraph: [
+      {
+        step: 1,
+        tool: "reformat_table",
+        input: userMessage,
+        output: text,
+        final: true
+      }
+    ]
   };
 }
 
@@ -269,9 +266,9 @@ function normalizeCityAliases(message) {
     const c = message.context.city.toLowerCase();
 
     const aliases = {
-      "givataim": "Givatayim",
+      givataim: "Givatayim",
       "giv'atayim": "Givatayim",
-      "givatayim": "Givatayim"
+      givatayim: "Givatayim"
     };
 
     if (aliases[c]) {
@@ -294,17 +291,6 @@ export async function executeAgent({ tool, message, conversationId }) {
       userMessage: getMessageText(message),
       conversationId
     });
-  }
-
-  // Normalize city aliases
-  message = normalizeCityAliases(message);
-
-  if (!TOOLS[tool]) {
-    return {
-      reply: "Tool not found.",
-      stateGraph,
-      success: false
-    };
   }
 
   /* ------------------------------
@@ -332,15 +318,26 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
+  // Normalize city aliases
+  message = normalizeCityAliases(message);
+
+  if (!TOOLS[tool]) {
+    return {
+      reply: "Tool not found.",
+      stateGraph,
+      success: false
+    };
+  }
+
   /* ------------------------------
-   * WEATHER – ONLY tool that receives full object
+   * WEATHER + MEMORYTOOL receive full object
    * ---------------------------- */
   let toolInput;
 
-  if (tool === "weather") {
-    toolInput = message; // full object { text, context }
+  if (tool === "weather" || tool === "memorytool") {
+    toolInput = message; // { text, context }
   } else {
-    toolInput = getMessageText(message); // string only
+    toolInput = getMessageText(message); // string
   }
 
   /* ------------------------------
@@ -365,6 +362,21 @@ export async function executeAgent({ tool, message, conversationId }) {
       stateGraph,
       success: false,
       tool
+    };
+  }
+
+  /* ------------------------------
+   * SPECIAL CASE: memorytool
+   * - No LLM
+   * - No summarization
+   * - Clean assistant message
+   * ---------------------------- */
+  if (tool === "memorytool") {
+    return {
+      reply: result.data?.message || "Memory updated.",
+      stateGraph,
+      tool,
+      success: true
     };
   }
 

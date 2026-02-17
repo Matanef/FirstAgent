@@ -126,6 +126,14 @@ app.post("/chat", async (req, res) => {
       memory.profile.name = message.substring("remember that my name is ".length).trim();
       console.log("💾 Updated profile: name =", memory.profile.name);
     }
+    if (lower.startsWith("remember my location is ")) {
+      memory.profile.location = message.substring("remember my location is ".length).trim();
+      console.log("💾 Updated profile: location =", memory.profile.location);
+    }
+    if (lower.startsWith("remember that my location is ")) {
+      memory.profile.location = message.substring("remember that my location is ".length).trim();
+      console.log("💾 Updated profile: location =", memory.profile.location);
+    }
 
     // PLAN - Enhanced planner with LLM intelligence
     console.log("🧠 Planning...");
@@ -153,8 +161,11 @@ app.post("/chat", async (req, res) => {
         finalContext.city = city;
         console.log("✅ Geolocation successful:", city);
       } else {
-        console.log("⚠️ Geolocation failed - falling back to extraction");
-        delete finalContext.city;
+        console.log("⚠️ Geolocation failed");
+        // Keep the geolocation flag so weather tool knows user said "here"
+        // Weather tool can check memory or ask for location
+        finalContext.wasGeolocationAttempt = true;
+        finalContext.city = null; // Explicitly null, not deleted
       }
     }
 

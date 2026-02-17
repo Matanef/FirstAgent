@@ -1,6 +1,9 @@
-// server/tools/weather.js
+// server/tools/weather.js (CORRECTED - handles geolocation properly)
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
+import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
+
+
 
 // ------------------------------
 // Detect if user wants a 5-day forecast
@@ -23,7 +26,7 @@ function wantsForecast(query) {
 function extractCity(query) {
   const text = typeof query === "string" ? query : query?.text || "";
   const lower = text.toLowerCase().trim();
-
+  console.log("WEATHER TOOL TRIGGERED:", request);
   // 1. Look for "in <city>"
   const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
   if (inMatch) return formatCity(inMatch[1]);
@@ -91,7 +94,7 @@ function formatCity(city) {
 }
 
 // ------------------------------
-// Main weather tool
+// Main weather tool (ENHANCED)
 // ------------------------------
 export async function weather(query) {
   if (!CONFIG.OPENWEATHER_KEY) {
@@ -104,42 +107,70 @@ export async function weather(query) {
   }
 
   try {
-    // 1. Determine city (context → memory → extraction)
+    // 1. Determine city from multiple sources
     let city = query?.context?.city || null;
+    const wasGeolocationAttempt = query?.context?.wasGeolocationAttempt;
 
-    // If context says "use geolocation", we expect the caller to have resolved it already.
+    console.log("🌤️ Weather tool received:", { city, wasGeolocationAttempt });
+
+    // If context explicitly set city to null but was a geo attempt
+    if (!city && wasGeolocationAttempt) {
+      console.log("🔍 Geolocation failed, checking memory for saved location...");
+      
+      // Try to get saved location from user profile
+      const memory = getMemory();
+      if (memory.profile?.location) {
+        city = memory.profile.location;
+        console.log("✅ Using saved location from profile:", city);
+      } else {
+        // Ask user to set their location
+        return {
+          tool: "weather",
+          success: false,
+          final: true,
+          error: "I couldn't determine your location. Please tell me your city, or say 'remember my location is [City]' so I can help you next time!",
+          data: {
+            suggestion: "Set your location by saying: 'remember my location is Tel Aviv'"
+          }
+        };
+      }
+    }
+
+    // If caller set __USE_GEOLOCATION__ but didn't resolve it
     if (city === "__USE_GEOLOCATION__") {
       city = null;
     }
 
-    // If no city from planner, try memory
-    if (!city) {
-      const memory = globalThis.__agentMemory || {};
-      if (memory.lastWeatherCity && isLikelyCity(memory.lastWeatherCity)) {
-        city = memory.lastWeatherCity;
-      }
-    }
-
-    // If still no city, extract from message text
+    // If still no city, try extraction from message
     if (!city) {
       city = extractCity(query);
+      console.log("🔍 Extracted city from message:", city);
     }
 
-    // If STILL no city → fail early
+    // Final check: do we have a city?
     if (!city) {
       return {
         tool: "weather",
         success: false,
         final: true,
-        error: "No city detected. Please specify a location."
+        error: "No city detected. Please specify a location (e.g., 'weather in Paris') or set your location with 'remember my location is [City]'."
       };
     }
 
-    // 2. Save city to memory (only if valid)
-    if (isLikelyCity(city)) {
-      globalThis.__agentMemory = globalThis.__agentMemory || {};
-      globalThis.__agentMemory.lastWeatherCity = city;
+// Only save location when planner explicitly indicated a weather request
+// (context.city present or context.raw === "weather")
+    const isPlannerWeather = !!(query?.context?.city || query?.context?.raw === "weather" || query?.context?.city === "__USE_GEOLOCATION__");
+      
+    if (isPlannerWeather && isLikelyCity(city)) {
+      const memory = getMemory();
+      if (!memory.profile) memory.profile = {};
+      if (!memory.profile.location || memory.profile.location !== city) {
+        memory.profile.location = city;
+        saveJSON(MEMORY_FILE, memory);
+        console.log("💾 Saved location to profile:", city);
+      }
     }
+
 
     // 3. Determine mode (current vs forecast)
     const forecastMode = wantsForecast(query);
@@ -170,7 +201,7 @@ export async function weather(query) {
         tool: "weather",
         success: false,
         final: true,
-        error: `I couldn't find weather data for "${city}".`
+        error: `I couldn't find weather data for "${city}". Please check the city name.`
       };
     }
 

@@ -122,3 +122,12 @@ export function updateProfileMemory(message) {
 
   saveJSON(MEMORY_FILE, memory);
 }
+// Clear only location from profile
+export function clearLocation() {
+  const memory = getMemory();
+  if (memory.profile && memory.profile.location) {
+    delete memory.profile.location;
+    saveJSON(MEMORY_FILE, memory);
+    console.log("🧹 Cleared profile.location from memory");
+  }
+}
