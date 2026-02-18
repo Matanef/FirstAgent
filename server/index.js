@@ -248,6 +248,13 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+app.get("/oauth/callback", async (req, res) => {
+  const { code } = req.query;
+  const { tokens } = await oAuth2Client.getToken(code);
+  saveToken(tokens);
+  res.send("✅ Gmail authenticated! You can close this window.");
+});
+
 // ============================================================
 // CONVERSATION APIs
 // ============================================================

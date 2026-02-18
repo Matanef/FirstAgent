@@ -105,8 +105,7 @@ function hereIndicatesWeather(text) {
   if (!/\bhere\b/.test(lower)) return false;
   // require at least one weather keyword somewhere in the sentence
   if (!containsKeyword(lower, WEATHER_KEYWORDS)) return false;
-  // ensure "here" is not used in other contexts like "here's the thing"
-  // check that "here" is a standalone token and not part of "here's"
+  // ensure "here" is a standalone token and not part of "here's"
   const words = lower.split(/\s+/);
   const idx = words.findIndex(w => w === "here");
   if (idx === -1) return false;
@@ -182,6 +181,7 @@ IMPORTANT:
 - Only use packageManager when the user clearly wants to manage npm packages.
 
 Respond with ONLY the tool name (and optional context after |), nothing else.`;
+
   try {
     const response = await llm(prompt);
 

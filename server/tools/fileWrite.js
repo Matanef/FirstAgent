@@ -77,6 +77,15 @@ export async function fileWrite(request) {
 
     // Protected file check
     const filename = path.basename(resolved);
+    // Safety guard: refuse any attempt to modify memory.json via fileWrite
+    if (filename.toLowerCase() === "memory.json") {
+      return {
+        tool: "fileWrite",
+        success: false,
+        final: true,
+        error: "Direct modification of memory.json via fileWrite is disabled for safety."
+      };
+    }
     if (isProtected(filename)) {
       if (!backup) {
         return {
