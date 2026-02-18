@@ -24,7 +24,13 @@ export async function memorytool(request) {
       console.log("✅ After delete:", memory.profile);
       
       // Save immediately
-      saveJSON(MEMORY_FILE, memory);
+      console.log("DEBUG memoryTool before save:", MEMORY_FILE, JSON.stringify(memory.profile));
+      try {
+        await saveJSON(MEMORY_FILE, memory);
+        console.log("DEBUG memoryTool save succeeded");
+      } catch (e) {
+        console.error("DEBUG memoryTool save failed:", e);
+      }
       
       // Verify it was saved
       const verification = getMemory();
@@ -53,7 +59,13 @@ export async function memorytool(request) {
     if (city) {
       const memory = getMemory();
       memory.profile.location = city;
-      saveJSON(MEMORY_FILE, memory);
+      console.log("DEBUG memoryTool before save:", MEMORY_FILE, JSON.stringify(memory.profile));
+      try {
+        await saveJSON(MEMORY_FILE, memory);
+        console.log("DEBUG memoryTool save succeeded");
+      } catch (e) {
+        console.error("DEBUG memoryTool save failed:", e);
+      }
 
       return {
         tool: "memorytool",

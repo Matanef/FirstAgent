@@ -102,7 +102,7 @@ export async function weather(query) {
           final: true,
           error: "I couldn't determine your location. Please tell me your city, or say 'remember my location is [City]' so I can help you next time!",
           data: {
-            suggestion: "Set your location by saying: 'remember my location is Tel Aviv'"
+            suggestion: "Set your location by saying: 'remember my location is Givatayim'"
           }
         };
       }

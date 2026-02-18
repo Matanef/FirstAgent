@@ -1,4 +1,4 @@
-// server/tools/file-enhanced.js
+// server/tools/file.js
 // Enhanced file system tool with multiple sandboxes and intelligent path resolution
 
 import fs from "fs/promises";

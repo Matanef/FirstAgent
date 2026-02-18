@@ -1,5 +1,6 @@
-// server/index.js (COMPLETE FIX - Memory bug resolved)
-// FIX #1: Reloads memory before saving to prevent deleted data from being restored
+// server/index.js
+
+// FIXED: Memory handling, inline profile updates, and conversation safety
 
 import express from "express";
 import cors from "cors";
@@ -19,6 +20,7 @@ import {
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
 import { resolveCityFromIp } from "./utils/geo.js";
+console.log("MEMORY_FILE:", MEMORY_FILE)
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,8 +30,13 @@ app.use(express.json({ limit: "10mb" }));
 
 // Enhanced logging
 app.use((req, res, next) => {
-  const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || req.connection.remoteAddress;
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${clientIp}`);
+  const clientIp =
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.ip ||
+    req.connection.remoteAddress;
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${clientIp}`
+  );
   req.clientIp = clientIp;
   next();
 });
@@ -42,11 +49,15 @@ const upload = multer({
     files: 20 // Max 20 files
   },
   fileFilter: (req, file, cb) => {
-    // Validate MIME types
     const allowedMimes = [
-      'text/plain', 'application/pdf', 'image/png', 'image/jpeg',
-      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      "text/plain",
+      "application/pdf",
+      "image/png",
+      "image/jpeg",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     ];
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
@@ -68,7 +79,10 @@ app.get("/debug/memory", (req, res) => {
     lastUpdated: new Date().toISOString(),
     stats: {
       totalConversations: Object.keys(memory.conversations).length,
-      totalMessages: Object.values(memory.conversations).reduce((sum, conv) => sum + conv.length, 0),
+      totalMessages: Object.values(memory.conversations).reduce(
+        (sum, conv) => sum + conv.length,
+        0
+      ),
       profileKeys: Object.keys(memory.profile).length
     }
   });
@@ -84,8 +98,9 @@ app.post("/debug/memory/reset", (req, res) => {
 });
 
 // ============================================================
-// CHAT ENDPOINT - FIX #1: Memory bug resolved
+// CHAT ENDPOINT
 // ============================================================
+
 app.post("/chat", async (req, res) => {
   const startTime = Date.now();
 
@@ -97,7 +112,9 @@ app.post("/chat", async (req, res) => {
     }
 
     if (message.length > 2000) {
-      return res.status(400).json({ error: "Message too long (max 2000 characters)" });
+      return res
+        .status(400)
+        .json({ error: "Message too long (max 2000 characters)" });
     }
 
     console.log("\n" + "=".repeat(70));
@@ -118,34 +135,53 @@ app.post("/chat", async (req, res) => {
       timestamp: new Date().toISOString()
     });
 
-    // INLINE PROFILE MEMORY UPDATE
-    const lower = message.toLowerCase();
-    if (lower.startsWith("remember my name is ")) {
-      memory.profile.name = message.substring("remember my name is ".length).trim();
-      console.log("💾 Updated profile: name =", memory.profile.name);
-      saveJSON(MEMORY_FILE, memory); // <-- FIX
+    // INLINE PROFILE MEMORY UPDATE (robust patterns)
+    // Handles:
+    // - "remember my name is X"
+    // - "remember that my name is X"
+    // - "please remember my name is X"
+    // - "you can remember that my location is X"
+    const nameMatch = message.match(/remember(?: that)? my name is (.+)$/i);
+    if (nameMatch) {
+      const name = nameMatch[1].trim();
+      if (name) {
+        memory.profile.name = name;
+        console.log("💾 Updated profile: name =", memory.profile.name);
+        console.log("DEBUG before saveJSON (index):", MEMORY_FILE, JSON.stringify(memory.profile));
+        try {
+          await saveJSON(MEMORY_FILE, memory);
+          console.log("DEBUG saveJSON succeeded (index)");
+        } catch (e) {
+          console.error("DEBUG saveJSON failed (index):", e);
+        }
+
+      }
     }
-    if (lower.startsWith("remember that my name is ")) {
-      memory.profile.name = message.substring("remember that my name is ".length).trim();
-      console.log("💾 Updated profile: name =", memory.profile.name);
-      saveJSON(MEMORY_FILE, memory); // <-- FIX
-    }
-    if (lower.startsWith("remember my location is ")) {
-      memory.profile.location = message.substring("remember my location is ".length).trim();
-      console.log("💾 Updated profile: location =", memory.profile.location);
-      saveJSON(MEMORY_FILE, memory); // <-- FIX
-    }
-    if (lower.startsWith("remember that my location is ")) {
-      memory.profile.location = message.substring("remember that my location is ".length).trim();
-      console.log("💾 Updated profile: location =", memory.profile.location);
-      saveJSON(MEMORY_FILE, memory); // <-- FIX
+
+    const locationMatch = message.match(
+      /remember(?: that)? my location is (.+)$/i
+    );
+    if (locationMatch) {
+      const city = locationMatch[1].trim();
+      if (city) {
+        memory.profile.location = city;
+        console.log("💾 Updated profile: location =", memory.profile.location);
+        console.log("DEBUG before saveJSON (index):", MEMORY_FILE, JSON.stringify(memory.profile));
+        try {
+          await saveJSON(MEMORY_FILE, memory);
+          console.log("DEBUG saveJSON succeeded (index)");
+        } catch (e) {
+          console.error("DEBUG saveJSON failed (index):", e);
+        }
+
+      }
     }
 
     // PLAN
     console.log("🧠 Planning...");
     const planResult = await plan({ message });
     const { tool, input, context, reasoning } = planResult;
-    
+
     console.log("🎯 Plan:", {
       tool,
       reasoning: reasoning || "pattern-based routing",
@@ -192,10 +228,9 @@ app.post("/chat", async (req, res) => {
     // Calculate confidence
     const confidence = calculateConfidence(stateGraph);
 
-    // FIX #1: RELOAD MEMORY BEFORE SAVING
-    // This prevents memoryTool deletions from being overwritten
+    // RELOAD MEMORY BEFORE SAVING (to respect external changes like memorytool)
     memory = getMemory();
-    // FIX: ensure conversation still exists after reload
+    // Ensure conversation still exists after reload
     memory.conversations[id] ??= [];
 
     // Save assistant reply
@@ -212,7 +247,14 @@ app.post("/chat", async (req, res) => {
     });
 
     // SAVE MEMORY
-    saveJSON(MEMORY_FILE, memory);
+    console.log("DEBUG before saveJSON (index):", MEMORY_FILE, JSON.stringify(memory.profile));
+    try {
+      await saveJSON(MEMORY_FILE, memory);
+      console.log("DEBUG saveJSON succeeded (index)");
+    } catch (e) {
+      console.error("DEBUG saveJSON failed (index):", e);
+    }
+
 
     const elapsed = Date.now() - startTime;
 
@@ -241,7 +283,6 @@ app.post("/chat", async (req, res) => {
         messageCount: memory.conversations[id].length
       }
     });
-
   } catch (err) {
     console.error("❌ CHAT ERROR:", err);
     console.error(err.stack);
@@ -256,13 +297,14 @@ app.post("/chat", async (req, res) => {
 // ============================================================
 // FILE UPLOAD ENDPOINT (Requirement #31)
 // ============================================================
-app.post("/upload", upload.array('files', 20), async (req, res) => {
+
+app.post("/upload", upload.array("files", 20), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "No files uploaded" });
     }
 
-    const fileData = req.files.map(file => ({
+    const fileData = req.files.map((file) => ({
       id: file.filename,
       originalName: file.originalname,
       mimetype: file.mimetype,
@@ -283,20 +325,21 @@ app.post("/upload", upload.array('files', 20), async (req, res) => {
 // ============================================================
 // COMPILE FILES ENDPOINT (Requirements #15, #16)
 // ============================================================
+
 app.post("/compile-files", async (req, res) => {
   try {
     const { files, conversationId } = req.body;
-    
+
     let combinedContent = "";
-    
+
     for (const filename of files) {
       const filepath = path.resolve("D:/local-llm-ui", filename);
-      
+
       // Security check
       if (!filepath.startsWith("D:/local-llm-ui")) {
         continue;
       }
-      
+
       try {
         const content = await fs.readFile(filepath, "utf8");
         combinedContent += `\n\n// ===== FILE: ${filename} =====\n\n`;
@@ -305,19 +348,17 @@ app.post("/compile-files", async (req, res) => {
         console.error(`Failed to read ${filename}:`, err);
       }
     }
-    
-    // Write to bigFile.txt
+
     const outputPath = path.resolve("D:/local-llm-ui/files2/bigFile.txt");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, combinedContent, "utf8");
-    
+
     res.json({
       success: true,
       filesCompiled: files.length,
       outputPath: "D:/local-llm-ui/files2/bigFile.txt",
       size: combinedContent.length
     });
-    
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -326,6 +367,7 @@ app.post("/compile-files", async (req, res) => {
 // ============================================================
 // CONVERSATION APIs
 // ============================================================
+
 app.get("/conversation/:id", (req, res) => {
   const memory = getMemory();
   const conversation = memory.conversations[req.params.id];
@@ -353,18 +395,23 @@ app.get("/conversations", (req, res) => {
       firstMessage: messages[0]?.timestamp,
       lastMessage: messages[messages.length - 1]?.timestamp,
       preview: messages[0]?.content.slice(0, 50),
-      toolsUsed: [...new Set(messages.filter(m => m.tool).map(m => m.tool))]
+      toolsUsed: [
+        ...new Set(messages.filter((m) => m.tool).map((m) => m.tool))
+      ]
     })
   );
 
-  conversations.sort((a, b) => 
-    new Date(b.lastMessage) - new Date(a.lastMessage)
+  conversations.sort(
+    (a, b) => new Date(b.lastMessage) - new Date(a.lastMessage)
   );
 
   res.json({
     conversations,
     totalConversations: conversations.length,
-    totalMessages: conversations.reduce((sum, c) => sum + c.messageCount, 0)
+    totalMessages: conversations.reduce(
+      (sum, c) => sum + c.messageCount,
+      0
+    )
   });
 });
 
@@ -376,7 +423,14 @@ app.delete("/conversation/:id", (req, res) => {
   }
 
   delete memory.conversations[req.params.id];
-  saveJSON(MEMORY_FILE, memory);
+  console.log("DEBUG before saveJSON (index):", MEMORY_FILE, JSON.stringify(memory.profile));
+  try {
+    saveJSON(MEMORY_FILE, memory);
+    console.log("DEBUG saveJSON succeeded (index)");
+  } catch (e) {
+    console.error("DEBUG saveJSON failed (index):", e);
+  }
+
 
   res.json({
     success: true,
@@ -387,6 +441,7 @@ app.delete("/conversation/:id", (req, res) => {
 // ============================================================
 // PROFILE API
 // ============================================================
+
 app.get("/profile", (req, res) => {
   const memory = getMemory();
   res.json({
@@ -415,6 +470,7 @@ app.post("/profile", (req, res) => {
 // ============================================================
 // START SERVER
 // ============================================================
+
 app.listen(PORT, () => {
   console.log("\n" + "=".repeat(70));
   console.log("🤖 ENHANCED AI AGENT SERVER");
