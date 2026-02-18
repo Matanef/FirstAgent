@@ -1,13 +1,9 @@
-// server/tools/weather.js (CORRECTED - handles geolocation properly)
+// server/tools/weather.js (COMPLETE FIX - Never saves location)
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
-import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
+import { getMemory } from "../memory.js";
 
-
-
-// ------------------------------
 // Detect if user wants a 5-day forecast
-// ------------------------------
 function wantsForecast(query) {
   const text = typeof query === "string" ? query : query?.text || "";
   const lower = text.toLowerCase();
@@ -20,13 +16,11 @@ function wantsForecast(query) {
   );
 }
 
-// ------------------------------
 // STRICT city extraction
-// ------------------------------
 function extractCity(query) {
   const text = typeof query === "string" ? query : query?.text || "";
   const lower = text.toLowerCase().trim();
-  console.log("WEATHER TOOL TRIGGERED:", request);
+
   // 1. Look for "in <city>"
   const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
   if (inMatch) return formatCity(inMatch[1]);
@@ -47,38 +41,18 @@ function extractCity(query) {
   return null;
 }
 
-// ------------------------------
 // Heuristic: Is this likely a city?
-// ------------------------------
 function isLikelyCity(text) {
   const blacklist = [
-    "table",
-    "please",
-    "forecast",
-    "weather",
-    "temperature",
-    "humidity",
-    "rain",
-    "snow",
-    "wind",
-    "week",
-    "days",
-    "next",
-    "show",
-    "it",
-    "in",
-    "for",
-    "here"
+    "table", "please", "forecast", "weather", "temperature",
+    "humidity", "rain", "snow", "wind", "week", "days",
+    "next", "show", "it", "in", "for", "here", "the"
   ];
 
   const cleaned = text.trim().toLowerCase();
 
   if (blacklist.includes(cleaned)) return false;
-
-  // Must contain only letters/spaces/hyphens
   if (!/^[a-zA-Z\s\-]+$/.test(cleaned)) return false;
-
-  // Must be at least 3 characters
   if (cleaned.length < 3) return false;
 
   return true;
@@ -93,9 +67,7 @@ function formatCity(city) {
     .join(" ");
 }
 
-// ------------------------------
-// Main weather tool (ENHANCED)
-// ------------------------------
+// Main weather tool (NEVER SAVES LOCATION)
 export async function weather(query) {
   if (!CONFIG.OPENWEATHER_KEY) {
     return {
@@ -115,9 +87,9 @@ export async function weather(query) {
 
     // If context explicitly set city to null but was a geo attempt
     if (!city && wasGeolocationAttempt) {
-      console.log("🔍 Geolocation failed, checking memory for saved location...");
+      console.log("📍 Geolocation failed, checking memory for saved location...");
       
-      // Try to get saved location from user profile
+      // Try to get saved location from user profile (READ ONLY)
       const memory = getMemory();
       if (memory.profile?.location) {
         city = memory.profile.location;
@@ -157,22 +129,12 @@ export async function weather(query) {
       };
     }
 
-// Only save location when planner explicitly indicated a weather request
-// (context.city present or context.raw === "weather")
-  const isPlannerWeather = !!(query?.context?.city || query?.context?.raw === "weather" || query?.context?.city === "__USE_GEOLOCATION__");
-    
-  if (isPlannerWeather && isLikelyCity(city)) {
-    const memory = getMemory();
-    if (!memory.profile) memory.profile = {};
-    if (!memory.profile.location || memory.profile.location !== city) {
-      memory.profile.location = city;
-      saveJSON(MEMORY_FILE, memory);
-      console.log("💾 Saved location to profile:", city);
-    }
-  }
+    // CRITICAL: NEVER SAVE LOCATION HERE
+    // Location saving only happens in:
+    // 1. index.js for "remember my location is X"
+    // 2. memorytool for explicit memory operations
 
-
-    // 3. Determine mode (current vs forecast)
+    // 2. Determine mode (current vs forecast)
     const forecastMode = wantsForecast(query);
 
     const endpoint = forecastMode
@@ -186,7 +148,7 @@ export async function weather(query) {
     const res = await fetch(url);
     const data = await res.json();
 
-    // 4. Error handling
+    // 3. Error handling
     if (res.status === 401) {
       return {
         tool: "weather",
@@ -214,7 +176,7 @@ export async function weather(query) {
       };
     }
 
-    // 5. Forecast mode
+    // 4. Forecast mode
     if (forecastMode) {
       const grouped = {};
 
@@ -245,7 +207,7 @@ export async function weather(query) {
       };
     }
 
-    // 6. Current weather mode
+    // 5. Current weather mode
     return {
       tool: "weather",
       success: true,

@@ -1,11 +1,10 @@
-// server/tools/memoryTool.js
+// server/tools/memoryTool.js (COMPLETE FIX - No side effects)
 import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
 
 export async function memorytool(request) {
   const text = request?.text || request || "";
   const lower = text.toLowerCase();
   const context = request?.context || {};
-  const memory = getMemory();
 
   // --- FORGET LOCATION ---
   if (
@@ -13,15 +12,23 @@ export async function memorytool(request) {
     lower.includes("forget my saved location") ||
     lower.includes("clear my location") ||
     lower.includes("remove my location") ||
+    lower.includes("delete my location") ||
     context.raw === "forget_location"
   ) {
+    // CRITICAL: Load fresh memory, modify, save
+    const memory = getMemory();
+    
     if (memory.profile?.location) {
-      console.log("Before delete:", memory.profile);
+      console.log("🗑️ Before delete:", memory.profile);
       delete memory.profile.location;
-      console.log("After delete:", memory.profile);
+      console.log("✅ After delete:", memory.profile);
+      
+      // Save immediately
       saveJSON(MEMORY_FILE, memory);
-      console.log("Saved memory:", getMemory().profile);
-
+      
+      // Verify it was saved
+      const verification = getMemory();
+      console.log("🔍 Verification:", verification.profile);
 
       return {
         tool: "memorytool",
@@ -40,9 +47,11 @@ export async function memorytool(request) {
   }
 
   // --- REMEMBER LOCATION ---
+  // (This is handled inline in index.js for immediate effect)
   if (lower.startsWith("remember my location is ")) {
     const city = text.substring("remember my location is ".length).trim();
     if (city) {
+      const memory = getMemory();
       memory.profile.location = city;
       saveJSON(MEMORY_FILE, memory);
 

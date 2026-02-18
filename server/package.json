@@ -17,6 +17,7 @@
     "expr-eval": "^2.0.2",
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
+    "multer": "^2.0.2",
     "nerdamer": "^1.1.13",
     "node-fetch": "^3.3.2",
     "rss-parser": "^3.13.0"
