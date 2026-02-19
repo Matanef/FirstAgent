@@ -1,5 +1,5 @@
-// server/planner.js (COMPLETE FIX - SelfImprovement routing added)
-// LLM-powered planner with intelligent intent detection + preclassifier heuristics
+// server/planner.js
+// COMPLETE FIX: #3 (send it email), #6 (file paths), review command detection
 
 import { llm } from "./tools/llm.js";
 
@@ -79,7 +79,6 @@ function hereIndicatesWeather(text) {
   return containsKeyword(lower, WEATHER_KEYWORDS);
 }
 
-// FIX: Detect self-improvement queries
 function isSelfImprovementQuery(text) {
   const lower = text.toLowerCase();
   const patterns = [
@@ -99,7 +98,6 @@ function isSelfImprovementQuery(text) {
   return patterns.some(pattern => pattern.test(lower));
 }
 
-// FIX: Detect meta questions about file access
 function isMetaQuestionAboutFiles(text) {
   const lower = text.toLowerCase();
   const metaPatterns = [
@@ -115,26 +113,73 @@ function isMetaQuestionAboutFiles(text) {
   return metaPatterns.some(pattern => pattern.test(lower));
 }
 
+// FIX #6: Enhanced file operation detection with project awareness
+function isFileOperation(text) {
+  const lower = text.toLowerCase();
+  return (
+    /^list\s+/i.test(text) ||  // "list ..."
+    /^show\s+(files?|folder|directory|contents?|me\s+the)/i.test(lower) ||
+    /^read\s+/i.test(text) ||
+    /^open\s+/i.test(text) ||
+    /go\s+to\s+.*\s+folder/i.test(lower) ||  // "go to tools folder"
+    /\b(scan|explore|look\s+(in|at)|check)\s+(the\s+)?(?:files?|folders?|directory|directories)/i.test(lower) ||
+    /(in\s+(your|my|the)\s+project|project\s+folder)/i.test(lower)  // "in your project"
+  );
+}
+
+// FIX #3: Detect "send it" for email confirmation (CRITICAL - check FIRST)
+function isSendItCommand(text) {
+  const trimmed = text.trim().toLowerCase();
+  return (
+    trimmed === "send it" ||
+    trimmed === "send" ||
+    trimmed === "yes send it" ||
+    trimmed === "yes, send it" ||
+    trimmed === "send the email" ||
+    trimmed === "send that email" ||
+    trimmed === "yes send" ||
+    trimmed === "confirm" ||
+    trimmed === "yes"
+  );
+}
+
+// NEW #12-16: Detect "review" command for code analysis
+function isReviewCommand(text) {
+  const lower = text.toLowerCase();
+  const patterns = [
+    /\breview\s+/i,  // "review <file>"
+    /\banalyze\s+/i,  // "analyze <file>"
+    /\binspect\s+/i,  // "inspect <file>"
+    /\bcheck\s+.*\b(code|file)\b/i,  // "check the code"
+    /\bexamine\s+/i,  // "examine <file>"
+    /give\s+.*\b(feedback|opinion|thoughts)\b.*\bon\b/i  // "give feedback on"
+  ];
+  
+  return patterns.some(pattern => pattern.test(lower));
+}
+
 async function detectIntentWithLLM(message) {
   const prompt = `You are an intent classifier for an AI agent with the following capabilities:
 
 AVAILABLE TOOLS:
 - weather: Current weather, forecasts
-- news: Latest headlines from RSS feeds
+- news: Latest headlines from RSS feeds (with topic filtering)
 - search: Web search for factual information
 - sports: Sports scores, standings
 - youtube: Search YouTube videos
 - shopping: Product search
 - finance: Stock prices
-- financeFundamentals: Company fundamentals, PE ratio, market cap, key statistics
-- file: Read/list files in D:/local-llm-ui and E:/testFolder
+- financeFundamentals: Company fundamentals, PE ratio, market cap
+- file: Read/list files in D:/local-llm-ui (your project) and E:/testFolder
 - fileWrite: Create or modify files
 - webDownload: Download code from URLs
 - packageManager: npm package management
 - email: Draft and send emails
 - tasks: Task management
 - calculator: Mathematical calculations
-- selfImprovement: Query self-improvements, routing accuracy, detected issues, weekly reports
+- selfImprovement: Query improvements, routing accuracy, detected issues, reports
+- github: GitHub API access (repository operations, issues, PRs)
+- review: Code review and analysis of files/folders
 - llm: General conversation, memory queries, meta questions
 - memorytool: Manage profile data (forget location)
 
@@ -142,25 +187,30 @@ USER MESSAGE:
 "${message}"
 
 CLASSIFICATION RULES:
-1. For table reformatting requests, respond: reformat_table
+1. For table reformatting → reformat_table
 2. "weather here" → weather|USE_GEO
 3. "weather in [City]" → weather|CityName
 4. "where am I" or "what's my location" → llm|location_query
 5. "remember my location/name" → llm|memory_write
 6. "what do you remember about me" → llm|memory_query
-7. Questions about agent capabilities → llm|meta_question
-8. "what have you improved" OR "routing accuracy" OR "detected issues" OR "weekly report" → selfImprovement
+7. Questions about agent capabilities or "do you have access to X" → llm|meta_question
+8. Self-improvement queries → selfImprovement
 9. Stock fundamentals/metrics → financeFundamentals
 10. Stock prices only → finance
-11. Reading/listing files → file
+11. Reading/listing files, "in your project", "go to folder" → file
 12. Creating/modifying files → fileWrite
 13. "forget my location" → memorytool|forget_location
-14. Casual chat → llm
+14. "review <file>" or "analyze code" → review
+15. GitHub operations (repos, issues, PRs) → github
+16. News with or without topic → news
+17. Casual chat → llm
 
 IMPORTANT:
-- Self-improvement queries ("what have you improved", "routing accuracy", "issues detected") MUST route to selfImprovement tool
-- "where am I" goes to LLM (not weather)!
-- Only use weather for actual weather conditions!
+- Self-improvement queries MUST route to selfImprovement tool
+- "where am I" goes to LLM (not weather)
+- File operations including "in your project folder" go to file tool
+- Review commands go to review tool
+- GitHub questions go to github tool (NOT llm)
 
 Respond with ONLY the tool name (and optional context after |).`;
 
@@ -220,7 +270,6 @@ function formatCity(city) {
     .join(" ");
 }
 
-// FIX: Normalize tool names (case-insensitive)
 function normalizeToolName(toolName) {
   const toolMap = {
     'financefundamentals': 'financeFundamentals',
@@ -250,8 +299,31 @@ export async function plan({ message }) {
 
   const lower = trimmed.toLowerCase();
 
-  // FIX: Self-improvement queries → selfImprovement tool
+  // FIX #3: "send it" for email confirmation (CRITICAL - check FIRST before LLM)
+  if (isSendItCommand(lower)) {
+    console.log("📧 Detected 'send it' command - routing to email confirmation");
+    return {
+      tool: "email_confirm",  // Special routing flag
+      input: trimmed,
+      context: { action: "send_confirmed" },
+      reasoning: "preclassifier_send_email_confirmation"
+    };
+  }
+
+  // NEW #12-16: Review commands
+  if (isReviewCommand(trimmed)) {
+    console.log("🔍 Detected review command");
+    return {
+      tool: "review",
+      input: trimmed,
+      context: {},
+      reasoning: "preclassifier_code_review"
+    };
+  }
+
+  // Self-improvement queries
   if (isSelfImprovementQuery(trimmed)) {
+    console.log("📊 Detected self-improvement query");
     return {
       tool: "selfImprovement",
       input: trimmed,
@@ -326,6 +398,17 @@ export async function plan({ message }) {
       input: trimmed,
       context: { raw: "location_query" },
       reasoning: "preclassifier_location_query"
+    };
+  }
+
+  // FIX #6: File operations (before LLM) - enhanced with project awareness
+  if (isFileOperation(trimmed)) {
+    console.log("📂 Detected file operation");
+    return {
+      tool: "file",
+      input: trimmed,
+      context: {},
+      reasoning: "preclassifier_file_operation"
     };
   }
 

@@ -1,5 +1,5 @@
-// server/executor.js (COMPLETE FIX - All issues resolved)
-// Fixes: markdown tables → HTML, email "send it" state, date awareness
+// server/executor.js
+// COMPLETE FIX: Email "send it" confirmation, review system, markdown tables, date awareness
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
@@ -7,7 +7,7 @@ import { llm } from "./tools/llm.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
 
-// FIX #3: Convert markdown tables to HTML
+// FIX #1: Convert markdown tables to HTML
 function convertMarkdownTablesToHTML(text) {
   const tableRegex = /\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)+)/g;
   
@@ -63,18 +63,20 @@ function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
 AGENT CAPABILITIES & AWARENESS:
 - I can search the web for current information
 - I can get weather forecasts (including "here" for your location)
-- I can access news from multiple sources
+- I can access news from multiple sources (with topic filtering)
 - I can look up stock prices and company fundamentals
 - I can perform calculations
-- I can read and list files in allowed directories: D:/local-llm-ui and E:/testFolder
-- I can remember user preferences and information across conversations
+- I can read and list files in: D:/local-llm-ui (my project) and E:/testFolder
+- I have GitHub API access for repository operations
+- I can review code files and generate analysis reports
+- I can remember user preferences across conversations
 - I can reformat information into tables when requested
-- I have access to the FULL conversation history (${allMessages.length} messages in this conversation)
+- I have FULL conversation history (${allMessages.length} messages)
 - Current date: ${today}
 - Current time: ${now}
 
 CONVERSATION STATISTICS:
-- Total messages in this conversation: ${allMessages.length}
+- Total messages: ${allMessages.length}
 - User messages: ${allMessages.filter(m => m.role === "user").length}
 - Assistant messages: ${allMessages.filter(m => m.role === "assistant").length}
 ${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
@@ -86,7 +88,7 @@ User profile (long-term memory):
 ${JSON.stringify(profile || {}, null, 2)}
 
 Full conversation history (${allMessages.length} messages):
-${convoText || "(no prior messages in this conversation)"}
+${convoText || "(no prior messages)"}
 
 Tone instructions:
 ${toneText}
@@ -94,7 +96,7 @@ ${toneText}
 Current user message:
 ${userMessage}
 
-Now write the final answer to the user. Be aware of the full conversation context and your capabilities.
+Now write the final answer. Be aware of full conversation context and your capabilities.
 `;
 }
 
@@ -115,7 +117,7 @@ async function runLLMWithFullMemory({ userMessage, conversationId }) {
   const llmResponse = await llm(prompt);
   let text = llmResponse?.data?.text || "I couldn't generate a response.";
 
-  // FIX: Convert markdown tables to HTML
+  // Convert markdown tables to HTML
   text = convertMarkdownTablesToHTML(text);
 
   return text;
@@ -141,9 +143,9 @@ async function summarizeWithLLM({
   const today = new Date().toLocaleDateString("en-GB");
   const tableRequested = wantsTableFormat(userQuestion);
 
-  // FIX #4: Emphasize current date for news
-  const dateEmphasis = tool === 'news' ? 
-    `CRITICAL: TODAY'S DATE IS ${today}. The news articles are from TODAY or the past few days, NOT from 2023 or old years!` : '';
+  // FIX: Emphasize current date for news and time-sensitive tools
+  const dateEmphasis = ['news', 'search', 'sports'].includes(tool) ? 
+    `CRITICAL: TODAY'S DATE IS ${today}. Information should be current and up-to-date!` : '';
 
   const prompt = `
 You are the final response generator for an AI assistant with deep awareness of context.
@@ -151,14 +153,14 @@ The current date is ${today}.
 ${dateEmphasis}
 
 CONVERSATION CONTEXT:
-- Total messages in this conversation: ${allMessages.length}
-- You have access to the FULL conversation history below
+- Total messages: ${allMessages.length}
+- You have FULL conversation history below
 
 User profile (long-term memory):
 ${JSON.stringify(profile, null, 2)}
 
 Full conversation history (${allMessages.length} messages):
-${convoText || "(no prior messages in this conversation)"}
+${convoText || "(no prior messages)"}
 
 Tone instructions:
 ${toneText}
@@ -173,16 +175,16 @@ ${JSON.stringify(toolResult, null, 2)}
 
 Formatting instructions:
 - Produce a clear, natural-language answer
-- Use the profile information naturally when relevant
-- Respect tone, detail, math, and formatting preferences
+- Use profile information naturally when relevant
+- Respect tone, detail, and formatting preferences
 ${
   tableRequested
-    ? "- Convert the structured data into an HTML table with headers and rows.\n- Keep the explanation short and place the table clearly.\n- Use class='ai-table-wrapper' and class='ai-table' for proper styling"
-    : "- Use normal paragraph formatting unless a different structure is clearly better"
+    ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
+    : "- Use normal paragraph formatting unless different structure is better"
 }
-- If the tool results indicate no reliable information, say so clearly and do NOT invent facts
+- If no reliable information, say so clearly - do NOT invent facts
 - Do NOT mention tools or internal steps
-- Be aware of the full conversation context and reference previous messages if relevant
+- Be aware of full conversation context and reference previous messages if relevant
 
 Generate the response:
 `;
@@ -190,7 +192,7 @@ Generate the response:
   const llmResponse = await llm(prompt);
   let text = llmResponse?.data?.text || "I couldn't generate a response.";
 
-  // FIX: Convert markdown tables to HTML
+  // Convert markdown tables to HTML
   text = convertMarkdownTablesToHTML(text);
 
   return {
@@ -226,12 +228,12 @@ User request:
 ${userMessage}
 
 INSTRUCTIONS:
-- Convert the information from the previous response into a well-structured HTML table
-- Use class="ai-table-wrapper" for the wrapper div
-- Use class="ai-table" for the table element
+- Convert information into a well-structured HTML table
+- Use class="ai-table-wrapper" for wrapper div
+- Use class="ai-table" for table element
 - Include appropriate headers
-- Keep the data accurate - don't add or remove information
-- Add a brief introduction before the table
+- Keep data accurate - don't add or remove information
+- Add brief introduction before the table
 
 Example format:
 <div class="ai-table-wrapper">
@@ -251,7 +253,7 @@ Generate the reformatted response:
   const llmResponse = await llm(prompt);
   let text = llmResponse?.data?.text || "I couldn't reformat the response.";
 
-  // FIX: Convert markdown tables to HTML
+  // Convert markdown tables to HTML
   text = convertMarkdownTablesToHTML(text);
 
   return {
@@ -296,15 +298,15 @@ function normalizeCityAliases(message) {
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
 
-  // FIX #5: Check for "send it" with pending email
-  const userText = getMessageText(message);
-  if (/^send\s+it$/i.test(userText.trim())) {
+  // FIX #3: Handle "send it" for email confirmation FIRST
+  if (tool === "email_confirm") {
+    console.log("📧 Processing email confirmation...");
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
     const lastMsg = conversation[conversation.length - 1];
     
     if (lastMsg?.role === 'assistant' && lastMsg?.data?.pendingEmail) {
-      console.log("📧 Found pending email, sending...");
+      console.log("✅ Found pending email, sending now...");
       const { to, subject, body } = lastMsg.data.pendingEmail;
       
       const sendResult = await sendConfirmedEmail({ to, subject, body });
@@ -323,6 +325,14 @@ export async function executeAgent({ tool, message, conversationId }) {
         tool: "email",
         data: sendResult.data,
         success: sendResult.success
+      };
+    } else {
+      // No pending email found
+      return {
+        reply: "I don't have a pending email to send. Please create an email draft first.",
+        stateGraph: [],
+        tool: "email",
+        success: false
       };
     }
   }
@@ -362,8 +372,10 @@ export async function executeAgent({ tool, message, conversationId }) {
   message = normalizeCityAliases(message);
 
   if (!TOOLS[tool]) {
+    console.error(`❌ Tool not found: ${tool}`);
+    console.log("Available tools:", Object.keys(TOOLS));
     return {
-      reply: "Tool not found.",
+      reply: `Tool "${tool}" not found. Available tools: ${Object.keys(TOOLS).join(", ")}`,
       stateGraph,
       success: false
     };
@@ -379,6 +391,7 @@ export async function executeAgent({ tool, message, conversationId }) {
   }
 
   // Execute tool
+  console.log(`🔧 Executing tool: ${tool}`);
   const result = await TOOLS[tool](toolInput);
 
   stateGraph.push({
@@ -423,7 +436,9 @@ export async function executeAgent({ tool, message, conversationId }) {
     "tasks",
     "news",
     "file",
-    "selfImprovement"  // Added
+    "selfImprovement",
+    "github",
+    "review"  // NEW
   ];
 
   if (summarizeTools.includes(tool)) {

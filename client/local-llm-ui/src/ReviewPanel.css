@@ -1,0 +1,57 @@
+.review-panel {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+}
+
+.review-header h3 {
+  color: var(--accent);
+  margin-bottom: 1rem;
+}
+
+.review-summary {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: var(--bg-hover);
+  border-radius: 6px;
+}
+
+.review-summary h4 {
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.review-snippets {
+  margin-bottom: 1.5rem;
+}
+
+.snippet-item {
+  margin-bottom: 1.5rem;
+}
+
+.snippet-reason {
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.review-suggestions {
+  padding: 1rem;
+  background: var(--bg-hover);
+  border-radius: 6px;
+}
+
+.review-suggestions h4 {
+  color: var(--success);
+  margin-bottom: 0.5rem;
+}
+
+.review-suggestions ul {
+  list-style-position: inside;
+  color: var(--text-primary);
+}
+
+.review-suggestions li {
+  margin-bottom: 0.5rem;
+}

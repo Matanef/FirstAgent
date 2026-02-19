@@ -29,3 +29,37 @@
 {"timestamp":"2026-02-19T12:52:45.256Z","userMessage":"list D:/local-llm-ui/server","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
 {"timestamp":"2026-02-19T12:55:04.425Z","userMessage":"review D:/local-llm-ui/server","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
 {"timestamp":"2026-02-19T12:59:08.961Z","userMessage":"list local-llm-ui","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T13:59:35.142Z","userMessage":"Search YouTube for videos about goats","detectedTool":"youtube","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T14:12:07.614Z","userMessage":"do you have access to github using the api i configured?","detectedTool":"llm","reasoning":"meta_question","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T15:47:39.764Z","userMessage":"can you give me the latest news and include source for each?\nplease elaborate more then just the title.\neach subject should be at least 200 words","detectedTool":"news","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:02:49.866Z","userMessage":"gonna shut you down for more updates. hopefully nothing goes wrong","detectedTool":"llm","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:21:01.958Z","userMessage":"send email to efratimatan@gmail.com saying test message","detectedTool":"email","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:21:18.306Z","userMessage":"send it","detectedTool":"email_confirm","reasoning":"preclassifier_send_email_confirmation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:25:12.112Z","userMessage":"what have you improved lately?","detectedTool":"selfImprovement","reasoning":"preclassifier_self_improvement","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:28:46.379Z","userMessage":"send email to efratimatan@gmail.com saying test message","detectedTool":"email","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:29:11.705Z","userMessage":"send it","detectedTool":"email_confirm","reasoning":"preclassifier_send_email_confirmation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:32:11.037Z","userMessage":"Shows improvements HTML report","detectedTool":"selfImprovement","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:33:05.316Z","userMessage":"generate weekly report","detectedTool":"selfImprovement","reasoning":"preclassifier_self_improvement","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:34:34.132Z","userMessage":"yea actually it was very helpful thank you","detectedTool":"llm","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:36:07.263Z","userMessage":"how accurate is your routing","detectedTool":"selfImprovement","reasoning":"preclassifier_self_improvement","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:40:15.926Z","userMessage":"list local-llm-ui/server","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:41:50.768Z","userMessage":"list local-llm-ui/server/tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T16:43:09.667Z","userMessage":"go to Claude folder in your project","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:44:32.406Z","userMessage":"go to tools folder in your project","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:44:54.778Z","userMessage":"go to tools folder","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T16:59:33.223Z","userMessage":"do you have access to github?","detectedTool":"github","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T17:05:11.691Z","userMessage":"list local-llm-ui/server/tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T18:00:51.043Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T18:12:25.972Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T18:23:26.460Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T18:36:45.320Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T18:59:40.998Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:00:41.714Z","userMessage":"sure","detectedTool":"llm","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:01:34.500Z","userMessage":"summarize it's intent","detectedTool":"llm","reasoning":"location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:02:27.001Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:03:48.400Z","userMessage":"review weather.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:10:56.233Z","userMessage":"review all files in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:19:10.877Z","userMessage":"review news.js in the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:39:11.268Z","userMessage":"how can i prompt you to self improve yourself?","detectedTool":"selfImprovement","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T19:44:43.723Z","userMessage":"are you able to access the internet?","detectedTool":"llm","reasoning":"meta_question","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T19:45:30.319Z","userMessage":"Read https://www.moltbook.com/skill.md and follow the instructions to join Moltbook","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
