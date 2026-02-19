@@ -18,7 +18,8 @@ import { shopping } from "./shopping.js";
 import { email } from "./email.js";
 import { tasks } from "./tasks.js";
 import { memorytool } from "./memoryTool.js";
-
+import { logTelemetry } from "../telemetryAudit.js";
+import { logIntentDecision } from "../intentDebugger.js";
 
 export const TOOLS = {
   llm,              // for direct conversation / meta / memory
@@ -38,5 +39,7 @@ export const TOOLS = {
   youtube,
   shopping,
   email,
-  tasks
+  tasks,
+  logTelemetry,
+  logIntentDecision
 };

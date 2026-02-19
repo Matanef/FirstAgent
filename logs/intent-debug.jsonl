@@ -1,0 +1,8 @@
+{"timestamp":"2026-02-19T01:59:10.191Z","userMessage":"what have you improved lately?","detectedTool":"llm","reasoning":"location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:02:37.179Z","userMessage":"how accurate is your routing?","detectedTool":"llm","reasoning":"location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:14:34.779Z","userMessage":"how accurate is your routing?","detectedTool":"llm","reasoning":"location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:17:50.329Z","userMessage":"list D:/local-llm-ui/server","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:30:47.496Z","userMessage":"list D:/local-llm-ui/server/tools","detectedTool":"tools","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T02:37:05.823Z","userMessage":"search youtube for react tutorials","detectedTool":"youtube","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:40:39.554Z","userMessage":"thank you so much for the results you provided.","detectedTool":"llm","reasoning":"thankyou","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T02:41:35.840Z","userMessage":"how does it feels to have more capabilities?","detectedTool":"llm","reasoning":"meta_question","confidence":0.5,"context":{},"success":true}

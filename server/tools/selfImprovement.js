@@ -1,0 +1,409 @@
+// server/tools/selfImprovement.js
+// Self-improvement tracking and reporting tool
+
+import { getRecentImprovements, generateSummaryReport } from "../telemetryAudit.js";
+import { getIntentAccuracyReport, detectMisroutingPatterns, getRoutingRecommendations } from "../intentDebugger.js";
+
+/**
+ * Self-improvement tool
+ * Handles queries about agent's self-modifications and improvements
+ */
+export async function selfImprovement(query) {
+  const lower = query.toLowerCase();
+
+  try {
+    // Query: "what have you improved lately?"
+    if (
+      lower.includes("what have you improved") ||
+      lower.includes("what improvements") ||
+      lower.includes("show improvements") ||
+      lower.includes("list improvements")
+    ) {
+      const improvements = await getRecentImprovements(20);
+
+      if (improvements.length === 0) {
+        return {
+          tool: "selfImprovement",
+          success: true,
+          final: true,
+          data: {
+            text: "I haven't recorded any self-improvements yet. I log improvements when I:\n- Modify my own code\n- Install new packages\n- Download learning resources\n- Update configuration files"
+          }
+        };
+      }
+
+      // Group by category
+      const byCategory = {};
+      for (const imp of improvements) {
+        const cat = imp.category || "other";
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(imp);
+      }
+
+      // Build HTML report
+      const html = `
+        <div class="improvements-report">
+          <h2>🔧 Recent Self-Improvements</h2>
+          
+          ${Object.entries(byCategory).map(([category, items]) => `
+            <div class="improvement-category">
+              <h3>${category.charAt(0).toUpperCase() + category.slice(1)}</h3>
+              <ul class="improvement-list">
+                ${items.map(imp => `
+                  <li class="improvement-item">
+                    <div class="improvement-action">${imp.action}</div>
+                    ${imp.reason ? `<div class="improvement-reason">${imp.reason}</div>` : ''}
+                    ${imp.file ? `<div class="improvement-file">📄 ${imp.file}</div>` : ''}
+                    <div class="improvement-timestamp">${new Date(imp.timestamp).toLocaleString()}</div>
+                  </li>
+                `).join('')}
+              </ul>
+            </div>
+          `).join('')}
+          
+          <div class="improvement-summary">
+            <p><strong>Total improvements:</strong> ${improvements.length}</p>
+            <p><strong>Categories:</strong> ${Object.keys(byCategory).join(', ')}</p>
+          </div>
+        </div>
+        
+        <style>
+          .improvements-report {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+          }
+          .improvements-report h2 {
+            margin-top: 0;
+            color: var(--text-primary);
+          }
+          .improvement-category {
+            margin: 1.5rem 0;
+          }
+          .improvement-category h3 {
+            color: var(--accent);
+            margin-bottom: 0.75rem;
+          }
+          .improvement-list {
+            list-style: none;
+            padding: 0;
+          }
+          .improvement-item {
+            background: var(--bg-hover);
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 6px;
+            border-left: 3px solid var(--accent);
+          }
+          .improvement-action {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+          }
+          .improvement-reason {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+          }
+          .improvement-file {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+          }
+          .improvement-timestamp {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+          }
+          .improvement-summary {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            color: var(--text-secondary);
+          }
+        </style>
+      `;
+
+      const text = improvements
+        .slice(0, 10)
+        .map(imp => `• ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
+        .join('\n');
+
+      return {
+        tool: "selfImprovement",
+        success: true,
+        final: true,
+        data: {
+          html,
+          text: `Recent improvements:\n\n${text}\n\n(Showing ${Math.min(10, improvements.length)} of ${improvements.length} total)`,
+          improvements: improvements.slice(0, 20)
+        }
+      };
+    }
+
+    // Query: "how accurate is your routing?"
+    if (
+      lower.includes("routing accuracy") ||
+      lower.includes("intent accuracy") ||
+      lower.includes("how accurate")
+    ) {
+      const report = await getIntentAccuracyReport();
+
+      const html = `
+        <div class="accuracy-report">
+          <h2>🎯 Routing Accuracy Report</h2>
+          
+          <div class="accuracy-stats">
+            <div class="stat-box">
+              <div class="stat-value">${report.successRate.toFixed(1)}%</div>
+              <div class="stat-label">Overall Success Rate</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-value">${report.totalDecisions}</div>
+              <div class="stat-label">Total Routing Decisions</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-value">${report.lowConfidenceDecisions.length}</div>
+              <div class="stat-label">Low Confidence</div>
+            </div>
+          </div>
+
+          <h3>By Tool</h3>
+          <table class="accuracy-table">
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Total</th>
+                <th>Successes</th>
+                <th>Success Rate</th>
+                <th>Avg Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(report.byTool)
+                .sort((a, b) => b[1].total - a[1].total)
+                .map(([tool, stats]) => `
+                  <tr>
+                    <td>${tool}</td>
+                    <td>${stats.total}</td>
+                    <td>${stats.successes}</td>
+                    <td>${((stats.successes / stats.total) * 100).toFixed(1)}%</td>
+                    <td>${stats.averageConfidence ? stats.averageConfidence.toFixed(2) : 'N/A'}</td>
+                  </tr>
+                `).join('')}
+            </tbody>
+          </table>
+        </div>
+        
+        <style>
+          .accuracy-report {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+          }
+          .accuracy-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+          }
+          .stat-box {
+            background: var(--bg-hover);
+            padding: 1rem;
+            border-radius: 6px;
+            text-align: center;
+          }
+          .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+          }
+          .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+          }
+          .accuracy-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+          }
+          .accuracy-table th {
+            background: var(--bg-hover);
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+          }
+          .accuracy-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border);
+          }
+          .accuracy-table tr:hover td {
+            background: var(--bg-hover);
+          }
+        </style>
+      `;
+
+      return {
+        tool: "selfImprovement",
+        success: true,
+        final: true,
+        data: {
+          html,
+          report
+        }
+      };
+    }
+
+    // Query: "what issues have you detected?"
+    if (
+      lower.includes("detected issues") ||
+      lower.includes("what problems") ||
+      lower.includes("misrouting patterns")
+    ) {
+      const patterns = await detectMisroutingPatterns();
+      const recommendations = await getRoutingRecommendations();
+
+      if (patterns.length === 0 && recommendations.length === 0) {
+        return {
+          tool: "selfImprovement",
+          success: true,
+          final: true,
+          data: {
+            text: "✅ No significant issues detected! Routing performance looks good."
+          }
+        };
+      }
+
+      const html = `
+        <div class="issues-report">
+          <h2>⚠️ Detected Issues & Recommendations</h2>
+          
+          ${patterns.length > 0 ? `
+            <h3>Patterns Detected</h3>
+            <ul class="issues-list">
+              ${patterns.map(p => `
+                <li class="issue-item">
+                  <div class="issue-type">${p.type.replace(/_/g, ' ').toUpperCase()}</div>
+                  <div class="issue-recommendation">${p.recommendation}</div>
+                </li>
+              `).join('')}
+            </ul>
+          ` : ''}
+
+          ${recommendations.length > 0 ? `
+            <h3>Recommendations</h3>
+            <ul class="recommendations-list">
+              ${recommendations.map(r => `
+                <li class="recommendation-item priority-${r.priority}">
+                  <div class="recommendation-header">
+                    <span class="recommendation-priority">${r.priority.toUpperCase()}</span>
+                    <span class="recommendation-category">${r.category}</span>
+                  </div>
+                  <div class="recommendation-details">${r.details}</div>
+                </li>
+              `).join('')}
+            </ul>
+          ` : ''}
+        </div>
+        
+        <style>
+          .issues-report {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+          }
+          .issues-list, .recommendations-list {
+            list-style: none;
+            padding: 0;
+          }
+          .issue-item, .recommendation-item {
+            background: var(--bg-hover);
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 6px;
+            border-left: 3px solid var(--warning);
+          }
+          .issue-type {
+            font-weight: 600;
+            color: var(--warning);
+            margin-bottom: 0.5rem;
+          }
+          .recommendation-header {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+          }
+          .recommendation-priority {
+            background: var(--error);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+          }
+          .priority-medium .recommendation-priority {
+            background: var(--warning);
+            color: #000;
+          }
+          .priority-low .recommendation-priority {
+            background: var(--success);
+          }
+          .recommendation-category {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+          }
+        </style>
+      `;
+
+      return {
+        tool: "selfImprovement",
+        success: true,
+        final: true,
+        data: {
+          html,
+          patterns,
+          recommendations
+        }
+      };
+    }
+
+    // Query: "generate weekly report"
+    if (
+      lower.includes("weekly report") ||
+      lower.includes("generate report") ||
+      lower.includes("summary report")
+    ) {
+      const htmlReport = await generateSummaryReport();
+
+      return {
+        tool: "selfImprovement",
+        success: true,
+        final: true,
+        data: {
+          html: htmlReport,
+          text: "Weekly report generated. This can be sent via email.",
+          report: htmlReport
+        }
+      };
+    }
+
+    // Default: unknown query
+    return {
+      tool: "selfImprovement",
+      success: false,
+      final: true,
+      error: "I can help with:\n- 'what have you improved lately?'\n- 'how accurate is your routing?'\n- 'what issues have you detected?'\n- 'generate weekly report'"
+    };
+
+  } catch (err) {
+    return {
+      tool: "selfImprovement",
+      success: false,
+      final: true,
+      error: `Self-improvement query failed: ${err.message}`
+    };
+  }
+}

@@ -7,7 +7,7 @@ import crypto from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs/promises";
-
+import { selfImprovement } from "../server/tools/selfImprovement.js";
 import { plan } from "./planner.js";
 import {
   loadJSON,
@@ -21,7 +21,22 @@ import {
 import { executeAgent } from "./executor.js";
 import { calculateConfidence } from "./audit.js";
 import { resolveCityFromIp } from "./utils/geo.js";
+import { calculator } from "./tools/calculator.js";
+import { email } from "./tools/email.js";
+import { logTelemetry } from "./telemetryAudit.js";
+import { logIntentDecision } from "./intentDebugger.js";
 
+
+export const TOOLS = {
+  executeAgent,
+  calculator,
+  resolveCityFromIp,
+  calculateConfidence,
+  email,
+  selfImprovement,
+  logIntentDecision,
+  logTelemetry
+};
 console.log("MEMORY_FILE:", MEMORY_FILE);
 
 const app = express();
@@ -168,13 +183,28 @@ app.post("/chat", async (req, res) => {
       message: { text: input ?? message, context: finalContext },
       conversationId: id
     });
-
+    const elapsed = Date.now() - startTime;
     const reply = result.reply;
     const stateGraph = result.stateGraph;
     if (!reply) throw new Error("Executor returned no reply");
 
     // Calculate confidence
     const confidence = calculateConfidence(stateGraph);
+    await logTelemetry({
+      tool: result.tool,
+      success: result.success,
+      executionTime: elapsed,
+      conversationId: id
+    });
+
+    // Log intent decision
+    await logIntentDecision({
+      userMessage: message,
+      detectedTool: tool,
+      reasoning,
+      confidence: confidence,
+      success: result.success
+    });
 
     // RELOAD MEMORY BEFORE SAVING (respect external changes like memorytool)
     try {
@@ -204,7 +234,7 @@ app.post("/chat", async (req, res) => {
       console.error("DEBUG saveJSON failed (index):", e);
     }
 
-    const elapsed = Date.now() - startTime;
+
     console.log("\n📊 EXECUTION SUMMARY");
     console.log("├─ Steps:", stateGraph.length);
     console.log("├─ Tool Used:", result.tool || "none");

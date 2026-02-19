@@ -1,6 +1,4 @@
-// server/tools/search-enhanced.js
-// Enhanced search with better aggregation, deduplication, and relevance scoring
-
+// server/tools/search.js (ENHANCED - Yandex added as 4th source)
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
@@ -8,9 +6,6 @@ import { loadJSON, saveJSON } from "../memory.js";
 const CACHE_FILE = "./search_cache.json";
 const CACHE_TTL = 3600000; // 1 hour
 
-/**
- * Normalize query for caching and comparison
- */
 function normalizeQuery(text) {
   return text
     .toLowerCase()
@@ -19,9 +14,6 @@ function normalizeQuery(text) {
     .trim();
 }
 
-/**
- * Calculate similarity between two strings (simple Jaccard similarity)
- */
 function calculateSimilarity(str1, str2) {
   const set1 = new Set(str1.toLowerCase().split(/\s+/));
   const set2 = new Set(str2.toLowerCase().split(/\s+/));
@@ -32,18 +24,13 @@ function calculateSimilarity(str1, str2) {
   return intersection.size / union.size;
 }
 
-/**
- * Deduplicate results based on URL and content similarity
- */
 function deduplicateResults(results) {
   const seen = new Set();
   const deduplicated = [];
 
   for (const result of results) {
-    // Check URL
     if (seen.has(result.url)) continue;
     
-    // Check content similarity with existing results
     const isDuplicate = deduplicated.some(existing => {
       const titleSim = calculateSimilarity(result.title, existing.title);
       const snippetSim = calculateSimilarity(result.snippet, existing.snippet);
@@ -59,9 +46,6 @@ function deduplicateResults(results) {
   return deduplicated;
 }
 
-/**
- * Score relevance of a result to the query
- */
 function scoreRelevance(result, query) {
   const queryTerms = query.toLowerCase().split(/\s+/);
   const titleLower = result.title.toLowerCase();
@@ -69,17 +53,14 @@ function scoreRelevance(result, query) {
   
   let score = 0;
   
-  // Title matches are worth more
   for (const term of queryTerms) {
     if (titleLower.includes(term)) score += 3;
     if (snippetLower.includes(term)) score += 1;
   }
   
-  // Exact phrase match bonus
   if (titleLower.includes(query.toLowerCase())) score += 10;
   if (snippetLower.includes(query.toLowerCase())) score += 5;
   
-  // Source credibility bonus
   const credibleDomains = [
     'wikipedia.org', 'britannica.com', 'edu', 'gov',
     'reuters.com', 'bbc.com', 'cnn.com', 'nytimes.com'
@@ -92,9 +73,7 @@ function scoreRelevance(result, query) {
   return score;
 }
 
-/**
- * Wikipedia summary fetch
- */
+// Wikipedia summary fetch
 async function fetchWikipedia(query) {
   try {
     const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
@@ -116,9 +95,7 @@ async function fetchWikipedia(query) {
   }
 }
 
-/**
- * DuckDuckGo Instant Answer API
- */
+// DuckDuckGo Instant Answer API
 async function fetchDuckDuckGo(query) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
@@ -136,7 +113,6 @@ async function fetchDuckDuckGo(query) {
         source: "DuckDuckGo"
       }));
     
-    // Add abstract if available
     if (data.Abstract && data.AbstractURL) {
       results.unshift({
         title: data.Heading || query,
@@ -153,9 +129,7 @@ async function fetchDuckDuckGo(query) {
   }
 }
 
-/**
- * Google / SerpAPI search
- */
+// Google / SerpAPI search
 async function fetchGoogle(query) {
   try {
     const apiKey = CONFIG.SERPAPI_KEY;
@@ -181,11 +155,35 @@ async function fetchGoogle(query) {
   }
 }
 
-/**
- * Enhanced search with intelligent aggregation
- */
+// NEW: Yandex search via SerpAPI
+async function fetchYandex(query) {
+  try {
+    const apiKey = CONFIG.SERPAPI_KEY;
+    if (!apiKey) {
+      console.warn("SerpAPI key not configured for Yandex");
+      return [];
+    }
+
+    const url = `https://serpapi.com/search.json?engine=yandex&text=${encodeURIComponent(query)}&api_key=${apiKey}`;
+    const data = await safeFetch(url);
+
+    if (!data || !data.organic_results) return [];
+
+    return data.organic_results.slice(0, 8).map(r => ({
+      title: r.title || query,
+      snippet: r.snippet || r.description || "",
+      url: r.link || "",
+      source: "Yandex"
+    }));
+  } catch (err) {
+    console.warn("Yandex/SerpAPI fetch failed:", err.message);
+    return [];
+  }
+}
+
+// Enhanced search with 4 sources including Yandex
 export async function search(query) {
-  console.log("🔍 Search query:", query);
+  console.log("🔎 Search query:", query);
   
   const normalizedQuery = normalizeQuery(query);
 
@@ -204,18 +202,19 @@ export async function search(query) {
     };
   }
 
-  // Fetch from multiple sources in parallel
-  console.log("🌐 Fetching from multiple sources...");
-  const [wiki, ddg, google] = await Promise.all([
+  // Fetch from FOUR sources in parallel (Wikipedia, DuckDuckGo, Google, Yandex)
+  console.log("🌐 Fetching from 4 sources (Wikipedia, DuckDuckGo, Google, Yandex)...");
+  const [wiki, ddg, google, yandex] = await Promise.all([
     fetchWikipedia(query),
     fetchDuckDuckGo(query),
-    fetchGoogle(query)
+    fetchGoogle(query),
+    fetchYandex(query)
   ]);
 
-  console.log(`📊 Results: Wikipedia(${wiki.length}), DuckDuckGo(${ddg.length}), Google(${google.length})`);
+  console.log(`📊 Results: Wikipedia(${wiki.length}), DuckDuckGo(${ddg.length}), Google(${google.length}), Yandex(${yandex.length})`);
 
   // Combine and deduplicate
-  let allResults = [...wiki, ...ddg, ...google];
+  let allResults = [...wiki, ...ddg, ...google, ...yandex];
   allResults = deduplicateResults(allResults);
 
   // Score and sort by relevance
@@ -226,7 +225,7 @@ export async function search(query) {
   allResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
 
   // Take top results
-  const topResults = allResults.slice(0, 8);
+  const topResults = allResults.slice(0, 10);
 
   // Generate summary text
   const summary = topResults.length > 0
@@ -238,7 +237,7 @@ export async function search(query) {
   const data = {
     results: topResults,
     text: summary,
-    totalSources: [wiki, ddg, google].filter(arr => arr.length > 0).length,
+    totalSources: [wiki, ddg, google, yandex].filter(arr => arr.length > 0).length,
     query: query,
     normalizedQuery: normalizedQuery
   };
@@ -250,20 +249,17 @@ export async function search(query) {
   };
   saveJSON(CACHE_FILE, cache);
 
-  console.log(`✅ Returning ${topResults.length} deduplicated results`);
+  console.log(`✅ Returning ${topResults.length} deduplicated results from ${data.totalSources} sources`);
 
   return {
     tool: "search",
     success: true,
     final: true,
     data,
-    reasoning: `Searched ${data.totalSources} sources, found ${topResults.length} relevant results`
+    reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex), found ${topResults.length} relevant results`
   };
 }
 
-/**
- * Export topic extraction for compatibility
- */
 export function extractTopic(text) {
   return normalizeQuery(text);
 }

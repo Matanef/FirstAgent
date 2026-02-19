@@ -1,4 +1,10 @@
-/* ULTRA-ENHANCED App Styling - NO BUBBLES, SPECIALIZED CONTENT AREAS */
+/* COMPLETE UI FIX - Requirements #13, #14 */
+/* Changes:
+   - Full-width chat container
+   - User messages aligned right
+   - Tone control button (32x32px → 270x100px)
+   - Improved layout and spacing
+*/
 
 * {
   box-sizing: border-box;
@@ -29,6 +35,10 @@
 
   --user-marker: #9b4dff;
   --agent-marker: #00d9ff;
+  
+  /* FIX #14: Tone button color */
+  --tone-button: #8b0000;
+  --tone-button-hover: #a52a2a;
 }
 
 body {
@@ -142,14 +152,18 @@ body {
   font-size: 0.9rem;
 }
 
-/* ========== CHAT CONTAINER ========== */
+/* ========== CHAT CONTAINER - FIX #13: FULL WIDTH ========== */
 
 .chat-container {
   flex: 1;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
+  /* REMOVED: max-width constraint */
+  width: 100%;
 }
+
+/* ========== CHAT HEADER WITH TONE BUTTON ========== */
 
 .chat-header {
   padding: 1rem 1.5rem;
@@ -158,11 +172,18 @@ body {
   justify-content: space-between;
   align-items: center;
   background: var(--bg-secondary);
+  position: relative;
 }
 
 .chat-header h1 {
   font-size: 1.3rem;
   font-weight: 600;
+}
+
+.header-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
 }
 
 .metadata {
@@ -172,7 +193,118 @@ body {
   color: var(--text-secondary);
 }
 
-/* ========== CONVERSATION FLOW (NO BUBBLES!) ========== */
+/* FIX #14: TONE CONTROL BUTTON */
+
+.tone-control-wrapper {
+  position: relative;
+}
+
+.tone-button {
+  width: 32px;
+  height: 32px;
+  background: var(--tone-button);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  color: white;
+  font-size: 1rem;
+}
+
+.tone-button:hover {
+  background: var(--tone-button-hover);
+}
+
+.tone-button.expanded {
+  width: 270px;
+  height: 100px;
+  border-radius: 8px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 100;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.tone-panel {
+  display: none;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  width: 100%;
+  height: 100%;
+}
+
+.tone-button.expanded .tone-panel {
+  display: flex;
+}
+
+.tone-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.tone-close {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 1.2rem;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.tone-close:hover {
+  opacity: 1;
+}
+
+.tone-slider-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tone-slider {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.tone-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+}
+
+.tone-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  border: none;
+}
+
+.tone-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* ========== CONVERSATION FLOW - FIX #13: USER MESSAGES RIGHT ========== */
 
 .conversation-flow {
   flex: 1;
@@ -190,10 +322,20 @@ body {
   padding-left: 1rem;
   border-left: 3px solid transparent;
   animation: fadeIn 0.3s ease;
+  /* FIX #13: Default to left, override for user */
+  margin-right: auto;
+  max-width: 80%;
 }
 
+/* FIX #13: USER MESSAGES ALIGNED RIGHT */
 .message-entry.user {
   border-left-color: var(--user-marker);
+  margin-left: auto;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 1rem;
+  border-left: none;
+  border-right: 3px solid var(--user-marker);
 }
 
 .message-entry.assistant {
@@ -224,6 +366,11 @@ body {
   gap: 1rem;
   align-items: center;
   font-size: 0.85rem;
+}
+
+/* FIX #13: Right-align user message meta */
+.message-entry.user .message-meta {
+  justify-content: flex-end;
 }
 
 .message-role {
@@ -366,7 +513,7 @@ body {
   font-weight: 600;
 }
 
-/* ========== FILE SYSTEM BROWSER ========== */
+/* ========== FILE SYSTEM BROWSER (WILL BE ENHANCED FOR #15, #16) ========== */
 
 .file-browser {
   margin: 0.75rem 0;
@@ -399,7 +546,7 @@ body {
 
 .file-item {
   display: grid;
-  grid-template-columns: 40px 1fr 80px 80px;
+  grid-template-columns: 40px 40px 1fr 80px 80px;
   gap: 1rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
@@ -413,6 +560,14 @@ body {
 
 .file-item:hover {
   background: var(--bg-hover);
+}
+
+/* FIX #15: FILE CHECKBOXES */
+.file-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 
 .file-icon {
@@ -434,6 +589,36 @@ body {
   color: var(--text-muted);
   font-size: 0.85rem;
   text-align: right;
+}
+
+/* FIX #16: COMPILE BUTTON */
+.file-actions {
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.1);
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.compile-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.compile-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.compile-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ========== WEATHER WIDGET ========== */
@@ -746,11 +931,16 @@ body {
   }
 
   .file-item {
-    grid-template-columns: 30px 1fr 60px;
+    grid-template-columns: 30px 30px 1fr 60px;
   }
 
   .file-size {
     display: none;
+  }
+  
+  /* User messages still right-aligned on mobile */
+  .message-entry.user {
+    max-width: 90%;
   }
 }
 
