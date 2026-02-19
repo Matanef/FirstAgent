@@ -4168,6 +4168,645 @@
           "steps": 1
         }
       }
+    ],
+    "2bee05d9-7079-493b-a29d-a42f2627c77e": [
+      {
+        "role": "assistant",
+        "content": "Hey Matan! I'm happy to help you with that. It looks like we've got a list of files for you in the \"D:/local-llm-ui/server/tools\" directory.\n\nWe have a total of 25 items, and they're all JavaScript files. You can see their names, types, and icons listed below:\n\n<table>\n  <thead>\n    <tr>\n      <th>Icon</th>\n      <th>Name</th>\n      <th>Type</th>\n    </tr>\n  </thead>\n  <tbody>\n    <!-- list of files -->\n  </tbody>\n</table>\n\nLet me know if you need any further assistance!",
+        "timestamp": "2026-02-19T20:07:56.660Z",
+        "confidence": 0.5,
+        "tool": "file",
+        "data": {
+          "items": [
+            {
+              "name": "calculator.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "calculator.test.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "email.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "file.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "fileWrite.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "finance.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "financeFundamentals.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "github.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "imageGen.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "index.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "llm.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "math-intent.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "memoryTool.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "news.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "packageManager.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "review.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "search.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "selfImprovement.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "shopping.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "sports.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "spotify.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "tasks.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "weather.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "webDownload.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "youtube.js",
+              "type": "file",
+              "icon": "📜"
+            }
+          ],
+          "path": "D:/local-llm-ui/server/tools",
+          "absolutePath": "D:\\local-llm-ui\\server\\tools",
+          "html": "\n        <div class=\"ai-table-wrapper\">\n          <p><strong>📂 Directory:</strong> D:/local-llm-ui/server/tools</p>\n          <p><strong>🗂️ Full path:</strong> D:\\local-llm-ui\\server\\tools</p>\n          <p><strong>📊 Total items:</strong> 25</p>\n          <table class=\"ai-table\">\n            <thead>\n              <tr><th>Icon</th><th>Name</th><th>Type</th></tr>\n            </thead>\n            <tbody>\n              <tr><td>📜</td><td>calculator.js</td><td>file</td></tr><tr><td>📜</td><td>calculator.test.js</td><td>file</td></tr><tr><td>📜</td><td>email.js</td><td>file</td></tr><tr><td>📜</td><td>file.js</td><td>file</td></tr><tr><td>📜</td><td>fileWrite.js</td><td>file</td></tr><tr><td>📜</td><td>finance.js</td><td>file</td></tr><tr><td>📜</td><td>financeFundamentals.js</td><td>file</td></tr><tr><td>📜</td><td>github.js</td><td>file</td></tr><tr><td>📜</td><td>imageGen.js</td><td>file</td></tr><tr><td>📜</td><td>index.js</td><td>file</td></tr><tr><td>📜</td><td>llm.js</td><td>file</td></tr><tr><td>📜</td><td>math-intent.js</td><td>file</td></tr><tr><td>📜</td><td>memoryTool.js</td><td>file</td></tr><tr><td>📜</td><td>news.js</td><td>file</td></tr><tr><td>📜</td><td>packageManager.js</td><td>file</td></tr><tr><td>📜</td><td>review.js</td><td>file</td></tr><tr><td>📜</td><td>search.js</td><td>file</td></tr><tr><td>📜</td><td>selfImprovement.js</td><td>file</td></tr><tr><td>📜</td><td>shopping.js</td><td>file</td></tr><tr><td>📜</td><td>sports.js</td><td>file</td></tr><tr><td>📜</td><td>spotify.js</td><td>file</td></tr><tr><td>📜</td><td>tasks.js</td><td>file</td></tr><tr><td>📜</td><td>weather.js</td><td>file</td></tr><tr><td>📜</td><td>webDownload.js</td><td>file</td></tr><tr><td>📜</td><td>youtube.js</td><td>file</td></tr>\n            </tbody>\n          </table>\n        </div>\n      ",
+          "text": "Directory: D:/local-llm-ui/server/tools (25 items)\n📜 file: calculator.js\n📜 file: calculator.test.js\n📜 file: email.js\n📜 file: file.js\n📜 file: fileWrite.js\n📜 file: finance.js\n📜 file: financeFundamentals.js\n📜 file: github.js\n📜 file: imageGen.js\n📜 file: index.js\n📜 file: llm.js\n📜 file: math-intent.js\n📜 file: memoryTool.js\n📜 file: news.js\n📜 file: packageManager.js\n📜 file: review.js\n📜 file: search.js\n📜 file: selfImprovement.js\n📜 file: shopping.js\n📜 file: sports.js\n📜 file: spotify.js\n📜 file: tasks.js\n📜 file: weather.js\n📜 file: webDownload.js\n📜 file: youtube.js"
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": "Accessed directory: \"D:/local-llm-ui/server/tools\" in sandbox: local-llm-ui"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Matan! It looks like you asked me to list a specific file for you. The file in question is \"news.js\" located in the directory \"D:/local-lll-ui/server/tools\". According to our system's information, this file has a size of 6.69 KB and contains 259 lines of code.\n\nHere's what we know about the file so far: it appears to be an enhanced version of article scraping and LLM summarization. It seems to include functions for scraping article content from URLs and generating summaries using natural language processing techniques.\n\nLet me know if you'd like more information or have any specific questions about this file!",
+        "timestamp": "2026-02-19T20:08:43.959Z",
+        "confidence": 0.5,
+        "tool": "file",
+        "data": {
+          "items": [
+            {
+              "name": "news.js",
+              "type": "file",
+              "size": 6846,
+              "sizeFormatted": "6.69 KB",
+              "lines": 259
+            }
+          ],
+          "text": "File: news.js (6.69 KB, 259 lines)\n\n// server/tools/news.js (ENHANCED - Article scraping + LLM summarization)\nimport Parser from \"rss-parser\";\nimport { safeFetch } from \"../utils/fetch.js\";\nimport { llm } from \"./llm.js\";\n\nconst parser = new Parser();\n\nconst FEEDS = {\n  ynet: \"https://www.ynet.co.il/Integration/StoryRss2.xml\",\n  kan: \"https://www.kan.org.il/Rss.aspx?pid=News\",\n  n12: \"https://www.mako.co.il/rss/news-israel.xml\",\n  jpost: \"https://www.jpost.com/Rss/RssFeedsHeadlines.aspx\",\n  toi: \"https://www.timesofisrael.com/feed/\",\n  bbc: \"http://feeds.bbci.co.uk/news/rss.xml\",\n  cnn: \"http://rss.cnn.com/rss/edition.rss\",\n  reuters: \"http://feeds.reuters.com/reuters/topNews\",\n  aljazeera: \"https://www.aljazeera.com/xml/rss/all.xml\"\n};\n\n// Scrape article content from URL\nasync function scrapeArticle(url) {\n  try {\n    const html = await safeFetch(url, { \n      method: \"GET\",\n      headers: {\n        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'\n      }\n    });\n    \n    if (!html || typeof html !== 'string') return null;\n    \n    // Simple text extraction (remove HTML tags)\n    let text = html\n      .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n      .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n      .replace(/<[^>]+>/g, ' ')\n      .replace(/\\s+/g, ' ')\n      .trim();\n    \n    // Take first 2000 characters for summarization\n    return text.substring(0, 2000);\n  } catch (err) {\n    console.warn(`Failed to scrape ${url}:`, err.message);\n    return null;\n  }\n}\n\n// Generate summary using LLM\nasync function summarizeArticle(title, content) {\n  if (!content) return null;\n\n... (truncated)",
+          "html": "\n        <div class=\"ai-table-wrapper\">\n          <p><strong>📄 File:</strong> news.js</p>\n          <p><strong>📏 Size:</strong> 6.69 KB</p>\n          <p><strong>📝 Lines:</strong> 259</p>\n          <pre style=\"max-height: 400px; overflow-y: auto; background: var(--bg-tertiary); padding: 1rem; border-radius: 8px;\">// server/tools/news.js (ENHANCED - Article scraping + LLM summarization)\nimport Parser from \"rss-parser\";\nimport { safeFetch } from \"../utils/fetch.js\";\nimport { llm } from \"./llm.js\";\n\nconst parser = new Parser();\n\nconst FEEDS = {\n  ynet: \"https://www.ynet.co.il/Integration/StoryRss2.xml\",\n  kan: \"https://www.kan.org.il/Rss.aspx?pid=News\",\n  n12: \"https://www.mako.co.il/rss/news-israel.xml\",\n  jpost: \"https://www.jpost.com/Rss/RssFeedsHeadlines.aspx\",\n  toi: \"https://www.timesofisrael.com/feed/\",\n  bbc: \"http://feeds.bbci.co.uk/news/rss.xml\",\n  cnn: \"http://rss.cnn.com/rss/edition.rss\",\n  reuters: \"http://feeds.reuters.com/reuters/topNews\",\n  aljazeera: \"https://www.aljazeera.com/xml/rss/all.xml\"\n};\n\n// Scrape article content from URL\nasync function scrapeArticle(url) {\n  try {\n    const html = await safeFetch(url, { \n      method: \"GET\",\n      headers: {\n        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'\n      }\n    });\n    \n    if (!html || typeof html !== 'string') return null;\n    \n    // Simple text extraction (remove HTML tags)\n    let text = html\n      .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n      .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n      .replace(/<[^>]+>/g, ' ')\n      .replace(/\\s+/g, ' ')\n      .trim();\n    \n    // Take first 2000 characters for summarization\n    return text.substring(0, 2000);\n  } catch (err) {\n    console.warn(`Failed to scrape ${url}:`, err.message);\n    return null;\n  }\n}\n\n// Generate summary using LLM\nasync function summarizeArticle(title, content) {\n  if (!content) return null;\n\n... (truncated, showing first 50 lines)</pre>\n        </div>\n      "
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": "Accessed file: \"D:/local-llm-ui/server/tools/news.js\" in sandbox: local-llm-ui"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Tool \"code review and analysis\n\n(rule 13: \"review <file>\")\" not found. Available tools: calculator, weather, finance, financeFundamentals, search, sports, youtube, shopping, news, file, fileWrite, email, tasks, memorytool, packageManager, webDownload, selfImprovement, github, review",
+        "timestamp": "2026-02-19T20:10:00.808Z",
+        "confidence": 0.5,
+        "metadata": {
+          "steps": 0
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Matan! I'm happy to provide some insights about the news.js file.\n\nFrom what I understand, this file seems to be an enhanced version of article scraping and LLM summarization. It includes functions for scraping article content from URLs and generating summaries using natural language processing techniques.\n\nI think it's interesting that this file has a relatively small size of 6.69 KB but contains 259 lines of code. This could indicate that the code is well-organized and efficient, which is great!\n\nIf you're looking to get more out of this file or have any specific questions about its functionality, I'd be happy to help you explore it further.\n\nLet me know if there's anything else I can do for you!",
+        "timestamp": "2026-02-19T20:12:32.941Z",
+        "confidence": 0.5,
+        "tool": "llm",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Hey Matan! I've got some great news for you. We've accessed the directory \"D:/local-llm-ui/server\" and gathered a list of all its contents. It looks like there are 19 items in total, including folders and files.\n\nLet's take a look at what we've found. There are several folders, including \"backup\", \"Claude\", \"node_modules\", \"routes\", \"skills\", \"tools\", and \"utils\". These folders seem to be organized nicely, making it easy to navigate through them.\n\nWe also have some files in the directory, such as \".env\", \"audit.js\", \"executor.js\", and more. Each file has a specific type, like \"file\" or \"folder\", and an icon that helps us identify what they are.\n\nHere's a summary of what we've found:\n\n* Folders: 8\n\t+ backup\n\t+ Claude\n\t+ node_modules\n\t+ routes\n\t+ skills\n\t+ tools\n\t+ utils\n* Files: 11\n\t+ .env\n\t+ audit.js\n\t+ executor.js\n\t+ index.js\n\t+ intentDebugger.js\n\t+ memory.js\n\t+ memoryLock.js\n\t+ package-lock.json\n\t+ package.json\n\t+ planner.js\n\t+ search_cache.json\n\t+ telemetryAudit.js\n\nI hope this helps you navigate the directory, Matan! Let me know if you have any further questions or need help with anything else.",
+        "timestamp": "2026-02-19T20:16:11.998Z",
+        "confidence": 0.5,
+        "tool": "file",
+        "data": {
+          "items": [
+            {
+              "name": "backup",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "Claude",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "node_modules",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "routes",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "skills",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "tools",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": "utils",
+              "type": "folder",
+              "icon": "📁"
+            },
+            {
+              "name": ".env",
+              "type": "file",
+              "icon": "📄"
+            },
+            {
+              "name": "audit.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "executor.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "index.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "intentDebugger.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "memory.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "memoryLock.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "package-lock.json",
+              "type": "file",
+              "icon": "📋"
+            },
+            {
+              "name": "package.json",
+              "type": "file",
+              "icon": "📋"
+            },
+            {
+              "name": "planner.js",
+              "type": "file",
+              "icon": "📜"
+            },
+            {
+              "name": "search_cache.json",
+              "type": "file",
+              "icon": "📋"
+            },
+            {
+              "name": "telemetryAudit.js",
+              "type": "file",
+              "icon": "📜"
+            }
+          ],
+          "path": "D:/local-llm-ui/server",
+          "absolutePath": "D:\\local-llm-ui\\server",
+          "html": "\n        <div class=\"ai-table-wrapper\">\n          <p><strong>📂 Directory:</strong> D:/local-llm-ui/server</p>\n          <p><strong>🗂️ Full path:</strong> D:\\local-llm-ui\\server</p>\n          <p><strong>📊 Total items:</strong> 19</p>\n          <table class=\"ai-table\">\n            <thead>\n              <tr><th>Icon</th><th>Name</th><th>Type</th></tr>\n            </thead>\n            <tbody>\n              <tr><td>📁</td><td>backup</td><td>folder</td></tr><tr><td>📁</td><td>Claude</td><td>folder</td></tr><tr><td>📁</td><td>node_modules</td><td>folder</td></tr><tr><td>📁</td><td>routes</td><td>folder</td></tr><tr><td>📁</td><td>skills</td><td>folder</td></tr><tr><td>📁</td><td>tools</td><td>folder</td></tr><tr><td>📁</td><td>utils</td><td>folder</td></tr><tr><td>📄</td><td>.env</td><td>file</td></tr><tr><td>📜</td><td>audit.js</td><td>file</td></tr><tr><td>📜</td><td>executor.js</td><td>file</td></tr><tr><td>📜</td><td>index.js</td><td>file</td></tr><tr><td>📜</td><td>intentDebugger.js</td><td>file</td></tr><tr><td>📜</td><td>memory.js</td><td>file</td></tr><tr><td>📜</td><td>memoryLock.js</td><td>file</td></tr><tr><td>📋</td><td>package-lock.json</td><td>file</td></tr><tr><td>📋</td><td>package.json</td><td>file</td></tr><tr><td>📜</td><td>planner.js</td><td>file</td></tr><tr><td>📋</td><td>search_cache.json</td><td>file</td></tr><tr><td>📜</td><td>telemetryAudit.js</td><td>file</td></tr>\n            </tbody>\n          </table>\n        </div>\n      ",
+          "text": "Directory: D:/local-llm-ui/server (19 items)\n📁 folder: backup\n📁 folder: Claude\n📁 folder: node_modules\n📁 folder: routes\n📁 folder: skills\n📁 folder: tools\n📁 folder: utils\n📄 file: .env\n📜 file: audit.js\n📜 file: executor.js\n📜 file: index.js\n📜 file: intentDebugger.js\n📜 file: memory.js\n📜 file: memoryLock.js\n📋 file: package-lock.json\n📋 file: package.json\n📜 file: planner.js\n📋 file: search_cache.json\n📜 file: telemetryAudit.js"
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": "Accessed directory: \"D:/local-llm-ui/server\" in sandbox: local-llm-ui"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Hey Matan! Good news - I have access to GitHub. As a matter of fact, we're all set up with the API, which means I can help you explore your repositories, create or read issues and PRs, search for code and repos, manage settings, and more.\n\nYou can think of me as your personal GitHub assistant! If you'd like to dig into any specific repository or task, just let me know.",
+        "timestamp": "2026-02-19T20:17:18.379Z",
+        "confidence": 0.5,
+        "tool": "github",
+        "data": {
+          "hasAccess": true,
+          "username": "Matanef",
+          "name": null,
+          "type": "User",
+          "message": "✅ Yes, I have GitHub API access!\n\n**Authenticated as:** Matanef\n**Account type:** User\n\nI can:\n- List your repositories\n- Create/read issues and PRs\n- Search code and repositories\n- Manage repository settings\n- And more!"
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": null
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Path not found: \"list my github repositories\"\n\nAllowed directories:\n- D:/local-llm-ui (your project)\n- E:/testFolder\n\nTip: Use relative paths like \"server/tools\" or \"local-llm-ui/server\"",
+        "timestamp": "2026-02-19T20:18:52.407Z",
+        "confidence": 0.5,
+        "tool": "file",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Path not found: \"list my github repositories\"\n\nAllowed directories:\n- D:/local-llm-ui (your project)\n- E:/testFolder\n\nTip: Use relative paths like \"server/tools\" or \"local-llm-ui/server\"",
+        "timestamp": "2026-02-19T20:19:01.412Z",
+        "confidence": 0.5,
+        "tool": "file",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Hey Matan! I've got a list of your GitHub repositories for you. It looks like you have 17 repositories in total, including \"FirstAgent\", \"FullStack_for_fun\", \"BootCamp2023\", and many more.\n\nHere's a summary of what we found:\n\n* FirstAgent (JavaScript) - 0 stars\n* FullStack_for_fun (HTML) - 0 stars\n* BootCamp2023 (JavaScript) - 0 stars\n* FinalProject1 (JavaScript) - 0 stars\n* Dep_CS (JavaScript) - 0 stars\n* Dep_Client (JavaScript) - 0 stars\n* Dep_Server (JavaScript) - 0 stars\n* Hackathon_2023_Dec (HTML) - 0 stars\n* First_HTML_Pgae_Exercise (HTML) - 0 stars\n* Developer-s_Insititute_2023 (HTML) - 0 stars\n* DeveloperInstituteFolder (Python) - 0 stars\n* TestBranches (HTML) - 0 stars\n* TestMarch2022 (Unknown) - 0 stars\n* Basic-Exercises (Unknown) - 0 stars\n* Daily_challenge_Avenger (CSS) - 0 stars\n* New_repo (HTML) - 0 stars\n* git_tutorial_matan (Unknown) - 0 stars\n\nTake a look at the list and see what catches your eye!",
+        "timestamp": "2026-02-19T20:21:16.785Z",
+        "confidence": 0.5,
+        "tool": "github",
+        "data": {
+          "repositories": [
+            {
+              "name": "FirstAgent",
+              "fullName": "Matanef/FirstAgent",
+              "description": "first LLM agent",
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2026-02-19T19:50:53Z",
+              "url": "https://github.com/Matanef/FirstAgent"
+            },
+            {
+              "name": "FullStack_for_fun",
+              "fullName": "Matanef/FullStack_for_fun",
+              "description": null,
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2025-08-18T14:53:40Z",
+              "url": "https://github.com/Matanef/FullStack_for_fun"
+            },
+            {
+              "name": "BootCamp2023",
+              "fullName": "Matanef/BootCamp2023",
+              "description": "Developers Institute BootCamp 2023",
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2024-05-07T16:02:24Z",
+              "url": "https://github.com/Matanef/BootCamp2023"
+            },
+            {
+              "name": "FinalProject1",
+              "fullName": "Matanef/FinalProject1",
+              "description": null,
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2024-03-20T10:13:44Z",
+              "url": "https://github.com/Matanef/FinalProject1"
+            },
+            {
+              "name": "Dep_CS",
+              "fullName": "Matanef/Dep_CS",
+              "description": null,
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2024-03-17T16:19:09Z",
+              "url": "https://github.com/Matanef/Dep_CS"
+            },
+            {
+              "name": "Dep_Client",
+              "fullName": "Matanef/Dep_Client",
+              "description": null,
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2024-03-17T16:13:07Z",
+              "url": "https://github.com/Matanef/Dep_Client"
+            },
+            {
+              "name": "Dep_Server",
+              "fullName": "Matanef/Dep_Server",
+              "description": null,
+              "private": false,
+              "language": "JavaScript",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2024-03-17T16:11:53Z",
+              "url": "https://github.com/Matanef/Dep_Server"
+            },
+            {
+              "name": "Hackathon_2023_Dec",
+              "fullName": "Matanef/Hackathon_2023_Dec",
+              "description": "Developers Institute Hackathon December 2023",
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2023-12-31T18:34:55Z",
+              "url": "https://github.com/Matanef/Hackathon_2023_Dec"
+            },
+            {
+              "name": "First_HTML_Pgae_Exercise",
+              "fullName": "Matanef/First_HTML_Pgae_Exercise",
+              "description": "First_HTML_Pgae_Exercise",
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2023-11-22T23:20:41Z",
+              "url": "https://github.com/Matanef/First_HTML_Pgae_Exercise"
+            },
+            {
+              "name": "Developer-s_Insititute_2023",
+              "fullName": "Matanef/Developer-s_Insititute_2023",
+              "description": "New Repository 2023",
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2023-11-14T17:07:46Z",
+              "url": "https://github.com/Matanef/Developer-s_Insititute_2023"
+            },
+            {
+              "name": "DeveloperInstituteFolder",
+              "fullName": "Matanef/DeveloperInstituteFolder",
+              "description": "experimental",
+              "private": false,
+              "language": "Python",
+              "stars": 0,
+              "forks": 1,
+              "updated": "2022-04-28T12:44:40Z",
+              "url": "https://github.com/Matanef/DeveloperInstituteFolder"
+            },
+            {
+              "name": "TestBranches",
+              "fullName": "Matanef/TestBranches",
+              "description": "only for test",
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2022-03-31T06:49:51Z",
+              "url": "https://github.com/Matanef/TestBranches"
+            },
+            {
+              "name": "TestMarch2022",
+              "fullName": "Matanef/TestMarch2022",
+              "description": null,
+              "private": false,
+              "language": null,
+              "stars": 0,
+              "forks": 0,
+              "updated": "2022-03-14T11:01:09Z",
+              "url": "https://github.com/Matanef/TestMarch2022"
+            },
+            {
+              "name": "Basic-Exercises",
+              "fullName": "Matanef/Basic-Exercises",
+              "description": "08/03",
+              "private": false,
+              "language": null,
+              "stars": 0,
+              "forks": 0,
+              "updated": "2022-03-08T19:54:57Z",
+              "url": "https://github.com/Matanef/Basic-Exercises"
+            },
+            {
+              "name": "Daily_challenge_Avenger",
+              "fullName": "Matanef/Daily_challenge_Avenger",
+              "description": "Daily_challenge_Avenger",
+              "private": false,
+              "language": "CSS",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2021-12-11T01:55:38Z",
+              "url": "https://github.com/Matanef/Daily_challenge_Avenger"
+            },
+            {
+              "name": "New_repo",
+              "fullName": "Matanef/New_repo",
+              "description": null,
+              "private": false,
+              "language": "HTML",
+              "stars": 0,
+              "forks": 0,
+              "updated": "2021-12-10T15:21:49Z",
+              "url": "https://github.com/Matanef/New_repo"
+            },
+            {
+              "name": "git_tutorial_matan",
+              "fullName": "Matanef/git_tutorial_matan",
+              "description": "Git Exercise DI",
+              "private": false,
+              "language": null,
+              "stars": 0,
+              "forks": 0,
+              "updated": "2021-12-10T00:49:38Z",
+              "url": "https://github.com/Matanef/git_tutorial_matan"
+            }
+          ],
+          "count": 17,
+          "html": "\n        <div class=\"ai-table-wrapper\">\n          <h3>📦 Your GitHub Repositories</h3>\n          <p><strong>Total:</strong> 17 repositories</p>\n          <table class=\"ai-table\">\n            <thead>\n              <tr>\n                <th>Name</th>\n                <th>Description</th>\n                <th>Language</th>\n                <th>⭐ Stars</th>\n                <th>🔀 Forks</th>\n                <th>Visibility</th>\n              </tr>\n            </thead>\n            <tbody>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/FirstAgent\" target=\"_blank\">FirstAgent</a></td>\n                  <td>first LLM agent</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/FullStack_for_fun\" target=\"_blank\">FullStack_for_fun</a></td>\n                  <td>-</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/BootCamp2023\" target=\"_blank\">BootCamp2023</a></td>\n                  <td>Developers Institute BootCamp 2023</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/FinalProject1\" target=\"_blank\">FinalProject1</a></td>\n                  <td>-</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Dep_CS\" target=\"_blank\">Dep_CS</a></td>\n                  <td>-</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Dep_Client\" target=\"_blank\">Dep_Client</a></td>\n                  <td>-</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Dep_Server\" target=\"_blank\">Dep_Server</a></td>\n                  <td>-</td>\n                  <td>JavaScript</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Hackathon_2023_Dec\" target=\"_blank\">Hackathon_2023_Dec</a></td>\n                  <td>Developers Institute Hackathon December 2023</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/First_HTML_Pgae_Exercise\" target=\"_blank\">First_HTML_Pgae_Exercise</a></td>\n                  <td>First_HTML_Pgae_Exercise</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Developer-s_Insititute_2023\" target=\"_blank\">Developer-s_Insititute_2023</a></td>\n                  <td>New Repository 2023</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/DeveloperInstituteFolder\" target=\"_blank\">DeveloperInstituteFolder</a></td>\n                  <td>experimental</td>\n                  <td>Python</td>\n                  <td>0</td>\n                  <td>1</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/TestBranches\" target=\"_blank\">TestBranches</a></td>\n                  <td>only for test</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/TestMarch2022\" target=\"_blank\">TestMarch2022</a></td>\n                  <td>-</td>\n                  <td>-</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Basic-Exercises\" target=\"_blank\">Basic-Exercises</a></td>\n                  <td>08/03</td>\n                  <td>-</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/Daily_challenge_Avenger\" target=\"_blank\">Daily_challenge_Avenger</a></td>\n                  <td>Daily_challenge_Avenger</td>\n                  <td>CSS</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/New_repo\" target=\"_blank\">New_repo</a></td>\n                  <td>-</td>\n                  <td>HTML</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n                <tr>\n                  <td><a href=\"https://github.com/Matanef/git_tutorial_matan\" target=\"_blank\">git_tutorial_matan</a></td>\n                  <td>Git Exercise DI</td>\n                  <td>-</td>\n                  <td>0</td>\n                  <td>0</td>\n                  <td>🌐 Public</td>\n                </tr>\n              \n            </tbody>\n          </table>\n        </div>\n      ",
+          "text": "Found 17 repositories:\n• FirstAgent (JavaScript) - 0 stars\n• FullStack_for_fun (HTML) - 0 stars\n• BootCamp2023 (JavaScript) - 0 stars\n• FinalProject1 (JavaScript) - 0 stars\n• Dep_CS (JavaScript) - 0 stars\n• Dep_Client (JavaScript) - 0 stars\n• Dep_Server (JavaScript) - 0 stars\n• Hackathon_2023_Dec (HTML) - 0 stars\n• First_HTML_Pgae_Exercise (HTML) - 0 stars\n• Developer-s_Insititute_2023 (HTML) - 0 stars\n• DeveloperInstituteFolder (Python) - 0 stars\n• TestBranches (HTML) - 0 stars\n• TestMarch2022 (Unknown) - 0 stars\n• Basic-Exercises (Unknown) - 0 stars\n• Daily_challenge_Avenger (CSS) - 0 stars\n• New_repo (HTML) - 0 stars\n• git_tutorial_matan (Unknown) - 0 stars"
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": null
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Hey Matan! I'm happy to show you your GitHub profile. Let me share some details with you.\n\nIt looks like your username is \"Matanef\", and you have 17 public repositories on your profile. Unfortunately, your name, bio, email, company, and location are not publicly available.\n\nHere's a summary of what I found:\n\n**GitHub Profile:**\n\n* Username: Matanef\n* Not public\n* No company\n* No location\n* 17 public repos\n* 0 followers, 0 following\n\nTake a look at your profile by clicking on the URL I provided. Let me know if you need any help with anything else!",
+        "timestamp": "2026-02-19T20:24:55.301Z",
+        "confidence": 0.5,
+        "tool": "github",
+        "data": {
+          "username": "Matanef",
+          "name": null,
+          "bio": null,
+          "email": null,
+          "publicRepos": 17,
+          "followers": 0,
+          "following": 0,
+          "company": null,
+          "location": null,
+          "url": "https://github.com/Matanef",
+          "text": "**GitHub Profile:**\n\n👤 Matanef\n📧 Not public\n🏢 No company\n📍 No location\n📦 17 public repos\n👥 0 followers, 0 following"
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": null
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Here's a friendly and concise review of the `news.js` file:\n\nHey Matan!\n\nI've reviewed your `news.js` file, and I'm excited to share my thoughts with you. This file is responsible for fetching RSS feeds from various news sources, scraping article content, summarizing articles using a Large Language Model (LLM), and generating HTML output with summary cards.\n\nHere are some key observations:\n\n* The file uses a parser library (`rss-parser`) to fetch RSS feeds from various sources.\n* It employs a `safeFetch` function from another utility file to make HTTP requests, which helps in handling errors and exceptions.\n* The code utilizes an LLM model (`llm.js`) for summarization tasks.\n* The article scraping and summarization logic is encapsulated within two separate functions: `scrapeArticle` and `summarizeArticle`.\n* The file uses a callback-based approach to handle asynchronous operations, which can make the code harder to read and maintain.\n\nSome strengths of this code include:\n\n* A modular design, separating concerns into distinct functions.\n* Utilizing a robust parsing library for fetching RSS feeds.\n* Well-organized article scraping and summarization logic that's easy to understand.\n\nNow, here are some suggestions for improvement:\n\n1. **Error handling**: While the `safeFetch` function helps in handling errors, it's essential to improve error handling throughout the code. Consider using try-catch blocks to catch and handle specific exceptions.\n2. **Code organization**: The file contains both data fetching and processing logic. Consider separating these concerns into different files or modules for better maintainability and scalability.\n3. **Code readability**: Refactor the code using promises or async/await syntax for better readability.\n4. **Performance optimization**: When fetching and processing large amounts of data, consider optimizing the code for performance.\n5. **Code quality enhancements**: Refactor the code to adhere to modern JavaScript best practices, such as using const declarations and arrow functions.\n\nOverall, this code is well-structured and easy to understand. With minor improvements in error handling, code organization, readability, performance optimization, and code quality enhancements, it can become even more robust and maintainable.\n\nI hope you find these suggestions helpful!",
+        "timestamp": "2026-02-19T20:28:27.635Z",
+        "confidence": 0.5,
+        "tool": "review",
+        "data": {
+          "file": "news.js",
+          "path": "server\\tools\\news.js",
+          "lines": 259,
+          "size": 6840,
+          "reviewText": "**Summary**\n\nThis file, `news.js`, is responsible for fetching RSS feeds from various news sources, scraping article content, summarizing the articles using a Large Language Model (LLM), and generating HTML output with summary cards. It fits into the project's architecture as a tool that provides summarized news articles to the user.\n\n**Key Observations**\n\n* The file uses a parser library (`rss-parser`) to fetch RSS feeds from various sources.\n* It employs a `safeFetch` function from another utility file to make HTTP requests, which helps in handling errors and exceptions.\n* The code utilizes an LLM model (`llm.js`) for summarization tasks.\n* The article scraping and summarization logic is encapsulated within two separate functions: `scrapeArticle` and `summarizeArticle`.\n* The file uses a callback-based approach to handle asynchronous operations, which can make the code harder to read and maintain.\n\n**Strengths**\n\n* The code uses a modular design, separating concerns into distinct functions.\n* It utilizes a robust parsing library for fetching RSS feeds.\n* The article scraping and summarization logic is well-organized and easy to understand.\n\n**Suggestions for Improvement**\n\n1. **Error handling**: While the `safeFetch` function helps in handling errors, it's essential to improve error handling throughout the code. Consider using try-catch blocks to catch and handle specific exceptions. For instance, you can log errors and provide a default response or message to the user.\n2. **Code organization**: The file contains both data fetching and processing logic. Consider separating these concerns into different files or modules for better maintainability and scalability.\n3. **Code readability**: The code uses a callback-based approach, which can make it harder to read and maintain. Consider refactoring the code using promises or async/await syntax for better readability.\n4. **Performance optimization**: When fetching and processing large amounts of data, consider optimizing the code for performance. This can be achieved by using caching mechanisms, parallel processing, or other techniques depending on the specific requirements.\n5. **Code quality enhancements**: The file uses a mix of JavaScript features, including ES6 syntax and some antiquated approaches (e.g., callback-based code). Consider refactoring the code to adhere to modern JavaScript best practices, such as using const declarations and arrow functions.\n\nOverall, the code is well-structured and easy to understand. With minor improvements in error handling, code organization, readability, performance optimization, and code quality enhancements, it can become even more robust and maintainable.",
+          "html": "\n      <div class=\"review-panel\">\n        <div class=\"review-header\">\n          <h3>🔍 Code Review: news.js</h3>\n          <p class=\"review-path\">📂 server\\tools\\news.js</p>\n          <p class=\"review-meta\">📏 259 lines • 7KB</p>\n        </div>\n        <div class=\"review-content\">\n          <p>**Summary**</p><p>This file, `news.js`, is responsible for fetching RSS feeds from various news sources, scraping article content, summarizing the articles using a Large Language Model (LLM), and generating HTML output with summary cards. It fits into the project's architecture as a tool that provides summarized news articles to the user.</p><p>**Key Observations**</p><p>* The file uses a parser library (`rss-parser`) to fetch RSS feeds from various sources.\n* It employs a `safeFetch` function from another utility file to make HTTP requests, which helps in handling errors and exceptions.\n* The code utilizes an LLM model (`llm.js`) for summarization tasks.\n* The article scraping and summarization logic is encapsulated within two separate functions: `scrapeArticle` and `summarizeArticle`.\n* The file uses a callback-based approach to handle asynchronous operations, which can make the code harder to read and maintain.</p><p>**Strengths**</p><p>* The code uses a modular design, separating concerns into distinct functions.\n* It utilizes a robust parsing library for fetching RSS feeds.\n* The article scraping and summarization logic is well-organized and easy to understand.</p><p>**Suggestions for Improvement**</p><p>1. **Error handling**: While the `safeFetch` function helps in handling errors, it's essential to improve error handling throughout the code. Consider using try-catch blocks to catch and handle specific exceptions. For instance, you can log errors and provide a default response or message to the user.\n2. **Code organization**: The file contains both data fetching and processing logic. Consider separating these concerns into different files or modules for better maintainability and scalability.\n3. **Code readability**: The code uses a callback-based approach, which can make it harder to read and maintain. Consider refactoring the code using promises or async/await syntax for better readability.\n4. **Performance optimization**: When fetching and processing large amounts of data, consider optimizing the code for performance. This can be achieved by using caching mechanisms, parallel processing, or other techniques depending on the specific requirements.\n5. **Code quality enhancements**: The file uses a mix of JavaScript features, including ES6 syntax and some antiquated approaches (e.g., callback-based code). Consider refactoring the code to adhere to modern JavaScript best practices, such as using const declarations and arrow functions.</p><p>Overall, the code is well-structured and easy to understand. With minor improvements in error handling, code organization, readability, performance optimization, and code quality enhancements, it can become even more robust and maintainable.</p>\n        </div>\n      </div>\n      \n      <style>\n        .review-panel {\n          background: var(--bg-tertiary);\n          border: 1px solid var(--border);\n          border-radius: 8px;\n          padding: 1.5rem;\n          margin: 1rem 0;\n        }\n        .review-header h3 {\n          color: var(--accent);\n          margin-bottom: 0.5rem;\n        }\n        .review-path {\n          color: var(--text-secondary);\n          font-family: monospace;\n          font-size: 0.9rem;\n          margin: 0.25rem 0;\n        }\n        .review-meta {\n          color: var(--text-muted);\n          font-size: 0.85rem;\n          margin: 0.25rem 0;\n        }\n        .review-content {\n          margin-top: 1rem;\n          color: var(--text-primary);\n          line-height: 1.6;\n        }\n        .review-content p {\n          margin: 0.75rem 0;\n        }\n      </style>\n    ",
+          "text": "Code Review: news.js\n\n**Summary**\n\nThis file, `news.js`, is responsible for fetching RSS feeds from various news sources, scraping article content, summarizing the articles using a Large Language Model (LLM), and generating HTML output with summary cards. It fits into the project's architecture as a tool that provides summarized news articles to the user.\n\n**Key Observations**\n\n* The file uses a parser library (`rss-parser`) to fetch RSS feeds from various sources.\n* It employs a `safeFetch` function from another utility file to make HTTP requests, which helps in handling errors and exceptions.\n* The code utilizes an LLM model (`llm.js`) for summarization tasks.\n* The article scraping and summarization logic is encapsulated within two separate functions: `scrapeArticle` and `summarizeArticle`.\n* The file uses a callback-based approach to handle asynchronous operations, which can make the code harder to read and maintain.\n\n**Strengths**\n\n* The code uses a modular design, separating concerns into distinct functions.\n* It utilizes a robust parsing library for fetching RSS feeds.\n* The article scraping and summarization logic is well-organized and easy to understand.\n\n**Suggestions for Improvement**\n\n1. **Error handling**: While the `safeFetch` function helps in handling errors, it's essential to improve error handling throughout the code. Consider using try-catch blocks to catch and handle specific exceptions. For instance, you can log errors and provide a default response or message to the user.\n2. **Code organization**: The file contains both data fetching and processing logic. Consider separating these concerns into different files or modules for better maintainability and scalability.\n3. **Code readability**: The code uses a callback-based approach, which can make it harder to read and maintain. Consider refactoring the code using promises or async/await syntax for better readability.\n4. **Performance optimization**: When fetching and processing large amounts of data, consider optimizing the code for performance. This can be achieved by using caching mechanisms, parallel processing, or other techniques depending on the specific requirements.\n5. **Code quality enhancements**: The file uses a mix of JavaScript features, including ES6 syntax and some antiquated approaches (e.g., callback-based code). Consider refactoring the code to adhere to modern JavaScript best practices, such as using const declarations and arrow functions.\n\nOverall, the code is well-structured and easy to understand. With minor improvements in error handling, code organization, readability, performance optimization, and code quality enhancements, it can become even more robust and maintainable."
+        },
+        "metadata": {
+          "steps": 1,
+          "reasoning": "Reviewed news.js (259 lines)"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "No valid math expression found",
+        "timestamp": "2026-02-19T20:36:58.827Z",
+        "confidence": 0.5,
+        "tool": "calculator",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Tool \"code\" not found. Available tools: calculator, weather, finance, financeFundamentals, search, sports, youtube, shopping, news, file, fileWrite, email, tasks, memorytool, packageManager, webDownload, selfImprovement, github, review",
+        "timestamp": "2026-02-19T20:37:50.810Z",
+        "confidence": 0.5,
+        "metadata": {
+          "steps": 0
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Could not find file: the\n\nSearched in:\n- server/tools/\n- server/\n- client/src/\n- project root\n\nPlease check the file name and path.",
+        "timestamp": "2026-02-19T20:40:23.964Z",
+        "confidence": 0.5,
+        "tool": "review",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Could not find file: tools\n\nSearched in:\n- server/tools/\n- server/\n- client/src/\n- project root\n\nPlease check the file name and path.",
+        "timestamp": "2026-02-19T20:40:46.179Z",
+        "confidence": 0.5,
+        "tool": "review",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Could not find file: tools/\n\nSearched in:\n- server/tools/\n- server/\n- client/src/\n- project root\n\nPlease check the file name and path.",
+        "timestamp": "2026-02-19T20:41:02.817Z",
+        "confidence": 0.5,
+        "tool": "review",
+        "metadata": {
+          "steps": 1
+        }
+      }
     ]
   },
   "profile": {

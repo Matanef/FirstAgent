@@ -1,5 +1,5 @@
 // server/planner.js
-// COMPLETE FIX: #3 (send it email), #6 (file paths), review command detection
+// COMPLETE FIX: All routing issues (#2 folder navigation, #3 github, #5 review)
 
 import { llm } from "./tools/llm.js";
 
@@ -113,21 +113,27 @@ function isMetaQuestionAboutFiles(text) {
   return metaPatterns.some(pattern => pattern.test(lower));
 }
 
-// FIX #6: Enhanced file operation detection with project awareness
+// FIX #2: Enhanced file operation detection - MUST come BEFORE LLM
 function isFileOperation(text) {
   const lower = text.toLowerCase();
+  
+  // CRITICAL: Detect file paths (D:/, E:/, C:/) immediately
+  if (/^(list|show|open|read)\s+[a-z]:[\/\\]/i.test(text)) {
+    console.log("🔍 Detected file path operation");
+    return true;
+  }
+  
   return (
-    /^list\s+/i.test(text) ||  // "list ..."
+    /^list\s+/i.test(text) ||
     /^show\s+(files?|folder|directory|contents?|me\s+the)/i.test(lower) ||
     /^read\s+/i.test(text) ||
     /^open\s+/i.test(text) ||
-    /go\s+to\s+.*\s+folder/i.test(lower) ||  // "go to tools folder"
+    /go\s+to\s+.*\s+folder/i.test(lower) ||
     /\b(scan|explore|look\s+(in|at)|check)\s+(the\s+)?(?:files?|folders?|directory|directories)/i.test(lower) ||
-    /(in\s+(your|my|the)\s+project|project\s+folder)/i.test(lower)  // "in your project"
+    /(in\s+(your|my|the)\s+project|project\s+folder)/i.test(lower)
   );
 }
 
-// FIX #3: Detect "send it" for email confirmation (CRITICAL - check FIRST)
 function isSendItCommand(text) {
   const trimmed = text.trim().toLowerCase();
   return (
@@ -139,23 +145,34 @@ function isSendItCommand(text) {
     trimmed === "send that email" ||
     trimmed === "yes send" ||
     trimmed === "confirm" ||
-    trimmed === "yes"
+    (trimmed === "yes" && text.length < 10)  // Short "yes" likely confirmation
   );
 }
 
-// NEW #12-16: Detect "review" command for code analysis
+// FIX #5: Detect "review" command
 function isReviewCommand(text) {
   const lower = text.toLowerCase();
   const patterns = [
-    /\breview\s+/i,  // "review <file>"
-    /\banalyze\s+/i,  // "analyze <file>"
-    /\binspect\s+/i,  // "inspect <file>"
-    /\bcheck\s+.*\b(code|file)\b/i,  // "check the code"
-    /\bexamine\s+/i,  // "examine <file>"
-    /give\s+.*\b(feedback|opinion|thoughts)\b.*\bon\b/i  // "give feedback on"
+    /\breview\s+/i,
+    /\banalyze\s+/i,
+    /\binspect\s+/i,
+    /\bcheck\s+.*\b(code|file)\b/i,
+    /\bexamine\s+/i,
+    /give\s+.*\b(feedback|opinion|thoughts)\b.*\bon\b/i
   ];
   
   return patterns.some(pattern => pattern.test(lower));
+}
+
+// FIX #3: Detect GitHub capability questions
+function isGitHubCapabilityQuestion(text) {
+  const lower = text.toLowerCase();
+  return (
+    /do you have.*github/i.test(lower) ||
+    /can you (access|use).*github/i.test(lower) ||
+    /github.*api.*configured/i.test(lower) ||
+    /access to github/i.test(lower)
+  );
 }
 
 async function detectIntentWithLLM(message) {
@@ -163,7 +180,7 @@ async function detectIntentWithLLM(message) {
 
 AVAILABLE TOOLS:
 - weather: Current weather, forecasts
-- news: Latest headlines from RSS feeds (with topic filtering)
+- news: Latest headlines from RSS feeds
 - search: Web search for factual information
 - sports: Sports scores, standings
 - youtube: Search YouTube videos
@@ -177,40 +194,36 @@ AVAILABLE TOOLS:
 - email: Draft and send emails
 - tasks: Task management
 - calculator: Mathematical calculations
-- selfImprovement: Query improvements, routing accuracy, detected issues, reports
+- selfImprovement: Query improvements, routing accuracy, detected issues
 - github: GitHub API access (repository operations, issues, PRs)
-- review: Code review and analysis of files/folders
+- review: Code review and analysis
 - llm: General conversation, memory queries, meta questions
-- memorytool: Manage profile data (forget location)
+- memorytool: Manage profile data
 
 USER MESSAGE:
 "${message}"
 
 CLASSIFICATION RULES:
-1. For table reformatting → reformat_table
+1. File paths (D:/, E:/, list D:/...) → file
 2. "weather here" → weather|USE_GEO
 3. "weather in [City]" → weather|CityName
-4. "where am I" or "what's my location" → llm|location_query
+4. "where am I" → llm|location_query
 5. "remember my location/name" → llm|memory_write
-6. "what do you remember about me" → llm|memory_query
-7. Questions about agent capabilities or "do you have access to X" → llm|meta_question
+6. "what do you remember" → llm|memory_query
+7. Meta questions about capabilities → llm|meta_question
 8. Self-improvement queries → selfImprovement
-9. Stock fundamentals/metrics → financeFundamentals
-10. Stock prices only → finance
-11. Reading/listing files, "in your project", "go to folder" → file
-12. Creating/modifying files → fileWrite
-13. "forget my location" → memorytool|forget_location
-14. "review <file>" or "analyze code" → review
-15. GitHub operations (repos, issues, PRs) → github
-16. News with or without topic → news
-17. Casual chat → llm
+9. Stock fundamentals → financeFundamentals
+10. Stock prices → finance
+11. GitHub operations → github
+12. "forget my location" → memorytool|forget_location
+13. "review <file>" → review
+14. News → news
+15. Casual chat → llm
 
-IMPORTANT:
-- Self-improvement queries MUST route to selfImprovement tool
-- "where am I" goes to LLM (not weather)
-- File operations including "in your project folder" go to file tool
-- Review commands go to review tool
-- GitHub questions go to github tool (NOT llm)
+CRITICAL: 
+- If message contains file paths like "D:/..." or "list D:/" → ALWAYS return "file"
+- If message contains "/tools" in a path → it's file operation, NOT the tools tool
+- GitHub questions → return "github" (NOT llm)
 
 Respond with ONLY the tool name (and optional context after |).`;
 
@@ -299,18 +312,29 @@ export async function plan({ message }) {
 
   const lower = trimmed.toLowerCase();
 
-  // FIX #3: "send it" for email confirmation (CRITICAL - check FIRST before LLM)
+  // FIX #3: "send it" for email confirmation (FIRST)
   if (isSendItCommand(lower)) {
-    console.log("📧 Detected 'send it' command - routing to email confirmation");
+    console.log("📧 Detected 'send it' command");
     return {
-      tool: "email_confirm",  // Special routing flag
+      tool: "email_confirm",
       input: trimmed,
       context: { action: "send_confirmed" },
       reasoning: "preclassifier_send_email_confirmation"
     };
   }
 
-  // NEW #12-16: Review commands
+  // FIX #3: GitHub capability questions (route to github tool to test)
+  if (isGitHubCapabilityQuestion(trimmed)) {
+    console.log("🔧 Detected GitHub capability question - routing to github tool");
+    return {
+      tool: "github",
+      input: trimmed,
+      context: { action: "test_access" },
+      reasoning: "preclassifier_github_capability_test"
+    };
+  }
+
+  // FIX #5: Review commands
   if (isReviewCommand(trimmed)) {
     console.log("🔍 Detected review command");
     return {
@@ -401,9 +425,9 @@ export async function plan({ message }) {
     };
   }
 
-  // FIX #6: File operations (before LLM) - enhanced with project awareness
+  // FIX #2: File operations (CRITICAL - check BEFORE LLM)
   if (isFileOperation(trimmed)) {
-    console.log("📂 Detected file operation");
+    console.log("📂 Detected file operation (preclassifier)");
     return {
       tool: "file",
       input: trimmed,
