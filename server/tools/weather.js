@@ -1,4 +1,4 @@
-// server/tools/weather.js (COMPLETE FIX - Never saves location)
+// server/tools/weather.js (unchanged behavior: never saves location; reads memory read-only)
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 import { getMemory } from "../memory.js";
@@ -50,32 +50,21 @@ function isLikelyCity(text) {
   ];
 
   const cleaned = text.trim().toLowerCase();
-
   if (blacklist.includes(cleaned)) return false;
   if (!/^[a-zA-Z\s\-]+$/.test(cleaned)) return false;
   if (cleaned.length < 3) return false;
-
   return true;
 }
 
 // Capitalize each word
 function formatCity(city) {
-  return city
-    .trim()
-    .split(/\s+/)
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  return city.trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
 // Main weather tool (NEVER SAVES LOCATION)
 export async function weather(query) {
   if (!CONFIG.OPENWEATHER_KEY) {
-    return {
-      tool: "weather",
-      success: false,
-      final: true,
-      error: "Weather API key not configured."
-    };
+    return { tool: "weather", success: false, final: true, error: "Weather API key not configured." };
   }
 
   try {
@@ -88,30 +77,23 @@ export async function weather(query) {
     // If context explicitly set city to null but was a geo attempt
     if (!city && wasGeolocationAttempt) {
       console.log("📍 Geolocation failed, checking memory for saved location...");
-      
-      // Try to get saved location from user profile (READ ONLY)
-      const memory = getMemory();
+      const memory = await getMemory();
       if (memory.profile?.location) {
         city = memory.profile.location;
         console.log("✅ Using saved location from profile:", city);
       } else {
-        // Ask user to set their location
         return {
           tool: "weather",
           success: false,
           final: true,
           error: "I couldn't determine your location. Please tell me your city, or say 'remember my location is [City]' so I can help you next time!",
-          data: {
-            suggestion: "Set your location by saying: 'remember my location is Givatayim'"
-          }
+          data: { suggestion: "Set your location by saying: 'remember my location is Tel Aviv'" }
         };
       }
     }
 
     // If caller set __USE_GEOLOCATION__ but didn't resolve it
-    if (city === "__USE_GEOLOCATION__") {
-      city = null;
-    }
+    if (city === "__USE_GEOLOCATION__") city = null;
 
     // If still no city, try extraction from message
     if (!city) {
@@ -121,65 +103,27 @@ export async function weather(query) {
 
     // Final check: do we have a city?
     if (!city) {
-      return {
-        tool: "weather",
-        success: false,
-        final: true,
-        error: "No city detected. Please specify a location (e.g., 'weather in Paris') or set your location with 'remember my location is [City]'."
-      };
+      return { tool: "weather", success: false, final: true, error: "No city detected. Please specify a location (e.g., 'weather in Paris') or set your location with 'remember my location is [City]'." };
     }
 
     // CRITICAL: NEVER SAVE LOCATION HERE
-    // Location saving only happens in:
-    // 1. index.js for "remember my location is X"
-    // 2. memorytool for explicit memory operations
 
     // 2. Determine mode (current vs forecast)
     const forecastMode = wantsForecast(query);
-
-    const endpoint = forecastMode
-      ? "https://api.openweathermap.org/data/2.5/forecast"
-      : "https://api.openweathermap.org/data/2.5/weather";
-
-    const url = `${endpoint}?q=${encodeURIComponent(
-      city
-    )}&units=metric&appid=${CONFIG.OPENWEATHER_KEY}`;
+    const endpoint = forecastMode ? "https://api.openweathermap.org/data/2.5/forecast" : "https://api.openweathermap.org/data/2.5/weather";
+    const url = `${endpoint}?q=${encodeURIComponent(city)}&units=metric&appid=${CONFIG.OPENWEATHER_KEY}`;
 
     const res = await fetch(url);
     const data = await res.json();
 
     // 3. Error handling
-    if (res.status === 401) {
-      return {
-        tool: "weather",
-        success: false,
-        final: true,
-        error: "Weather API error: 401 (Invalid API key or key not activated)"
-      };
-    }
-
-    if (res.status === 404) {
-      return {
-        tool: "weather",
-        success: false,
-        final: true,
-        error: `I couldn't find weather data for "${city}". Please check the city name.`
-      };
-    }
-
-    if (!res.ok) {
-      return {
-        tool: "weather",
-        success: false,
-        final: true,
-        error: `Weather API error: ${res.status}`
-      };
-    }
+    if (res.status === 401) return { tool: "weather", success: false, final: true, error: "Weather API error: 401 (Invalid API key or key not activated)" };
+    if (res.status === 404) return { tool: "weather", success: false, final: true, error: `I couldn't find weather data for "${city}". Please check the city name.` };
+    if (!res.ok) return { tool: "weather", success: false, final: true, error: `Weather API error: ${res.status}` };
 
     // 4. Forecast mode
     if (forecastMode) {
       const grouped = {};
-
       for (const entry of data.list) {
         const date = entry.dt_txt.split(" ")[0];
         if (!grouped[date]) grouped[date] = [];
@@ -192,19 +136,7 @@ export async function weather(query) {
           description: entry.weather?.[0]?.description
         });
       }
-
-      return {
-        tool: "weather",
-        success: true,
-        final: true,
-        data: {
-          mode: "forecast",
-          city,
-          country: data.city?.country,
-          forecast: grouped,
-          raw: data
-        }
-      };
+      return { tool: "weather", success: true, final: true, data: { mode: "forecast", city, country: data.city?.country, forecast: grouped, raw: data } };
     }
 
     // 5. Current weather mode
@@ -225,11 +157,6 @@ export async function weather(query) {
       }
     };
   } catch (err) {
-    return {
-      tool: "weather",
-      success: false,
-      final: true,
-      error: `Weather tool failed: ${err.message}`
-    };
+    return { tool: "weather", success: false, final: true, error: `Weather tool failed: ${err.message}` };
   }
 }

@@ -2735,10 +2735,58 @@
           "steps": 1
         }
       }
+    ],
+    "ea632eac-f04c-49b0-8388-a8ca7838ca2b": [
+      {
+        "role": "user",
+        "content": "remember that my location is Givatayim",
+        "timestamp": "2026-02-19T00:04:53.474Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I've taken note of your location as Givatayim! I can use this information to provide you with more accurate weather forecasts. Would you like me to check the current weather conditions in Givatayim or plan ahead for a specific date? Additionally, I can help you find news, look up stock prices, perform calculations, and much more. What's on your mind today?",
+        "timestamp": "2026-02-19T00:05:12.501Z",
+        "confidence": 0.5,
+        "tool": "llm",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "user",
+        "content": "forget my locattion",
+        "timestamp": "2026-02-19T00:05:39.056Z"
+      },
+      {
+        "role": "assistant",
+        "content": "I've forgotten your saved location.",
+        "timestamp": "2026-02-19T00:05:40.382Z",
+        "confidence": 0.5,
+        "tool": "memorytool",
+        "metadata": {
+          "steps": 1
+        }
+      },
+      {
+        "role": "user",
+        "content": "remember that my location is Givatayim",
+        "timestamp": "2026-02-19T00:05:52.710Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Great reminder! Now that I know you're located in Givatayim, I can provide you with more accurate weather forecasts if you'd like. Would you like me to check the current weather conditions or forecast for the next few days?",
+        "timestamp": "2026-02-19T00:05:59.545Z",
+        "confidence": 0.5,
+        "tool": "llm",
+        "metadata": {
+          "steps": 1
+        }
+      }
     ]
   },
   "profile": {
-    "name": "Matan"
+    "name": "Matan",
+    "location": "Givatayim"
   },
   "meta": {}
 }

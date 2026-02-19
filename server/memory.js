@@ -1,133 +1,133 @@
 // server/memory.js
-import fs from "fs";
+// Robust async memory layer with atomic writes, caching, and a simple in-process mutex.
+
+import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Single source of truth for memory file
 export const MEMORY_FILE = path.resolve(__dirname, "..", "utils", "memory.json");
+export const DEFAULT_MEMORY = { conversations: {}, profile: {}, meta: {} };
 
-export const DEFAULT_MEMORY = {
-  conversations: {},
-  profile: {},
-  meta: {}
-};
+// In-memory cache and simple mutex queue
+let _cache = null;
+let _cacheMtime = 0;
+let _locked = false;
+const _queue = [];
+
+async function _acquireLock() {
+  if (!_locked) {
+    _locked = true;
+    return;
+  }
+  await new Promise((resolve) => _queue.push(resolve));
+  _locked = true;
+}
+function _releaseLock() {
+  _locked = false;
+  const next = _queue.shift();
+  if (next) next();
+}
 
 function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
-function ensureMemoryDirAndFile() {
+function ensureMemoryDirAndFileSync() {
   const dir = path.dirname(MEMORY_FILE);
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  if (!fsSync.existsSync(dir)) {
+    fsSync.mkdirSync(dir, { recursive: true });
   }
+  if (!fsSync.existsSync(MEMORY_FILE)) {
+    fsSync.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2), "utf8");
+  }
+}
 
-  if (!fs.existsSync(MEMORY_FILE)) {
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2));
+async function _readFileSafe(file) {
+  try {
+    ensureMemoryDirAndFileSync();
+    const raw = await fs.readFile(file, "utf8");
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
   }
 }
 
 function validateMemoryShape(raw) {
   const safe = clone(DEFAULT_MEMORY);
-
   if (raw && typeof raw === "object") {
-    if (raw.conversations && typeof raw.conversations === "object") {
-      safe.conversations = raw.conversations;
-    }
-    if (raw.profile && typeof raw.profile === "object") {
-      safe.profile = raw.profile;
-    }
-    if (raw.meta && typeof raw.meta === "object") {
-      safe.meta = raw.meta;
-    }
+    if (raw.conversations && typeof raw.conversations === "object") safe.conversations = raw.conversations;
+    if (raw.profile && typeof raw.profile === "object") safe.profile = raw.profile;
+    if (raw.meta && typeof raw.meta === "object") safe.meta = raw.meta;
   }
-
   return safe;
 }
 
-// ------------------------------
-// Safe loader
-// ------------------------------
-export function loadJSON(filePath = MEMORY_FILE, defaultValue = DEFAULT_MEMORY) {
+export async function loadJSON(file = MEMORY_FILE, fallback = DEFAULT_MEMORY) {
+  const data = await _readFileSafe(file);
+  return validateMemoryShape(data || fallback);
+}
+
+export async function saveJSON(file = MEMORY_FILE, obj) {
+  await _acquireLock();
   try {
-    ensureMemoryDirAndFile();
-
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-
-    return validateMemoryShape(parsed);
+    ensureMemoryDirAndFileSync();
+    const tmp = `${file}.tmp`;
+    const safeData = validateMemoryShape(obj);
+    const data = JSON.stringify(safeData, null, 2);
+    await fs.writeFile(tmp, data, "utf8");
+    await fs.rename(tmp, file);
+    _cache = safeData;
+    _cacheMtime = Date.now();
+    console.log(`[memory] saveJSON succeeded: ${file} (${new Date().toISOString()})`);
+    return true;
   } catch (err) {
-    console.error("Error loading JSON:", err.message);
-    return clone(defaultValue);
+    console.error("[memory] saveJSON failed:", err);
+    throw err;
+  } finally {
+    _releaseLock();
   }
 }
 
-// ------------------------------
-// Safe saver
-// ------------------------------
-export function saveJSON(filePath = MEMORY_FILE, data) {
+export async function reloadMemory() {
+  await _acquireLock();
   try {
-    ensureMemoryDirAndFile();
-
-    const safeData = validateMemoryShape(data);
-    fs.writeFileSync(filePath, JSON.stringify(safeData, null, 2));
-  } catch (err) {
-    console.error("Error saving JSON:", err.message);
+    const data = await loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+    _cache = data;
+    _cacheMtime = Date.now();
+    console.log("[memory] reloadMemory loaded from disk");
+    return _cache;
+  } finally {
+    _releaseLock();
   }
 }
 
-// ------------------------------
-// Get memory (safe)
-// ------------------------------
-export function getMemory() {
-  return loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+export async function getMemory() {
+  if (_cache) return _cache;
+  const data = await loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+  _cache = data;
+  _cacheMtime = Date.now();
+  console.log("[memory] getMemory loaded into cache");
+  return _cache;
 }
 
-// ------------------------------
-// Optional helper: append message
-// ------------------------------
-export function appendConversationMessage(conversationId, role, content) {
-  const memory = getMemory();
-
-  memory.conversations[conversationId] ??= [];
-
-  memory.conversations[conversationId].push({
-    role,
-    content,
-    ts: Date.now()
-  });
-
-  saveJSON(MEMORY_FILE, memory);
-}
-
-// ------------------------------
-// Optional helper: profile update
-// (not used by index.js anymore, but kept for tools)
-// ------------------------------
-export function updateProfileMemory(message) {
-  const memory = getMemory();
-  const lower = message.toLowerCase();
-
-  if (lower.startsWith("remember my name is ")) {
-    memory.profile.name = message.substring("remember my name is ".length).trim();
-  }
-
-  if (lower.startsWith("remember that my name is ")) {
-    memory.profile.name = message.substring("remember that my name is ".length).trim();
-  }
-
-  saveJSON(MEMORY_FILE, memory);
-}
-// Clear only location from profile
-export function clearLocation() {
-  const memory = getMemory();
-  if (memory.profile && memory.profile.location) {
-    delete memory.profile.location;
-    saveJSON(MEMORY_FILE, memory);
-    console.log("🧹 Cleared profile.location from memory");
+/**
+ * Run a function while holding the memory lock to avoid races.
+ * Example:
+ * await withMemoryLock(async () => {
+ *   const memory = await getMemory();
+ *   memory.profile.foo = 'bar';
+ *   await saveJSON(MEMORY_FILE, memory);
+ * });
+ */
+export async function withMemoryLock(fn) {
+  await _acquireLock();
+  try {
+    return await fn();
+  } finally {
+    _releaseLock();
   }
 }
