@@ -297,7 +297,7 @@ app.post("/compile-files", async (req, res) => {
         console.error(`Failed to read ${filename}:`, err);
       }
     }
-    const outputPath = path.resolve("D:/local-llm-ui/files2/bigFile.txt");
+    const outputPath = path.resolve("D:/local-llm-ui/files/bigFile.txt");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, combinedContent, "utf8");
     res.json({ success: true, filesCompiled: (files || []).length, outputPath: "D:/local-llm-ui/files2/bigFile.txt", size: combinedContent.length });

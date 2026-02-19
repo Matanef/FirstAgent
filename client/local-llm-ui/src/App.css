@@ -1,9 +1,9 @@
-/* COMPLETE UI FIX - Requirements #13, #14 */
-/* Changes:
-   - Full-width chat container
-   - User messages aligned right
-   - Tone control button (32x32px → 270x100px)
-   - Improved layout and spacing
+/* COMPLETE UI FIX - ALL ISSUES RESOLVED */
+/* Fixes:
+   Issue #9 - Checkbox clickability (pointer-events, z-index)
+   Issue #10 - Compile button visibility (display: flex !important)
+   Issue #12 - YouTube grid layout (2x2 grid)
+   Issue #13 - Chat width limit (max-width: 1475px)
 */
 
 * {
@@ -36,7 +36,6 @@
   --user-marker: #9b4dff;
   --agent-marker: #00d9ff;
   
-  /* FIX #14: Tone button color */
   --tone-button: #8b0000;
   --tone-button-hover: #a52a2a;
 }
@@ -53,8 +52,6 @@ body {
   height: 100vh;
   overflow: hidden;
 }
-
-/* ========== SIDEBAR ========== */
 
 .sidebar {
   width: 260px;
@@ -152,18 +149,16 @@ body {
   font-size: 0.9rem;
 }
 
-/* ========== CHAT CONTAINER - FIX #13: FULL WIDTH ========== */
-
+/* FIX #13: Chat width limit */
 .chat-container {
   flex: 1;
+  max-width: 1475px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
-  /* REMOVED: max-width constraint */
   width: 100%;
 }
-
-/* ========== CHAT HEADER WITH TONE BUTTON ========== */
 
 .chat-header {
   padding: 1rem 1.5rem;
@@ -172,7 +167,6 @@ body {
   justify-content: space-between;
   align-items: center;
   background: var(--bg-secondary);
-  position: relative;
 }
 
 .chat-header h1 {
@@ -182,8 +176,8 @@ body {
 
 .header-controls {
   display: flex;
-  gap: 1rem;
   align-items: center;
+  gap: 1rem;
 }
 
 .metadata {
@@ -193,8 +187,7 @@ body {
   color: var(--text-secondary);
 }
 
-/* FIX #14: TONE CONTROL BUTTON */
-
+/* Tone Control */
 .tone-control-wrapper {
   position: relative;
 }
@@ -203,15 +196,16 @@ body {
   width: 32px;
   height: 32px;
   background: var(--tone-button);
+  color: white;
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  font-size: 1.2rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  color: white;
-  font-size: 1rem;
+  transition: all 0.3s ease;
+  overflow: hidden;
 }
 
 .tone-button:hover {
@@ -221,31 +215,23 @@ body {
 .tone-button.expanded {
   width: 270px;
   height: 100px;
-  border-radius: 8px;
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 100;
-  box-shadow: 0 8px 24px var(--shadow);
+  background: var(--tone-button);
 }
 
 .tone-panel {
-  display: none;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
   width: 100%;
   height: 100%;
-}
-
-.tone-button.expanded .tone-panel {
   display: flex;
+  flex-direction: column;
+  padding: 0.75rem;
 }
 
 .tone-panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 0.5rem;
+  color: white;
   font-size: 0.9rem;
   font-weight: 600;
 }
@@ -254,45 +240,53 @@ body {
   background: transparent;
   border: none;
   color: white;
+  font-size: 1.5rem;
   cursor: pointer;
-  font-size: 1.2rem;
-  opacity: 0.7;
-  transition: opacity 0.2s;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .tone-close:hover {
-  opacity: 1;
+  opacity: 0.8;
 }
 
 .tone-slider-container {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  justify-content: center;
 }
 
 .tone-slider {
   width: 100%;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.2);
-  outline: none;
+  height: 6px;
   -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  outline: none;
+  margin-bottom: 0.5rem;
 }
 
 .tone-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 16px;
   height: 16px;
-  border-radius: 50%;
   background: white;
+  border-radius: 50%;
   cursor: pointer;
 }
 
 .tone-slider::-moz-range-thumb {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
   background: white;
+  border-radius: 50%;
   cursor: pointer;
   border: none;
 }
@@ -300,11 +294,9 @@ body {
 .tone-labels {
   display: flex;
   justify-content: space-between;
+  color: rgba(255, 255, 255, 0.7);
   font-size: 0.7rem;
-  opacity: 0.7;
 }
-
-/* ========== CONVERSATION FLOW - FIX #13: USER MESSAGES RIGHT ========== */
 
 .conversation-flow {
   flex: 1;
@@ -322,24 +314,23 @@ body {
   padding-left: 1rem;
   border-left: 3px solid transparent;
   animation: fadeIn 0.3s ease;
-  /* FIX #13: Default to left, override for user */
-  margin-right: auto;
-  max-width: 80%;
+  max-width: 100%;
 }
 
-/* FIX #13: USER MESSAGES ALIGNED RIGHT */
 .message-entry.user {
   border-left-color: var(--user-marker);
   margin-left: auto;
   margin-right: 0;
-  padding-left: 0;
-  padding-right: 1rem;
+  align-items: flex-end;
   border-left: none;
   border-right: 3px solid var(--user-marker);
+  padding-left: 0;
+  padding-right: 1rem;
 }
 
 .message-entry.assistant {
   border-left-color: var(--agent-marker);
+  margin-right: auto;
 }
 
 .message-entry.error {
@@ -366,11 +357,6 @@ body {
   gap: 1rem;
   align-items: center;
   font-size: 0.85rem;
-}
-
-/* FIX #13: Right-align user message meta */
-.message-entry.user .message-meta {
-  justify-content: flex-end;
 }
 
 .message-role {
@@ -436,8 +422,7 @@ body {
   font-size: 0.7rem;
 }
 
-/* ========== CODE BLOCKS ========== */
-
+/* Code Blocks */
 .code-block-container {
   margin: 0.75rem 0;
   border-radius: 8px;
@@ -491,7 +476,6 @@ body {
   color: #a9b7c6;
 }
 
-/* Calculator results */
 .calc-result {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
@@ -513,8 +497,7 @@ body {
   font-weight: 600;
 }
 
-/* ========== FILE SYSTEM BROWSER (WILL BE ENHANCED FOR #15, #16) ========== */
-
+/* FILE BROWSER - FIX #9, #10 */
 .file-browser {
   margin: 0.75rem 0;
   background: var(--bg-tertiary);
@@ -533,10 +516,22 @@ body {
   font-weight: 600;
 }
 
+.header-right {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
 .file-count {
   font-size: 0.8rem;
   color: var(--text-muted);
   font-weight: normal;
+}
+
+.selected-count {
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .file-list {
@@ -546,8 +541,8 @@ body {
 
 .file-item {
   display: grid;
-  grid-template-columns: 40px 40px 1fr 80px 80px;
-  gap: 1rem;
+  grid-template-columns: 32px 40px 1fr 80px 80px;
+  gap: 0.75rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   transition: background 0.2s;
@@ -562,12 +557,20 @@ body {
   background: var(--bg-hover);
 }
 
-/* FIX #15: FILE CHECKBOXES */
+/* FIX #9: Checkbox clickability */
 .file-checkbox {
   width: 18px;
   height: 18px;
   cursor: pointer;
   accent-color: var(--accent);
+  pointer-events: auto !important;
+  z-index: 10;
+  position: relative;
+}
+
+.file-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .file-icon {
@@ -591,14 +594,22 @@ body {
   text-align: right;
 }
 
-/* FIX #16: COMPILE BUTTON */
+/* FIX #10: Compile button visibility */
 .file-actions {
-  padding: 0.75rem 1rem;
-  background: rgba(0, 0, 0, 0.1);
+  display: flex !important;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.2);
   border-top: 1px solid var(--border);
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
+  gap: 1rem;
+  position: relative;
+  z-index: 1;
+}
+
+.file-actions-text {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
 }
 
 .compile-btn {
@@ -607,22 +618,127 @@ body {
   border: none;
   padding: 0.5rem 1rem;
   border-radius: 6px;
-  cursor: pointer;
   font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .compile-btn:hover:not(:disabled) {
   background: var(--accent-hover);
+  transform: translateY(-1px);
 }
 
 .compile-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-/* ========== WEATHER WIDGET ========== */
+/* FIX #12: YouTube 2x2 grid */
+.youtube-container {
+  margin: 0.75rem 0;
+}
 
+.youtube-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  max-width: 100%;
+}
+
+.youtube-video-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 100%;
+  height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+.youtube-video-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.youtube-thumbnail {
+  width: 100%;
+  height: 146px;
+  object-fit: cover;
+}
+
+.youtube-video-info {
+  padding: 0.75rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.youtube-video-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-bottom: 0.25rem;
+}
+
+.youtube-video-channel {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.youtube-player-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.youtube-player-container {
+  position: relative;
+  width: 90%;
+  max-width: 1280px;
+  aspect-ratio: 16 / 9;
+  background: black;
+}
+
+.youtube-close-btn {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 2rem;
+  cursor: pointer;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.youtube-close-btn:hover {
+  opacity: 0.8;
+}
+
+/* Weather Widget */
 .weather-widget {
   margin: 0.75rem 0;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -661,73 +777,23 @@ body {
   opacity: 0.85;
 }
 
-/* ========== MEDIA WIDGET ========== */
-
-.media-widget {
-  margin: 0.75rem 0;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.media-header {
-  padding: 0.75rem 1rem;
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid var(--border);
-  font-weight: 600;
-}
-
-.spotify-widget .media-content {
-  display: flex;
-  gap: 1rem;
-  padding: 1rem;
-}
-
-.album-art {
-  width: 80px;
-  height: 80px;
-  background: var(--bg-hover);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2rem;
-}
-
-.track-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.track-title {
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin-bottom: 0.25rem;
-}
-
-.track-artist {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-}
-
-/* ========== RICH HTML CONTENT ========== */
-
+/* Rich HTML Content */
 .rich-html-content {
   margin: 0.75rem 0;
 }
 
-.rich-html-content table {
+.rich-html-content table,
+.ai-table {
   width: 100%;
   border-collapse: collapse;
   background: var(--bg-tertiary);
   border-radius: 8px;
   overflow: hidden;
+  margin: 1rem 0;
 }
 
-.rich-html-content th {
+.rich-html-content th,
+.ai-table th {
   background: rgba(0, 0, 0, 0.3);
   padding: 0.75rem;
   text-align: left;
@@ -735,21 +801,28 @@ body {
   font-weight: 600;
 }
 
-.rich-html-content td {
+.rich-html-content td,
+.ai-table td {
   padding: 0.75rem;
   border-bottom: 1px solid var(--border);
 }
 
-.rich-html-content tr:last-child td {
+.rich-html-content tr:last-child td,
+.ai-table tr:last-child td {
   border-bottom: none;
 }
 
-.rich-html-content tr:hover td {
+.rich-html-content tr:hover td,
+.ai-table tr:hover td {
   background: var(--bg-hover);
 }
 
-/* ========== INPUT AREA ========== */
+.ai-table-wrapper {
+  margin: 1rem 0;
+  overflow-x: auto;
+}
 
+/* Input Area */
 .input-area {
   padding: 1rem 1.5rem;
   background: var(--bg-secondary);
@@ -817,8 +890,7 @@ body {
   cursor: not-allowed;
 }
 
-/* ========== WELCOME SCREEN ========== */
-
+/* Welcome Screen */
 .welcome-screen {
   flex: 1;
   display: flex;
@@ -861,8 +933,7 @@ body {
   box-shadow: 0 4px 12px rgba(29, 155, 240, 0.3);
 }
 
-/* ========== TYPING INDICATOR ========== */
-
+/* Typing Indicator */
 .typing-indicator {
   display: flex;
   gap: 0.4rem;
@@ -894,8 +965,7 @@ body {
   }
 }
 
-/* ========== SCROLLBAR ========== */
-
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -914,7 +984,12 @@ body {
   background: var(--text-muted);
 }
 
-/* ========== RESPONSIVE ========== */
+/* Responsive */
+@media (max-width: 900px) {
+  .youtube-grid {
+    grid-template-columns: 1fr;
+  }
+}
 
 @media (max-width: 768px) {
   .sidebar {
@@ -937,14 +1012,7 @@ body {
   .file-size {
     display: none;
   }
-  
-  /* User messages still right-aligned on mobile */
-  .message-entry.user {
-    max-width: 90%;
-  }
 }
-
-/* ========== EMPTY CHAT ========== */
 
 .empty-chat {
   flex: 1;

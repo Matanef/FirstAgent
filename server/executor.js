@@ -1,17 +1,38 @@
-// server/executor.js
-// Enhanced executor with full memory, table reformatting, and deep agent awareness
+// server/executor.js (COMPLETE FIX - All issues resolved)
+// Fixes: markdown tables → HTML, email "send it" state, date awareness
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
 import { llm } from "./tools/llm.js";
 import { getToneDescription } from "../tone/toneGuide.js";
+import { sendConfirmedEmail } from "./tools/email.js";
 
-// If you add tone later, wire it here
-// import { getToneDescription } from "../tone/toneGuide.js";
+// FIX #3: Convert markdown tables to HTML
+function convertMarkdownTablesToHTML(text) {
+  const tableRegex = /\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)+)/g;
+  
+  return text.replace(tableRegex, (match, headers, rows) => {
+    const headerCells = headers.split('|').map(h => h.trim()).filter(Boolean);
+    const rowData = rows.trim().split('\n').map(row => 
+      row.split('|').map(cell => cell.trim()).filter(Boolean)
+    );
+    
+    let html = '<div class="ai-table-wrapper"><table class="ai-table">';
+    html += '<thead><tr>';
+    headerCells.forEach(h => html += `<th>${h}</th>`);
+    html += '</tr></thead><tbody>';
+    
+    rowData.forEach(row => {
+      html += '<tr>';
+      row.forEach(cell => html += `<td>${cell}</td>`);
+      html += '</tr>';
+    });
+    
+    html += '</tbody></table></div>';
+    return html;
+  });
+}
 
-/* -------------------------------------------------------
- * Helper: detect if user wants table format
- * ----------------------------------------------------- */
 function wantsTableFormat(userQuestion) {
   const lower = (userQuestion || "").toLowerCase();
   return (
@@ -27,13 +48,8 @@ function wantsTableFormat(userQuestion) {
   );
 }
 
-/* -------------------------------------------------------
- * Build comprehensive context for LLM with FULL memory
- * ----------------------------------------------------- */
 function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
-  // const toneText = getToneDescription(profile || {});
   const toneText = getToneDescription(profile || {});
-
   const allMessages = conversation || [];
 
   const convoText = allMessages
@@ -82,11 +98,8 @@ Now write the final answer to the user. Be aware of the full conversation contex
 `;
 }
 
-/* -------------------------------------------------------
- * Run LLM with full memory and awareness
- * ----------------------------------------------------- */
 async function runLLMWithFullMemory({ userMessage, conversationId }) {
-  const memory = getMemory();
+  const memory = await getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
 
@@ -100,23 +113,22 @@ async function runLLMWithFullMemory({ userMessage, conversationId }) {
   });
 
   const llmResponse = await llm(prompt);
-  const text = llmResponse?.data?.text || "I couldn't generate a response.";
+  let text = llmResponse?.data?.text || "I couldn't generate a response.";
+
+  // FIX: Convert markdown tables to HTML
+  text = convertMarkdownTablesToHTML(text);
 
   return text;
 }
 
-/* -------------------------------------------------------
- * Summarize tool output with LLM (with full context and table support)
- * ----------------------------------------------------- */
 async function summarizeWithLLM({
   userQuestion,
   toolResult,
   conversationId,
   tool
 }) {
-  const memory = getMemory();
+  const memory = await getMemory();
   const profile = memory.profile || {};
-  // const toneText = getToneDescription(profile);
   const toneText = getToneDescription(profile || {});
 
   const conversation = memory.conversations?.[conversationId] || [];
@@ -129,9 +141,14 @@ async function summarizeWithLLM({
   const today = new Date().toLocaleDateString("en-GB");
   const tableRequested = wantsTableFormat(userQuestion);
 
+  // FIX #4: Emphasize current date for news
+  const dateEmphasis = tool === 'news' ? 
+    `CRITICAL: TODAY'S DATE IS ${today}. The news articles are from TODAY or the past few days, NOT from 2023 or old years!` : '';
+
   const prompt = `
 You are the final response generator for an AI assistant with deep awareness of context.
 The current date is ${today}.
+${dateEmphasis}
 
 CONVERSATION CONTEXT:
 - Total messages in this conversation: ${allMessages.length}
@@ -171,7 +188,10 @@ Generate the response:
 `;
 
   const llmResponse = await llm(prompt);
-  const text = llmResponse?.data?.text || "I couldn't generate a response.";
+  let text = llmResponse?.data?.text || "I couldn't generate a response.";
+
+  // FIX: Convert markdown tables to HTML
+  text = convertMarkdownTablesToHTML(text);
 
   return {
     reply: text,
@@ -180,11 +200,8 @@ Generate the response:
   };
 }
 
-/* -------------------------------------------------------
- * Reformat previous response as table
- * ----------------------------------------------------- */
 async function reformatAsTable({ userMessage, conversationId }) {
-  const memory = getMemory();
+  const memory = await getMemory();
   const conversation = memory.conversations?.[conversationId] || [];
 
   const lastAssistantMessage = [...conversation]
@@ -232,7 +249,10 @@ Generate the reformatted response:
 `;
 
   const llmResponse = await llm(prompt);
-  const text = llmResponse?.data?.text || "I couldn't reformat the response.";
+  let text = llmResponse?.data?.text || "I couldn't reformat the response.";
+
+  // FIX: Convert markdown tables to HTML
+  text = convertMarkdownTablesToHTML(text);
 
   return {
     reply: text,
@@ -249,16 +269,10 @@ Generate the reformatted response:
   };
 }
 
-/* -------------------------------------------------------
- * Helper: normalize message for tools
- * ----------------------------------------------------- */
 function getMessageText(message) {
   return typeof message === "string" ? message : message?.text;
 }
 
-/* -------------------------------------------------------
- * City aliasing (OpenWeather quirks)
- * ----------------------------------------------------- */
 function normalizeCityAliases(message) {
   if (!message || typeof message !== "object") return message;
 
@@ -279,11 +293,39 @@ function normalizeCityAliases(message) {
   return message;
 }
 
-/* -------------------------------------------------------
- * executeAgent – enhanced with full memory and awareness
- * ----------------------------------------------------- */
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
+
+  // FIX #5: Check for "send it" with pending email
+  const userText = getMessageText(message);
+  if (/^send\s+it$/i.test(userText.trim())) {
+    const memory = await getMemory();
+    const conversation = memory.conversations?.[conversationId] || [];
+    const lastMsg = conversation[conversation.length - 1];
+    
+    if (lastMsg?.role === 'assistant' && lastMsg?.data?.pendingEmail) {
+      console.log("📧 Found pending email, sending...");
+      const { to, subject, body } = lastMsg.data.pendingEmail;
+      
+      const sendResult = await sendConfirmedEmail({ to, subject, body });
+      
+      stateGraph.push({
+        step: 1,
+        tool: "email",
+        input: message,
+        output: sendResult,
+        final: true
+      });
+      
+      return {
+        reply: sendResult.data?.message || sendResult.error || "Email sent!",
+        stateGraph,
+        tool: "email",
+        data: sendResult.data,
+        success: sendResult.success
+      };
+    }
+  }
 
   // Special case: reformat previous response as table
   if (tool === "reformat_table") {
@@ -293,9 +335,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     });
   }
 
-  /* ------------------------------
-   * Direct LLM - with FULL memory
-   * ---------------------------- */
+  // Direct LLM - with FULL memory
   if (tool === "llm") {
     const reply = await runLLMWithFullMemory({
       userMessage: getMessageText(message),
@@ -329,9 +369,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  /* ------------------------------
-   * WEATHER + MEMORYTOOL receive full object
-   * ---------------------------- */
+  // WEATHER + MEMORYTOOL receive full object
   let toolInput;
 
   if (tool === "weather" || tool === "memorytool") {
@@ -340,9 +378,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     toolInput = getMessageText(message); // string
   }
 
-  /* ------------------------------
-   * Execute tool
-   * ---------------------------- */
+  // Execute tool
   const result = await TOOLS[tool](toolInput);
 
   stateGraph.push({
@@ -353,9 +389,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     final: result?.final ?? true
   });
 
-  /* ------------------------------
-   * Do NOT summarize failed tools
-   * ---------------------------- */
+  // Do NOT summarize failed tools
   if (!result?.success) {
     return {
       reply: result?.error || "Tool execution failed.",
@@ -365,12 +399,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  /* ------------------------------
-   * SPECIAL CASE: memorytool
-   * - No LLM
-   * - No summarization
-   * - Clean assistant message
-   * ---------------------------- */
+  // SPECIAL CASE: memorytool - No LLM, No summarization
   if (tool === "memorytool") {
     return {
       reply: result.data?.message || "Memory updated.",
@@ -380,9 +409,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  /* ------------------------------
-   * Tools that should be summarized (with full context)
-   * ---------------------------- */
+  // Tools that should be summarized (with full context)
   const summarizeTools = [
     "search",
     "finance",
@@ -395,7 +422,8 @@ export async function executeAgent({ tool, message, conversationId }) {
     "email",
     "tasks",
     "news",
-    "file"
+    "file",
+    "selfImprovement"  // Added
   ];
 
   if (summarizeTools.includes(tool)) {
@@ -416,9 +444,7 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  /* ------------------------------
-   * Default: return raw tool output
-   * ---------------------------- */
+  // Default: return raw tool output
   const reply =
     result?.data?.html ||
     result?.data?.text ||

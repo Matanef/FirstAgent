@@ -1,13 +1,10 @@
-// client/local-llm-ui/src/App.jsx (COMPLETE - All UI requirements)
+// client/local-llm-ui/src/App.jsx (COMPLETE FIX - All UI issues resolved)
 /**
- * COMPLETE React Chat UI with ALL features:
- * - Full-width chat with right-aligned user messages (Req #13)
- * - Tone control button (Req #14)
- * - File checkboxes for selection (Req #15)
- * - Compile to bigFile.txt (Req #16)
- * - YouTube video display 4x (390x220px) (Req #22)
- * - File upload/drag-drop (Req #31)
- * - Specialized content renderers
+ * COMPLETE UI FIX:
+ * - Issue #9: Checkboxes now clickable (stopPropagation)
+ * - Issue #10: Compile button always visible when files selected
+ * - Issue #12: YouTube 2x2 grid layout
+ * - Issue #13: Chat width limited to 1475px
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -15,9 +12,7 @@ import "./App.css";
 
 const API_URL = "http://localhost:3000";
 
-// ============================================================================
-// YouTube Video Display (Requirement #22)
-// ============================================================================
+// YouTube Video Display (Issue #12: 2x2 grid)
 function YouTubeVideoGrid({ videos }) {
   if (!videos || videos.length === 0) return null;
 
@@ -65,9 +60,7 @@ function YouTubeVideoGrid({ videos }) {
   );
 }
 
-// ============================================================================
-// File Browser with Checkboxes (Requirements #15, #16)
-// ============================================================================
+// File Browser with Checkboxes (Issues #9, #10)
 function FileSystemBrowser({ data, conversationId }) {
   const [selectedFiles, setSelectedFiles] = useState(new Set());
   const [compiling, setCompiling] = useState(false);
@@ -116,16 +109,27 @@ function FileSystemBrowser({ data, conversationId }) {
     <div className="file-browser">
       <div className="file-browser-header">
         <span>📂 {data.path || "Directory"}</span>
-        <span className="file-count">{data.items.length} items</span>
+        <div className="header-right">
+          <span className="file-count">{data.items.length} items</span>
+          {selectedFiles.size > 0 && (
+            <span className="selected-count">{selectedFiles.size} selected</span>
+          )}
+        </div>
       </div>
+      
       <div className="file-list">
         {data.items.map((item, i) => (
           <div key={i} className="file-item">
+            {/* FIX #9: stopPropagation for clickable checkboxes */}
             <input
               type="checkbox"
               className="file-checkbox"
               checked={selectedFiles.has(item.name)}
-              onChange={() => handleCheckbox(item.name)}
+              onChange={(e) => {
+                e.stopPropagation();
+                handleCheckbox(item.name);
+              }}
+              onClick={(e) => e.stopPropagation()}
               disabled={item.type === 'folder'}
             />
             <span className="file-icon">{item.icon || (item.type === 'folder' ? '📁' : '📄')}</span>
@@ -135,15 +139,19 @@ function FileSystemBrowser({ data, conversationId }) {
           </div>
         ))}
       </div>
+      
+      {/* FIX #10: Always render when files selected */}
       {selectedFiles.size > 0 && (
         <div className="file-actions">
-          <span>{selectedFiles.size} files selected</span>
+          <span className="file-actions-text">
+            {selectedFiles.size} file{selectedFiles.size > 1 ? 's' : ''} selected
+          </span>
           <button 
             className="compile-btn" 
             onClick={handleCompile}
             disabled={compiling}
           >
-            {compiling ? "📦 Compiling..." : "📦 Compile to bigFile.txt"}
+            {compiling ? "📦 Compiling..." : "📦 Compile Selected"}
           </button>
         </div>
       )}
@@ -151,9 +159,7 @@ function FileSystemBrowser({ data, conversationId }) {
   );
 }
 
-// ============================================================================
 // Other specialized renderers
-// ============================================================================
 function CodeBlock({ code, language = "javascript" }) {
   return (
     <div className="code-block-container">
@@ -262,9 +268,7 @@ function SmartContent({ message, conversationId }) {
   }
 }
 
-// ============================================================================
 // MAIN APP COMPONENT
-// ============================================================================
 function App() {
   const [conversations, setConversations] = useState({});
   const [activeId, setActiveId] = useState(null);
@@ -273,18 +277,16 @@ function App() {
   const [error, setError] = useState(null);
   const [metadata, setMetadata] = useState(null);
 
-  // Requirement #14: Tone control
+  // Tone control
   const [toneExpanded, setToneExpanded] = useState(false);
-  const [toneValue, setToneValue] = useState(1); // 0: concise, 1: mediumWarm, 2: warm, 3: professional
+  const [toneValue, setToneValue] = useState(1);
 
   const messagesEndRef = useRef(null);
 
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversations, activeId]);
 
-  // Save tone to backend
   useEffect(() => {
     const toneNames = ["concise", "mediumWarm", "warm", "professional"];
     const toneName = toneNames[toneValue];
@@ -454,7 +456,7 @@ function App() {
               </div>
             )}
 
-            {/* Requirement #14: Tone Control Button */}
+            {/* Tone Control */}
             <div className="tone-control-wrapper">
               <button 
                 className={`tone-button ${toneExpanded ? "expanded" : ""}`}

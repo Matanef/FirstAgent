@@ -1,9 +1,8 @@
-// server/planner.js (COMPLETE FIX - All bugs resolved)
-// Preserves deterministic logic while fixing critical issues
+// server/planner.js (COMPLETE FIX - SelfImprovement routing added)
+// LLM-powered planner with intelligent intent detection + preclassifier heuristics
 
 import { llm } from "./tools/llm.js";
 
-// Hardcoded pattern detectors (deterministic)
 const HARDCODED_PATTERNS = {
   calculator: (msg) => {
     const trimmed = msg.trim();
@@ -21,16 +20,15 @@ const HARDCODED_PATTERNS = {
   }
 };
 
-// Weather keywords
 const WEATHER_KEYWORDS = [
   "weather", "forecast", "temperature", "temp", "rain", "raining",
   "snow", "snowing", "humidity", "wind", "windy", "sunny", "cloudy",
   "storm", "stormy", "drizzle", "shower", "heat", "cold", "hot"
 ];
 
-// Memory operation synonyms
 const FORGET_SYNONYMS = [
-  "forget", "forgot", "remove", "clear", "discard", "delete"
+  "forget", "forgot", "remove", "clear", "discard", "omit",
+  "neglect", "overlook", "delete"
 ];
 
 const REMEMBER_SYNONYMS = [
@@ -81,7 +79,27 @@ function hereIndicatesWeather(text) {
   return containsKeyword(lower, WEATHER_KEYWORDS);
 }
 
-// FIX #2: Detect meta-questions about file access
+// FIX: Detect self-improvement queries
+function isSelfImprovementQuery(text) {
+  const lower = text.toLowerCase();
+  const patterns = [
+    /what (have|did) you (improve|change|modify|update|fix)/i,
+    /show (me )?(your |the )?improvements/i,
+    /list (your |the )?improvements/i,
+    /how accurate is (your )?routing/i,
+    /routing accuracy/i,
+    /intent accuracy/i,
+    /what (issues|problems) (have you|did you) detect/i,
+    /detected (issues|problems|patterns)/i,
+    /misrouting patterns/i,
+    /generate (a |the )?weekly report/i,
+    /self[- ]improvement/i
+  ];
+  
+  return patterns.some(pattern => pattern.test(lower));
+}
+
+// FIX: Detect meta questions about file access
 function isMetaQuestionAboutFiles(text) {
   const lower = text.toLowerCase();
   const metaPatterns = [
@@ -91,22 +109,10 @@ function isMetaQuestionAboutFiles(text) {
     /what (folders?|directories) are available/i,
     /show me (your|the) (allowed|available) (folders?|directories)/i,
     /what (is|are) (your|the) sandbox/i,
-    /where can you (read|write|access)/i,
-    /do you know what is this folder/i,
-    /what is this folder/i
+    /where can you (read|write|access)/i
   ];
 
   return metaPatterns.some(pattern => pattern.test(lower));
-}
-
-// Detect file/folder scan requests
-function isFileScanRequest(text) {
-  const lower = text.toLowerCase();
-  return (
-    /review (the )?files? in/i.test(lower) ||
-    /scan (the )?(folder|directory|files)/i.test(lower) ||
-    /summarize (the )?(folder|files)/i.test(lower)
-  );
 }
 
 async function detectIntentWithLLM(message) {
@@ -128,6 +134,7 @@ AVAILABLE TOOLS:
 - email: Draft and send emails
 - tasks: Task management
 - calculator: Mathematical calculations
+- selfImprovement: Query self-improvements, routing accuracy, detected issues, weekly reports
 - llm: General conversation, memory queries, meta questions
 - memorytool: Manage profile data (forget location)
 
@@ -135,22 +142,31 @@ USER MESSAGE:
 "${message}"
 
 CLASSIFICATION RULES:
-1. For "fundamentals", "pe ratio", "market cap", "key stats" → financeFundamentals
-2. For stock prices only → finance
-3. "weather here" → weather|USE_GEO
-4. "weather in [City]" → weather|CityName
-5. "where am I" or "what's my location" → llm|location_query
-6. "what folders can you access" → llm|meta_question
-7. "list D:/path" → file
-8. "remember my location" → llm|memory_write
-9. "forget my location" → memorytool|forget_location
-10. "scan files in folder" → file|scan
-11. Meta questions about the agent → llm
+1. For table reformatting requests, respond: reformat_table
+2. "weather here" → weather|USE_GEO
+3. "weather in [City]" → weather|CityName
+4. "where am I" or "what's my location" → llm|location_query
+5. "remember my location/name" → llm|memory_write
+6. "what do you remember about me" → llm|memory_query
+7. Questions about agent capabilities → llm|meta_question
+8. "what have you improved" OR "routing accuracy" OR "detected issues" OR "weekly report" → selfImprovement
+9. Stock fundamentals/metrics → financeFundamentals
+10. Stock prices only → finance
+11. Reading/listing files → file
+12. Creating/modifying files → fileWrite
+13. "forget my location" → memorytool|forget_location
+14. Casual chat → llm
+
+IMPORTANT:
+- Self-improvement queries ("what have you improved", "routing accuracy", "issues detected") MUST route to selfImprovement tool
+- "where am I" goes to LLM (not weather)!
+- Only use weather for actual weather conditions!
 
 Respond with ONLY the tool name (and optional context after |).`;
 
   try {
     const response = await llm(prompt);
+
     if (!response.success || !response.data?.text) {
       return { intent: "llm", reason: "fallback" };
     }
@@ -178,8 +194,6 @@ Respond with ONLY the tool name (and optional context after |).`;
       result.city = contextStr;
     } else if (intent === "llm" && contextStr) {
       result.reason = contextStr;
-    } else if (intent === "file" && contextStr === "scan") {
-      result.context.mode = "scan";
     }
 
     return result;
@@ -206,14 +220,15 @@ function formatCity(city) {
     .join(" ");
 }
 
-// FIX #19: Case-insensitive tool name normalization
+// FIX: Normalize tool names (case-insensitive)
 function normalizeToolName(toolName) {
   const toolMap = {
     'financefundamentals': 'financeFundamentals',
     'memorytool': 'memorytool',
     'filewrite': 'fileWrite',
     'webdownload': 'webDownload',
-    'packagemanager': 'packageManager'
+    'packagemanager': 'packageManager',
+    'selfimprovement': 'selfImprovement'
   };
   
   const lower = toolName.toLowerCase();
@@ -235,23 +250,23 @@ export async function plan({ message }) {
 
   const lower = trimmed.toLowerCase();
 
-  // FIX #2: Meta questions about file access → LLM
+  // FIX: Self-improvement queries → selfImprovement tool
+  if (isSelfImprovementQuery(trimmed)) {
+    return {
+      tool: "selfImprovement",
+      input: trimmed,
+      context: {},
+      reasoning: "preclassifier_self_improvement"
+    };
+  }
+
+  // Meta questions about file access
   if (isMetaQuestionAboutFiles(trimmed)) {
     return {
       tool: "llm",
       input: trimmed,
       context: { raw: "meta_question" },
       reasoning: "preclassifier_meta_file_question"
-    };
-  }
-
-  // File scan requests
-  if (isFileScanRequest(trimmed)) {
-    return {
-      tool: "file",
-      input: trimmed,
-      context: { mode: "scan" },
-      reasoning: "preclassifier_file_scan"
     };
   }
 
@@ -339,7 +354,7 @@ export async function plan({ message }) {
     };
   }
 
-  // FIX #19: Normalize tool name (case-insensitive)
+  // Normalize tool name (case-insensitive)
   const normalizedTool = normalizeToolName(detection.intent || "llm");
 
   return {

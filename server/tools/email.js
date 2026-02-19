@@ -1,8 +1,9 @@
-// server/tools/email.js (ENHANCED - Draft confirmation before sending)
+// server/tools/email.js (COMPLETE FIX - Email state management)
+// Fix #5: Stores pendingEmail for "send it" confirmation
+
 import { google } from "googleapis";
 import { getAuthorizedClient } from "../utils/googleOAuth.js";
 
-// Parse email details from natural language
 function parseEmailRequest(query) {
   const lower = query.toLowerCase();
   
@@ -20,7 +21,7 @@ function parseEmailRequest(query) {
     subject = subjectMatch[1].trim();
   }
   
-  // Extract body (everything after "saying" or "message:")
+  // Extract body
   let body = query;
   const sayingMatch = query.match(/saying[:\s]+(.+)$/is);
   if (sayingMatch) {
@@ -64,7 +65,6 @@ export async function email(query) {
     };
   }
 
-  // Return draft for confirmation
   return {
     tool: "email",
     success: true,
@@ -74,12 +74,12 @@ export async function email(query) {
       to,
       subject,
       body,
+      pendingEmail: { to, subject, body },
       message: `📧 **Email Draft:**\n\n**To:** ${to}\n**Subject:** ${subject}\n**Message:**\n${body}\n\nSay "send it" to confirm, or "cancel" to discard.`
     }
   };
 }
 
-// Separate function to actually send after confirmation
 export async function sendConfirmedEmail({ to, subject, body }) {
   try {
     const auth = await getAuthorizedClient();
