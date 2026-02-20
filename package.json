@@ -1,7 +1,9 @@
 {
-  "dependencies": {
-    "replicate": "^1.4.0",
-    "type": "module"
-
-  }
+  "name": "local-llm-ui",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "client/local-llm-ui"
+  ]
 }

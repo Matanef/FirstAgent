@@ -1,49 +1,12 @@
 // server/intentDebugger.js
 // Intent classification debugging and analysis system
 
-import fs from "fs/promises";
 import path from "path";
+import { PROJECT_ROOT } from "./utils/config.js";
+import { appendLog, readLog } from "./utils/jsonlLogger.js";
 
-const LOGS_DIR = path.resolve("D:/local-llm-ui/logs");
+const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
 const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");
-
-async function ensureLogsDir() {
-  try {
-    await fs.mkdir(LOGS_DIR, { recursive: true });
-  } catch (err) {
-    console.error("Failed to create logs directory:", err);
-  }
-}
-
-async function appendLog(filepath, data) {
-  try {
-    await ensureLogsDir();
-    const line = JSON.stringify(data) + "\n";
-    await fs.appendFile(filepath, line, "utf8");
-  } catch (err) {
-    console.error(`Failed to append to ${filepath}:`, err);
-  }
-}
-
-async function readLog(filepath, limit = 100) {
-  try {
-    const content = await fs.readFile(filepath, "utf8");
-    const lines = content.trim().split("\n");
-    const entries = lines.map(line => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
-
-    return entries.slice(-limit);
-  } catch (err) {
-    if (err.code === "ENOENT") return [];
-    console.error(`Failed to read ${filepath}:`, err);
-    return [];
-  }
-}
 
 /**
  * Log intent routing decision
@@ -60,8 +23,8 @@ export async function logIntentDecision(decision) {
     success: decision.success
   };
 
-  await appendLog(INTENT_LOG, entry);
-  
+  await appendLog(INTENT_LOG, entry, LOGS_DIR);
+
   console.log("🎯 Intent logged:", decision.detectedTool, "- Confidence:", decision.confidence || "N/A");
 }
 
@@ -71,7 +34,7 @@ export async function logIntentDecision(decision) {
  */
 export async function getIntentAccuracyReport() {
   const entries = await readLog(INTENT_LOG, 500);
-  
+
   const report = {
     totalDecisions: entries.length,
     successRate: 0,
@@ -84,7 +47,7 @@ export async function getIntentAccuracyReport() {
 
   for (const entry of entries) {
     const tool = entry.detectedTool || "unknown";
-    
+
     if (!report.byTool[tool]) {
       report.byTool[tool] = {
         total: 0,
@@ -156,7 +119,7 @@ export async function detectMisroutingPatterns() {
   for (const entry of failedQueries) {
     const normalizedQuery = entry.userMessage.toLowerCase().trim();
     const firstWords = normalizedQuery.split(/\s+/).slice(0, 3).join(" ");
-    
+
     if (!queryGroups[firstWords]) {
       queryGroups[firstWords] = [];
     }
@@ -219,7 +182,7 @@ export async function detectMisroutingPatterns() {
 export async function getRoutingRecommendations() {
   const patterns = await detectMisroutingPatterns();
   const report = await getIntentAccuracyReport();
-  
+
   const recommendations = [];
 
   // Based on patterns

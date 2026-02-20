@@ -1,53 +1,13 @@
 // server/telemetryAudit.js
 // Comprehensive telemetry and audit logging system
 
-import fs from "fs/promises";
 import path from "path";
+import { PROJECT_ROOT } from "./utils/config.js";
+import { appendLog, readLog } from "./utils/jsonlLogger.js";
 
-const LOGS_DIR = path.resolve("D:/local-llm-ui/logs");
+const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
 const TELEMETRY_LOG = path.join(LOGS_DIR, "telemetry.jsonl");
 const IMPROVEMENTS_LOG = path.join(LOGS_DIR, "improvements.jsonl");
-
-// Ensure logs directory exists
-async function ensureLogsDir() {
-  try {
-    await fs.mkdir(LOGS_DIR, { recursive: true });
-  } catch (err) {
-    console.error("Failed to create logs directory:", err);
-  }
-}
-
-// Append line to JSONL file
-async function appendLog(filepath, data) {
-  try {
-    await ensureLogsDir();
-    const line = JSON.stringify(data) + "\n";
-    await fs.appendFile(filepath, line, "utf8");
-  } catch (err) {
-    console.error(`Failed to append to ${filepath}:`, err);
-  }
-}
-
-// Read JSONL file
-async function readLog(filepath, limit = 100) {
-  try {
-    const content = await fs.readFile(filepath, "utf8");
-    const lines = content.trim().split("\n");
-    const entries = lines.map(line => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
-
-    return entries.slice(-limit); // Return last N entries
-  } catch (err) {
-    if (err.code === "ENOENT") return [];
-    console.error(`Failed to read ${filepath}:`, err);
-    return [];
-  }
-}
 
 /**
  * Log telemetry event
@@ -60,8 +20,8 @@ export async function logTelemetry(event) {
     ...event
   };
 
-  await appendLog(TELEMETRY_LOG, entry);
-  
+  await appendLog(TELEMETRY_LOG, entry, LOGS_DIR);
+
   // Also log to console for immediate visibility
   console.log("📊 Telemetry:", event.tool || event.action, "-", event.success ? "✅" : "❌");
 }
@@ -77,8 +37,8 @@ export async function logImprovement(improvement) {
     ...improvement
   };
 
-  await appendLog(IMPROVEMENTS_LOG, entry);
-  
+  await appendLog(IMPROVEMENTS_LOG, entry, LOGS_DIR);
+
   console.log("🔧 Improvement logged:", improvement.category, "-", improvement.action);
 }
 
@@ -106,7 +66,7 @@ export async function getRecentImprovements(limit = 50) {
  */
 export async function calculateToolStats() {
   const entries = await getRecentTelemetry(1000);
-  
+
   const stats = {
     totalCalls: entries.length,
     successRate: 0,
@@ -121,14 +81,14 @@ export async function calculateToolStats() {
 
   for (const entry of entries) {
     if (entry.success) successCount++;
-    
+
     const tool = entry.tool || "unknown";
     stats.toolUsage[tool] = (stats.toolUsage[tool] || 0) + 1;
-    
+
     if (!entry.success && entry.error) {
       stats.errorsByTool[tool] = (stats.errorsByTool[tool] || 0) + 1;
     }
-    
+
     if (entry.executionTime) {
       totalTime += entry.executionTime;
       timeCount++;
@@ -160,13 +120,13 @@ export async function detectAnomalies() {
   }
 
   // Detect excessive steps
-  for (const [convId, entries] of Object.entries(conversations)) {
-    if (entries.length > 10) {
+  for (const [convId, convEntries] of Object.entries(conversations)) {
+    if (convEntries.length > 10) {
       anomalies.push({
         type: "excessive_steps",
         conversationId: convId,
-        steps: entries.length,
-        message: `Conversation ${convId} took ${entries.length} steps (excessive)`
+        steps: convEntries.length,
+        message: `Conversation ${convId} took ${convEntries.length} steps (excessive)`
       });
     }
   }
@@ -174,7 +134,7 @@ export async function detectAnomalies() {
   // Detect repeated failures
   const recentFailures = entries.filter(e => !e.success).slice(-10);
   const failuresByTool = {};
-  
+
   for (const failure of recentFailures) {
     const tool = failure.tool || "unknown";
     failuresByTool[tool] = (failuresByTool[tool] || 0) + 1;
@@ -216,7 +176,7 @@ export async function generateSummaryReport(since = null) {
   }
 
   const improvements = await getRecentImprovements(100);
-  const recentImprovements = improvements.filter(i => 
+  const recentImprovements = improvements.filter(i =>
     new Date(i.timestamp) >= since
   );
 
@@ -259,12 +219,12 @@ export async function generateSummaryReport(since = null) {
         <h2>🛠️ Most Used Tools</h2>
         <ul>
           ${Object.entries(stats.toolUsage)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5)
-            .map(([tool, count]) => `
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([tool, count]) => `
               <li>${tool}: ${count} calls</li>
             `)
-            .join('')}
+      .join('')}
         </ul>
 
         <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">

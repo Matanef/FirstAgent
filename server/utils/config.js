@@ -1,5 +1,13 @@
 // server/utils/config.js (CORRECTED - properly detects Gmail OAuth)
 import 'dotenv/config';
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Dynamic project root — works regardless of where the repo is cloned
+export const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 const warnings = [];
 

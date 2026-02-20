@@ -1,24 +1,63 @@
 // server/planner.js
-// COMPLETE FIX: All routing issues (#2 folder navigation, #3 github, #5 review)
+// Two-tier intent routing: Certainty Layer → LLM Classifier
+// Only unambiguous patterns are hardcoded; everything else goes to the LLM
 
 import { llm } from "./tools/llm.js";
 
-const HARDCODED_PATTERNS = {
-  calculator: (msg) => {
-    const trimmed = msg.trim();
-    if (!/[0-9]/.test(trimmed)) return false;
-    if (/[+\-*/^=()]/.test(trimmed)) return true;
-    return /^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed);
-  },
+// ============================================================
+// TIER 1: CERTAINTY LAYER — zero-ambiguity patterns only
+// ============================================================
 
-  isSimpleDateTime: (msg) => {
-    const lower = msg.toLowerCase().trim();
-    return (
-      /^what('?s| is) (the )?(date|time|day)/.test(lower) ||
-      /^(date|time|day|month|year) (today|now)/.test(lower)
-    );
-  }
-};
+/**
+ * Detect pure math expressions (no natural language collision possible)
+ */
+function isMathExpression(msg) {
+  const trimmed = msg.trim();
+  if (!/[0-9]/.test(trimmed)) return false;
+  if (/[+\-*/^=()]/.test(trimmed)) return true;
+  return /^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed);
+}
+
+/**
+ * Detect simple date/time questions
+ */
+function isSimpleDateTime(msg) {
+  const lower = msg.toLowerCase().trim();
+  return (
+    /^what('?s| is) (the )?(date|time|day)/.test(lower) ||
+    /^(date|time|day|month|year) (today|now)/.test(lower)
+  );
+}
+
+/**
+ * Detect explicit file paths with drive letters (D:/, E:/, C:/)
+ * This is unambiguous — no natural language collision possible
+ */
+function hasExplicitFilePath(text) {
+  return /[a-z]:[\\/]/i.test(text);
+}
+
+/**
+ * Detect "send it" / confirmation commands for email
+ */
+function isSendItCommand(text) {
+  const trimmed = text.trim().toLowerCase();
+  return (
+    trimmed === "send it" ||
+    trimmed === "send" ||
+    trimmed === "yes send it" ||
+    trimmed === "yes, send it" ||
+    trimmed === "send the email" ||
+    trimmed === "send that email" ||
+    trimmed === "yes send" ||
+    trimmed === "confirm" ||
+    (trimmed === "yes" && text.length < 10)
+  );
+}
+
+// ============================================================
+// WEATHER HELPERS (kept — weather keywords are domain-specific enough)
+// ============================================================
 
 const WEATHER_KEYWORDS = [
   "weather", "forecast", "temperature", "temp", "rain", "raining",
@@ -58,7 +97,7 @@ function locationWithForgetLike(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   if (!/\blocation\b/.test(lower)) return false;
-  return FORGET_SYNONYMS.some(s => 
+  return FORGET_SYNONYMS.some(s =>
     wordsAround(lower, "location", s, 6) || wordsAround(lower, s, "location", 6)
   );
 }
@@ -67,7 +106,7 @@ function locationWithRememberLike(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   if (!/\blocation\b/.test(lower)) return false;
-  return REMEMBER_SYNONYMS.some(s => 
+  return REMEMBER_SYNONYMS.some(s =>
     wordsAround(lower, "location", s, 6) || wordsAround(lower, s, "location", 6)
   );
 }
@@ -77,193 +116,6 @@ function hereIndicatesWeather(text) {
   const lower = text.toLowerCase();
   if (!/\bhere\b/.test(lower)) return false;
   return containsKeyword(lower, WEATHER_KEYWORDS);
-}
-
-function isSelfImprovementQuery(text) {
-  const lower = text.toLowerCase();
-  const patterns = [
-    /what (have|did) you (improve|change|modify|update|fix)/i,
-    /show (me )?(your |the )?improvements/i,
-    /list (your |the )?improvements/i,
-    /how accurate is (your )?routing/i,
-    /routing accuracy/i,
-    /intent accuracy/i,
-    /what (issues|problems) (have you|did you) detect/i,
-    /detected (issues|problems|patterns)/i,
-    /misrouting patterns/i,
-    /generate (a |the )?weekly report/i,
-    /self[- ]improvement/i
-  ];
-  
-  return patterns.some(pattern => pattern.test(lower));
-}
-
-function isMetaQuestionAboutFiles(text) {
-  const lower = text.toLowerCase();
-  const metaPatterns = [
-    /which (folders?|directories) (do|can) (you|i) (have )?access/i,
-    /what (folders?|directories) (do|can) (you|i) (have )?access/i,
-    /to which (folders?|directories)/i,
-    /what (folders?|directories) are available/i,
-    /show me (your|the) (allowed|available) (folders?|directories)/i,
-    /what (is|are) (your|the) sandbox/i,
-    /where can you (read|write|access)/i
-  ];
-
-  return metaPatterns.some(pattern => pattern.test(lower));
-}
-
-// FIX #2: Enhanced file operation detection - MUST come BEFORE LLM
-function isFileOperation(text) {
-  const lower = text.toLowerCase();
-  
-  // CRITICAL: Detect file paths (D:/, E:/, C:/) immediately
-  if (/^(list|show|open|read)\s+[a-z]:[\/\\]/i.test(text)) {
-    console.log("🔍 Detected file path operation");
-    return true;
-  }
-  
-  return (
-    /^list\s+/i.test(text) ||
-    /^show\s+(files?|folder|directory|contents?|me\s+the)/i.test(lower) ||
-    /^read\s+/i.test(text) ||
-    /^open\s+/i.test(text) ||
-    /go\s+to\s+.*\s+folder/i.test(lower) ||
-    /\b(scan|explore|look\s+(in|at)|check)\s+(the\s+)?(?:files?|folders?|directory|directories)/i.test(lower) ||
-    /(in\s+(your|my|the)\s+project|project\s+folder)/i.test(lower)
-  );
-}
-
-function isSendItCommand(text) {
-  const trimmed = text.trim().toLowerCase();
-  return (
-    trimmed === "send it" ||
-    trimmed === "send" ||
-    trimmed === "yes send it" ||
-    trimmed === "yes, send it" ||
-    trimmed === "send the email" ||
-    trimmed === "send that email" ||
-    trimmed === "yes send" ||
-    trimmed === "confirm" ||
-    (trimmed === "yes" && text.length < 10)  // Short "yes" likely confirmation
-  );
-}
-
-// FIX #5: Detect "review" command
-function isReviewCommand(text) {
-  const lower = text.toLowerCase();
-  const patterns = [
-    /\breview\s+/i,
-    /\banalyze\s+/i,
-    /\binspect\s+/i,
-    /\bcheck\s+.*\b(code|file)\b/i,
-    /\bexamine\s+/i,
-    /give\s+.*\b(feedback|opinion|thoughts)\b.*\bon\b/i
-  ];
-  
-  return patterns.some(pattern => pattern.test(lower));
-}
-
-// FIX #3: Detect GitHub capability questions
-function isGitHubCapabilityQuestion(text) {
-  const lower = text.toLowerCase();
-  return (
-    /do you have.*github/i.test(lower) ||
-    /can you (access|use).*github/i.test(lower) ||
-    /github.*api.*configured/i.test(lower) ||
-    /access to github/i.test(lower)
-  );
-}
-
-async function detectIntentWithLLM(message) {
-  const prompt = `You are an intent classifier for an AI agent with the following capabilities:
-
-AVAILABLE TOOLS:
-- weather: Current weather, forecasts
-- news: Latest headlines from RSS feeds
-- search: Web search for factual information
-- sports: Sports scores, standings
-- youtube: Search YouTube videos
-- shopping: Product search
-- finance: Stock prices
-- financeFundamentals: Company fundamentals, PE ratio, market cap
-- file: Read/list files in D:/local-llm-ui (your project) and E:/testFolder
-- fileWrite: Create or modify files
-- webDownload: Download code from URLs
-- packageManager: npm package management
-- email: Draft and send emails
-- tasks: Task management
-- calculator: Mathematical calculations
-- selfImprovement: Query improvements, routing accuracy, detected issues
-- github: GitHub API access (repository operations, issues, PRs)
-- review: Code review and analysis
-- llm: General conversation, memory queries, meta questions
-- memorytool: Manage profile data
-
-USER MESSAGE:
-"${message}"
-
-CLASSIFICATION RULES:
-1. File paths (D:/, E:/, list D:/...) → file
-2. "weather here" → weather|USE_GEO
-3. "weather in [City]" → weather|CityName
-4. "where am I" → llm|location_query
-5. "remember my location/name" → llm|memory_write
-6. "what do you remember" → llm|memory_query
-7. Meta questions about capabilities → llm|meta_question
-8. Self-improvement queries → selfImprovement
-9. Stock fundamentals → financeFundamentals
-10. Stock prices → finance
-11. GitHub operations → github
-12. "forget my location" → memorytool|forget_location
-13. "review <file>" → review
-14. News → news
-15. Casual chat → llm
-
-CRITICAL: 
-- If message contains file paths like "D:/..." or "list D:/" → ALWAYS return "file"
-- If message contains "/tools" in a path → it's file operation, NOT the tools tool
-- GitHub questions → return "github" (NOT llm)
-
-Respond with ONLY the tool name (and optional context after |).`;
-
-  try {
-    const response = await llm(prompt);
-
-    if (!response.success || !response.data?.text) {
-      return { intent: "llm", reason: "fallback" };
-    }
-
-    const text = response.data.text.trim();
-    console.log("🧠 LLM Intent Response:", text);
-
-    const parts = text.split("|");
-    const intent = parts[0].trim().toLowerCase();
-    const contextStr = parts[1]?.trim();
-
-    const result = {
-      intent,
-      reason: "llm_classified",
-      context: {}
-    };
-
-    if (contextStr) {
-      result.context.raw = contextStr;
-    }
-
-    if (intent === "weather" && contextStr === "USE_GEO") {
-      result.useGeolocation = true;
-    } else if (intent === "weather" && contextStr) {
-      result.city = contextStr;
-    } else if (intent === "llm" && contextStr) {
-      result.reason = contextStr;
-    }
-
-    return result;
-  } catch (err) {
-    console.error("LLM intent detection error:", err.message);
-    return { intent: "llm", reason: "error_fallback" };
-  }
 }
 
 function extractCity(message) {
@@ -292,111 +144,232 @@ function normalizeToolName(toolName) {
     'packagemanager': 'packageManager',
     'selfimprovement': 'selfImprovement'
   };
-  
   const lower = toolName.toLowerCase();
   return toolMap[lower] || toolName;
 }
 
+// ============================================================
+// TIER 2: SMART LLM CLASSIFIER
+// ============================================================
+
+/**
+ * Extract context signals from the message to help the LLM disambiguate.
+ * These are factual observations, not routing decisions.
+ */
+function extractContextSignals(message) {
+  const lower = message.toLowerCase();
+  const signals = [];
+
+  if (hasExplicitFilePath(message)) {
+    signals.push("CONTAINS_FILE_PATH");
+  }
+  if (/\b(github|repo|repository|repos|pull request|PR|issue|commit)\b/i.test(message)) {
+    signals.push("MENTIONS_GITHUB");
+  }
+  if (/\b(stock|share|ticker|nasdaq|nyse|s&p|portfolio|dividend|pe ratio|market cap|fundamentals)\b/i.test(lower)) {
+    signals.push("MENTIONS_FINANCE");
+  }
+  if (containsKeyword(lower, WEATHER_KEYWORDS)) {
+    signals.push("MENTIONS_WEATHER");
+  }
+  if (/\b(news|headline|latest|breaking|article)\b/i.test(lower)) {
+    signals.push("MENTIONS_NEWS");
+  }
+  if (/\b(youtube|video|watch|clip|channel)\b/i.test(lower)) {
+    signals.push("MENTIONS_YOUTUBE");
+  }
+  if (/\b(email|mail|send to|draft|compose)\b/i.test(lower)) {
+    signals.push("MENTIONS_EMAIL");
+  }
+  if (/\b(file|folder|directory|path|read|write|create file)\b/i.test(lower)) {
+    signals.push("MENTIONS_FILE_CONCEPTS");
+  }
+  if (/\b(review|code review|inspect|examine)\b/i.test(lower)) {
+    signals.push("MENTIONS_REVIEW");
+  }
+  if (/\b(search|look up|find|google|what is|who is|how to)\b/i.test(lower)) {
+    signals.push("MENTIONS_SEARCH");
+  }
+  if (/\b(improve|improvement|accuracy|routing|misrouting|weekly report)\b/i.test(lower)) {
+    signals.push("MENTIONS_SELF_IMPROVEMENT");
+  }
+  if (/\b(remember|forget|my name|my location|profile)\b/i.test(lower)) {
+    signals.push("MENTIONS_MEMORY");
+  }
+  if (/\b(sport|score|match|game|league|team|nba|nfl|premier league|champions league)\b/i.test(lower)) {
+    signals.push("MENTIONS_SPORTS");
+  }
+
+  return signals;
+}
+
+/**
+ * LLM-based intent classification with context signals and disambiguation examples
+ */
+async function detectIntentWithLLM(message, contextSignals) {
+  const signalText = contextSignals.length > 0
+    ? `\nCONTEXT SIGNALS DETECTED: ${contextSignals.join(", ")}`
+    : "\nNo strong context signals detected.";
+
+  const prompt = `You are an intent classifier for an AI agent. Classify the user's message into ONE tool.
+
+AVAILABLE TOOLS:
+- weather: Current weather, forecasts
+- news: Latest headlines from RSS feeds
+- search: Web search for factual information, "what is", "who is", "how to"
+- sports: Sports scores, standings, leagues
+- youtube: Search YouTube videos
+- shopping: Product search and price comparison
+- finance: Stock prices, ticker lookups
+- financeFundamentals: Company fundamentals, PE ratio, market cap, financial analysis
+- file: Read/list LOCAL files and folders (requires a file path or explicit "in my project")
+- fileWrite: Create or modify local files
+- webDownload: Download code/content from URLs
+- packageManager: npm package management
+- email: Draft and send emails
+- tasks: Task management, to-do lists
+- calculator: Mathematical calculations
+- selfImprovement: Query the agent's own improvements, routing accuracy, detected issues
+- github: GitHub repository operations — list repos, issues, PRs, commits
+- review: Code review and analysis of specific files
+- memorytool: Manage user profile data (forget location, etc.)
+- llm: General conversation, memory queries, meta questions, casual chat
+
+USER MESSAGE:
+"${message}"
+${signalText}
+
+CRITICAL DISAMBIGUATION RULES:
+1. "list repos" / "show my repositories" / "list my github" → github (NOT file)
+2. "list D:/..." or "read C:/..." (contains drive letter path) → file
+3. "list files in my project" / "show project folder" → file
+4. "show me the weather" / "how's the weather" → weather (NOT file)
+5. "read this article" / "read about X" → search (NOT file)
+6. "analyze AAPL" / "analyze Tesla stock" → financeFundamentals (NOT review)
+7. "review server/index.js" / "review my code" → review
+8. "open github" / "check my github" → github (NOT file)
+9. "what have you improved" / "show improvements" → selfImprovement
+10. "search for X" / "look up X" / "what is X" → search
+11. "show me videos about X" → youtube (NOT file)
+12. "what's the score" / "how did X play" → sports
+13. "forget my location" → memorytool
+14. "remember my name is X" → llm (memory write via conversation)
+15. Casual chat / greetings / opinions → llm
+
+The word "list" does NOT automatically mean file operations. Consider the OBJECT being listed.
+The word "show" does NOT automatically mean file operations. Consider what is being shown.
+The word "read" does NOT automatically mean file operations. Consider what is being read.
+The word "analyze" does NOT automatically mean review. Consider what is being analyzed.
+
+Respond with ONLY the tool name (and optional context after |).
+Examples: "github", "weather|London", "weather|USE_GEO", "file", "llm|memory_query"`;
+
+  try {
+    const response = await llm(prompt);
+
+    if (!response.success || !response.data?.text) {
+      return { intent: "llm", reason: "fallback" };
+    }
+
+    const text = response.data.text.trim();
+    console.log("🧠 LLM Intent Response:", text);
+
+    // Parse response: "toolname" or "toolname|context"
+    const parts = text.split("|");
+    const rawIntent = parts[0].trim().toLowerCase();
+    const contextStr = parts[1]?.trim();
+
+    // Clean up — LLM sometimes returns extra text
+    const intent = rawIntent.replace(/[^a-z_]/g, "");
+
+    const result = {
+      intent,
+      reason: "llm_classified",
+      context: {}
+    };
+
+    if (contextStr) {
+      result.context.raw = contextStr;
+    }
+
+    if (intent === "weather" && contextStr === "USE_GEO") {
+      result.useGeolocation = true;
+    } else if (intent === "weather" && contextStr) {
+      result.city = contextStr;
+    } else if (intent === "llm" && contextStr) {
+      result.reason = contextStr;
+    }
+
+    return result;
+  } catch (err) {
+    console.error("LLM intent detection error:", err.message);
+    return { intent: "llm", reason: "error_fallback" };
+  }
+}
+
+// ============================================================
+// MAIN PLAN FUNCTION — Two-Tier Routing
+// ============================================================
+
 export async function plan({ message }) {
   const trimmed = message.trim();
-
-  // HARDCODED: Pure math
-  if (HARDCODED_PATTERNS.calculator(trimmed)) {
-    return { tool: "calculator", input: trimmed, reasoning: "hardcoded_math" };
-  }
-
-  // HARDCODED: Simple date/time
-  if (HARDCODED_PATTERNS.isSimpleDateTime(trimmed)) {
-    return { tool: "llm", input: trimmed, reasoning: "hardcoded_datetime" };
-  }
-
   const lower = trimmed.toLowerCase();
 
-  // FIX #3: "send it" for email confirmation (FIRST)
+  // ── TIER 1: CERTAINTY LAYER ──────────────────────────────
+  // Only patterns with zero ambiguity
+
+  // 1. Pure math expressions
+  if (isMathExpression(trimmed)) {
+    return { tool: "calculator", input: trimmed, reasoning: "certainty_math" };
+  }
+
+  // 2. Simple date/time
+  if (isSimpleDateTime(trimmed)) {
+    return { tool: "llm", input: trimmed, reasoning: "certainty_datetime" };
+  }
+
+  // 3. Email confirmation ("send it", "yes")
   if (isSendItCommand(lower)) {
     console.log("📧 Detected 'send it' command");
     return {
       tool: "email_confirm",
       input: trimmed,
       context: { action: "send_confirmed" },
-      reasoning: "preclassifier_send_email_confirmation"
+      reasoning: "certainty_email_confirm"
     };
   }
 
-  // FIX #3: GitHub capability questions (route to github tool to test)
-  if (isGitHubCapabilityQuestion(trimmed)) {
-    console.log("🔧 Detected GitHub capability question - routing to github tool");
-    return {
-      tool: "github",
-      input: trimmed,
-      context: { action: "test_access" },
-      reasoning: "preclassifier_github_capability_test"
-    };
-  }
-
-  // FIX #5: Review commands
-  if (isReviewCommand(trimmed)) {
-    console.log("🔍 Detected review command");
-    return {
-      tool: "review",
-      input: trimmed,
-      context: {},
-      reasoning: "preclassifier_code_review"
-    };
-  }
-
-  // Self-improvement queries
-  if (isSelfImprovementQuery(trimmed)) {
-    console.log("📊 Detected self-improvement query");
-    return {
-      tool: "selfImprovement",
-      input: trimmed,
-      context: {},
-      reasoning: "preclassifier_self_improvement"
-    };
-  }
-
-  // Meta questions about file access
-  if (isMetaQuestionAboutFiles(trimmed)) {
-    return {
-      tool: "llm",
-      input: trimmed,
-      context: { raw: "meta_question" },
-      reasoning: "preclassifier_meta_file_question"
-    };
-  }
-
-  // Forget location
+  // 4. Forget location (very specific phrase)
   if (locationWithForgetLike(lower)) {
     return {
       tool: "memorytool",
       input: trimmed,
       context: { raw: "forget_location" },
-      reasoning: "preclassifier_forget_location"
+      reasoning: "certainty_forget_location"
     };
   }
 
-  // Remember location
+  // 5. Remember location (very specific phrase)
   if (locationWithRememberLike(lower) || /\bremember my location\b/i.test(lower)) {
     return {
       tool: "llm",
       input: trimmed,
       context: { raw: "memory_write" },
-      reasoning: "preclassifier_remember_location"
+      reasoning: "certainty_remember_location"
     };
   }
 
-  // "here" + weather keywords
+  // 6. "weather here" — weather keyword + "here" (domain-specific, no collision)
   if (hereIndicatesWeather(lower)) {
     return {
       tool: "weather",
       input: trimmed,
       context: { city: "__USE_GEOLOCATION__" },
-      reasoning: "preclassifier_here_weather"
+      reasoning: "certainty_here_weather"
     };
   }
 
-  // Weather with city
+  // 7. Weather keywords with a city name
   if (containsKeyword(lower, WEATHER_KEYWORDS)) {
     const extracted = extractCity(trimmed);
     if (extracted) {
@@ -404,42 +377,49 @@ export async function plan({ message }) {
         tool: "weather",
         input: trimmed,
         context: { city: extracted },
-        reasoning: "preclassifier_weather_with_city"
+        reasoning: "certainty_weather_with_city"
       };
     }
+    // Weather keyword without city — still unambiguous enough
     return {
       tool: "weather",
       input: trimmed,
       context: {},
-      reasoning: "preclassifier_weather_no_city"
+      reasoning: "certainty_weather_no_city"
     };
   }
 
-  // Location query
+  // 8. Location query
   if (/\bwhere am i\b/i.test(lower) || /\bwhat('?s| is) my location\b/i.test(lower)) {
     return {
       tool: "llm",
       input: trimmed,
       context: { raw: "location_query" },
-      reasoning: "preclassifier_location_query"
+      reasoning: "certainty_location_query"
     };
   }
 
-  // FIX #2: File operations (CRITICAL - check BEFORE LLM)
-  if (isFileOperation(trimmed)) {
-    console.log("📂 Detected file operation (preclassifier)");
+  // 9. Explicit file path with drive letter (D:/, E:/, C:/) — unambiguous
+  if (hasExplicitFilePath(trimmed)) {
+    console.log("📂 Detected explicit file path");
     return {
       tool: "file",
       input: trimmed,
       context: {},
-      reasoning: "preclassifier_file_operation"
+      reasoning: "certainty_file_path"
     };
   }
 
-  // LLM classifier for everything else
-  const detection = await detectIntentWithLLM(trimmed);
+  // ── TIER 2: LLM CLASSIFIER ──────────────────────────────
+  // Everything else — let the LLM decide with full context
 
-  // Weather handling
+  const contextSignals = extractContextSignals(trimmed);
+  console.log("🧠 Context signals:", contextSignals);
+
+  const detection = await detectIntentWithLLM(trimmed, contextSignals);
+  console.log("🎯 LLM classified:", detection.intent, "| reason:", detection.reason);
+
+  // Post-processing for weather (needs city extraction)
   if (detection.intent === "weather") {
     const context = {};
     if (detection.useGeolocation || /\bhere\b/i.test(trimmed)) {

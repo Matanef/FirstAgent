@@ -3,10 +3,10 @@ import express from "express";
 import path from "path";
 import fs from "fs/promises";
 import { executeAgent } from "../executor.js";
+import { PROJECT_ROOT } from "../utils/config.js";
 
 const router = express.Router();
 const MAX_FILE_SIZE = 200 * 1024; // 200KB
-const PROJECT_ROOT = path.resolve("D:/local-llm-ui");
 
 function isAllowed(resolved) {
   return resolved.startsWith(PROJECT_ROOT);

@@ -19,9 +19,6 @@ export async function llm(prompt) {
       body: JSON.stringify(body)
     });
 
-    // TEMP DEBUG
-    console.log("LLM RAW RESPONSE:", response);
-
     const text =
       response?.response ||
       response?.message ||

@@ -6,28 +6,29 @@ import { getMemory } from "./memory.js";
 import { llm } from "./tools/llm.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
+import { PROJECT_ROOT } from "./utils/config.js";
 
 // FIX #1: Convert markdown tables to HTML
 function convertMarkdownTablesToHTML(text) {
   const tableRegex = /\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)+)/g;
-  
+
   return text.replace(tableRegex, (match, headers, rows) => {
     const headerCells = headers.split('|').map(h => h.trim()).filter(Boolean);
-    const rowData = rows.trim().split('\n').map(row => 
+    const rowData = rows.trim().split('\n').map(row =>
       row.split('|').map(cell => cell.trim()).filter(Boolean)
     );
-    
+
     let html = '<div class="ai-table-wrapper"><table class="ai-table">';
     html += '<thead><tr>';
     headerCells.forEach(h => html += `<th>${h}</th>`);
     html += '</tr></thead><tbody>';
-    
+
     rowData.forEach(row => {
       html += '<tr>';
       row.forEach(cell => html += `<td>${cell}</td>`);
       html += '</tr>';
     });
-    
+
     html += '</tbody></table></div>';
     return html;
   });
@@ -66,7 +67,7 @@ AGENT CAPABILITIES & AWARENESS:
 - I can access news from multiple sources (with topic filtering)
 - I can look up stock prices and company fundamentals
 - I can perform calculations
-- I can read and list files in: D:/local-llm-ui (my project) and E:/testFolder
+- I can read and list files in: ${PROJECT_ROOT} (my project) and E:/testFolder
 - I have GitHub API access for repository operations
 - I can review code files and generate analysis reports
 - I can remember user preferences across conversations
@@ -144,7 +145,7 @@ async function summarizeWithLLM({
   const tableRequested = wantsTableFormat(userQuestion);
 
   // FIX: Emphasize current date for news and time-sensitive tools
-  const dateEmphasis = ['news', 'search', 'sports'].includes(tool) ? 
+  const dateEmphasis = ['news', 'search', 'sports'].includes(tool) ?
     `CRITICAL: TODAY'S DATE IS ${today}. Information should be current and up-to-date!` : '';
 
   const prompt = `
@@ -177,11 +178,10 @@ Formatting instructions:
 - Produce a clear, natural-language answer
 - Use profile information naturally when relevant
 - Respect tone, detail, and formatting preferences
-${
-  tableRequested
-    ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
-    : "- Use normal paragraph formatting unless different structure is better"
-}
+${tableRequested
+      ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
+      : "- Use normal paragraph formatting unless different structure is better"
+    }
 - If no reliable information, say so clearly - do NOT invent facts
 - Do NOT mention tools or internal steps
 - Be aware of full conversation context and reference previous messages if relevant
@@ -304,13 +304,13 @@ export async function executeAgent({ tool, message, conversationId }) {
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
     const lastMsg = conversation[conversation.length - 1];
-    
+
     if (lastMsg?.role === 'assistant' && lastMsg?.data?.pendingEmail) {
       console.log("✅ Found pending email, sending now...");
       const { to, subject, body } = lastMsg.data.pendingEmail;
-      
+
       const sendResult = await sendConfirmedEmail({ to, subject, body });
-      
+
       stateGraph.push({
         step: 1,
         tool: "email",
@@ -318,7 +318,7 @@ export async function executeAgent({ tool, message, conversationId }) {
         output: sendResult,
         final: true
       });
-      
+
       return {
         reply: sendResult.data?.message || sendResult.error || "Email sent!",
         stateGraph,

@@ -55,29 +55,27 @@ function makeEmailRaw({ to, subject, text }) {
 
 export async function email(query) {
   const { to, subject, body } = parseEmailRequest(query);
+  const attachments = extractAttachments(query);
   
-  if (!to) {
-    return {
-      tool: "email",
-      success: false,
-      final: true,
-      error: "Could not detect recipient email address. Please specify 'to someone@example.com'"
-    };
-  }
-
-  return {
-    tool: "email",
-    success: true,
-    final: false,
-    data: {
-      mode: "draft",
-      to,
-      subject,
-      body,
-      pendingEmail: { to, subject, body },
-      message: `📧 **Email Draft:**\n\n**To:** ${to}\n**Subject:** ${subject}\n**Message:**\n${body}\n\nSay "send it" to confirm, or "cancel" to discard.`
+  // If attachments, read files
+  const attachmentData = await Promise.all(
+    attachments.map(async (file) => {
+      const content = await fs.readFile(file.path);
+      return {
+        filename: file.name,
+        content: content.toString('base64'),
+        mimeType: file.mimeType
+      };
+    })
+  );
+  
+  // Send via Gmail with attachments
+  await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: makeEmailWithAttachments({ to, subject, body, attachments: attachmentData })
     }
-  };
+  });
 }
 
 export async function sendConfirmedEmail({ to, subject, body }) {

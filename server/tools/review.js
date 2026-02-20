@@ -10,7 +10,7 @@ const SANDBOX_ROOTS = [
   path.resolve("E:/testFolder")
 ];
 
-const MAX_FILE_SIZE = 200 * 1024; // 200KB
+const MAX_FILE_SIZE = 200 * 4096; // 200KB
 
 function isPathAllowed(resolvedPath) {
   return SANDBOX_ROOTS.some(root => resolvedPath.startsWith(root));
@@ -144,7 +144,7 @@ export async function review(query) {
         tool: "review",
         success: false,
         final: true,
-        error: `File too large: ${Math.round(stat.size / 1024)}KB (max 200KB)\n\nPlease review smaller files or request specific sections.`
+        error: `File too large: ${Math.round(stat.size / 1024)}KB (max 5000KB)\n\nPlease review smaller files or request specific sections.`
       };
     }
     

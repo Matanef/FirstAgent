@@ -79,3 +79,58 @@
 {"timestamp":"2026-02-19T20:40:23.961Z","userMessage":"review the tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
 {"timestamp":"2026-02-19T20:40:46.176Z","userMessage":"review tools folder","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
 {"timestamp":"2026-02-19T20:41:02.813Z","userMessage":"review tools/","detectedTool":"review","reasoning":"preclassifier_code_review","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T20:58:40.765Z","userMessage":"you are progressing bit by bit but you are progressing never the less. gonna put your code through scrutiny with Antgravity.\nhope all will be good after it","detectedTool":"llm","reasoning":"location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T21:39:26.480Z","userMessage":"list tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T21:40:06.330Z","userMessage":"list the folder tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T21:41:03.232Z","userMessage":"list the tools folder in your project","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T21:41:27.843Z","userMessage":"folder tools","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T21:42:23.261Z","userMessage":"list D:/local-llm-ui/client","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T21:44:13.577Z","userMessage":"list D:/local-llm-ui/client/local-llm-ui","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T21:46:31.447Z","userMessage":"list D:/local-llm-ui/server/tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:02:49.481Z","userMessage":"list D:/local-llm-ui/server/tools","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:09:08.592Z","userMessage":"what is this folder?","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T22:21:27.305Z","userMessage":"list my github repos","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T22:22:10.753Z","userMessage":"list D:/local-llm-ui/server","detectedTool":"file","reasoning":"preclassifier_file_operation","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:24:07.943Z","userMessage":"open D:/local-llm-ui/server/tools/news.js","detectedTool":"file","reasoning":"certainty_file_path","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:25:57.756Z","userMessage":"list my git repo","detectedTool":"github","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:31:57.352Z","userMessage":"list my github repos","detectedTool":"github","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:35:01.935Z","userMessage":"show me latest video in youtube about Epstein files","detectedTool":"youtube","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:53:46.065Z","userMessage":"what the forecast for tomorrow?","detectedTool":"weather","reasoning":"certainty_weather_no_city","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T22:54:16.410Z","userMessage":"what's the weather gonna be tomorrow at givatayim","detectedTool":"weather","reasoning":"certainty_weather_no_city","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T22:54:49.033Z","userMessage":"what's my location?","detectedTool":"llm","reasoning":"certainty_location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:56:35.194Z","userMessage":"what's gonna be the forecast for the next 5 days in Givatayim","detectedTool":"weather","reasoning":"certainty_weather_with_city","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T22:58:09.798Z","userMessage":"review D:/local-llm-ui/server/planner.js","detectedTool":"file","reasoning":"certainty_file_path","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T23:01:38.811Z","userMessage":"review planner.js in server folder","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T23:06:05.866Z","userMessage":"can you present the plan() function?","detectedTool":"calculator","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T23:06:25.214Z","userMessage":"can you present the plan function?","detectedTool":"calculator","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T23:38:46.753Z","userMessage":"how much is X? 24(32X-353)-(245+35X)=(357/672)","detectedTool":"calculator","reasoning":"certainty_math","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T23:39:11.645Z","userMessage":"how much is? 24(32X-353)-(245+35X)=(357/672)","detectedTool":"calculator","reasoning":"certainty_math","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-19T23:39:43.344Z","userMessage":"24(32X-353)-(245+35X)=(357/672)","detectedTool":"calculator","reasoning":"certainty_math","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-19T23:48:04.587Z","userMessage":"what does this file do? index in server folder","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T00:30:37.314Z","userMessage":"remember my phone number 0587426393","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T00:31:16.172Z","userMessage":"remember my name","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T00:47:29.926Z","userMessage":"what is my name?","detectedTool":"search","reasoning":"llm_classified","confidence":0.65,"context":{},"success":true}
+{"timestamp":"2026-02-20T00:51:57.760Z","userMessage":"remember my name is matan","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T00:59:34.903Z","userMessage":"what is my name?","detectedTool":"search","reasoning":"llm_classified","confidence":0.65,"context":{},"success":true}
+{"timestamp":"2026-02-20T01:01:20.397Z","userMessage":"remember my name is matan","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T01:05:43.206Z","userMessage":"my name is Matan","detectedTool":"llm","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T01:06:57.275Z","userMessage":"who is the primary user?","detectedTool":"search","reasoning":"llm_classified","confidence":0.65,"context":{},"success":true}
+{"timestamp":"2026-02-20T01:09:42.826Z","userMessage":"OWL fundamental","detectedTool":"financeFundamentals","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:01:50.672Z","userMessage":"hey hey and goof morning.\nplease tell me what are the latest news in Israel. each headlines should be explained in 4-5 lines of text. please","detectedTool":"calculator","reasoning":"certainty_math","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:04:12.430Z","userMessage":"what is my location?","detectedTool":"llm","reasoning":"certainty_location_query","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:04:25.963Z","userMessage":"what's my name?","detectedTool":"llm","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:05:02.474Z","userMessage":"what is my email?","detectedTool":"email","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:06:22.974Z","userMessage":"can you review memory.json in the utils folder?","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:07:43.601Z","userMessage":"can you review memory.json in the utils folder?","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:08:21.725Z","userMessage":"can you review memory.json in the utils folder?","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:10:06.435Z","userMessage":"can you review memory.json in the utils folder?","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:11:07.644Z","userMessage":"200 * 1024","detectedTool":"calculator","reasoning":"certainty_math","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:12:35.622Z","userMessage":"can you review memory.json in the utils folder and explain why the profile is not being saved.","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:13:19.194Z","userMessage":"can you review memory.json in the utils folder in the project root and explain why the profile is not being saved","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:13:33.758Z","userMessage":"list project root","detectedTool":"file","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:14:17.410Z","userMessage":"review D:/lical-llm-ui/utils/memory.json","detectedTool":"file","reasoning":"certainty_file_path","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:16:16.974Z","userMessage":"review server/tools/","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:19:02.696Z","userMessage":"can you review memory.json in the utils folder?","detectedTool":"review","reasoning":"llm_classified","confidence":0.5,"context":{},"success":true}
+{"timestamp":"2026-02-20T11:21:08.893Z","userMessage":"after reviewing the file can you tell me why it does not save new information in the profile section?","detectedTool":"fileWrite","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:21:34.282Z","userMessage":"after reviewing it can you tell me why it does not save new information in the profile section?","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}
+{"timestamp":"2026-02-20T11:22:03.881Z","userMessage":"do you understand that this file your your memory?","detectedTool":"memorytool","reasoning":"llm_classified","confidence":0.5,"context":{},"success":false}

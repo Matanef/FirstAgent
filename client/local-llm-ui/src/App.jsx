@@ -1,272 +1,12 @@
-// client/local-llm-ui/src/App.jsx (COMPLETE FIX - All UI issues resolved)
-/**
- * COMPLETE UI FIX:
- * - Issue #9: Checkboxes now clickable (stopPropagation)
- * - Issue #10: Compile button always visible when files selected
- * - Issue #12: YouTube 2x2 grid layout
- * - Issue #13: Chat width limited to 1475px
- */
+// client/local-llm-ui/src/App.jsx
+// Main application component — slimmed down with extracted components
 
 import { useState, useEffect, useRef } from "react";
+import DOMPurify from "dompurify";
+import SmartContent from "./components/SmartContent";
 import "./App.css";
 
 const API_URL = "http://localhost:3000";
-
-// YouTube Video Display (Issue #12: 2x2 grid)
-function YouTubeVideoGrid({ videos }) {
-  if (!videos || videos.length === 0) return null;
-
-  const [selectedVideo, setSelectedVideo] = useState(null);
-
-  return (
-    <div className="youtube-container">
-      <div className="youtube-grid">
-        {videos.slice(0, 4).map((video, i) => (
-          <div 
-            key={i} 
-            className="youtube-video-card"
-            onClick={() => setSelectedVideo(video.id)}
-          >
-            <img
-              src={`https://img.youtube.com/vi/${video.id}/mqdefault.jpg`}
-              alt={video.title}
-              className="youtube-thumbnail"
-            />
-            <div className="youtube-video-info">
-              <div className="youtube-video-title">{video.title}</div>
-              <div className="youtube-video-channel">{video.channelTitle}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {selectedVideo && (
-        <div className="youtube-player-modal" onClick={() => setSelectedVideo(null)}>
-          <div className="youtube-player-container" onClick={e => e.stopPropagation()}>
-            <button className="youtube-close-btn" onClick={() => setSelectedVideo(null)}>×</button>
-            <iframe
-              width="100%"
-              height="100%"
-              src={`https://www.youtube.com/embed/${selectedVideo}`}
-              frameBorder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              title="YouTube video player"
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// File Browser with Checkboxes (Issues #9, #10)
-function FileSystemBrowser({ data, conversationId }) {
-  const [selectedFiles, setSelectedFiles] = useState(new Set());
-  const [compiling, setCompiling] = useState(false);
-
-  if (!data || !data.items) return null;
-
-  const handleCheckbox = (filename) => {
-    const newSelected = new Set(selectedFiles);
-    if (newSelected.has(filename)) {
-      newSelected.delete(filename);
-    } else {
-      newSelected.add(filename);
-    }
-    setSelectedFiles(newSelected);
-  };
-
-  const handleCompile = async () => {
-    if (selectedFiles.size === 0) return;
-
-    setCompiling(true);
-    try {
-      const res = await fetch(`${API_URL}/compile-files`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          files: Array.from(selectedFiles),
-          conversationId
-        })
-      });
-
-      const result = await res.json();
-      if (result.success) {
-        alert(`✅ Compiled ${result.filesCompiled} files to bigFile.txt`);
-        setSelectedFiles(new Set());
-      } else {
-        alert(`❌ Compilation failed: ${result.error}`);
-      }
-    } catch (err) {
-      alert(`❌ Compilation error: ${err.message}`);
-    } finally {
-      setCompiling(false);
-    }
-  };
-
-  return (
-    <div className="file-browser">
-      <div className="file-browser-header">
-        <span>📂 {data.path || "Directory"}</span>
-        <div className="header-right">
-          <span className="file-count">{data.items.length} items</span>
-          {selectedFiles.size > 0 && (
-            <span className="selected-count">{selectedFiles.size} selected</span>
-          )}
-        </div>
-      </div>
-      
-      <div className="file-list">
-        {data.items.map((item, i) => (
-          <div key={i} className="file-item">
-            {/* FIX #9: stopPropagation for clickable checkboxes */}
-            <input
-              type="checkbox"
-              className="file-checkbox"
-              checked={selectedFiles.has(item.name)}
-              onChange={(e) => {
-                e.stopPropagation();
-                handleCheckbox(item.name);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              disabled={item.type === 'folder'}
-            />
-            <span className="file-icon">{item.icon || (item.type === 'folder' ? '📁' : '📄')}</span>
-            <span className="file-name">{item.name}</span>
-            <span className="file-type">{item.type}</span>
-            {item.sizeFormatted && <span className="file-size">{item.sizeFormatted}</span>}
-          </div>
-        ))}
-      </div>
-      
-      {/* FIX #10: Always render when files selected */}
-      {selectedFiles.size > 0 && (
-        <div className="file-actions">
-          <span className="file-actions-text">
-            {selectedFiles.size} file{selectedFiles.size > 1 ? 's' : ''} selected
-          </span>
-          <button 
-            className="compile-btn" 
-            onClick={handleCompile}
-            disabled={compiling}
-          >
-            {compiling ? "📦 Compiling..." : "📦 Compile Selected"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Other specialized renderers
-function CodeBlock({ code, language = "javascript" }) {
-  return (
-    <div className="code-block-container">
-      <div className="code-block-header">
-        <span className="code-language">{language}</span>
-        <button
-          className="code-copy-btn"
-          onClick={() => navigator.clipboard.writeText(code)}
-        >
-          📋 Copy
-        </button>
-      </div>
-      <pre className="code-block">
-        <code>{code}</code>
-      </pre>
-    </div>
-  );
-}
-
-function WeatherWidget({ data }) {
-  if (!data) return null;
-
-  return (
-    <div className="weather-widget">
-      <div className="weather-header">
-        <span>🌤️ {data.city}, {data.country}</span>
-      </div>
-      <div className="weather-content">
-        <div className="weather-temp">{data.temp}°C</div>
-        <div className="weather-desc">{data.description}</div>
-        <div className="weather-details">
-          <span>💨 Wind: {data.wind_speed} m/s</span>
-          <span>💧 Humidity: {data.humidity}%</span>
-          <span>🌡️ Feels like: {data.feels_like}°C</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function detectContentType(content, data, tool) {
-  if (tool === "youtube" && data?.videos) return "youtube";
-  if (content.includes("```") || tool === "calculator") return "code";
-  if (tool === "file" && data?.items) return "filesystem";
-  if (tool === "weather" && data?.temp) return "weather";
-  if (content.includes("<table") || content.includes("ai-table")) return "html";
-  return "text";
-}
-
-function SmartContent({ message, conversationId }) {
-  const contentType = detectContentType(
-    message.content || "",
-    message.data,
-    message.tool
-  );
-
-  switch (contentType) {
-    case "youtube":
-      return <YouTubeVideoGrid videos={message.data.videos} />;
-
-    case "code":
-      const codeMatch = (message.content || "").match(/```(\w+)?\n([\s\S]*?)```/);
-      if (codeMatch) {
-        return <CodeBlock code={codeMatch[2]} language={codeMatch[1] || "text"} />;
-      }
-      if (message.tool === "calculator" && message.data?.expression) {
-        return (
-          <div className="calc-result">
-            <div className="calc-expression">{message.data.expression}</div>
-            <div className="calc-answer">= {message.data.result}</div>
-          </div>
-        );
-      }
-      return <div className="message-text">{message.content}</div>;
-
-    case "filesystem":
-      return (
-        <>
-          <FileSystemBrowser data={message.data} conversationId={conversationId} />
-          {message.content && !message.content.includes("<") && (
-            <div className="message-note">{message.content}</div>
-          )}
-        </>
-      );
-
-    case "weather":
-      return (
-        <>
-          <WeatherWidget data={message.data} />
-          {message.content && !message.content.toLowerCase().includes("weather") && (
-            <div className="message-note">{message.content}</div>
-          )}
-        </>
-      );
-
-    case "html":
-      return (
-        <div
-          className="rich-html-content"
-          dangerouslySetInnerHTML={{ __html: message.content }}
-        />
-      );
-
-    default:
-      return <div className="message-text">{message.content}</div>;
-  }
-}
 
 // MAIN APP COMPONENT
 function App() {
@@ -458,7 +198,7 @@ function App() {
 
             {/* Tone Control */}
             <div className="tone-control-wrapper">
-              <button 
+              <button
                 className={`tone-button ${toneExpanded ? "expanded" : ""}`}
                 onClick={() => setToneExpanded(!toneExpanded)}
               >
@@ -466,8 +206,8 @@ function App() {
                   <div className="tone-panel">
                     <div className="tone-panel-header">
                       <span>Tone Control</span>
-                      <button 
-                        className="tone-close" 
+                      <button
+                        className="tone-close"
                         onClick={(e) => { e.stopPropagation(); setToneExpanded(false); }}
                       >
                         ×
