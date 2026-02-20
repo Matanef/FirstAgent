@@ -1,0 +1,83 @@
+# 🤖 AI Agent Tool Usage Manual
+
+This manual provides prompt suggestions for each tool available to your AI Agent. Use these templates to get the best results.
+
+---
+
+### 📧 Email & Contacts
+Manage your communication and address book.
+*   **Prompt 1**: "Email rafiefrati@gmail.com saying I'll be late for dinner."
+*   **Prompt 2**: "Send Matan an email about the project updates with subject: Status Report."
+*   **Prompt 3**: "Add Rafi as a contact: 050-1234567, rafiefrati@gmail.com."
+
+### 📂 File Management
+Interact with your local filesystem.
+*   **Prompt 1**: "List all files in D:/local-llm-ui/server/tools."
+*   **Prompt 2**: "Read the content of server/executor.js and explain the main logic."
+*   **Prompt 3**: "Create a new file called 'notes.txt' with the text 'Don't forget the milk'."
+
+### 💻 GitHub Integration
+Perform repository operations directly.
+*   **Prompt 1**: "List my GitHub repositories."
+*   **Prompt 2**: "Show the latest commits for the 'llm-ui' repo."
+*   **Prompt 3**: "List open issues on the project."
+
+### 🔍 Search & News
+Stay informed with real-time web data.
+*   **Prompt 1**: "Search for the latest news about OpenAI Sora."
+*   **Prompt 2**: "Who won the Best Picture award at the last Oscars?"
+*   **Prompt 3**: "What are the top headlines from BBC News right now?"
+
+### 📈 Finance & Fundamentals
+Analyze stocks and market trends.
+*   **Prompt 1**: "What's the current stock price of NVIDIA (NVDA)?"
+*   **Prompt 2**: "Analyze Apple's (AAPL) fundamentals including PE ratio and market cap."
+*   **Prompt 3**: "Show me a summary of Tesla's (TSLA) latest financial performance."
+
+### 🌦️ Weather
+Get local and global forecasts.
+*   **Prompt 1**: "How's the weather here right now?"
+*   **Prompt 2**: "Show me the 5-day forecast for Tel Aviv."
+*   **Prompt 3**: "Will it rain in London tomorrow?"
+
+### ⚽ Sports
+Check scores, standings, and game times.
+*   **Prompt 1**: "What was the score of the latest Real Madrid match?"
+*   **Prompt 2**: "Show the Premier League standings."
+*   **Prompt 3**: "When is the next Lakers game?"
+
+### 🎥 YouTube
+Find videos and channels.
+*   **Prompt 1**: "Find me a YouTube tutorial on React Hooks."
+*   **Prompt 2**: "Search for the latest MKBHD video."
+*   **Prompt 3**: "Show me funny cat videos."
+
+### 🛒 Shopping
+Compare prices and find products.
+*   **Prompt 1**: "Search for iPhone 15 Pro Max prices."
+*   **Prompt 2**: "Find the best deals on gaming laptops."
+*   **Prompt 3**: "What are the top-rated headphones on Amazon?"
+
+### 🧹 Code Review
+Deep analysis of your code files.
+*   **Prompt 1**: "Review server/planner.js and suggest performance improvements."
+*   **Prompt 2**: "Analyze server/index.js for potential security vulnerabilities."
+*   **Prompt 3**: "Compare the logic in file.js and fileWrite.js."
+
+### 🧠 Memory & Profile
+Manage what the agent knows about you.
+*   **Prompt 1**: "Remember that my favorite color is blue."
+*   **Prompt 2**: "Forget my saved home location."
+*   **Prompt 3**: "Show me what you remember about my preferences."
+
+### 🧮 Calculator
+Precise mathematical operations.
+*   **Prompt 1**: "What's the square root of 144 plus 25?"
+*   **Prompt 2**: "Calculate 15% tip on a 250 dollar bill."
+*   **Prompt 3**: "Convert 100 miles to kilometers."
+
+### 📦 Development Tools
+Manage project dependencies and assets.
+*   **Prompt 1**: "Install the 'lodash' package using npm."
+*   **Prompt 2**: "Download the content of https://example.com/script.js."
+*   **Prompt 3**: "Show me what improvements you've made to the code recently."

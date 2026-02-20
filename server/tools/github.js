@@ -21,7 +21,7 @@ async function testGitHubAccess() {
   try {
     const octokit = getOctokit();
     const { data } = await octokit.users.getAuthenticated();
-    
+
     return {
       tool: "github",
       success: true,
@@ -198,7 +198,7 @@ export async function github(request) {
     // Get user info
     if (/who am i/i.test(lower) || /my.*profile/i.test(lower) || /my.*info/i.test(lower)) {
       const { data } = await octokit.users.getAuthenticated();
-      
+
       return {
         tool: "github",
         success: true,
@@ -217,6 +217,48 @@ export async function github(request) {
           text: `**GitHub Profile:**\n\n👤 ${data.name || data.login}\n📧 ${data.email || 'Not public'}\n🏢 ${data.company || 'No company'}\n📍 ${data.location || 'No location'}\n📦 ${data.public_repos} public repos\n👥 ${data.followers} followers, ${data.following} following`
         }
       };
+    }
+
+    // Get file content
+    const contentMatch = lower.match(/(?:get|read|show|review)\s+(?:file\s+)?([a-zA-Z0-9_\-\.\/]+)\s+(?:from|in)\s+repo\s+([a-zA-Z0-9_\-\.\/]+)/i) ||
+      lower.match(/(?:get|read|show|review)\s+repo\s+([a-zA-Z0-9_\-\.\/]+)\s+file\s+([a-zA-Z0-9_\-\.\/]+)/i);
+
+    if (contentMatch) {
+      let filePath, repoPath;
+      if (lower.includes("repo") && lower.indexOf("repo") < lower.indexOf("file")) {
+        repoPath = contentMatch[1];
+        filePath = contentMatch[2];
+      } else {
+        filePath = contentMatch[1];
+        repoPath = contentMatch[2];
+      }
+
+      const [owner, repo] = repoPath.includes('/') ? repoPath.split('/') : [null, repoPath];
+
+      // If owner is missing, use the authenticated user
+      const finalOwner = owner || (await octokit.users.getAuthenticated()).data.login;
+
+      const { data } = await octokit.repos.getContent({
+        owner: finalOwner,
+        repo: repo,
+        path: filePath
+      });
+
+      if (data.encoding === 'base64') {
+        const content = Buffer.from(data.content, 'base64').toString('utf8');
+        return {
+          tool: "github",
+          success: true,
+          final: true,
+          data: {
+            owner: finalOwner,
+            repo,
+            path: filePath,
+            content,
+            text: `📄 **File:** ${filePath} (${repo})\n\n\`\`\`\n${content.slice(0, 500)}${content.length > 500 ? '...' : ''}\n\`\`\``
+          }
+        };
+      }
     }
 
     // Default: show help
@@ -245,7 +287,7 @@ What would you like to do?`
 
   } catch (err) {
     console.error("GitHub tool error:", err);
-    
+
     // Better error messages
     let errorMessage = err.message;
     if (err.status === 401) {

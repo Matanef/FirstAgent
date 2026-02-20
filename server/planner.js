@@ -240,21 +240,24 @@ USER MESSAGE:
 ${signalText}
 
 CRITICAL DISAMBIGUATION RULES:
-1. "list repos" / "show my repositories" / "list my github" → github (NOT file)
-2. "list D:/..." or "read C:/..." (contains drive letter path) → file
-3. "list files in my project" / "show project folder" → file
-4. "show me the weather" / "how's the weather" → weather (NOT file)
-5. "read this article" / "read about X" → search (NOT file)
-6. "analyze AAPL" / "analyze Tesla stock" → financeFundamentals (NOT review)
-7. "review server/index.js" / "review my code" → review
-8. "open github" / "check my github" → github (NOT file)
-9. "what have you improved" / "show improvements" → selfImprovement
-10. "search for X" / "look up X" / "what is X" → search
-11. "show me videos about X" → youtube (NOT file)
-12. "what's the score" / "how did X play" → sports
-13. "forget my location" → memorytool
-14. "remember my name is X" → llm (memory write via conversation)
-15. Casual chat / greetings / opinions → llm
+1. "add contact" / "save contact" / "save that rafi's email is X" → contacts (NOT email)
+2. "send email to X" / "email X" / "compose email" → email
+3. "list repos" / "show my repositories" / "list my github" → github (NOT file)
+4. "list D:/..." or "read C:/..." (contains drive letter path) → file
+5. "list files in my project" / "show project folder" → file
+6. "show me the weather" / "how's the weather" → weather (NOT file)
+7. "read this article" / "read about X" → search (NOT file)
+8. "analyze AAPL" / "analyze Tesla stock" → financeFundamentals (NOT review)
+9. "review server/index.js" / "review my code" → review
+10. "open github" / "check my github" → github (NOT file)
+11. "what have you improved" / "show improvements" / "review yourself" → selfImprovement
+12. "search for X" / "look up X" / "what is X" → search
+13. "show me videos about X" → youtube (NOT file)
+14. "what's the score" / "how did X play" → sports
+15. "forget my location" → memorytool
+16. "remember my name is X" → llm (memory write via conversation)
+17. "review your logic" / "review your own code" → selfImprovement
+18. Casual chat / greetings / opinions → llm
 
 The word "list" does NOT automatically mean file operations. Consider the OBJECT being listed.
 The word "show" does NOT automatically mean file operations. Consider what is being shown.

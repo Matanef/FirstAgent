@@ -198,11 +198,8 @@ function App() {
 
             {/* Tone Control */}
             <div className="tone-control-wrapper">
-              <button
-                className={`tone-button ${toneExpanded ? "expanded" : ""}`}
-                onClick={() => setToneExpanded(!toneExpanded)}
-              >
-                {!toneExpanded ? "🎭" : (
+              {toneExpanded ? (
+                <div className="tone-button expanded">
                   <div className="tone-panel">
                     <div className="tone-panel-header">
                       <span>Tone Control</span>
@@ -221,7 +218,6 @@ function App() {
                         value={toneValue}
                         onChange={(e) => setToneValue(Number(e.target.value))}
                         className="tone-slider"
-                        onClick={(e) => e.stopPropagation()}
                       />
                       <div className="tone-labels">
                         <span>Concise</span>
@@ -231,8 +227,16 @@ function App() {
                       </div>
                     </div>
                   </div>
-                )}
-              </button>
+                </div>
+              ) : (
+                <button
+                  className="tone-button"
+                  onClick={() => setToneExpanded(true)}
+                  title="Adjust AI Tone"
+                >
+                  🎭
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -17,7 +17,8 @@ export async function selfImprovement(query) {
       lower.includes("what have you improved") ||
       lower.includes("what improvements") ||
       lower.includes("show improvements") ||
-      lower.includes("list improvements")
+      lower.includes("list improvements") ||
+      lower.includes("recent improvements")
     ) {
       const improvements = await getRecentImprovements(20);
 
@@ -27,7 +28,8 @@ export async function selfImprovement(query) {
           success: true,
           final: true,
           data: {
-            text: "I haven't recorded any self-improvements yet. I log improvements when I:\n- Modify my own code\n- Install new packages\n- Download learning resources\n- Update configuration files"
+            text: "I haven't recorded any self-improvements yet. I log improvements when I:\n- Modify my own code\n- Install new packages\n- Download learning resources\n- Update configuration files",
+            message: "I haven't recorded any self-improvements yet."
           }
         };
       }
@@ -181,8 +183,8 @@ export async function selfImprovement(query) {
             </thead>
             <tbody>
               ${Object.entries(report.byTool)
-                .sort((a, b) => b[1].total - a[1].total)
-                .map(([tool, stats]) => `
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([tool, stats]) => `
                   <tr>
                     <td>${tool}</td>
                     <td>${stats.total}</td>
@@ -370,6 +372,38 @@ export async function selfImprovement(query) {
       };
     }
 
+    // Query: "Review your own logic" or "Suggest improvements to yourself"
+    if (
+      lower.includes("review your") ||
+      lower.includes("suggest improvement") ||
+      (lower.includes("make you") && (lower.includes("smarter") || lower.includes("faster")))
+    ) {
+      // Import review tool dynamically to avoid circular dependency
+      const { review } = await import("./review.js");
+
+      // Default to reviewing the planner and executor
+      const target = lower.includes("planner") ? "server/planner.js" :
+        lower.includes("executor") ? "server/executor.js" :
+          "server/planner.js"; // Default to planner as it's the most critical
+
+      const reviewResult = await review(`review ${target}`);
+
+      if (reviewResult.success) {
+        const message = `🤖 **Self-Critique (${target}):**\n\nI've analyzed my core logic in \`${target}\`. Here are some ways I can improve:\n\n${reviewResult.data.reviewText}`;
+        return {
+          tool: "selfImprovement",
+          success: true,
+          final: true,
+          data: {
+            ...reviewResult.data,
+            text: message,
+            html: reviewResult.data.html || message,
+            message
+          }
+        };
+      }
+    }
+
     // Query: "generate weekly report"
     if (
       lower.includes("weekly report") ||
@@ -395,7 +429,7 @@ export async function selfImprovement(query) {
       tool: "selfImprovement",
       success: false,
       final: true,
-      error: "I can help with:\n- 'what have you improved lately?'\n- 'how accurate is your routing?'\n- 'what issues have you detected?'\n- 'generate weekly report'"
+      error: "I can help with:\n- 'what have you improved lately?'\n- 'how accurate is your routing?'\n- 'what issues have you detected?'\n- 'Review your own logic (planner/executor)'\n- 'suggest improvements to make you smarter'"
     };
 
   } catch (err) {

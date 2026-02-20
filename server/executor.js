@@ -298,18 +298,22 @@ function normalizeCityAliases(message) {
 export async function executeAgent({ tool, message, conversationId }) {
   const stateGraph = [];
 
-  // FIX #3: Handle "send it" for email confirmation FIRST
+  // FIX #3: Handle "send it" for email confirmation
   if (tool === "email_confirm") {
     console.log("📧 Processing email confirmation...");
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
-    const lastMsg = conversation[conversation.length - 1];
 
-    if (lastMsg?.role === 'assistant' && lastMsg?.data?.pendingEmail) {
-      console.log("✅ Found pending email, sending now...");
-      const { to, subject, body } = lastMsg.data.pendingEmail;
+    // Search backward for the most recent draft
+    const draftMessage = [...conversation]
+      .reverse()
+      .find(m => m.role === 'assistant' && m.data?.pendingEmail);
 
-      const sendResult = await sendConfirmedEmail({ to, subject, body });
+    if (draftMessage) {
+      console.log("✅ Found pending email draft, sending now...");
+      const { to, subject, body, attachments } = draftMessage.data.pendingEmail;
+
+      const sendResult = await sendConfirmedEmail({ to, subject, body, attachments });
 
       stateGraph.push({
         step: 1,
@@ -327,7 +331,7 @@ export async function executeAgent({ tool, message, conversationId }) {
         success: sendResult.success
       };
     } else {
-      // No pending email found
+      console.log("❌ No pending email draft found in history.");
       return {
         reply: "I don't have a pending email to send. Please create an email draft first.",
         stateGraph: [],
@@ -412,12 +416,13 @@ export async function executeAgent({ tool, message, conversationId }) {
     };
   }
 
-  // SPECIAL CASE: memorytool - No LLM, No summarization
-  if (tool === "memorytool") {
+  // SPECIAL CASE: memorytool & selfImprovement - No LLM, No summarization
+  if (tool === "memorytool" || tool === "selfImprovement") {
     return {
-      reply: result.data?.message || "Memory updated.",
+      reply: result.data?.text || result.data?.message || "Task completed.",
       stateGraph,
       tool,
+      data: result.data, // Include standard data for UI
       success: true
     };
   }
@@ -436,7 +441,6 @@ export async function executeAgent({ tool, message, conversationId }) {
     "tasks",
     "news",
     "file",
-    "selfImprovement",
     "github",
     "review"  // NEW
   ];
