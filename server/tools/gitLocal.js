@@ -1,6 +1,7 @@
-// server/tools/gitLocal.js
 import { exec } from "child_process";
 import { promisify } from "util";
+import fs from "fs/promises";
+import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
 
 const execAsync = promisify(exec);
@@ -15,6 +16,34 @@ async function runGit(command) {
     } catch (err) {
         return { success: false, error: err.message, stderr: err.stderr };
     }
+}
+
+/**
+ * Resolves a bare filename to its relative path from PROJECT_ROOT.
+ * Searches in server/tools, server, client/src, etc.
+ */
+async function resolveRelativePath(filename) {
+    if (!filename || filename === "." || filename.includes("/") || filename.includes("\\")) {
+        return filename;
+    }
+
+    const commonDirs = ["server/tools", "server", "client/src", "utils"];
+    for (const dir of commonDirs) {
+        const fullPath = path.join(PROJECT_ROOT, dir, filename);
+        try {
+            await fs.access(fullPath);
+            return path.join(dir, filename).replace(/\\/g, "/");
+        } catch {
+            // Check for .js extension if missing
+            if (!filename.endsWith(".js")) {
+                try {
+                    await fs.access(fullPath + ".js");
+                    return path.join(dir, filename + ".js").replace(/\\/g, "/");
+                } catch { }
+            }
+        }
+    }
+    return filename; // Fallback to original
 }
 
 /**
@@ -56,7 +85,13 @@ export async function gitLocal(request) {
         if (lowerAction === "status" || fullRequest.includes("git status")) {
             result = await runGit("status");
         } else if (lowerAction === "add" || fullRequest.includes("git add") || lowerAction === "stage") {
-            const target = params || ".";
+            let target = params || ".";
+            // Safety: prevent LLM from using "improvement" or "changes" as a pathspec
+            if (["improvement", "improve", "changes", "staged"].includes(target.toLowerCase())) {
+                target = ".";
+            } else if (target !== ".") {
+                target = await resolveRelativePath(target);
+            }
             result = await runGit(`add ${target}`);
         } else if (lowerAction === "commit" || fullRequest.includes("git commit")) {
             // Extract commit message from params or fullRequest
@@ -67,7 +102,8 @@ export async function gitLocal(request) {
             if (!msg || msg === "commit") msg = "Agent self-improvement update";
             result = await runGit(`commit -m "${msg.replace(/"/g, '\\"')}"`);
         } else if (lowerAction === "diff" || fullRequest.includes("git diff")) {
-            result = await runGit(`diff ${params}`);
+            const target = await resolveRelativePath(params);
+            result = await runGit(`diff ${target}`);
         } else if (lowerAction === "log" || fullRequest.includes("git log")) {
             result = await runGit(`log --oneline -n 10`);
         } else if (lowerAction === "push" || fullRequest.includes("git push")) {

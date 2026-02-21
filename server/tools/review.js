@@ -32,23 +32,20 @@ function extractFilePath(query) {
     return { filename, folder, fullPath: `${folder}/${filename}` };
   }
 
-  // Pattern 2: "review server/tools/news.js"
-  match = query.match(/review\s+([a-zA-Z0-9_\-\.\/\\]+)/i);
+  // Pattern 2: "review server/tools/news.js" or "review our email tool"
+  // Skip common possessive/definite adjectives
+  match = query.match(/review\s+(our\s+|the\s+|my\s+)?([a-zA-Z0-9_\-\.\/\\]+)/i);
   if (match) {
-    const fullPath = match[1].trim();
+    const fullPath = match[2].trim();
     return { fullPath };
   }
 
-  // Pattern 4: Bare filename (no "review" prefix)
-  // This is important for multi-step execution where the input is just the file name
-  if (query && !query.includes(" ")) {
-    return { filename: query.trim() };
-  }
-
-  // Pattern 5: Conversational reference (e.g. "Finance tool", "Review my index")
+  // Pattern 3: Conversational reference (e.g. "Finance tool", "Review my index", "review_email_tool")
   // Strip common noise words and try to extract a core filename
+  // Convert underscores/dashes to spaces first for cleaner boundary matching
+  let clean = query.replace(/[_\-]/g, ' ');
   const noiseRegex = /\b(review|tool|file|against|them|our|the|my|against)\b/gi;
-  let clean = query.replace(noiseRegex, '').trim();
+  clean = clean.replace(noiseRegex, ' ').replace(/\s+/g, ' ').trim();
 
   // Handle cases like "email_tool" or "Finance-tool" by stripping the suffix
   clean = clean.replace(/[_\-](tool|file|js)$/i, '');
@@ -59,6 +56,12 @@ function extractFilePath(query) {
     // Still has spaces, take the first substantial word
     const words = clean.split(/\s+/).filter(w => w.length > 2);
     if (words.length > 0) return { filename: words[0] };
+  }
+
+  // Pattern 4: Bare filename (no "review" prefix)
+  // This is important for multi-step execution where the input is just the file name
+  if (query && !query.includes(" ")) {
+    return { filename: query.trim() };
   }
 
   return null;

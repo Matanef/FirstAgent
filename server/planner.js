@@ -282,9 +282,12 @@ CRITICAL FORMATTING RULES:
 1. Respond with ONE OR MORE LINES. Each line must be a separate step in this format: tool_name | refined_input | context
 2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
 3. context (the third column) is OPTIONAL and ONLY used for the gitLocal commit message. Leave empty for all other steps.
-4. If the user asks to "stage an improvement", "suggest improvement", "commit improvement", or "self-improve", YOU MUST include EVERY step: trending -> review -> gitLocal status -> gitLocal add -> gitLocal commit.
-4. DO NOT add any explanations, notes, or "Step 1:". 
-5. DO NOT use markdown formatting.
+4. ALWAYS extract a refined_input if the tool requires one (like review, finance, search).
+5. For the "review" tool, refined_input MUST BE the filename ONLY (e.g. "email.js"). DO NOT include the word "review" in the input column.
+6. For "gitLocal add", NEVER use the word "improvement" as a path. Use the SAME file name you used in the "review" step, or use "." to add all changes.
+7. If the user asks for an "improvement", "patch", or "self-improve", YOU MUST plan EXACTLY 5 STEPS: githubTrending | review | gitLocal status | gitLocal add | gitLocal commit.
+8. DO NOT add any explanations, notes, or "Step 1:". 
+9. DO NOT use markdown formatting.
 
 TOOL HINTS:
 - gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff", "git push".
@@ -513,9 +516,11 @@ export async function plan({ message }) {
     // Normalize tool name (case-insensitive)
     const normalizedTool = normalizeToolName(detection.intent || "llm");
 
-    // FIX: Don't leak the full prompt into specialized tools during multi-step flows
-    // If the LLM failed to extract a specific input, we prefer null over a noisy full-sentence fallback
-    const finalInput = (detection.reason === "llm_classified" && !detection.extractedInput && normalizedTool !== 'llm')
+    // FIX: Don't leak the full prompt into specialized technical tools during multi-step flows
+    // Tools like gitLocal and githubTrending are sensitive to noisy full-sentence fallbacks.
+    // However, NLP-aware tools like 'review' or 'search' can handle the full trimmed prompt if extraction fails.
+    const technicalTools = ['gitLocal', 'githubTrending'];
+    const finalInput = (detection.reason === "llm_classified" && !detection.extractedInput && technicalTools.includes(normalizedTool))
       ? null
       : (detection.extractedInput || trimmed);
 
