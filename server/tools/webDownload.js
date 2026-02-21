@@ -13,19 +13,19 @@ const DOWNLOAD_DIR = path.resolve("D:/local-llm-ui/downloads");
 async function downloadFile(url, filename) {
   try {
     const response = await fetch(url);
-    
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
     const content = await response.text();
-    
+
     // Ensure download directory exists
     await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
-    
+
     const filepath = path.join(DOWNLOAD_DIR, filename);
     await fs.writeFile(filepath, content, "utf8");
-    
+
     return {
       success: true,
       filepath,
@@ -46,7 +46,7 @@ async function downloadFile(url, filename) {
 async function downloadFromGitHub(url) {
   // Convert GitHub URL to raw if needed
   let rawUrl = url;
-  
+
   if (url.includes("github.com") && !url.includes("raw.githubusercontent.com")) {
     rawUrl = url
       .replace("github.com", "raw.githubusercontent.com")
@@ -64,13 +64,13 @@ async function fetchNpmPackageInfo(packageName) {
   try {
     const url = `https://registry.npmjs.org/${packageName}`;
     const response = await fetch(url);
-    
+
     if (!response.ok) {
       throw new Error(`Package not found: ${packageName}`);
     }
 
     const data = await response.json();
-    
+
     return {
       name: data.name,
       version: data["dist-tags"]?.latest,
@@ -93,7 +93,27 @@ async function fetchNpmPackageInfo(packageName) {
  */
 export async function webDownload(request) {
   try {
-    const { url, type = "auto", filename } = request;
+    let url = request.url;
+    let type = request.type || "auto";
+    let filename = request.filename;
+
+    if (!url && typeof request === 'object') {
+      const text = request.text || "";
+      // Simple regex to find URL in text if it's just a URL string
+      if (/^https?:\/\/\S+$/.test(text.trim())) {
+        url = text.trim();
+      } else if (text.trim().includes(" ")) {
+        // Conversational, try to extract the first URL
+        const match = text.match(/https?:\/\/\S+/);
+        if (match) url = match[0];
+      } else {
+        url = text.trim();
+      }
+    }
+
+    if (!url && typeof request === 'string') {
+      url = request.trim();
+    }
 
     if (!url) {
       return {
@@ -113,7 +133,7 @@ export async function webDownload(request) {
       // For npm, we just fetch info, user needs to install via packageManager tool
       const packageName = url.replace(/^npm:/, "");
       const info = await fetchNpmPackageInfo(packageName);
-      
+
       return {
         tool: "webDownload",
         success: !info.error,

@@ -21,7 +21,8 @@ import { selfImprovement } from "./selfImprovement.js";
 import { github } from "./github.js";
 import { gitLocal } from "./gitLocal.js";
 import { review } from "./review.js";  // NEW: Review tool
-import { nlpTool as nlp_tool } from "./nlp.js"; // NEW: NLP tool
+import { nlpTool as nlp_tool } from "./nlp.js";
+import { githubTrending } from "./githubTrending.js";
 
 export const TOOLS = {
   calculator,
@@ -44,7 +45,8 @@ export const TOOLS = {
   github,
   gitLocal,
   review,  // NEW: Code review tool
-  nlp_tool // NEW: NLP analysis
+  nlp_tool,
+  githubTrending
 };
 
 // Validate all tools are functions at startup

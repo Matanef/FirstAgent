@@ -16,7 +16,7 @@ import {
 } from "./utils/uiUtils.js";
 
 
-function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities }) {
+function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
 
@@ -54,6 +54,9 @@ ${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
 NLP ANALYSIS:
 - Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
 - Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
+
+PREVIOUS STEPS IN THIS SEQUENCE:
+${stateGraph ? JSON.stringify(stateGraph, null, 2) : "none"}
 `;
 
   return `${awarenessContext}
@@ -75,7 +78,7 @@ Now write the final answer. Be aware of full conversation context and your capab
 `;
 }
 
-async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, onChunk }) {
+async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
@@ -87,7 +90,8 @@ async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, en
     conversation,
     capabilities,
     sentiment,
-    entities
+    entities,
+    stateGraph
   });
 
   let text = "";
@@ -115,6 +119,7 @@ async function summarizeWithLLM({
   tool,
   sentiment,
   entities,
+  stateGraph,
   onChunk
 }) {
   const memory = await getMemory();
@@ -164,6 +169,9 @@ Tool used: ${tool}
 
 Tool result (structured data):
 ${JSON.stringify(toolResult, null, 2)}
+
+PREVIOUS STEPS IN THIS SEQUENCE:
+${stateGraph ? JSON.stringify(stateGraph, null, 2) : "none"}
 
 Formatting instructions:
 - Produce a clear, natural-language answer
@@ -272,12 +280,12 @@ Generate the reformatted response:
 }
 
 
-export async function executeAgent({ tool, message, conversationId, onChunk }) {
-  const stateGraph = [];
+/**
+ * executeStep
+ * Executes a SINGLE plan step (one tool call)
+ */
+export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const queryText = typeof message === "string" ? message : message?.text || "";
-
-  // Background NLP Analysis
-  const { sentiment, entities } = getBackgroundNLP(queryText);
 
   // FIX #3: Handle "send it" for email confirmation
   if (tool === "email_confirm") {
@@ -296,28 +304,20 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
 
       const sendResult = await sendConfirmedEmail({ to, subject, body, attachments });
 
-      stateGraph.push({
-        step: 1,
-        tool: "email",
-        input: message,
-        output: sendResult,
-        final: true
-      });
-
       return {
         reply: sendResult.data?.message || sendResult.error || "Email sent!",
-        stateGraph,
         tool: "email",
         data: sendResult.data,
-        success: sendResult.success
+        success: sendResult.success,
+        final: true
       };
     } else {
       console.log("❌ No pending email draft found in history.");
       return {
         reply: "I don't have a pending email to send. Please create an email draft first.",
-        stateGraph: [],
         tool: "email",
-        success: false
+        success: false,
+        final: true
       };
     }
   }
@@ -337,22 +337,15 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
       conversationId,
       sentiment, // Pass to LLM
       entities,  // Pass to LLM
+      stateGraph, // Pass previous tool results
       onChunk    // Pass chunk handler
-    });
-
-    stateGraph.push({
-      step: 1,
-      tool,
-      input: message,
-      output: reply,
-      final: true
     });
 
     return {
       reply,
-      stateGraph,
       tool,
-      success: true
+      success: true,
+      final: true
     };
   }
 
@@ -368,8 +361,8 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
     console.log("Available tools:", toolKeys);
     return {
       reply: `Tool "${tool}" not found. Available tools: ${toolKeys.join(", ")}`,
-      stateGraph,
-      success: false
+      success: false,
+      final: true
     };
   }
 
@@ -379,7 +372,7 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
   // WEATHER + MEMORYTOOL receive full object
   let toolInput;
 
-  if (tool === "weather" || tool === "memorytool") {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload"].includes(tool)) {
     toolInput = message; // { text, context }
   } else {
     toolInput = getMessageText(message); // string
@@ -389,21 +382,28 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
   console.log(`🔧 Executing tool: ${tool}`);
   const result = await TOOLS[tool](toolInput);
 
-  stateGraph.push({
-    step: 1,
+  return {
     tool,
     input: toolInput,
     output: result,
+    success: result.success,
     final: result?.final ?? true
-  });
+  };
+}
 
-  // Do NOT summarize failed tools
-  if (!result?.success) {
+/**
+ * finalizeStep
+ * Summarizes tool results or returns raw output
+ */
+export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
+  const { tool, output: result } = stepResult;
+
+  if (!stepResult.success) {
     return {
-      reply: result?.error || "Tool execution failed.",
-      stateGraph,
+      reply: result?.error || result?.data?.error || "Tool execution failed.",
+      tool,
       success: false,
-      tool
+      final: true
     };
   }
 
@@ -411,29 +411,18 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
   if (tool === "memorytool" || tool === "selfImprovement") {
     return {
       reply: result.data?.text || result.data?.message || "Task completed.",
-      stateGraph,
       tool,
-      data: result.data, // Include standard data for UI
-      success: true
+      data: result.data,
+      success: true,
+      final: true
     };
   }
 
-  // Tools that should be summarized (with full context)
+  // Tools that should be summarized
   const summarizeTools = [
-    "search",
-    "finance",
-    "financeFundamentals",
-    "calculator",
-    "weather",
-    "sports",
-    "youtube",
-    "shopping",
-    "email",
-    "tasks",
-    "news",
-    "file",
-    "github",
-    "review"  // NEW
+    "search", "finance", "financeFundamentals", "calculator", "weather",
+    "sports", "youtube", "shopping", "email", "tasks", "news", "file",
+    "github", "review", "githubTrending"
   ];
 
   if (summarizeTools.includes(tool)) {
@@ -444,16 +433,17 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
       tool,
       sentiment,
       entities,
+      stateGraph,
       onChunk
     });
 
     return {
       reply: summary.reply,
-      stateGraph,
       tool,
       data: result.data,
       reasoning: summary.reasoning,
-      success: true
+      success: true,
+      final: true
     };
   }
 
@@ -467,10 +457,54 @@ export async function executeAgent({ tool, message, conversationId, onChunk }) {
 
   return {
     reply,
-    stateGraph,
     tool,
     data: result.data,
     reasoning: result.reasoning || null,
-    success: true
+    success: true,
+    final: true
+  };
+}
+
+/**
+ * executeAgent (Single Step / Direct)
+ * Legacy/Direct entry point for executing a single tool call.
+ * Used by specialized routes like 'review.js'.
+ */
+export async function executeAgent({ tool, message, conversationId, onChunk }) {
+  const queryText = typeof message === "string" ? message : message?.text || "";
+  const { sentiment, entities } = getBackgroundNLP(queryText);
+
+  // 1. Execute the tool
+  const stepResult = await executeStep({
+    tool,
+    message,
+    conversationId,
+    sentiment,
+    entities,
+    stateGraph: [],
+    onChunk
+  });
+
+  // 2. Finalize and Return
+  const finalized = await finalizeStep({
+    stepResult,
+    message,
+    conversationId,
+    sentiment,
+    entities,
+    stateGraph: [],
+    onChunk
+  });
+
+  return {
+    ...finalized,
+    stateGraph: [{
+      step: 1,
+      tool: finalized.tool,
+      input: message,
+      output: finalized.reply,
+      success: finalized.success,
+      final: finalized.final
+    }]
   };
 }

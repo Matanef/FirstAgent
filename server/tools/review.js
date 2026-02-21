@@ -19,41 +19,52 @@ function isPathAllowed(resolvedPath) {
 // Extract file path from natural language
 function extractFilePath(query) {
   const lower = query.toLowerCase();
-  
+
   // Pattern 1: "review news.js in tools folder"
   let match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)\s+in\s+(the\s+)?([a-zA-Z0-9_\-\/\s]+)/i);
   if (match) {
     const filename = match[1];
     let folder = match[3].trim();
-    
+
     // Clean up folder path
     folder = folder.replace(/\s+folder\s*$/i, '').replace(/\s+/g, '/');
-    
+
     return { filename, folder, fullPath: `${folder}/${filename}` };
   }
-  
+
   // Pattern 2: "review server/tools/news.js"
   match = query.match(/review\s+([a-zA-Z0-9_\-\.\/\\]+)/i);
   if (match) {
     const fullPath = match[1].trim();
     return { fullPath };
   }
-  
-  // Pattern 3: Just a filename
-  match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)/i);
-  if (match) {
-    return { filename: match[1] };
+
+  // Pattern 4: Bare filename (no "review" prefix)
+  // This is important for multi-step execution where the input is just the file name
+  if (query && !query.includes(" ")) {
+    return { filename: query.trim() };
   }
-  
+
+  // Pattern 5: Conversational reference (e.g. "Finance tool", "Review my index")
+  // Strip common noise words and try to extract a core filename
+  const clean = query.replace(/\b(review|tool|file|against|them|our|the|my|against)\b/gi, '').trim();
+  if (clean && !clean.includes(" ")) {
+    return { filename: clean };
+  } else if (clean) {
+    // Still has spaces, take the first substantial word
+    const words = clean.split(/\s+/).filter(w => w.length > 2);
+    if (words.length > 0) return { filename: words[0] };
+  }
+
   return null;
 }
 
 // Resolve file path with sandbox validation
 async function resolveFilePath(pathInfo) {
   if (!pathInfo) return null;
-  
+
   const sandboxRoot = SANDBOX_ROOTS[0]; // Default to project root
-  
+
   // Try direct path first
   if (pathInfo.fullPath) {
     let resolved = path.resolve(sandboxRoot, pathInfo.fullPath);
@@ -68,12 +79,12 @@ async function resolveFilePath(pathInfo) {
           try {
             await fs.access(resolved);
             return resolved;
-          } catch {}
+          } catch { }
         }
       }
     }
   }
-  
+
   // Try filename + folder
   if (pathInfo.filename && pathInfo.folder) {
     const resolved = path.resolve(sandboxRoot, pathInfo.folder, pathInfo.filename);
@@ -81,10 +92,10 @@ async function resolveFilePath(pathInfo) {
       try {
         await fs.access(resolved);
         return resolved;
-      } catch {}
+      } catch { }
     }
   }
-  
+
   // Try just filename (search common locations)
   if (pathInfo.filename) {
     const commonPaths = [
@@ -93,26 +104,48 @@ async function resolveFilePath(pathInfo) {
       path.resolve(sandboxRoot, 'client/src', pathInfo.filename),
       path.resolve(sandboxRoot, pathInfo.filename)
     ];
-    
+
     for (const testPath of commonPaths) {
       if (isPathAllowed(testPath)) {
         try {
           await fs.access(testPath);
           return testPath;
-        } catch {}
+        } catch {
+          // Try with .js
+          const jsPath = testPath + '.js';
+          try {
+            await fs.access(jsPath);
+            return jsPath;
+          } catch {
+            // Try lowercase filename
+            const lowerPath = path.join(path.dirname(testPath), path.basename(testPath).toLowerCase());
+            try {
+              await fs.access(lowerPath);
+              return lowerPath;
+            } catch {
+              // Try lowercase + .js
+              const jsLowerPath = lowerPath + '.js';
+              try {
+                await fs.access(jsLowerPath);
+                return jsLowerPath;
+              } catch { }
+            }
+          }
+        }
       }
     }
   }
-  
+
   return null;
 }
 
-export async function review(query) {
+export async function review(request) {
   try {
+    const query = typeof request === 'string' ? request : request?.text;
     console.log("🔍 Review tool called with:", query);
-    
+
     // Extract file path
-    const pathInfo = extractFilePath(query);
+    const pathInfo = extractFilePath(query || "");
     if (!pathInfo) {
       return {
         tool: "review",
@@ -121,9 +154,9 @@ export async function review(query) {
         error: "Could not determine which file to review. Please specify a file path like:\n- 'review news.js in tools folder'\n- 'review server/tools/news.js'\n- 'review news.js'"
       };
     }
-    
+
     console.log("📂 Extracted path info:", pathInfo);
-    
+
     // Resolve to actual file path
     const resolvedPath = await resolveFilePath(pathInfo);
     if (!resolvedPath) {
@@ -134,9 +167,9 @@ export async function review(query) {
         error: `Could not find file: ${pathInfo.filename || pathInfo.fullPath}\n\nSearched in:\n- server/tools/\n- server/\n- client/src/\n- project root\n\nPlease check the file name and path.`
       };
     }
-    
+
     console.log("✅ Resolved to:", resolvedPath);
-    
+
     // Check file size
     const stat = await fs.stat(resolvedPath);
     if (stat.size > MAX_FILE_SIZE) {
@@ -147,17 +180,17 @@ export async function review(query) {
         error: `File too large: ${Math.round(stat.size / 1024)}KB (max 5000KB)\n\nPlease review smaller files or request specific sections.`
       };
     }
-    
+
     // Read file content
     const content = await fs.readFile(resolvedPath, "utf8");
     const lines = content.split('\n').length;
-    
+
     console.log(`📄 Read file: ${lines} lines, ${content.length} bytes`);
-    
+
     // Build LLM review prompt
     const filename = path.basename(resolvedPath);
     const relativePath = path.relative("D:/local-llm-ui", resolvedPath);
-    
+
     const prompt = `You are a senior software engineer conducting a code review.
 
 FILE: ${relativePath}
@@ -201,15 +234,15 @@ IMPORTANT:
     // Get LLM review
     console.log("🤖 Calling LLM for review...");
     const llmResponse = await llm(prompt);
-    
+
     if (!llmResponse.success) {
       throw new Error("LLM review failed: " + (llmResponse.error || "Unknown error"));
     }
-    
+
     const reviewText = llmResponse.data?.text || "Review could not be generated.";
-    
+
     console.log("✅ Review generated:", reviewText.slice(0, 100) + "...");
-    
+
     // Format response
     const html = `
       <div class="review-panel">
@@ -256,7 +289,7 @@ IMPORTANT:
         }
       </style>
     `;
-    
+
     return {
       tool: "review",
       success: true,
@@ -272,7 +305,7 @@ IMPORTANT:
       },
       reasoning: `Reviewed ${filename} (${lines} lines)`
     };
-    
+
   } catch (err) {
     console.error("❌ Review tool error:", err);
     return {

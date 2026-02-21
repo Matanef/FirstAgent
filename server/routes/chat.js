@@ -3,7 +3,6 @@
 
 import express from "express";
 import crypto from "crypto";
-import { plan } from "../planner.js";
 import {
     loadJSON,
     saveJSON,
@@ -12,7 +11,7 @@ import {
     MEMORY_FILE,
     DEFAULT_MEMORY
 } from "../memory.js";
-import { executeAgent } from "../executor.js";
+import { executeAgent } from "../utils/coordinator.js";
 import { calculateConfidence } from "../audit.js";
 import { resolveCityFromIp } from "../utils/geo.js";
 import { logTelemetry } from "../telemetryAudit.js";
@@ -61,31 +60,19 @@ router.post("/chat", async (req, res) => {
             if (city) memory.profile.location = city;
         }
 
-        // PLAN
-        console.log("🧠 Planning...");
-        const planResult = await plan({ message });
-        const { tool, input, context, reasoning } = planResult;
-
-        // GEOLOCATION
-        let finalContext = context || {};
-        if (tool === "weather" && finalContext.city === "__USE_GEOLOCATION__") {
-            const city = await resolveCityFromIp(req.clientIp);
-            if (city) finalContext.city = city;
-        }
-
         // Send initial state
-        res.write(`data: ${JSON.stringify({ type: 'start', conversationId: id, tool })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'start', conversationId: id })}\n\n`);
 
-        // EXECUTE
-        console.log("⚙️ Executing tool:", tool);
-        let accumulatedReply = "";
+        // EXECUTE via Coordinator (Handles planning and multi-step loop)
         const result = await executeAgent({
-            tool,
-            message: { text: input ?? message, context: finalContext },
+            message,
             conversationId: id,
+            clientIp: req.clientIp,
             onChunk: (chunk) => {
-                accumulatedReply += chunk;
                 res.write(`data: ${JSON.stringify({ type: 'chunk', chunk })}\n\n`);
+            },
+            onStep: (stepInfo) => {
+                res.write(`data: ${JSON.stringify({ type: 'step', ...stepInfo })}\n\n`);
             }
         });
 
@@ -132,7 +119,6 @@ router.post("/chat", async (req, res) => {
                 steps: stateGraph.length,
                 executionTime: elapsed,
                 reasoning: result.reasoning,
-                planReasoning: reasoning,
                 messageCount: memory.conversations[id].length
             }
         })}\n\n`);

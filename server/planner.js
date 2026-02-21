@@ -34,7 +34,16 @@ function isSimpleDateTime(msg) {
  * This is unambiguous — no natural language collision possible
  */
 function hasExplicitFilePath(text) {
-  return /[a-z]:[\\/]/i.test(text);
+  // Match drive letters (C:/, D:\) but exclude protocol headers (http://, https://)
+  return /[a-z]:[\\/]/i.test(text) && !/[a-z]+:\/\//i.test(text);
+}
+
+/**
+ * Detect URLs (http:// or https://)
+ */
+function isUrl(text) {
+  const trimmed = text.trim();
+  return /^https?:\/\//i.test(trimmed);
 }
 
 /**
@@ -196,6 +205,9 @@ function extractContextSignals(message) {
   if (/\b(git status|git add|git commit|git diff|git log)\b/i.test(lower)) {
     signals.push("MENTIONS_LOCAL_GIT");
   }
+  if (/\b(trending|trending repos|trending github)\b/i.test(lower)) {
+    signals.push("MENTIONS_TRENDING");
+  }
   if (/\b(remember|forget|my name|my location|profile)\b/i.test(lower)) {
     signals.push("MENTIONS_MEMORY");
   }
@@ -214,7 +226,7 @@ async function detectIntentWithLLM(message, contextSignals) {
     ? `\nCONTEXT SIGNALS DETECTED: ${contextSignals.join(", ")}`
     : "\nNo strong context signals detected.";
 
-  const prompt = `You are an intent classifier for an AI agent. Classify the user's message into ONE tool.
+  const prompt = `You are a multi-step planner for an AI agent. Based on the user's request, plan a SEQUENCE of one or more tool calls.
 
 AVAILABLE TOOLS:
 - weather: Current weather, forecasts
@@ -233,9 +245,11 @@ AVAILABLE TOOLS:
 - tasks: Task management, to-do lists
 - calculator: Mathematical calculations
 - selfImprovement: Query the agent's own improvements, routing accuracy, detected issues
-- github: REMOTE GitHub repository operations — list repos, issues, PRs, commits
+- github: REMOTE GitHub repository operations — list repos, issues, PRs
 - gitLocal: LOCAL Git operations — status, add, commit, diff, log
+- githubTrending: Fetch currently trending software repositories from GitHub
 - review: Code review and analysis of specific files
+- nlp_tool: Textual analysis for sentiment and entities
 - memorytool: Manage user profile data (forget location, etc.)
 - llm: General conversation, memory queries, casual chat, agreements (e.g. "sure", "ok", "go ahead")
 
@@ -265,72 +279,82 @@ CRITICAL DISAMBIGUATION RULES:
 19. "morning" / "good morning" / "hello" / "hi" → llm
 
 CRITICAL FORMATTING RULES:
-1. Respond with EXACTLY ONE LINE in this format: tool_name | refined_input | context
+1. Respond with ONE OR MORE LINES. Each line must be a separate step in this format: tool_name | refined_input | context
 2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
-3. DO NOT add any explanations, notes, or "Based on..." text. 
-4. DO NOT use markdown formatting in your response.
+3. If the user asks to "stage an improvement" or "self-improve", YOU MUST include EVERY step: trending -> review -> gitLocal status -> gitLocal add -> gitLocal commit.
+4. DO NOT add any explanations, notes, or "Step 1:". 
+5. DO NOT use markdown formatting.
 
 TOOL HINTS:
 - gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff".
 - github: USE ONLY FOR REMOTE REPO LISTING OR ISSUES.
 
 EXAMPLES:
+1. "Search for patterns, review my file, and commit"
+githubTrending | patterns | 
+review | my_file.js | 
 gitLocal | status | 
+gitLocal | add . | 
+gitLocal | commit | staged improvement
+
+2. "How's the weather in London and news about AI"
 weather | | London
+news | AI | 
+
+3. "Analyze AAPL and check my project files"
 financeFundamentals | AAPL | 
-file | list D:/project | 
-llm | | casual_chat
-llm | | casual_agreement (for "sure", "ok", "go ahead")
+file | list | 
 `;
 
   try {
     const response = await llm(prompt);
 
     if (!response.success || !response.data?.text) {
-      return { intent: "llm", reason: "fallback" };
+      return [{ intent: "llm", reason: "fallback" }];
     }
 
     const lines = response.data.text.trim().split("\n");
-    // Find the first line that actually contains a tool/pipe
-    const intentLine = lines.find(l => l.includes("|")) || lines[0];
+    const steps = [];
 
-    console.log("🧠 LLM Intent Line:", intentLine);
+    for (const line of lines) {
+      if (!line.includes("|")) continue;
 
-    // Parse response: "tool | input | context"
-    const parts = intentLine.split("|");
-    const rawIntent = parts[0].trim().toLowerCase();
-    const extractedInput = parts[1]?.trim();
-    const contextStr = parts[2]?.trim();
+      const parts = line.split("|");
+      const rawIntent = parts[0].trim().toLowerCase().replace(/[*#]/g, "").replace(/[^a-z_]/g, "");
+      const extractedInput = parts[1]?.trim();
+      const contextStr = parts[2]?.trim();
 
-    // Clean up intent — remove markdown bolding or extra punctuation
-    const intent = rawIntent.replace(/[*#]/g, "").trim().replace(/[^a-z_]/g, "");
+      if (!rawIntent) continue;
 
-    const result = {
-      intent,
-      reason: "llm_classified",
-      context: {}
-    };
+      const step = {
+        intent: rawIntent,
+        reason: "llm_classified",
+        extractedInput: extractedInput || null,
+        context: contextStr ? { raw: contextStr } : {}
+      };
 
-    if (extractedInput) {
-      result.extractedInput = extractedInput;
+      // Special case: weather (un-normalize city if needed)
+      if (rawIntent === "weather") {
+        if (contextStr === "USE_GEO" || extractedInput === "USE_GEO") {
+          step.useGeolocation = true;
+        } else if (contextStr || extractedInput) {
+          step.city = contextStr || extractedInput;
+        }
+      } else if (rawIntent === "llm" && (contextStr || extractedInput)) {
+        step.reason = contextStr || extractedInput;
+      }
+
+      steps.push(step);
     }
 
-    if (contextStr) {
-      result.context.raw = contextStr;
+    if (steps.length === 0) {
+      return [{ intent: "llm", reason: "fallback" }];
     }
 
-    if (intent === "weather" && (contextStr === "USE_GEO" || extractedInput === "USE_GEO")) {
-      result.useGeolocation = true;
-    } else if (intent === "weather" && (contextStr || extractedInput)) {
-      result.city = contextStr || extractedInput;
-    } else if (intent === "llm" && (contextStr || extractedInput)) {
-      result.reason = contextStr || extractedInput;
-    }
-
-    return result;
+    return steps;
   } catch (err) {
     console.error("LLM intent detection error:", err.message);
-    return { intent: "llm", reason: "error_fallback" };
+    return [{ intent: "llm", reason: "error_fallback" }];
   }
 }
 
@@ -347,12 +371,12 @@ export async function plan({ message }) {
 
   // 1. Pure math expressions
   if (isMathExpression(trimmed)) {
-    return { tool: "calculator", input: trimmed, reasoning: "certainty_math" };
+    return [{ tool: "calculator", input: trimmed, reasoning: "certainty_math" }];
   }
 
   // 2. Simple date/time
   if (isSimpleDateTime(trimmed)) {
-    return { tool: "llm", input: trimmed, reasoning: "certainty_datetime" };
+    return [{ tool: "llm", input: trimmed, reasoning: "certainty_datetime" }];
   }
 
   // 4. Local Git (unambiguous)
@@ -364,93 +388,93 @@ export async function plan({ message }) {
     else if (lower.includes("diff")) action = "diff";
     else if (lower.includes("log")) action = "log";
 
-    return {
+    return [{
       tool: "gitLocal",
       input: action, // Pass the detected action directly
       reasoning: "certainty_git_local"
-    };
+    }];
   }
 
   // 5. Email confirmation ("send it", "yes")
   if (isSendItCommand(lower)) {
     console.log("📧 Detected 'send it' command");
-    return {
+    return [{
       tool: "email_confirm",
       input: trimmed,
       context: { action: "send_confirmed" },
       reasoning: "certainty_email_confirm"
-    };
+    }];
   }
 
   // 6. Forget location (very specific phrase)
   if (locationWithForgetLike(lower)) {
-    return {
+    return [{
       tool: "memorytool",
       input: trimmed,
       context: { raw: "forget_location" },
       reasoning: "certainty_forget_location"
-    };
+    }];
   }
 
   // 5. Remember location (very specific phrase)
   if (locationWithRememberLike(lower) || /\bremember my location\b/i.test(lower)) {
-    return {
+    return [{
       tool: "llm",
       input: trimmed,
       context: { raw: "memory_write" },
       reasoning: "certainty_remember_location"
-    };
+    }];
   }
 
   // 6. "weather here" — weather keyword + "here" (domain-specific, no collision)
   if (hereIndicatesWeather(lower)) {
-    return {
+    return [{
       tool: "weather",
       input: trimmed,
       context: { city: "__USE_GEOLOCATION__" },
       reasoning: "certainty_here_weather"
-    };
+    }];
   }
 
   // 7. Weather keywords with a city name
   if (containsKeyword(lower, WEATHER_KEYWORDS)) {
     const extracted = extractCity(trimmed);
     if (extracted) {
-      return {
+      return [{
         tool: "weather",
         input: trimmed,
         context: { city: extracted },
         reasoning: "certainty_weather_with_city"
-      };
+      }];
     }
     // Weather keyword without city — still unambiguous enough
-    return {
+    return [{
       tool: "weather",
       input: trimmed,
       context: {},
       reasoning: "certainty_weather_no_city"
-    };
+    }];
   }
 
   // 8. Location query
   if (/\bwhere am i\b/i.test(lower) || /\bwhat('?s| is) my location\b/i.test(lower)) {
-    return {
+    return [{
       tool: "llm",
       input: trimmed,
       context: { raw: "location_query" },
       reasoning: "certainty_location_query"
-    };
+    }];
   }
 
   // 9. Explicit file path with drive letter (D:/, E:/, C:/) — unambiguous
   if (hasExplicitFilePath(trimmed)) {
     console.log("📂 Detected explicit file path");
-    return {
-      tool: "file",
-      input: trimmed,
-      context: {},
-      reasoning: "certainty_file_path"
-    };
+    return [{ tool: "file", input: trimmed, reasoning: "certainty_file_path" }];
+  }
+
+  // 10. URLs (http://, https://) — unambiguous
+  if (isUrl(trimmed)) {
+    return [{ tool: "webDownload", input: trimmed, reasoning: "certainty_url" }];
   }
 
   // ── TIER 2: LLM CLASSIFIER ──────────────────────────────
@@ -459,38 +483,46 @@ export async function plan({ message }) {
   const contextSignals = extractContextSignals(trimmed);
   console.log("🧠 Context signals:", contextSignals);
 
-  const detection = await detectIntentWithLLM(trimmed, contextSignals);
-  console.log("🎯 LLM classified:", detection.intent, "| reason:", detection.reason);
+  const detections = await detectIntentWithLLM(trimmed, contextSignals);
+  console.log("🎯 LLM classified:", detections.length, "steps");
 
-  // Post-processing for weather (needs city extraction)
-  if (detection.intent === "weather") {
-    const context = {};
-    if (detection.useGeolocation || /\bhere\b/i.test(trimmed)) {
-      context.city = "__USE_GEOLOCATION__";
-    } else if (detection.city) {
-      context.city = detection.city;
-    } else {
-      const extractedCity = extractCity(trimmed);
-      if (extractedCity) {
-        context.city = extractedCity;
+  return detections.map(detection => {
+    // Post-processing for weather (needs city extraction)
+    if (detection.intent === "weather") {
+      const context = {};
+      if (detection.useGeolocation || /\bhere\b/i.test(trimmed)) {
+        context.city = "__USE_GEOLOCATION__";
+      } else if (detection.city) {
+        context.city = detection.city;
+      } else {
+        const extractedCity = extractCity(trimmed);
+        if (extractedCity) {
+          context.city = extractedCity;
+        }
       }
+
+      return {
+        tool: "weather",
+        input: detection.extractedInput || trimmed,
+        context,
+        reasoning: detection.reason
+      };
     }
 
+    // Normalize tool name (case-insensitive)
+    const normalizedTool = normalizeToolName(detection.intent || "llm");
+
+    // FIX: Don't leak the full prompt into specialized tools during multi-step flows
+    // If the LLM failed to extract a specific input, we prefer null over a noisy full-sentence fallback
+    const finalInput = (detection.reason === "llm_classified" && !detection.extractedInput && normalizedTool !== 'llm')
+      ? null
+      : (detection.extractedInput || trimmed);
+
     return {
-      tool: "weather",
-      input: trimmed,
-      context,
+      tool: normalizedTool,
+      input: finalInput,
+      context: detection.context || {},
       reasoning: detection.reason
     };
-  }
-
-  // Normalize tool name (case-insensitive)
-  const normalizedTool = normalizeToolName(detection.intent || "llm");
-
-  return {
-    tool: normalizedTool,
-    input: detection.extractedInput || trimmed,
-    context: detection.context || {},
-    reasoning: detection.reason
-  };
+  });
 }

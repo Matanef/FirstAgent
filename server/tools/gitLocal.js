@@ -30,8 +30,11 @@ export async function gitLocal(request) {
             action = parts[0];
             params = parts.slice(1).join(" ");
         } else {
-            action = request.action;
-            params = request.params || "";
+            // Handle enriched object { text, context }
+            const text = request.text || "";
+            const parts = text.trim().split(/\s+/);
+            action = parts[0];
+            params = parts.slice(1).join(" ") || request.context?.raw || "";
         }
 
         if (!action) {
@@ -42,33 +45,42 @@ export async function gitLocal(request) {
                 error: "Action (status, add, commit, etc.) is required"
             };
         }
-
         let result;
-        switch (action.toLowerCase()) {
-            case "status":
+        const lowerAction = (action || "").toLowerCase();
+        const fullRequest = `${action} ${params}`.trim().toLowerCase();
+
+        // Robust command detection
+        if (lowerAction === "status" || fullRequest.includes("git status")) {
+            result = await runGit("status");
+        } else if (lowerAction === "add" || fullRequest.includes("git add") || lowerAction === "stage") {
+            const target = params || ".";
+            result = await runGit(`add ${target}`);
+        } else if (lowerAction === "commit" || fullRequest.includes("git commit")) {
+            // Extract commit message from params or fullRequest
+            let msg = params;
+            const msgMatch = fullRequest.match(/commit\s+(?:-m\s+)?["']?([^"']+)["']?/i);
+            if (msgMatch) msg = msgMatch[1];
+
+            if (!msg || msg === "commit") msg = "Agent self-improvement update";
+            result = await runGit(`commit -m "${msg.replace(/"/g, '\\"')}"`);
+        } else if (lowerAction === "diff" || fullRequest.includes("git diff")) {
+            result = await runGit(`diff ${params}`);
+        } else if (lowerAction === "log" || fullRequest.includes("git log")) {
+            result = await runGit(`log --oneline -n 10`);
+        } else {
+            // Fallback for natural language like "stage the changes"
+            if (fullRequest.includes("stage") || fullRequest.includes("add everything")) {
+                result = await runGit("add .");
+            } else if (fullRequest.includes("status")) {
                 result = await runGit("status");
-                break;
-            case "add":
-                if (!params) return { tool: "gitLocal", success: false, error: "File path(s) required for 'add'" };
-                result = await runGit(`add ${params}`);
-                break;
-            case "commit":
-                if (!params) return { tool: "gitLocal", success: false, error: "Commit message required for 'commit'" };
-                result = await runGit(`commit -m "${params.replace(/"/g, '\\"')}"`);
-                break;
-            case "diff":
-                result = await runGit(`diff ${params}`);
-                break;
-            case "log":
-                result = await runGit(`log --oneline -n 10`);
-                break;
-            default:
+            } else {
                 return {
                     tool: "gitLocal",
                     success: false,
                     final: true,
-                    error: `Unsupported git action: ${action}`
+                    error: `Unsupported git action or command: ${action}. Please use status, add, commit, or diff.`
                 };
+            }
         }
 
         const html = `
