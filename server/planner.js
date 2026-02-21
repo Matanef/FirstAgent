@@ -281,12 +281,13 @@ CRITICAL DISAMBIGUATION RULES:
 CRITICAL FORMATTING RULES:
 1. Respond with ONE OR MORE LINES. Each line must be a separate step in this format: tool_name | refined_input | context
 2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
-3. If the user asks to "stage an improvement" or "self-improve", YOU MUST include EVERY step: trending -> review -> gitLocal status -> gitLocal add -> gitLocal commit.
+3. context (the third column) is OPTIONAL and ONLY used for the gitLocal commit message. Leave empty for all other steps.
+4. If the user asks to "stage an improvement", "suggest improvement", "commit improvement", or "self-improve", YOU MUST include EVERY step: trending -> review -> gitLocal status -> gitLocal add -> gitLocal commit.
 4. DO NOT add any explanations, notes, or "Step 1:". 
 5. DO NOT use markdown formatting.
 
 TOOL HINTS:
-- gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff".
+- gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff", "git push".
 - github: USE ONLY FOR REMOTE REPO LISTING OR ISSUES.
 
 EXAMPLES:
@@ -294,7 +295,7 @@ EXAMPLES:
 githubTrending | patterns | 
 review | my_file.js | 
 gitLocal | status | 
-gitLocal | add . | 
+gitLocal | add my_file.js | 
 gitLocal | commit | staged improvement
 
 2. "How's the weather in London and news about AI"

@@ -34,7 +34,10 @@ export async function gitLocal(request) {
             const text = request.text || "";
             const parts = text.trim().split(/\s+/);
             action = parts[0];
-            params = parts.slice(1).join(" ") || request.context?.raw || "";
+
+            // Only use context.raw for commit messages
+            const fallbackParams = (action === 'commit') ? (request.context?.raw || "") : "";
+            params = parts.slice(1).join(" ") || fallbackParams;
         }
 
         if (!action) {
@@ -67,6 +70,8 @@ export async function gitLocal(request) {
             result = await runGit(`diff ${params}`);
         } else if (lowerAction === "log" || fullRequest.includes("git log")) {
             result = await runGit(`log --oneline -n 10`);
+        } else if (lowerAction === "push" || fullRequest.includes("git push")) {
+            result = await runGit(`push ${params || "origin main"}`);
         } else {
             // Fallback for natural language like "stage the changes"
             if (fullRequest.includes("stage") || fullRequest.includes("add everything")) {

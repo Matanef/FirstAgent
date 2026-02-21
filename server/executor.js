@@ -422,7 +422,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
-    "github", "review", "githubTrending"
+    "github", "review", "githubTrending", "gitLocal"
   ];
 
   if (summarizeTools.includes(tool)) {

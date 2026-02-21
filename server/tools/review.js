@@ -47,7 +47,12 @@ function extractFilePath(query) {
 
   // Pattern 5: Conversational reference (e.g. "Finance tool", "Review my index")
   // Strip common noise words and try to extract a core filename
-  const clean = query.replace(/\b(review|tool|file|against|them|our|the|my|against)\b/gi, '').trim();
+  const noiseRegex = /\b(review|tool|file|against|them|our|the|my|against)\b/gi;
+  let clean = query.replace(noiseRegex, '').trim();
+
+  // Handle cases like "email_tool" or "Finance-tool" by stripping the suffix
+  clean = clean.replace(/[_\-](tool|file|js)$/i, '');
+
   if (clean && !clean.includes(" ")) {
     return { filename: clean };
   } else if (clean) {
