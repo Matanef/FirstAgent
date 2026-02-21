@@ -281,13 +281,12 @@ CRITICAL DISAMBIGUATION RULES:
 CRITICAL FORMATTING RULES:
 1. Respond with ONE OR MORE LINES. Each line must be a separate step in this format: tool_name | refined_input | context
 2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
-3. context (the third column) is OPTIONAL and ONLY used for the gitLocal commit message. Leave empty for all other steps.
-4. ALWAYS extract a refined_input if the tool requires one (like review, finance, search).
-5. For the "review" tool, refined_input MUST BE the filename ONLY (e.g. "email.js"). DO NOT include the word "review" in the input column.
-6. For "gitLocal add", NEVER use the word "improvement" as a path. Use the SAME file name you used in the "review" step, or use "." to add all changes.
-7. If the user asks for an "improvement", "patch", or "self-improve", YOU MUST plan EXACTLY 5 STEPS: githubTrending | review | gitLocal status | gitLocal add | gitLocal commit.
-8. DO NOT add any explanations, notes, or "Step 1:". 
-9. DO NOT use markdown formatting.
+3. context (the third column) is ONLY for the gitLocal commit message. Leave empty otherwise.
+4. ALWAYS extract a refined_input for tools like review, finance, search.
+5. For "review", refined_input is the filename ONLY. DO NOT include "review" in the input column.
+6. For "gitLocal add", ONLY use the file name from the "review" step or ".". NEVER use "improvement".
+7. For any "improvement", "patch", "suggest improvement", or "self-improve" request, YOU MUST plan EXACTLY 5 steps: githubTrending | review | gitLocal status | gitLocal add | gitLocal commit. DO NOT skip any step.
+8. Respond with ONLY the tool calls. No notes or markdown.
 
 TOOL HINTS:
 - gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff", "git push".
