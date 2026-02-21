@@ -27,20 +27,31 @@ async function resolveRelativePath(filename) {
         return filename;
     }
 
+    // Advanced cleaning (matches review.js logic)
+    // 1. Strip hallucinated extensions like .py, .txt
+    let clean = filename.replace(/\.(py|txt|md|json)$/i, '');
+
+    // 2. Strip noise words and underscores
+    clean = clean.replace(/[_\-]/g, ' ');
+    const noiseRegex = /\b(review|tool|file|against|them|our|the|my|against)\b/gi;
+    clean = clean.replace(noiseRegex, ' ').replace(/\s+/g, ' ').trim();
+
+    // 3. Strip project-specific tool/file suffixes
+    clean = clean.replace(/[_\s-](tool|file|js)$/i, '');
+
+    const target = clean || filename;
     const commonDirs = ["server/tools", "server", "client/src", "utils"];
     for (const dir of commonDirs) {
-        const fullPath = path.join(PROJECT_ROOT, dir, filename);
+        const fullPath = path.join(PROJECT_ROOT, dir, target);
         try {
             await fs.access(fullPath);
-            return path.join(dir, filename).replace(/\\/g, "/");
+            return path.join(dir, target).replace(/\\/g, "/");
         } catch {
-            // Check for .js extension if missing
-            if (!filename.endsWith(".js")) {
-                try {
-                    await fs.access(fullPath + ".js");
-                    return path.join(dir, filename + ".js").replace(/\\/g, "/");
-                } catch { }
-            }
+            // Check for .js extension
+            try {
+                await fs.access(fullPath + ".js");
+                return path.join(dir, target + ".js").replace(/\\/g, "/");
+            } catch { }
         }
     }
     return filename; // Fallback to original

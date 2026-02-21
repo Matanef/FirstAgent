@@ -226,7 +226,8 @@ async function detectIntentWithLLM(message, contextSignals) {
     ? `\nCONTEXT SIGNALS DETECTED: ${contextSignals.join(", ")}`
     : "\nNo strong context signals detected.";
 
-  const prompt = `You are a multi-step planner for an AI agent. Based on the user's request, plan a SEQUENCE of one or more tool calls.
+  const prompt = `You are a multi-step planner for an AI agent in a Node.js/Javascript project. Based on the user's request, plan a SEQUENCE of one or more tool calls.
+2. ALWAYS use ".js" extensions for local project files. NEVER use ".py".
 
 AVAILABLE TOOLS:
 - weather: Current weather, forecasts
