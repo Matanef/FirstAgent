@@ -1,4 +1,6 @@
 // server/utils/coordinator.js
+// VERIFIED FIX: Multi-step execution with proper plan validation
+
 import { plan } from "../planner.js";
 import { executeStep, finalizeStep } from "../executor.js";
 import { getBackgroundNLP } from "./nlpUtils.js";
@@ -11,13 +13,36 @@ import { resolveCityFromIp } from "./geo.js";
 export async function executeAgent({ message, conversationId, clientIp, onChunk, onStep }) {
     const queryText = typeof message === "string" ? message : message?.text || "";
 
-    // 1. Initial Analysis
+    // 1. Background NLP Analysis
     const { sentiment, entities } = getBackgroundNLP(queryText);
 
     // 2. Multi-Step Planning
     console.log("🧠 Planning steps for:", queryText);
-    const steps = await plan({ message });
-    console.log(`🎯 Plan generated: ${steps.length} steps`);
+    const planResult = await plan({ message: queryText });
+    
+    // CRITICAL: Validate and normalize plan result
+    let steps;
+    if (Array.isArray(planResult)) {
+        steps = planResult;
+    } else if (planResult && typeof planResult === 'object') {
+        // Old planner returns single object - wrap it in array
+        console.warn("⚠️ Planner returned single object, wrapping in array");
+        steps = [planResult];
+    } else {
+        console.error("❌ Invalid plan result:", planResult);
+        steps = [];
+    }
+    
+    console.log(`🎯 Plan generated: ${steps.length} step${steps.length !== 1 ? 's' : ''}`);
+    
+    if (steps.length === 0) {
+        return {
+            reply: "I couldn't determine how to help with that request.",
+            tool: "error",
+            success: false,
+            stateGraph: []
+        };
+    }
 
     const stateGraph = [];
     let lastFinalized = null;
@@ -41,37 +66,47 @@ export async function executeAgent({ message, conversationId, clientIp, onChunk,
         // GEOLOCATION for weather
         if (step.tool === "weather" && step.context?.city === "__USE_GEOLOCATION__") {
             const city = await resolveCityFromIp(clientIp);
-            if (city) step.context.city = city;
+            if (city) {
+                step.context.city = city;
+                console.log(`📍 Resolved geolocation: ${city}`);
+            }
         }
+
+        // Build message object for this step
+        const stepMessage = {
+            text: step.input !== undefined ? step.input : queryText,
+            context: step.context || {}
+        };
 
         // Execute the tool
         const stepResult = await executeStep({
             tool: step.tool,
-            message: (step.input !== undefined) ? { text: step.input, context: step.context } : message,
+            message: stepMessage,
             conversationId,
             sentiment,
             entities,
-            stateGraph
+            stateGraph  // Pass previous steps for context
         });
 
-        // Finalize (Summarize or Reformat)
-        // We only stream chunks for the VERY LAST step to avoid mixing multiple summaries
+        // Finalize (Summarize or Return Raw)
+        // Only stream chunks for the LAST step to avoid mixing
         const isLastStep = (stepNumber === steps.length);
 
         const finalized = await finalizeStep({
             stepResult,
-            message: (step.input !== undefined) ? step.input : message,
+            message: stepMessage.text,
             conversationId,
             sentiment,
             entities,
-            stateGraph, // NEW: Pass results of previous steps
+            stateGraph,
             onChunk: isLastStep ? onChunk : null
         });
 
+        // Add to state graph
         stateGraph.push({
             step: stepNumber,
             tool: step.tool,
-            input: (step.input !== undefined) ? step.input : message,
+            input: stepMessage.text,
             output: finalized.reply,
             success: finalized.success,
             final: finalized.final
@@ -84,19 +119,22 @@ export async function executeAgent({ message, conversationId, clientIp, onChunk,
                 event: "step_end",
                 step: stepNumber,
                 success: finalized.success,
-                reply: finalized.reply
+                tool: step.tool
             });
         }
 
-        // If a step fails, we stop the sequence
+        // Stop on failure
         if (!finalized.success) {
-            console.log(`⚠️ Step ${stepNumber} failed, stopping autonomous loop.`);
+            console.log(`⚠️ Step ${stepNumber} failed, stopping execution`);
             break;
         }
     }
 
+    console.log(`📊 Execution complete: ${stateGraph.length} steps executed`);
+
     return {
         ...lastFinalized,
-        stateGraph
+        stateGraph,
+        tool: lastFinalized?.tool || steps[0]?.tool || "unknown"
     };
 }

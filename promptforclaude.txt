@@ -1043,4 +1043,180 @@ i have issues with the assistant that it's hallucinating that he accessed and re
 i'm ready for phase 3
 
 
+part 1/2
+******IMPORTANT, don't start the analysis and rewriting until all files were uploaded.
+can you please help me resolve this issue.
+the story is that i tried to configure an fully autonoumos agent with the 
+ability to modify it's code and review files on github and able to perform several tasks from one prompt.
+the issue is it's failing and i'm not sure why.
+could you please review the uploaded files address this issue fix it and provide a rewrite of the necessary files?
+i have made many changes since lasr i uploaded files here so i will be uploading them in two parts.
+as far as i understand it there are suppose to be 5 steps:
+ FORMATTING RULES:
+1. Respond with ONE OR MORE LINES. Each line must be a separate step in this format: tool_name | refined_input | context
+2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
+3. context (the third column) is ONLY for the gitLocal commit message. Leave empty otherwise.
+4. ALWAYS extract a refined_input for tools like review, finance, search.
+5. For "review", refined_input is the filename ONLY. DO NOT include "review" in the input column.
+6. For "gitLocal add", ONLY use the file name from the "review" step or ".". NEVER use "improvement".
+7. For any "improvement", "patch", "suggest improvement", or "self-improve" request, YOU MUST plan EXACTLY 5 steps: githubTrending | review | gitLocal status | gitLocal add | gitLocal commit. DO NOT skip any step.
 
+but the server says there are only 3 steps. can you address it as well as the broken HTML in the page?
+it looks as thought the agent used nlp tool where it shouldn't have.
+
+💬 USER (STREAMING): Scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement
+🧠 Background NLP: Sentiment=neutral(0.17), Entities=0
+🧠 Planning steps for: Scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement
+🧠 Context signals: [
+  'MENTIONS_GITHUB',
+  'MENTIONS_EMAIL',
+  'MENTIONS_REVIEW',
+  'MENTIONS_SELF_IMPROVEMENT',
+  'MENTIONS_TRENDING'
+]
+safeFetch URL: http://localhost:11434/api/generate
+🎯 LLM classified: 3 steps
+🎯 Plan generated: 3 steps
+⚙️ Step 1/3: Executing githubtrending
+🔧 Executing tool: githubTrending
+🔍 Searching GitHub for trending topic: Scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement...
+safeFetch URL: http://localhost:11434/api/generate
+⚙️ Step 2/3: Executing review
+🔧 Executing tool: review
+🔍 Review tool called with: email.js
+📂 Extracted path info: { filename: 'email.js' }
+✅ Resolved to: D:\local-llm-ui\server\tools\email.js
+📄 Read file: 212 lines, 6408 bytes
+🤖 Calling LLM for review...
+safeFetch URL: http://localhost:11434/api/generate
+✅ Review generated: **Summary**
+
+This file is responsible for processing email requests and attachments in the Local LLM...
+safeFetch URL: http://localhost:11434/api/generate
+⚙️ Step 3/3: Executing nlp_tool
+🔧 Executing tool: nlp_tool
+📊 Telemetry: nlp_tool - ✅
+[memory] reloadMemory loaded from disk
+[memory] saveJSON succeeded: D:\local-llm-ui\utils\memory.json (2026-02-21T09:26:57.874Z)
+
+You11:24:43
+Scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement
+Agent11:24:4350%
+
+      <div class="nlp-analysis">
+        <h3>🔍 NLP Analysis</h3>
+        
+        <div class="sentiment-box neutral">
+          <strong>Sentiment:</strong> NEUTRAL (0)
+        </div>
+
+        <div class="entities-section">
+          <h4>Entities Detected:</h4>
+          <ul>
+            
+            
+            
+            
+            
+          </ul>
+          <p>No entities detected.</p>
+        </div>
+      </div>
+
+      <style>
+        .nlp-analysis {
+          background: var(--bg-tertiary);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 1rem;
+        }
+        .sentiment-box {
+          padding: 0.75rem;
+          border-radius: 6px;
+          margin-bottom: 1rem;
+          text-align: center;
+          font-weight: 600;
+        }
+        .sentiment-box.positive { background: var(--success-bg || #d4edda); color: #155724; }
+        .sentiment-box.negative { background: var(--error-bg || #f8d7da); color: #721c24; }
+        .sentiment-box.neutral { background: var(--bg-hover); color: var(--text-secondary); }
+        .entities-section ul {
+          list-style: none;
+          padding: 0;
+        }
+        .entities-section li {
+          margin-bottom: 0.5rem;
+          font-size: 0.9rem;
+        }
+      </style>
+    
+🔍 Execution trace (3 steps)
+
+[
+  {
+    "step": 1,
+    "tool": "githubtrending",
+    "input": "Scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement",
+    "output": "Based on your request to scan GitHub trending for email patterns, review our email tool against them, and suggest a commit-able improvement, I've analyzed the results. Unfortunately, my search didn't yield any top repositories that match this specific topic.\n\nHowever, I'd like to suggest an alternative approach. Instead of searching for pre-existing solutions, we could focus on enhancing our current email tool to better cater to common patterns found in GitHub trending topics. This way, we can tailor our tool to address emerging needs and improve user experience.\n\nLet's take a closer look at the email patterns we've identified and discuss how we can incorporate those insights into our tool. I'm confident that with some creative problem-solving, we can develop a valuable improvement that will benefit our users. What do you think?",
+    "success": true,
+    "final": true
+  },
+  {
+    "step": 2,
+    "tool": "review",
+    "input": "email.js",
+    "output": "Based on your request to review our email tool against GitHub trending patterns and suggest a commit-able improvement, I've analyzed the results. Here's my findings:\n\nThe provided code review for `email.js` is quite comprehensive, highlighting both strengths and areas for improvement. The file effectively handles multiple scenarios for extracting recipient information, attachments, and subject/body content from the input query.\n\nOne suggestion that caught my attention is to consider breaking down the `email` function into smaller, more manageable components, such as separate functions for parsing input, extracting attachments, and sending the email. This would improve maintainability and readability.\n\nAnother area of improvement is in regular expression optimization. While regular expressions are useful in this context, they can be slow and resource-intensive. Considering alternative approaches, like string manipulation or dedicated libraries, could optimize performance.\n\nAdditionally, security consideration should be taken into account when processing user input. Validating and sanitizing data can prevent potential security vulnerabilities, such as SQL injection or cross-site scripting (XSS).\n\nLastly, updating variable names and function comments to improve code readability would be beneficial.\n\nBy addressing these suggestions, the code can become more maintainable, efficient, and secure, ultimately providing a better experience for users. What do you think?",
+    "success": true,
+    "final": true
+  },
+  {
+    "step": 3,
+    "tool": "nlp_tool",
+    "input": "email patterns",
+    "output": "\n      <div class=\"nlp-analysis\">\n        <h3>🔍 NLP Analysis</h3>\n        \n        <div class=\"sentiment-box neutral\">\n          <strong>Sentiment:</strong> NEUTRAL (0)\n        </div>\n\n        <div class=\"entities-section\">\n          <h4>Entities Detected:</h4>\n          <ul>\n            \n            \n            \n            \n            \n          </ul>\n          <p>No entities detected.</p>\n        </div>\n      </div>\n\n      <style>\n        .nlp-analysis {\n          background: var(--bg-tertiary);\n          border: 1px solid var(--border);\n          border-radius: 8px;\n          padding: 1rem;\n        }\n        .sentiment-box {\n          padding: 0.75rem;\n          border-radius: 6px;\n          margin-bottom: 1rem;\n          text-align: center;\n          font-weight: 600;\n        }\n        .sentiment-box.positive { background: var(--success-bg || #d4edda); color: #155724; }\n        .sentiment-box.negative { background: var(--error-bg || #f8d7da); color: #721c24; }\n        .sentiment-box.neutral { background: var(--bg-hover); color: var(--text-secondary); }\n        .entities-section ul {\n          list-style: none;\n          padding: 0;\n        }\n        .entities-section li {\n          margin-bottom: 0.5rem;\n          font-size: 0.9rem;\n        }\n      </style>\n    ",
+    "success": true,
+    "final": true
+  }
+]
+
+
+
+i'm sorry but you will have to rewrite the files you provided since you didn't wait for the second batch of files like i requested.
+
+
+
+
+
+weather tool: do not read location from prompt or from profile in memory.js.(inputweather.txt for logs)
+
+
+
+LOTR jokes tool: starting to stream the answer and then when done turn to 4 youtube videos. in the server logs you can see that youtube was selected as a tool.(inputLOTR.txt for logs)
+
+
+
+email tool: forget the message and can't send it. (inputemail.txt for logs)
+
+
+
+news tool: doesn't distil topic or can't search topic since in the intro llm response it acknowledge the topic. (inputnews.txt for logs)
+
+
+
+memory tool:  meta question used the memory tool. when prompt for memories about me the response was Memory request not understood.  (inputmemory.txt for logs)
+
+
+
+sports and github: when prompt regarding a sports question the assistant answer is ok and the tool used was sports but the following question that could have gotten maybe to search or to sports tool since the API key is from API-Football but instead went to the github tool. the assistant gave an answer that i think it hallucinated because it used the github tool. why does it adds \...\\n to the commit command? (inputgithub.txt for logs).
+
+
+
+youtube tool:  now that the chat streaming is working i could see that when searching for youtube for a subject the initial response of the assistant is acknowledging the topic and then it gave a small summary on each video. once the chat-streaming ended the response will disappear and only the 4 rectangles of the video will remain. could we combine those that a search will also show the summary of each video? we can make the rectangles smaller like instead 420/220 we can go width: 320 height: 220. we also got some space in the chat area, we can make the distance between the videos bigger and in that space add the llm response (of course to each video it's respective summary).
+
+let's address all of those issues and i'm attaching again my previous prompt so you can do all of them together.
+
+as always please provide a rewrite of all the necessary files and an elaborate and comprehensive  guides as well as summary regarding what was changed what is the proper way and what were the modifications in my case.
+
+
+
+thank you in advance

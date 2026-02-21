@@ -1,5 +1,6 @@
 // server/tools/nlp.js
-// Natural Language Processing - Sentiment Analysis & Entity Recognition
+// FIXED: Natural Language Processing - Sentiment Analysis & Entity Recognition
+// Returns text for LLM summarization, HTML in data field for UI
 
 import natural from "natural";
 import nlp from "compromise";
@@ -19,10 +20,8 @@ const analyzer = new Analyzer("English", stemmer, "afinn");
 export function analyzeSentiment(text) {
   if (!text) return { score: 0, sentiment: "neutral" };
 
-  // Natural expects an array of tokens
   const tokenizer = new natural.WordTokenizer();
   const tokens = tokenizer.tokenize(text);
-
   const score = analyzer.getSentiment(tokens) || 0;
 
   let sentiment = "neutral";
@@ -56,7 +55,7 @@ export function extractEntities(text) {
 
 /**
  * NLP Tool
- * Provides structured analysis of text
+ * FIXED: Returns text summary for LLM, HTML in data field only
  */
 export async function nlpTool(query) {
   try {
@@ -64,7 +63,7 @@ export async function nlpTool(query) {
 
     if (typeof textToAnalyze !== 'string' || textToAnalyze.length < 2) {
       return {
-        tool: "nlp",
+        tool: "nlp_tool",
         success: false,
         final: true,
         error: "Please provide text to analyze."
@@ -74,6 +73,20 @@ export async function nlpTool(query) {
     const sentiment = analyzeSentiment(textToAnalyze);
     const entities = extractEntities(textToAnalyze);
 
+    // Build text summary for LLM
+    const textSummary = `NLP Analysis Results:
+
+Sentiment: ${sentiment.sentiment.toUpperCase()} (score: ${sentiment.score})
+
+Entities Detected:
+${entities.people.length > 0 ? `• People: ${entities.people.join(', ')}` : ''}
+${entities.places.length > 0 ? `• Places: ${entities.places.join(', ')}` : ''}
+${entities.organizations.length > 0 ? `• Organizations: ${entities.organizations.join(', ')}` : ''}
+${entities.dates.length > 0 ? `• Dates: ${entities.dates.join(', ')}` : ''}
+${entities.emails.length > 0 ? `• Emails: ${entities.emails.join(', ')}` : ''}
+${Object.values(entities).every(arr => arr.length === 0) ? '• No entities detected' : ''}`;
+
+    // Build HTML for rich display (stored in data, not returned as main text)
     const html = `
       <div class="nlp-analysis">
         <h3>🔍 NLP Analysis</h3>
@@ -84,6 +97,7 @@ export async function nlpTool(query) {
 
         <div class="entities-section">
           <h4>Entities Detected:</h4>
+          ${entities.people.length > 0 || entities.places.length > 0 || entities.organizations.length > 0 || entities.dates.length > 0 || entities.emails.length > 0 ? `
           <ul>
             ${entities.people.length > 0 ? `<li>👤 <strong>People:</strong> ${entities.people.join(', ')}</li>` : ''}
             ${entities.places.length > 0 ? `<li>📍 <strong>Places:</strong> ${entities.places.join(', ')}</li>` : ''}
@@ -91,16 +105,17 @@ export async function nlpTool(query) {
             ${entities.dates.length > 0 ? `<li>📅 <strong>Dates:</strong> ${entities.dates.join(', ')}</li>` : ''}
             ${entities.emails.length > 0 ? `<li>📧 <strong>Emails:</strong> ${entities.emails.join(', ')}</li>` : ''}
           </ul>
-          ${Object.values(entities).every(arr => arr.length === 0) ? '<p>No entities detected.</p>' : ''}
+          ` : '<p>No entities detected.</p>'}
         </div>
       </div>
-
+      
       <style>
         .nlp-analysis {
           background: var(--bg-tertiary);
           border: 1px solid var(--border);
           border-radius: 8px;
           padding: 1rem;
+          margin: 1rem 0;
         }
         .sentiment-box {
           padding: 0.75rem;
@@ -109,9 +124,13 @@ export async function nlpTool(query) {
           text-align: center;
           font-weight: 600;
         }
-        .sentiment-box.positive { background: var(--success-bg || #d4edda); color: #155724; }
-        .sentiment-box.negative { background: var(--error-bg || #f8d7da); color: #721c24; }
-        .sentiment-box.neutral { background: var(--bg-hover); color: var(--text-secondary); }
+        .sentiment-box.positive { background: #d4edda; color: #155724; }
+        .sentiment-box.negative { background: #f8d7da; color: #721c24; }
+        .sentiment-box.neutral { background: #e2e3e5; color: #383d41; }
+        .entities-section h4 {
+          margin-top: 1rem;
+          color: var(--text-primary);
+        }
         .entities-section ul {
           list-style: none;
           padding: 0;
@@ -123,21 +142,22 @@ export async function nlpTool(query) {
       </style>
     `;
 
+    // CRITICAL FIX: Return text in main output, HTML in data
     return {
-      tool: "nlp",
+      tool: "nlp_tool",
       success: true,
       final: true,
       data: {
         sentiment,
         entities,
-        html,
-        text: `Sentiment: ${sentiment.sentiment} (${sentiment.score})\nEntities: ${JSON.stringify(entities)}`
+        html,  // HTML stored here for optional rich rendering
+        text: textSummary  // Clean text for LLM
       }
     };
 
   } catch (err) {
     return {
-      tool: "nlp",
+      tool: "nlp_tool",
       success: false,
       final: true,
       error: `NLP Analysis failed: ${err.message}`
