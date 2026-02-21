@@ -46,7 +46,8 @@ function isLikelyCity(text) {
   const blacklist = [
     "table", "please", "forecast", "weather", "temperature",
     "humidity", "rain", "snow", "wind", "week", "days",
-    "next", "show", "it", "in", "for", "here", "the"
+    "next", "show", "it", "in", "for", "here", "the",
+    "morning", "afternoon", "evening", "night"
   ];
 
   const cleaned = text.trim().toLowerCase();

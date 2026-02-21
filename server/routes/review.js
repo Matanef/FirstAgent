@@ -6,7 +6,7 @@ import { executeAgent } from "../executor.js";
 import { PROJECT_ROOT } from "../utils/config.js";
 
 const router = express.Router();
-const MAX_FILE_SIZE = 200 * 1024; // 200KB
+const MAX_FILE_SIZE = 200 * 4096; // 200KB
 
 function isAllowed(resolved) {
   return resolved.startsWith(PROJECT_ROOT);

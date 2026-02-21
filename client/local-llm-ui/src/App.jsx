@@ -78,7 +78,7 @@ function App() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_URL}/chat`, {
+      const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -87,20 +87,21 @@ function App() {
         })
       });
 
-      if (!res.ok) {
-        throw new Error(`Server error: ${res.status}`);
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
       }
 
-      const data = await res.json();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedText = "";
 
+      // Add placeholder bot message
+      const botMsgId = Date.now();
       const botMsg = {
         role: "assistant",
-        content: data.reply,
+        content: "",
         timestamp: new Date().toISOString(),
-        confidence: data.confidence,
-        stateGraph: data.stateGraph,
-        tool: data.tool,
-        data: data.data
+        loading: true
       };
 
       setConversations(c => ({
@@ -108,7 +109,45 @@ function App() {
         [activeId]: [...c[activeId], botMsg]
       }));
 
-      setMetadata(data.metadata);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = JSON.parse(line.slice(6));
+
+          if (data.type === "chunk") {
+            accumulatedText += data.chunk;
+            setConversations(c => {
+              const current = [...c[activeId]];
+              const last = { ...current[current.length - 1] };
+              last.content = accumulatedText;
+              current[current.length - 1] = last;
+              return { ...c, [activeId]: current };
+            });
+          } else if (data.type === "done") {
+            setConversations(c => {
+              const current = [...c[activeId]];
+              const last = { ...current[current.length - 1] };
+              last.content = data.reply;
+              last.confidence = data.confidence;
+              last.stateGraph = data.stateGraph;
+              last.tool = data.tool;
+              last.data = data.data;
+              last.loading = false;
+              current[current.length - 1] = last;
+              return { ...c, [activeId]: current };
+            });
+            setMetadata(data.metadata);
+          } else if (data.type === "error") {
+            throw new Error(data.error);
+          }
+        }
+      }
     } catch (err) {
       console.error("Send error:", err);
       setError(err.message);

@@ -19,7 +19,9 @@ import { packageManager } from "./packageManager.js";
 import { webDownload } from "./webDownload.js";
 import { selfImprovement } from "./selfImprovement.js";
 import { github } from "./github.js";
+import { gitLocal } from "./gitLocal.js";
 import { review } from "./review.js";  // NEW: Review tool
+import { nlpTool as nlp_tool } from "./nlp.js"; // NEW: NLP tool
 
 export const TOOLS = {
   calculator,
@@ -40,7 +42,9 @@ export const TOOLS = {
   webDownload,
   selfImprovement,
   github,
-  review  // NEW: Code review tool
+  gitLocal,
+  review,  // NEW: Code review tool
+  nlp_tool // NEW: NLP analysis
 };
 
 // Validate all tools are functions at startup

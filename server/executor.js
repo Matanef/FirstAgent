@@ -3,53 +3,20 @@
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
-import { llm } from "./tools/llm.js";
+import { llm, llmStream } from "./tools/llm.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
 import { PROJECT_ROOT } from "./utils/config.js";
+import { getBackgroundNLP } from "./utils/nlpUtils.js";
+import {
+  convertMarkdownTablesToHTML,
+  wantsTableFormat,
+  normalizeCityAliases,
+  getMessageText
+} from "./utils/uiUtils.js";
 
-// FIX #1: Convert markdown tables to HTML
-function convertMarkdownTablesToHTML(text) {
-  const tableRegex = /\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)+)/g;
 
-  return text.replace(tableRegex, (match, headers, rows) => {
-    const headerCells = headers.split('|').map(h => h.trim()).filter(Boolean);
-    const rowData = rows.trim().split('\n').map(row =>
-      row.split('|').map(cell => cell.trim()).filter(Boolean)
-    );
-
-    let html = '<div class="ai-table-wrapper"><table class="ai-table">';
-    html += '<thead><tr>';
-    headerCells.forEach(h => html += `<th>${h}</th>`);
-    html += '</tr></thead><tbody>';
-
-    rowData.forEach(row => {
-      html += '<tr>';
-      row.forEach(cell => html += `<td>${cell}</td>`);
-      html += '</tr>';
-    });
-
-    html += '</tbody></table></div>';
-    return html;
-  });
-}
-
-function wantsTableFormat(userQuestion) {
-  const lower = (userQuestion || "").toLowerCase();
-  return (
-    lower.includes("show in a table") ||
-    lower.includes("show it in a table") ||
-    lower.includes("display in a table") ||
-    lower.includes("table format") ||
-    lower.includes("as a table") ||
-    lower.includes("in table form") ||
-    lower.includes("tabular") ||
-    lower.includes("make a table") ||
-    lower.includes("create a table")
-  );
-}
-
-function buildLLMContext({ userMessage, profile, conversation, capabilities }) {
+function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
 
@@ -83,7 +50,14 @@ CONVERSATION STATISTICS:
 ${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
 `;
 
+  const CONTEXT_ENRICHMENT = `
+NLP ANALYSIS:
+- Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
+- Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
+`;
+
   return `${awarenessContext}
+${CONTEXT_ENRICHMENT}
 
 User profile (long-term memory):
 ${JSON.stringify(profile || {}, null, 2)}
@@ -101,24 +75,34 @@ Now write the final answer. Be aware of full conversation context and your capab
 `;
 }
 
-async function runLLMWithFullMemory({ userMessage, conversationId }) {
+async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, onChunk }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
-
   const capabilities = Object.keys(TOOLS);
 
   const prompt = buildLLMContext({
     userMessage,
     profile,
     conversation,
-    capabilities
+    capabilities,
+    sentiment,
+    entities
   });
 
-  const llmResponse = await llm(prompt);
-  let text = llmResponse?.data?.text || "I couldn't generate a response.";
+  let text = "";
+  if (onChunk) {
+    const result = await llmStream(prompt, (chunk) => {
+      text += chunk;
+      onChunk(chunk);
+    });
+    if (!result.success) text = "I encountered an error while streaming.";
+  } else {
+    const llmResponse = await llm(prompt);
+    text = llmResponse?.data?.text || "I couldn't generate a response.";
+  }
 
-  // Convert markdown tables to HTML
+  // Convert markdown tables to HTML (at the end for full text)
   text = convertMarkdownTablesToHTML(text);
 
   return text;
@@ -128,7 +112,10 @@ async function summarizeWithLLM({
   userQuestion,
   toolResult,
   conversationId,
-  tool
+  tool,
+  sentiment,
+  entities,
+  onChunk
 }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
@@ -152,6 +139,10 @@ async function summarizeWithLLM({
 You are the final response generator for an AI assistant with deep awareness of context.
 The current date is ${today}.
 ${dateEmphasis}
+
+NLP ANALYSIS:
+- Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
+- Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
 
 CONVERSATION CONTEXT:
 - Total messages: ${allMessages.length}
@@ -189,8 +180,17 @@ ${tableRequested
 Generate the response:
 `;
 
-  const llmResponse = await llm(prompt);
-  let text = llmResponse?.data?.text || "I couldn't generate a response.";
+  let text = "";
+  if (onChunk) {
+    const streamResult = await llmStream(prompt, (chunk) => {
+      text += chunk;
+      onChunk(chunk);
+    });
+    if (!streamResult.success) text = "I couldn't summarize the tool results.";
+  } else {
+    const llmResponse = await llm(prompt);
+    text = llmResponse?.data?.text || "I couldn't generate a response.";
+  }
 
   // Convert markdown tables to HTML
   text = convertMarkdownTablesToHTML(text);
@@ -271,32 +271,13 @@ Generate the reformatted response:
   };
 }
 
-function getMessageText(message) {
-  return typeof message === "string" ? message : message?.text;
-}
 
-function normalizeCityAliases(message) {
-  if (!message || typeof message !== "object") return message;
-
-  if (message.context?.city) {
-    const c = message.context.city.toLowerCase();
-
-    const aliases = {
-      givataim: "Givatayim",
-      "giv'atayim": "Givatayim",
-      givatayim: "Givatayim"
-    };
-
-    if (aliases[c]) {
-      message.context.city = aliases[c];
-    }
-  }
-
-  return message;
-}
-
-export async function executeAgent({ tool, message, conversationId }) {
+export async function executeAgent({ tool, message, conversationId, onChunk }) {
   const stateGraph = [];
+  const queryText = typeof message === "string" ? message : message?.text || "";
+
+  // Background NLP Analysis
+  const { sentiment, entities } = getBackgroundNLP(queryText);
 
   // FIX #3: Handle "send it" for email confirmation
   if (tool === "email_confirm") {
@@ -353,7 +334,10 @@ export async function executeAgent({ tool, message, conversationId }) {
   if (tool === "llm") {
     const reply = await runLLMWithFullMemory({
       userMessage: getMessageText(message),
-      conversationId
+      conversationId,
+      sentiment, // Pass to LLM
+      entities,  // Pass to LLM
+      onChunk    // Pass chunk handler
     });
 
     stateGraph.push({
@@ -375,15 +359,22 @@ export async function executeAgent({ tool, message, conversationId }) {
   // Normalize city aliases
   message = normalizeCityAliases(message);
 
-  if (!TOOLS[tool]) {
+  // Case-insensitive tool lookup
+  const toolKeys = Object.keys(TOOLS);
+  const actualToolKey = toolKeys.find(k => k.toLowerCase() === tool.toLowerCase());
+
+  if (!actualToolKey) {
     console.error(`❌ Tool not found: ${tool}`);
-    console.log("Available tools:", Object.keys(TOOLS));
+    console.log("Available tools:", toolKeys);
     return {
-      reply: `Tool "${tool}" not found. Available tools: ${Object.keys(TOOLS).join(", ")}`,
+      reply: `Tool "${tool}" not found. Available tools: ${toolKeys.join(", ")}`,
       stateGraph,
       success: false
     };
   }
+
+  // Update tool variable to the correct case for consistent internal usage
+  tool = actualToolKey;
 
   // WEATHER + MEMORYTOOL receive full object
   let toolInput;
@@ -450,7 +441,10 @@ export async function executeAgent({ tool, message, conversationId }) {
       userQuestion: getMessageText(message),
       toolResult: result,
       conversationId,
-      tool
+      tool,
+      sentiment,
+      entities,
+      onChunk
     });
 
     return {

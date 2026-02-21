@@ -163,7 +163,7 @@ function extractContextSignals(message) {
   if (hasExplicitFilePath(message)) {
     signals.push("CONTAINS_FILE_PATH");
   }
-  if (/\b(github|repo|repository|repos|pull request|PR|issue|commit)\b/i.test(message)) {
+  if (/\b(github|repo|repository|issue|pull request|pr)\b/i.test(lower)) {
     signals.push("MENTIONS_GITHUB");
   }
   if (/\b(stock|share|ticker|nasdaq|nyse|s&p|portfolio|dividend|pe ratio|market cap|fundamentals)\b/i.test(lower)) {
@@ -192,6 +192,9 @@ function extractContextSignals(message) {
   }
   if (/\b(improve|improvement|accuracy|routing|misrouting|weekly report)\b/i.test(lower)) {
     signals.push("MENTIONS_SELF_IMPROVEMENT");
+  }
+  if (/\b(git status|git add|git commit|git diff|git log)\b/i.test(lower)) {
+    signals.push("MENTIONS_LOCAL_GIT");
   }
   if (/\b(remember|forget|my name|my location|profile)\b/i.test(lower)) {
     signals.push("MENTIONS_MEMORY");
@@ -230,10 +233,11 @@ AVAILABLE TOOLS:
 - tasks: Task management, to-do lists
 - calculator: Mathematical calculations
 - selfImprovement: Query the agent's own improvements, routing accuracy, detected issues
-- github: GitHub repository operations — list repos, issues, PRs, commits
+- github: REMOTE GitHub repository operations — list repos, issues, PRs, commits
+- gitLocal: LOCAL Git operations — status, add, commit, diff, log
 - review: Code review and analysis of specific files
 - memorytool: Manage user profile data (forget location, etc.)
-- llm: General conversation, memory queries, meta questions, casual chat
+- llm: General conversation, memory queries, casual chat, agreements (e.g. "sure", "ok", "go ahead")
 
 USER MESSAGE:
 "${message}"
@@ -257,15 +261,27 @@ CRITICAL DISAMBIGUATION RULES:
 15. "forget my location" → memorytool
 16. "remember my name is X" → llm (memory write via conversation)
 17. "review your logic" / "review your own code" → selfImprovement
-18. Casual chat / greetings / opinions → llm
+18. "analyze sentiment of X" / "extract entities from X" / "nlp analysis" → nlp_tool
+19. "morning" / "good morning" / "hello" / "hi" → llm
 
-The word "list" does NOT automatically mean file operations. Consider the OBJECT being listed.
-The word "show" does NOT automatically mean file operations. Consider what is being shown.
-The word "read" does NOT automatically mean file operations. Consider what is being read.
-The word "analyze" does NOT automatically mean review. Consider what is being analyzed.
+CRITICAL FORMATTING RULES:
+1. Respond with EXACTLY ONE LINE in this format: tool_name | refined_input | context
+2. refined_input should be the SPECIFIC command or query (e.g. "status" for gitLocal, "AAPL" for finance).
+3. DO NOT add any explanations, notes, or "Based on..." text. 
+4. DO NOT use markdown formatting in your response.
 
-Respond with ONLY the tool name (and optional context after |).
-Examples: "github", "weather|London", "weather|USE_GEO", "file", "llm|memory_query"`;
+TOOL HINTS:
+- gitLocal: USE FOR LOCAL "git status", "git add", "git commit", "git diff".
+- github: USE ONLY FOR REMOTE REPO LISTING OR ISSUES.
+
+EXAMPLES:
+gitLocal | status | 
+weather | | London
+financeFundamentals | AAPL | 
+file | list D:/project | 
+llm | | casual_chat
+llm | | casual_agreement (for "sure", "ok", "go ahead")
+`;
 
   try {
     const response = await llm(prompt);
@@ -274,16 +290,20 @@ Examples: "github", "weather|London", "weather|USE_GEO", "file", "llm|memory_que
       return { intent: "llm", reason: "fallback" };
     }
 
-    const text = response.data.text.trim();
-    console.log("🧠 LLM Intent Response:", text);
+    const lines = response.data.text.trim().split("\n");
+    // Find the first line that actually contains a tool/pipe
+    const intentLine = lines.find(l => l.includes("|")) || lines[0];
 
-    // Parse response: "toolname" or "toolname|context"
-    const parts = text.split("|");
+    console.log("🧠 LLM Intent Line:", intentLine);
+
+    // Parse response: "tool | input | context"
+    const parts = intentLine.split("|");
     const rawIntent = parts[0].trim().toLowerCase();
-    const contextStr = parts[1]?.trim();
+    const extractedInput = parts[1]?.trim();
+    const contextStr = parts[2]?.trim();
 
-    // Clean up — LLM sometimes returns extra text
-    const intent = rawIntent.replace(/[^a-z_]/g, "");
+    // Clean up intent — remove markdown bolding or extra punctuation
+    const intent = rawIntent.replace(/[*#]/g, "").trim().replace(/[^a-z_]/g, "");
 
     const result = {
       intent,
@@ -291,16 +311,20 @@ Examples: "github", "weather|London", "weather|USE_GEO", "file", "llm|memory_que
       context: {}
     };
 
+    if (extractedInput) {
+      result.extractedInput = extractedInput;
+    }
+
     if (contextStr) {
       result.context.raw = contextStr;
     }
 
-    if (intent === "weather" && contextStr === "USE_GEO") {
+    if (intent === "weather" && (contextStr === "USE_GEO" || extractedInput === "USE_GEO")) {
       result.useGeolocation = true;
-    } else if (intent === "weather" && contextStr) {
-      result.city = contextStr;
-    } else if (intent === "llm" && contextStr) {
-      result.reason = contextStr;
+    } else if (intent === "weather" && (contextStr || extractedInput)) {
+      result.city = contextStr || extractedInput;
+    } else if (intent === "llm" && (contextStr || extractedInput)) {
+      result.reason = contextStr || extractedInput;
     }
 
     return result;
@@ -331,7 +355,23 @@ export async function plan({ message }) {
     return { tool: "llm", input: trimmed, reasoning: "certainty_datetime" };
   }
 
-  // 3. Email confirmation ("send it", "yes")
+  // 4. Local Git (unambiguous)
+  if (/\b(git status|git add|git commit|git diff|git log)\b/i.test(lower)) {
+    let action = "status";
+    if (lower.includes("status")) action = "status";
+    else if (lower.includes("add")) action = "add";
+    else if (lower.includes("commit")) action = "commit";
+    else if (lower.includes("diff")) action = "diff";
+    else if (lower.includes("log")) action = "log";
+
+    return {
+      tool: "gitLocal",
+      input: action, // Pass the detected action directly
+      reasoning: "certainty_git_local"
+    };
+  }
+
+  // 5. Email confirmation ("send it", "yes")
   if (isSendItCommand(lower)) {
     console.log("📧 Detected 'send it' command");
     return {
@@ -342,7 +382,7 @@ export async function plan({ message }) {
     };
   }
 
-  // 4. Forget location (very specific phrase)
+  // 6. Forget location (very specific phrase)
   if (locationWithForgetLike(lower)) {
     return {
       tool: "memorytool",
@@ -449,7 +489,7 @@ export async function plan({ message }) {
 
   return {
     tool: normalizedTool,
-    input: trimmed,
+    input: detection.extractedInput || trimmed,
     context: detection.context || {},
     reasoning: detection.reason
   };
