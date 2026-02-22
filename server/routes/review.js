@@ -2,7 +2,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs/promises";
-import { executeAgent } from "../executor.js";
+import { executeAgent } from "../utils/coordinator.js";
 import { PROJECT_ROOT } from "../utils/config.js";
 
 const router = express.Router();

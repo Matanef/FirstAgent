@@ -1,0 +1,10 @@
+{
+  "test": {
+    "to": "you@example.com",
+    "subject": "Message from AI Agent",
+    "body": "hi",
+    "attachments": [],
+    "createdAt": "2026-02-22T10:05:04.793Z",
+    "updatedAt": "2026-02-22T10:05:04.795Z"
+  }
+}

@@ -1,5 +1,5 @@
 // server/executor.js
-// COMPLETE FIX: Email "send it" confirmation, review system, markdown tables, date awareness
+// COMPREHENSIVE FIX: All issues resolved including email confirmation, sports context, etc.
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
@@ -8,374 +8,238 @@ import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
 import { PROJECT_ROOT } from "./utils/config.js";
 import { getBackgroundNLP } from "./utils/nlpUtils.js";
-import {
-  convertMarkdownTablesToHTML,
-  wantsTableFormat,
-  normalizeCityAliases,
-  getMessageText
-} from "./utils/uiUtils.js";
 
+function convertMarkdownTablesToHTML(text) {
+  const tableRegex = /\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)+)/g;
+
+  return text.replace(tableRegex, (match, headers, rows) => {
+    const headerCells = headers.split('|').map(h => h.trim()).filter(Boolean);
+    const rowData = rows.trim().split('\n').map(row =>
+      row.split('|').map(cell => cell.trim()).filter(Boolean)
+    );
+
+    let html = '<div class="ai-table-wrapper"><table class="ai-table">';
+    html += '<thead><tr>';
+    headerCells.forEach(h => html += `<th>${h}</th>`);
+    html += '</tr></thead><tbody>';
+
+    rowData.forEach(row => {
+      html += '<tr>';
+      row.forEach(cell => html += `<td>${cell}</td>`);
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+  });
+}
+
+function getMessageText(message) {
+  return typeof message === "string" ? message : message?.text || "";
+}
 
 function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
-
-  const convoText = allMessages
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
+  const convoText = allMessages.map(m => `${m.role}: ${m.content}`).join("\n");
   const today = new Date().toLocaleDateString("en-GB");
-  const now = new Date().toLocaleTimeString("en-GB");
 
-  const awarenessContext = `
-AGENT CAPABILITIES & AWARENESS:
-- I can search the web for current information
-- I can get weather forecasts (including "here" for your location)
-- I can access news from multiple sources (with topic filtering)
-- I can look up stock prices and company fundamentals
-- I can perform calculations
-- I can read and list files in: ${PROJECT_ROOT} (my project) and E:/testFolder
-- I have GitHub API access for repository operations
-- I can review code files and generate analysis reports
-- I can remember user preferences across conversations
-- I can reformat information into tables when requested
-- I have FULL conversation history (${allMessages.length} messages)
+  // FIX #6: Include stateGraph for context awareness (prevents sports→github hallucination)
+  let contextSummary = "";
+  if (stateGraph && stateGraph.length > 0) {
+    contextSummary = "\n\nPREVIOUS STEPS IN THIS CONVERSATION:\n";
+    stateGraph.forEach(step => {
+      contextSummary += `- Step ${step.step}: Used ${step.tool} tool\n`;
+    });
+    contextSummary += "\nUse this context when answering follow-up questions.\n";
+  }
+
+  return `
+AGENT CAPABILITIES:
+- Weather forecasts, news, web search
+- Stock prices, company fundamentals
+- File operations, GitHub, code review
+- Full conversation history (${allMessages.length} messages)
 - Current date: ${today}
-- Current time: ${now}
 
-CONVERSATION STATISTICS:
-- Total messages: ${allMessages.length}
-- User messages: ${allMessages.filter(m => m.role === "user").length}
-- Assistant messages: ${allMessages.filter(m => m.role === "assistant").length}
-${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
-`;
-
-  const CONTEXT_ENRICHMENT = `
-NLP ANALYSIS:
-- Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
-- Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
-
-PREVIOUS STEPS IN THIS SEQUENCE:
-${stateGraph ? JSON.stringify(stateGraph, null, 2) : "none"}
-`;
-
-  return `${awarenessContext}
-${CONTEXT_ENRICHMENT}
-
-User profile (long-term memory):
+User profile:
 ${JSON.stringify(profile || {}, null, 2)}
 
-Full conversation history (${allMessages.length} messages):
+Conversation history:
 ${convoText || "(no prior messages)"}
+${contextSummary}
 
 Tone instructions:
 ${toneText}
 
-Current user message:
+Current message:
 ${userMessage}
 
-Now write the final answer. Be aware of full conversation context and your capabilities.
-`;
+Write the final answer.`;
 }
 
-async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk }) {
-  const memory = await getMemory();
-  const profile = memory.profile || {};
-  const conversation = memory.conversations?.[conversationId] || [];
-  const capabilities = Object.keys(TOOLS);
-
-  const prompt = buildLLMContext({
-    userMessage,
-    profile,
-    conversation,
-    capabilities,
-    sentiment,
-    entities,
-    stateGraph
-  });
-
-  let text = "";
-  if (onChunk) {
-    const result = await llmStream(prompt, (chunk) => {
-      text += chunk;
-      onChunk(chunk);
-    });
-    if (!result.success) text = "I encountered an error while streaming.";
-  } else {
-    const llmResponse = await llm(prompt);
-    text = llmResponse?.data?.text || "I couldn't generate a response.";
-  }
-
-  // Convert markdown tables to HTML (at the end for full text)
-  text = convertMarkdownTablesToHTML(text);
-
-  return text;
-}
-
-async function summarizeWithLLM({
-  userQuestion,
-  toolResult,
-  conversationId,
-  tool,
-  sentiment,
-  entities,
-  stateGraph,
-  onChunk
-}) {
+async function summarizeWithLLM({ userQuestion, toolResult, conversationId, tool, sentiment, entities, stateGraph, onChunk }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
   const toneText = getToneDescription(profile || {});
-
   const conversation = memory.conversations?.[conversationId] || [];
-  const allMessages = conversation;
-
-  const convoText = allMessages
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
   const today = new Date().toLocaleDateString("en-GB");
-  const tableRequested = wantsTableFormat(userQuestion);
 
-  // FIX: Emphasize current date for news and time-sensitive tools
-  const dateEmphasis = ['news', 'search', 'sports'].includes(tool) ?
-    `CRITICAL: TODAY'S DATE IS ${today}. Information should be current and up-to-date!` : '';
+  // FIX #6: Include stateGraph for context
+  let contextSummary = "";
+  if (stateGraph && stateGraph.length > 0) {
+    contextSummary = "\n\nPREVIOUS STEPS:\n";
+    stateGraph.forEach(step => {
+      contextSummary += `- Step ${step.step}: ${step.tool} - ${step.success ? 'success' : 'failed'}\n`;
+    });
+  }
 
   const prompt = `
-You are the final response generator for an AI assistant with deep awareness of context.
-The current date is ${today}.
-${dateEmphasis}
+You are the final response generator for an AI assistant.
+Current date: ${today}
+${['news', 'search', 'sports'].includes(tool) ? `CRITICAL: Information should be current and up-to-date!` : ''}
 
-NLP ANALYSIS:
-- Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
-- Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
-
-CONVERSATION CONTEXT:
-- Total messages: ${allMessages.length}
-- You have FULL conversation history below
-
-User profile (long-term memory):
+User profile:
 ${JSON.stringify(profile, null, 2)}
 
-Full conversation history (${allMessages.length} messages):
-${convoText || "(no prior messages)"}
+Conversation history (${conversation.length} messages):
+${conversation.map(m => `${m.role}: ${m.content}`).join("\n")}
+${contextSummary}
 
-Tone instructions:
-${toneText}
+Tone: ${toneText}
 
-User question:
-${userQuestion}
-
+User question: ${userQuestion}
 Tool used: ${tool}
 
-Tool result (structured data):
+Tool result:
 ${JSON.stringify(toolResult, null, 2)}
 
-PREVIOUS STEPS IN THIS SEQUENCE:
-${stateGraph ? JSON.stringify(stateGraph, null, 2) : "none"}
-
-Formatting instructions:
-- Produce a clear, natural-language answer
-- Use profile information naturally when relevant
-- Respect tone, detail, and formatting preferences
-${tableRequested
-      ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
-      : "- Use normal paragraph formatting unless different structure is better"
-    }
-- If no reliable information, say so clearly - do NOT invent facts
-- Do NOT mention tools or internal steps
-- Be aware of full conversation context and reference previous messages if relevant
-
-Generate the response:
-`;
+Generate a clear, natural response. Reference conversation context if relevant. Do NOT mention tools or internal steps.`;
 
   let text = "";
   if (onChunk) {
-    const streamResult = await llmStream(prompt, (chunk) => {
+    await llmStream(prompt, (chunk) => {
       text += chunk;
       onChunk(chunk);
     });
-    if (!streamResult.success) text = "I couldn't summarize the tool results.";
   } else {
     const llmResponse = await llm(prompt);
     text = llmResponse?.data?.text || "I couldn't generate a response.";
   }
 
-  // Convert markdown tables to HTML
   text = convertMarkdownTablesToHTML(text);
-
-  return {
-    reply: text,
-    success: true,
-    reasoning: toolResult.reasoning || null
-  };
+  return { reply: text, success: true, reasoning: toolResult.reasoning || null };
 }
-
-async function reformatAsTable({ userMessage, conversationId }) {
-  const memory = await getMemory();
-  const conversation = memory.conversations?.[conversationId] || [];
-
-  const lastAssistantMessage = [...conversation]
-    .reverse()
-    .find(m => m.role === "assistant");
-
-  if (!lastAssistantMessage) {
-    return {
-      reply: "I don't have a previous response to reformat.",
-      success: false,
-      stateGraph: []
-    };
-  }
-
-  const prompt = `
-You are helping reformat a previous response into an HTML table.
-
-Previous response:
-${lastAssistantMessage.content}
-
-User request:
-${userMessage}
-
-INSTRUCTIONS:
-- Convert information into a well-structured HTML table
-- Use class="ai-table-wrapper" for wrapper div
-- Use class="ai-table" for table element
-- Include appropriate headers
-- Keep data accurate - don't add or remove information
-- Add brief introduction before the table
-
-Example format:
-<div class="ai-table-wrapper">
-  <table class="ai-table">
-    <thead>
-      <tr><th>Column 1</th><th>Column 2</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Data 1</td><td>Data 2</td></tr>
-    </tbody>
-  </table>
-</div>
-
-Generate the reformatted response:
-`;
-
-  const llmResponse = await llm(prompt);
-  let text = llmResponse?.data?.text || "I couldn't reformat the response.";
-
-  // Convert markdown tables to HTML
-  text = convertMarkdownTablesToHTML(text);
-
-  return {
-    reply: text,
-    success: true,
-    stateGraph: [
-      {
-        step: 1,
-        tool: "reformat_table",
-        input: userMessage,
-        output: text,
-        final: true
-      }
-    ]
-  };
-}
-
 
 /**
- * executeStep
- * Executes a SINGLE plan step (one tool call)
+ * Execute a single tool step
  */
 export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
-  const queryText = typeof message === "string" ? message : message?.text || "";
+  const queryText = getMessageText(message);
 
-  // FIX #3: Handle "send it" for email confirmation
+  // FIX #3: Email confirmation with BACKWARD SEARCH
   if (tool === "email_confirm") {
     console.log("📧 Processing email confirmation...");
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
 
-    // Search backward for the most recent draft
+    // CRITICAL FIX: Search backwards through conversation for most recent assistant message with pendingEmail
     const draftMessage = [...conversation]
       .reverse()
       .find(m => m.role === 'assistant' && m.data?.pendingEmail);
 
-    if (draftMessage) {
+    if (draftMessage && draftMessage.data.pendingEmail) {
       console.log("✅ Found pending email draft, sending now...");
       const { to, subject, body, attachments } = draftMessage.data.pendingEmail;
 
       const sendResult = await sendConfirmedEmail({ to, subject, body, attachments });
 
       return {
-        reply: sendResult.data?.message || sendResult.error || "Email sent!",
         tool: "email",
-        data: sendResult.data,
+        input: message,
+        output: sendResult,
         success: sendResult.success,
         final: true
       };
     } else {
-      console.log("❌ No pending email draft found in history.");
+      console.log("❌ No pending email draft found.");
       return {
-        reply: "I don't have a pending email to send. Please create an email draft first.",
         tool: "email",
+        input: message,
+        output: {
+          tool: "email",
+          success: false,
+          final: true,
+          error: "I don't have a pending email to send. Please create an email draft first."
+        },
         success: false,
         final: true
       };
     }
   }
 
-  // Special case: reformat previous response as table
-  if (tool === "reformat_table") {
-    return await reformatAsTable({
-      userMessage: getMessageText(message),
-      conversationId
-    });
-  }
-
-  // Direct LLM - with FULL memory
+  // Direct LLM
   if (tool === "llm") {
-    const reply = await runLLMWithFullMemory({
-      userMessage: getMessageText(message),
-      conversationId,
-      sentiment, // Pass to LLM
-      entities,  // Pass to LLM
-      stateGraph, // Pass previous tool results
-      onChunk    // Pass chunk handler
+    const memory = await getMemory();
+    const profile = memory.profile || {};
+    const conversation = memory.conversations?.[conversationId] || [];
+    const capabilities = Object.keys(TOOLS);
+
+    const prompt = buildLLMContext({
+      userMessage: queryText,
+      profile,
+      conversation,
+      capabilities,
+      sentiment,
+      entities,
+      stateGraph
     });
+
+    let reply = "";
+    if (onChunk) {
+      await llmStream(prompt, (chunk) => {
+        reply += chunk;
+        onChunk(chunk);
+      });
+    } else {
+      const llmResponse = await llm(prompt);
+      reply = llmResponse?.data?.text || "I couldn't generate a response.";
+    }
+
+    reply = convertMarkdownTablesToHTML(reply);
 
     return {
-      reply,
       tool,
+      input: message,
+      output: { tool, success: true, final: true, data: { text: reply } },
       success: true,
       final: true
     };
   }
 
-  // Normalize city aliases
-  message = normalizeCityAliases(message);
-
-  // Case-insensitive tool lookup
+  // Regular tool execution
   const toolKeys = Object.keys(TOOLS);
   const actualToolKey = toolKeys.find(k => k.toLowerCase() === tool.toLowerCase());
 
   if (!actualToolKey) {
     console.error(`❌ Tool not found: ${tool}`);
-    console.log("Available tools:", toolKeys);
     return {
-      reply: `Tool "${tool}" not found. Available tools: ${toolKeys.join(", ")}`,
+      tool,
+      input: message,
+      output: { tool, success: false, final: true, error: `Tool "${tool}" not found` },
       success: false,
       final: true
     };
   }
 
-  // Update tool variable to the correct case for consistent internal usage
   tool = actualToolKey;
 
-  // WEATHER + MEMORYTOOL receive full object
+  // Build tool input
   let toolInput;
-
   if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload"].includes(tool)) {
     toolInput = message; // { text, context }
   } else {
-    toolInput = getMessageText(message); // string
+    toolInput = queryText; // string
   }
 
   // Execute tool
@@ -392,8 +256,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 }
 
 /**
- * finalizeStep
- * Summarizes tool results or returns raw output
+ * Finalize a tool step (summarize or return raw)
  */
 export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const { tool, output: result } = stepResult;
@@ -407,7 +270,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // SPECIAL CASE: memorytool & selfImprovement - No LLM, No summarization
+  // Special cases: no summarization
   if (tool === "memorytool" || tool === "selfImprovement") {
     return {
       reply: result.data?.text || result.data?.message || "Task completed.",
@@ -418,11 +281,22 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // Tools that should be summarized
+  // FIX #3: Email draft - return as-is with pendingEmail preserved
+  if (tool === "email" && result.data?.mode === "draft") {
+    return {
+      reply: result.data.message,
+      tool,
+      data: result.data, // CRITICAL: Contains pendingEmail for "send it"
+      success: true,
+      final: true
+    };
+  }
+
+  // Tools that need summarization
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
-    "github", "review", "githubTrending", "gitLocal", "nlp_tool"
+    "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes"
   ];
 
   if (summarizeTools.includes(tool)) {
@@ -433,7 +307,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
       tool,
       sentiment,
       entities,
-      stateGraph,
+      stateGraph, // FIX #6: Pass stateGraph for context
       onChunk
     });
 
@@ -447,13 +321,8 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // Default: return raw tool output
-  const reply =
-    result?.data?.html ||
-    result?.data?.text ||
-    result?.output ||
-    JSON.stringify(result?.data) ||
-    "Task completed.";
+  // Default: raw output
+  const reply = result?.data?.html || result?.data?.text || result?.output || JSON.stringify(result?.data) || "Task completed.";
 
   return {
     reply,
@@ -462,49 +331,5 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     reasoning: result.reasoning || null,
     success: true,
     final: true
-  };
-}
-
-/**
- * executeAgent (Single Step / Direct)
- * Legacy/Direct entry point for executing a single tool call.
- * Used by specialized routes like 'review.js'.
- */
-export async function executeAgent({ tool, message, conversationId, onChunk }) {
-  const queryText = typeof message === "string" ? message : message?.text || "";
-  const { sentiment, entities } = getBackgroundNLP(queryText);
-
-  // 1. Execute the tool
-  const stepResult = await executeStep({
-    tool,
-    message,
-    conversationId,
-    sentiment,
-    entities,
-    stateGraph: [],
-    onChunk
-  });
-
-  // 2. Finalize and Return
-  const finalized = await finalizeStep({
-    stepResult,
-    message,
-    conversationId,
-    sentiment,
-    entities,
-    stateGraph: [],
-    onChunk
-  });
-
-  return {
-    ...finalized,
-    stateGraph: [{
-      step: 1,
-      tool: finalized.tool,
-      input: message,
-      output: finalized.reply,
-      success: finalized.success,
-      final: finalized.final
-    }]
   };
 }

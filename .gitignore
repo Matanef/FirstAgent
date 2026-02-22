@@ -4,3 +4,5 @@ files/
 **/backup
 server/Claude
 server/Antigravity
+server/tokens/
+utils/

@@ -23,6 +23,8 @@ import { gitLocal } from "./gitLocal.js";
 import { review } from "./review.js";  // NEW: Review tool
 import { nlpTool as nlp_tool } from "./nlp.js";
 import { githubTrending } from "./githubTrending.js";
+import { email_confirm } from "./emailConfirm.js";
+
 
 export const TOOLS = {
   calculator,
@@ -46,7 +48,8 @@ export const TOOLS = {
   gitLocal,
   review,  // NEW: Code review tool
   nlp_tool,
-  githubTrending
+  githubTrending,
+  email_confirm
 };
 
 // Validate all tools are functions at startup

@@ -10,7 +10,7 @@ import { getMemory } from "../memory.js";
 import { resolveContact, extractContactRef } from "./contacts.js";
 import { saveDraft, getDraft, clearDraft } from "../utils/emailDrafts.js";
 import { getAuthorizedClient } from "../utils/googleOAuth.js";
-
+export { sendConfirmedEmail as sendEmail };
 
 
 async function parseEmailRequest(query, ctx = {}) {
@@ -183,7 +183,7 @@ export async function email(request) {
     return {
       tool: "email",
       success: true,
-      final: true, // ensure executor shows the result
+      final: true,
       data: {
         mode: "draft",
         to,
@@ -191,12 +191,10 @@ export async function email(request) {
         body,
         attachments,
         pendingEmail: draft,
-        preview,           // existing preview string
-        message: preview,  // UI-friendly key many executors read
+        message: preview,
         sessionId
       }
     };
-
   } catch (err) {
     console.error("Email tool error:", err);
     return {

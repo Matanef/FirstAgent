@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const MEMORY_FILE = path.resolve(__dirname, "..", "utils", "memory.json");
-export const DEFAULT_MEMORY = { conversations: {}, profile: {}, durable: [], meta: {} };
+export const DEFAULT_MEMORY = { conversations: {}, profile: {}, meta: {} };
 
 // In-memory cache and simple mutex queue
 let _cache = null;
@@ -61,7 +61,6 @@ function validateMemoryShape(raw) {
   if (raw && typeof raw === "object") {
     if (raw.conversations && typeof raw.conversations === "object") safe.conversations = raw.conversations;
     if (raw.profile && typeof raw.profile === "object") safe.profile = raw.profile;
-    if (Array.isArray(raw.durable)) safe.durable = raw.durable;
     if (raw.meta && typeof raw.meta === "object") safe.meta = raw.meta;
   }
   return safe;
@@ -131,71 +130,4 @@ export async function withMemoryLock(fn) {
   } finally {
     _releaseLock();
   }
-}
-
-// ----------------------
-// Convenience helpers
-// ----------------------
-
-export async function getProfile() {
-  const mem = await getMemory();
-  return mem.profile || {};
-}
-
-export async function setProfileField(fieldPath, value) {
-  return await withMemoryLock(async () => {
-    const mem = await getMemory();
-    mem.profile = mem.profile || {};
-    const parts = fieldPath.split(".");
-    let cur = mem.profile;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const p = parts[i];
-      cur[p] = cur[p] || {};
-      cur = cur[p];
-    }
-    const last = parts[parts.length - 1];
-    if (typeof value === "undefined") {
-      // delete if undefined
-      if (cur && Object.prototype.hasOwnProperty.call(cur, last)) delete cur[last];
-    } else {
-      cur[last] = value;
-    }
-    mem.meta = mem.meta || {};
-    mem.meta.lastUpdated = new Date().toISOString();
-    await saveJSON(MEMORY_FILE, mem);
-    return mem;
-  });
-}
-
-export async function addOrUpdateContact(key, contactObj) {
-  return await withMemoryLock(async () => {
-    const mem = await getMemory();
-    mem.profile = mem.profile || {};
-    mem.profile.contacts = mem.profile.contacts || {};
-    const now = new Date().toISOString();
-    mem.profile.contacts[key] = Object.assign({}, mem.profile.contacts[key] || {}, contactObj, { lastUpdated: now });
-    mem.meta = mem.meta || {};
-    mem.meta.lastUpdated = now;
-    await saveJSON(MEMORY_FILE, mem);
-    return mem.profile.contacts[key];
-  });
-}
-
-export async function deleteContact(key) {
-  return await withMemoryLock(async () => {
-    const mem = await getMemory();
-    if (mem.profile?.contacts && mem.profile.contacts[key]) {
-      delete mem.profile.contacts[key];
-      mem.meta = mem.meta || {};
-      mem.meta.lastUpdated = new Date().toISOString();
-      await saveJSON(MEMORY_FILE, mem);
-      return true;
-    }
-    return false;
-  });
-}
-
-export async function listContacts() {
-  const mem = await getMemory();
-  return mem.profile?.contacts || {};
 }

@@ -10,6 +10,7 @@ import chatRoutes from "./routes/chat.js";
 import conversationRoutes from "./routes/conversations.js";
 import fileRoutes from "./routes/files.js";
 import reviewRoutes from "./routes/review.js";
+import oauthCallback from "./routes/oauthCallback.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +20,8 @@ const PORT = process.env.PORT || 3000;
 // ============================================================
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use("/", oauthCallback);
+
 
 // Request logging with IP extraction
 app.use((req, res, next) => {

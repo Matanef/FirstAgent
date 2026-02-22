@@ -1,4 +1,6 @@
-// server/tools/news.js (ENHANCED - Article scraping + LLM summarization)
+// server/tools/news.js
+// COMPLETE FIX: News with topic extraction and filtering
+
 import Parser from "rss-parser";
 import { safeFetch } from "../utils/fetch.js";
 import { llm } from "./llm.js";
@@ -17,7 +19,53 @@ const FEEDS = {
   aljazeera: "https://www.aljazeera.com/xml/rss/all.xml"
 };
 
-// Scrape article content from URL
+// FIX #4: Extract topic from user query
+function extractTopic(query) {
+  const text = typeof query === "string" ? query : query?.text || "";
+  const lower = text.toLowerCase();
+  
+  // Remove common phrases
+  let cleaned = lower
+    .replace(/give me|show me|get|fetch|latest|recent|breaking|top/gi, '')
+    .replace(/news|headlines|articles|stories/gi, '')
+    .replace(/about|regarding|on|for/gi, '')
+    .trim();
+  
+  // Extract specific topic patterns
+  const topicMatch = lower.match(/(?:about|regarding|on|for)\s+([a-z0-9\s]+)$/i);
+  if (topicMatch) {
+    return topicMatch[1].trim();
+  }
+  
+  // Extract from "X news"
+  const newsMatch = lower.match(/([a-z0-9\s]+)\s+news/i);
+  if (newsMatch) {
+    const topic = newsMatch[1].trim();
+    if (topic.length > 2 && !['the', 'latest', 'breaking', 'top'].includes(topic)) {
+      return topic;
+    }
+  }
+  
+  // If we have a meaningful cleaned string
+  if (cleaned.length > 2 && cleaned.split(/\s+/).length <= 4) {
+    return cleaned;
+  }
+  
+  return null;
+}
+
+// Filter headlines by topic
+function filterByTopic(items, topic) {
+  if (!topic) return items;
+  
+  const keywords = topic.toLowerCase().split(/\s+/);
+  
+  return items.filter(item => {
+    const searchText = `${item.title} ${item.description || ''}`.toLowerCase();
+    return keywords.some(keyword => searchText.includes(keyword));
+  });
+}
+
 async function scrapeArticle(url) {
   try {
     const html = await safeFetch(url, { 
@@ -29,7 +77,6 @@ async function scrapeArticle(url) {
     
     if (!html || typeof html !== 'string') return null;
     
-    // Simple text extraction (remove HTML tags)
     let text = html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -37,7 +84,6 @@ async function scrapeArticle(url) {
       .replace(/\s+/g, ' ')
       .trim();
     
-    // Take first 2000 characters for summarization
     return text.substring(0, 2000);
   } catch (err) {
     console.warn(`Failed to scrape ${url}:`, err.message);
@@ -45,7 +91,6 @@ async function scrapeArticle(url) {
   }
 }
 
-// Generate summary using LLM
 async function summarizeArticle(title, content) {
   if (!content) return null;
   
@@ -72,18 +117,24 @@ Summary (2-3 sentences):`;
 
 export async function news(request) {
   try {
+    const query = typeof request === "string" ? request : request?.text || "";
+    
+    // FIX #4: Extract topic from query
+    const topic = extractTopic(query);
+    console.log(`📰 News tool - Topic extracted: "${topic || 'general'}"`);
+    
     const results = [];
-    const scrapedArticles = [];
+    const allItems = [];
 
     // Fetch all RSS feeds
     for (const [name, url] of Object.entries(FEEDS)) {
       try {
         const feed = await parser.parseURL(url);
-
-        const items = (feed.items || []).slice(0, 5).map(i => ({
+        const items = (feed.items || []).slice(0, 10).map(i => ({
           title: i.title,
           link: i.link,
           date: i.pubDate,
+          description: i.contentSnippet || i.description,
           source: name
         }));
 
@@ -93,15 +144,7 @@ export async function news(request) {
           error: null
         });
 
-        // Collect top articles for scraping
-        if (items.length > 0) {
-          scrapedArticles.push({
-            title: items[0].title,
-            link: items[0].link,
-            source: name
-          });
-        }
-
+        allItems.push(...items);
       } catch (err) {
         results.push({
           source: name,
@@ -111,12 +154,15 @@ export async function news(request) {
       }
     }
 
-    // Scrape and summarize top 3 articles
-    console.log(`📰 Scraping top 3 articles...`);
-    const summaries = [];
+    // FIX #4: Filter by topic if specified
+    const filteredItems = topic ? filterByTopic(allItems, topic) : allItems;
     
-    for (let i = 0; i < Math.min(3, scrapedArticles.length); i++) {
-      const article = scrapedArticles[i];
+    console.log(`📊 Total items: ${allItems.length}, Filtered: ${filteredItems.length}`);
+
+    // Scrape and summarize top 3 filtered articles
+    const summaries = [];
+    for (let i = 0; i < Math.min(3, filteredItems.length); i++) {
+      const article = filteredItems[i];
       console.log(`  Scraping: ${article.title}`);
       
       const content = await scrapeArticle(article.link);
@@ -133,7 +179,7 @@ export async function news(request) {
       }
     }
 
-    // Build HTML with summary cards
+    // Build HTML
     const summaryCards = summaries.map(s => `
       <div class="news-summary-card">
         <div class="news-summary-header">
@@ -147,41 +193,43 @@ export async function news(request) {
 
     const html = `
       <div class="news-container">
+        ${topic ? `<div class="news-topic-banner">📰 News about: <strong>${topic}</strong></div>` : ''}
+        
         ${summaries.length > 0 ? `
           <div class="news-summaries">
-            <h2>📰 Top Stories</h2>
+            <h2>Top Stories</h2>
             ${summaryCards}
           </div>
         ` : ''}
         
         <div class="ai-table-wrapper">
-          <h3>All Headlines</h3>
+          <h3>${topic ? 'All Related Headlines' : 'All Headlines'}</h3>
           <table class="ai-table">
             <thead>
               <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
             </thead>
             <tbody>
-              ${results
-                .map(r =>
-                  r.items
-                    .map(
-                      i => `
-                    <tr>
-                      <td>${r.source}</td>
-                      <td><a href="${i.link}" target="_blank">${i.title}</a></td>
-                      <td>${i.date || "-"}</td>
-                    </tr>
-                  `
-                    )
-                    .join("")
-                )
-                .join("")}
+              ${filteredItems.slice(0, 20).map(i => `
+                <tr>
+                  <td>${i.source}</td>
+                  <td><a href="${i.link}" target="_blank">${i.title}</a></td>
+                  <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
+                </tr>
+              `).join('')}
             </tbody>
           </table>
         </div>
       </div>
       
       <style>
+        .news-topic-banner {
+          background: var(--accent);
+          color: white;
+          padding: 0.75rem 1rem;
+          border-radius: 6px;
+          margin-bottom: 1rem;
+          font-size: 1.1rem;
+        }
         .news-container {
           display: flex;
           flex-direction: column;
@@ -230,11 +278,6 @@ export async function news(request) {
       </style>
     `;
 
-    const totalItems = results.reduce(
-      (acc, r) => acc + (r.items ? r.items.length : 0),
-      0
-    );
-
     return {
       tool: "news",
       success: true,
@@ -242,10 +285,12 @@ export async function news(request) {
       data: { 
         results, 
         summaries,
-        html, 
-        totalItems 
+        topic,
+        totalItems: allItems.length,
+        filteredItems: filteredItems.length,
+        html
       },
-      reasoning: `Fetched ${totalItems} headlines from ${results.length} sources, scraped and summarized top ${summaries.length} articles`
+      reasoning: `Fetched ${allItems.length} headlines, ${topic ? `filtered to ${filteredItems.length} about "${topic}"` : 'showing all'}, summarized top ${summaries.length} articles`
     };
   } catch (err) {
     return {
