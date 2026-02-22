@@ -1,67 +1,49 @@
 // server/tools/email.js
-// ENHANCED: Email with attachments, contact resolution, and draft adapter
+// COMPLETE FIX: Email with proper draft persistence in data field
 
 import { google } from "googleapis";
+import { getAuthorizedClient } from "../utils/googleOAuth.js";
+import { resolveContact, extractContactRef } from "./contacts.js";
 import fs from "fs/promises";
-import fsSync from "fs";
 import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
 import { getMemory } from "../memory.js";
-import { resolveContact, extractContactRef } from "./contacts.js";
-import { saveDraft, getDraft, clearDraft } from "../utils/emailDrafts.js";
-import { getAuthorizedClient } from "../utils/googleOAuth.js";
 
-
-
-async function parseEmailRequest(query, ctx = {}) {
-  const lower = (query || "").toLowerCase();
+async function parseEmailRequest(query) {
+  const lower = query.toLowerCase();
   const memory = await getMemory();
 
-  // 1. Extract floating email address anywhere in the query
-  let to = ctx.to || null;
-  const emailMatch = (query || "").match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  // Extract email address or resolve contact
+  let to = null;
+  const emailMatch = query.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
   if (emailMatch) {
     to = emailMatch[0];
   } else {
-    // 2. Try contact/name resolution
-    const contactRef = extractContactRef(query || "");
+    const contactRef = extractContactRef(query);
     if (contactRef) {
       const resolved = await resolveContact(contactRef);
-      if (resolved && resolved.contact?.email) {
+      if (resolved && resolved.contact.email) {
         to = resolved.contact.email;
         console.log(`📧 Resolved contact "${contactRef}" to ${to}`);
-      } else {
-        // 3. Fallback: Check if it's the user's own name/email
-        const myName = memory.profile?.self?.name || memory.profile?.name;
-        const myEmail = memory.profile?.self?.email || memory.profile?.email;
-        if (myName && contactRef.toLowerCase().includes(myName.toLowerCase()) && myEmail) {
-          to = myEmail;
-          console.log(`📧 Resolved "self" reference "${contactRef}" to ${to}`);
-        }
       }
     }
   }
 
   // Extract subject
-  let subject = ctx.subject || "Message from AI Agent";
-  const subjectMatch = (query || "").match(/subject[:\s]+([^\n]+)/i);
+  let subject = "Message from AI Agent";
+  const subjectMatch = lower.match(/subject[:\s]+([^\n]+)/i);
   if (subjectMatch) {
     subject = subjectMatch[1].trim();
   }
 
   // Extract body
-  let body = ctx.body || query || "";
-  const sayingMatch = (query || "").match(/saying[:\s]+(.+?)(?:\s+with|$)/is);
+  let body = query;
+  const sayingMatch = query.match(/saying[:\s]+(.+?)(?:\s+with|$)/is);
   if (sayingMatch) {
     body = sayingMatch[1].trim();
-  } else {
-    const messageMatch = (query || "").match(/message[:\s]+(.+?)(?:\s+with|$)/is);
-    if (messageMatch) {
-      body = messageMatch[1].trim();
-    }
   }
 
-  // Extract attachments (Hardcoded list of extensions for safety)
+  // Extract attachments
   const requestedAttachments = [];
   const attachmentPatterns = [
     /with\s+(.+?\.(?:pdf|docx|xlsx|png|jpg|jpeg|txt|csv))\s+attached/gi,
@@ -71,7 +53,7 @@ async function parseEmailRequest(query, ctx = {}) {
 
   for (const pattern of attachmentPatterns) {
     let match;
-    while ((match = pattern.exec(query || "")) !== null) {
+    while ((match = pattern.exec(query)) !== null) {
       requestedAttachments.push(match[1].trim());
     }
   }
@@ -83,8 +65,7 @@ async function findAttachment(filename) {
   const searchPaths = [
     path.resolve(PROJECT_ROOT, "uploads", filename),
     path.resolve(PROJECT_ROOT, "downloads", filename),
-    path.resolve(PROJECT_ROOT, filename),
-    path.resolve(PROJECT_ROOT, "files2", filename)
+    path.resolve(PROJECT_ROOT, filename)
   ];
 
   for (const searchPath of searchPaths) {
@@ -98,45 +79,16 @@ async function findAttachment(filename) {
   return null;
 }
 
-function getMimeType(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  const mimeTypes = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".txt": "text/plain",
-    ".csv": "text/csv"
-  };
-  return mimeTypes[ext] || "application/octet-stream";
-}
-
-/**
- * Primary email tool entrypoint.
- * - Builds a draft from the user's query
- * - Saves the draft via emailDrafts.saveDraft(sessionId, draft)
- * - Returns a preview and instructs the user to "send it" or "cancel"
- *
- * `query` can be a string or an object. If object, it may contain { text, context }.
- * `context.sessionId` is used to scope drafts per session.
- */
-export async function email(request) {
+export async function email(query) {
   try {
-    const text = typeof request === "string" ? request : (request?.text || "");
-    const ctx = request?.context || {};
-    const sessionId = ctx.sessionId || "default";
-
-    const { to, subject, body, requestedAttachments } = await parseEmailRequest(text, ctx);
+    const { to, subject, body, requestedAttachments } = await parseEmailRequest(query);
 
     if (!to) {
       return {
         tool: "email",
         success: false,
         final: true,
-        error:
-          "Could not detect recipient email address.\n\nTry:\n• 'send email to john@example.com'\n• 'email mom about dinner' (if mom is a saved contact)\n• 'add Mom as a contact, email: mom@example.com' to save contacts"
+        error: "Could not detect recipient email address.\n\nTry:\n• 'send email to john@example.com'\n• 'email mom about dinner' (if mom is a saved contact)"
       };
     }
 
@@ -150,53 +102,27 @@ export async function email(request) {
           attachments.push({
             filename: path.basename(filepath),
             filepath,
-            size: stat.size,
-            mimeType: getMimeType(filepath)
+            size: stat.size
           });
         }
       }
     }
 
-    const draft = {
-      to,
-      subject,
-      body,
-      attachments,
-      createdAt: new Date().toISOString()
-    };
-
-    // Persist draft for confirmation flow
-    await saveDraft(sessionId, draft);
-
-    const preview = [
-      "📧 **Email Draft:**",
-      "",
-      `**To:** ${to}`,
-      `**Subject:** ${subject}`,
-      "**Message:**",
-      body,
-      attachments.length > 0 ? `\n📎 **Attachments (${attachments.length}):**\n${attachments.map(a => `• ${a.filename}`).join("\n")}` : "",
-      "",
-      'Say "send it" to confirm, or "cancel" to discard.'
-    ].join("\n");
-
+    // FIX #3: Store complete draft in data.pendingEmail for executor to find
     return {
       tool: "email",
       success: true,
-      final: true, // ensure executor shows the result
+      final: true, // Mark as final so it doesn't get summarized
       data: {
         mode: "draft",
         to,
         subject,
         body,
         attachments,
-        pendingEmail: draft,
-        preview,           // existing preview string
-        message: preview,  // UI-friendly key many executors read
-        sessionId
+        pendingEmail: { to, subject, body, attachments }, // CRITICAL: Store here for "send it"
+        message: `📧 **Email Draft:**\n\n**To:** ${to}\n**Subject:** ${subject}\n**Message:**\n${body}\n${attachments.length > 0 ? `\n📎 **Attachments (${attachments.length}):**\n${attachments.map(a => `• ${a.filename}`).join('\n')}\n` : ""}\n\n✅ Say "send it" to confirm, or "cancel" to discard.`
       }
     };
-
   } catch (err) {
     console.error("Email tool error:", err);
     return {
@@ -208,107 +134,21 @@ export async function email(request) {
   }
 }
 
-/**
- * sendConfirmedEmail
- * - Accepts a draft object or reads the draft for a sessionId
- * - Sends via Gmail API using OAuth client
- * - Returns a result object { success, messageId?, error? }
- */
-export async function sendConfirmedEmail({ draft, sessionId = "default" } = {}) {
+export async function sendConfirmedEmail({ to, subject, body, attachments = [] }) {
   try {
-    let to, subject, body, attachments;
-    if (draft) {
-      ({ to, subject, body, attachments = [] } = draft);
-    } else {
-      const saved = await getDraft(sessionId);
-      if (!saved) {
-        return { success: false, error: "No draft found to send." };
-      }
-      ({ to, subject, body, attachments = [] } = saved);
-    }
-
     const auth = await getAuthorizedClient();
     const gmail = google.gmail({ version: "v1", auth });
 
-    // Build multipart message if attachments exist, otherwise simple text message
-    if (!attachments || attachments.length === 0) {
-      const message = [
-        `To: ${to}`,
-        `Subject: ${subject}`,
-        "MIME-Version: 1.0",
-        "Content-Type: text/plain; charset=utf-8",
-        "",
-        body
-      ].join("\n");
+    const message = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      body
+    ].join("\n");
 
-      const raw = Buffer.from(message)
-        .toString("base64")
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/, "");
-
-      const res = await gmail.users.messages.send({
-        userId: "me",
-        requestBody: { raw }
-      });
-
-      // Clear draft on success
-      await clearDraft(sessionId);
-
-      return { success: true, messageId: res.data.id };
-    }
-
-    // If attachments exist, build a multipart MIME message
-    // Note: This is a simple implementation; for large attachments consider resumable uploads or using the Gmail media upload.
-    const boundary = "----=_Part_" + Date.now();
-    const nl = "\r\n";
-    let mimeParts = [];
-
-    // Headers
-    mimeParts.push(`From: me`);
-    mimeParts.push(`To: ${to}`);
-    mimeParts.push(`Subject: ${subject}`);
-    mimeParts.push("MIME-Version: 1.0");
-    mimeParts.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
-    mimeParts.push("");
-    mimeParts.push(`--${boundary}`);
-    mimeParts.push(`Content-Type: text/plain; charset="UTF-8"`);
-    mimeParts.push("Content-Transfer-Encoding: 7bit");
-    mimeParts.push("");
-    mimeParts.push(body);
-    mimeParts.push("");
-
-    // Attach each file
-    for (const att of attachments) {
-      let filePath = att.filepath || att.path || att.filename;
-      // If only filename provided, try to find it
-      if (!path.isAbsolute(filePath)) {
-        const found = await findAttachment(filePath);
-        if (found) filePath = found;
-      }
-      try {
-        const data = await fs.readFile(filePath);
-        const b64 = data.toString("base64");
-        const filename = att.filename || path.basename(filePath);
-        const mimeType = att.mimeType || getMimeType(filename);
-
-        mimeParts.push(`--${boundary}`);
-        mimeParts.push(`Content-Type: ${mimeType}; name="${filename}"`);
-        mimeParts.push("Content-Transfer-Encoding: base64");
-        mimeParts.push(`Content-Disposition: attachment; filename="${filename}"`);
-        mimeParts.push("");
-        mimeParts.push(b64);
-        mimeParts.push("");
-      } catch (e) {
-        console.warn(`Attachment read failed for ${filePath}:`, e.message);
-        // skip this attachment
-      }
-    }
-
-    mimeParts.push(`--${boundary}--`);
-    const fullMessage = mimeParts.join(nl);
-
-    const raw = Buffer.from(fullMessage)
+    const raw = Buffer.from(message)
       .toString("base64")
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -319,12 +159,24 @@ export async function sendConfirmedEmail({ draft, sessionId = "default" } = {}) 
       requestBody: { raw }
     });
 
-    // Clear draft on success
-    await clearDraft(sessionId);
-
-    return { success: true, messageId: res.data.id };
+    return {
+      tool: "email",
+      success: true,
+      final: true,
+      data: {
+        to,
+        subject,
+        body,
+        messageId: res.data.id,
+        message: `✅ Email sent successfully to ${to}`
+      }
+    };
   } catch (err) {
-    console.error("sendConfirmedEmail error:", err);
-    return { success: false, error: err.message || String(err) };
+    return {
+      tool: "email",
+      success: false,
+      final: true,
+      error: `Email sending failed: ${err.message}`
+    };
   }
 }

@@ -5,4 +5,4 @@ files/
 server/Claude
 server/Antigravity
 server/tokens/
-utils/
+utils/**

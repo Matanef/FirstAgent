@@ -31,7 +31,9 @@ async function runGit(command) {
 /**
  * Check if there are any staged changes ready to commit
  */
-async function hasStagedChanges() {
+async function hasS
+
+tagedChanges() {
     const result = await runGit("diff --cached --name-only");
     // If stdout has content, there are staged files
     return result.stdout && result.stdout.trim().length > 0;

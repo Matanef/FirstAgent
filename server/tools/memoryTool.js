@@ -1,82 +1,25 @@
 // server/tools/memoryTool.js
-// Memory tool with profile retrieval functionality and structured output
+// COMPLETE FIX: Memory tool with profile retrieval functionality
 
-import { getMemory, saveJSON, reloadMemory, MEMORY_FILE, getProfile, setProfileField, addOrUpdateContact, deleteContact, listContacts, withMemoryLock } from "../memory.js";
+import { getMemory, saveJSON, reloadMemory, MEMORY_FILE } from "../memory.js";
 
 export async function memorytool(request) {
-  const text = (request?.text || request || "").trim();
+  const text = request?.text || request || "";
   const lower = text.toLowerCase();
   const context = request?.context || {};
 
-  // Generic "remember my X is Y" handler (supports email, phone, name, tone, whatsapp)
-const genericRememberMatch = text.match(/remember(?: that)? my (name|email|phone|whatsapp|tone|location) (?:is|:)?\s*(.+)$/i);
-if (genericRememberMatch) {
-  const field = genericRememberMatch[1].toLowerCase();
-  const value = genericRememberMatch[2].trim();
-  if (field && value) {
-    // Map field to profile.self path
-    const fieldMap = {
-      name: "self.name",
-      email: "self.email",
-      phone: "self.phone",
-      whatsapp: "self.whatsapp",
-      tone: "self.tone",
-      location: "self.location"
-    };
-    const path = fieldMap[field] || `self.${field}`;
-    await setProfileField(path, value);
-    return {
-      tool: "memorytool",
-      success: true,
-      final: true,
-      data: { message: `Saved your ${field} as ${value}.`, structured: { identity: { [field]: value } } }
-    };
-  }
-}
-
-  // Helper to build structured summary
-  async function buildSummary() {
-    const mem = await getMemory();
-    const profile = mem.profile || {};
-    const self = profile.self || {};
-    const contacts = profile.contacts || {};
-    const contactEntries = Object.entries(contacts).map(([k, v]) => ({ key: k, name: v.name, email: v.email, phone: v.phone }));
-    const structured = {
-      identity: {
-        name: self.name || profile.name || null,
-        aliases: self.aliases || [],
-        location: self.location || null,
-        email: self.email || null,
-        phone: self.phone || null,
-        tone: self.tone || null
-      },
-      contacts: contactEntries,
-      durable: mem.durable || []
-    };
-
-    let text = "📋 **Here's what I remember about you:**\n\n";
-    if (structured.identity.name) text += `• **Name:** ${structured.identity.name}\n`;
-    if (structured.identity.location) text += `• **Location:** ${structured.identity.location}\n`;
-    if (structured.identity.tone) text += `• **Preferred tone:** ${structured.identity.tone}\n`;
-    text += `\n**Contacts saved:** ${contactEntries.length}\n`;
-    if (contactEntries.length > 0) {
-      text += contactEntries.slice(0, 5).map(c => `• ${c.name}: ${c.email || c.phone || 'No details'}`).join("\n");
-      if (contactEntries.length > 5) text += `\n• ... and ${contactEntries.length - 5} more`;
-    }
-    return { text, structured };
-  }
-
   // --- FORGET LOCATION ---
-  if (lower.includes("forget my location") || lower.includes("clear my location") || lower.includes("remove my location") || lower.includes("delete my location") || context.raw === "forget_location") {
-    const mem = await getMemory();
-    if (mem.profile?.self?.location || mem.profile?.location) {
-      await setProfileField("self.location", undefined);
-      // also remove top-level profile.location if present
-      await withMemoryLock(async () => {
-        const m = await getMemory();
-        if (m.profile?.location) delete m.profile.location;
-        await saveJSON(MEMORY_FILE, m);
-      });
+  if (
+    lower.includes("forget my location") ||
+    lower.includes("clear my location") ||
+    lower.includes("remove my location") ||
+    lower.includes("delete my location") ||
+    context.raw === "forget_location"
+  ) {
+    const memory = await getMemory();
+    if (memory.profile?.location) {
+      delete memory.profile.location;
+      await saveJSON(MEMORY_FILE, memory);
       return {
         tool: "memorytool",
         success: true,
@@ -92,58 +35,122 @@ if (genericRememberMatch) {
     };
   }
 
-  // --- REMEMBER LOCATION (pattern) ---
-  const rememberLocMatch = text.match(/remember(?: that)? my location is (.+)$/i);
-  if (rememberLocMatch) {
-    const city = rememberLocMatch[1].trim();
-    if (city) {
-      await setProfileField("self.location", city);
+  // --- REMEMBER LOCATION ---
+  if (lower.includes("remember my location is ") || lower.includes("remember that my location is ")) {
+    const match = text.match(/remember(?: that)? my location is (.+)$/i);
+    if (match) {
+      const city = match[1].trim();
+      if (city) {
+        const memory = await getMemory();
+        memory.profile.location = city;
+        await saveJSON(MEMORY_FILE, memory);
+        return {
+          tool: "memorytool",
+          success: true,
+          final: true,
+          data: { message: `I've saved your location as ${city}.` }
+        };
+      }
+    }
+  }
+
+  // FIX #5: PROFILE RETRIEVAL - "what do you remember about me?"
+  if (
+    lower.includes("what do you remember") ||
+    lower.includes("what do you know about me") ||
+    lower.includes("tell me about myself") ||
+    lower.includes("what is my information") ||
+    lower.includes("show my profile") ||
+    lower.includes("my profile") ||
+    lower.includes("what's in my profile")
+  ) {
+    const memory = await getMemory();
+    const profile = memory.profile || {};
+
+    if (Object.keys(profile).length === 0) {
       return {
         tool: "memorytool",
         success: true,
         final: true,
-        data: { message: `I've saved your location as ${city}.`, structured: { identity: { location: city } } }
+        data: {
+          profile: {},
+          message: "I don't have any information saved about you yet.\n\nYou can tell me things like:\n• 'remember my name is John'\n• 'remember my location is London'"
+        }
       };
     }
-  }
 
-  // --- ADD CONTACT (simple pattern) ---
-  const addContactMatch = text.match(/add\s+([^\n,]+)\s+as a contact(?:,?\s*email:\s*([^\s,]+))?/i);
-  if (addContactMatch) {
-    const name = addContactMatch[1].trim();
-    const email = addContactMatch[2] ? addContactMatch[2].trim() : undefined;
-    const key = name.toLowerCase().replace(/\s+/g, "_");
-    const contact = { name, email, lastUpdated: new Date().toISOString() };
-    const saved = await addOrUpdateContact(key, contact);
-    return { tool: "memorytool", success: true, final: true, data: { message: `Saved contact ${name}.`, contact: saved } };
-  }
+    // Build profile summary
+    let summary = "📋 **Here's what I remember about you:**\n\n";
+    if (profile.name) summary += `• **Name:** ${profile.name}\n`;
+    if (profile.location) summary += `• **Location:** ${profile.location}\n`;
+    if (profile.email) summary += `• **Email:** ${profile.email}\n`;
+    if (profile.tone) summary += `• **Preferred tone:** ${profile.tone}\n`;
 
-  // --- DELETE CONTACT ---
-  const delMatch = text.match(/delete contact\s+([^\n]+)/i) || text.match(/remove contact\s+([^\n]+)/i);
-  if (delMatch) {
-    const key = delMatch[1].trim().toLowerCase().replace(/\s+/g, "_");
-    const ok = await deleteContact(key);
-    return { tool: "memorytool", success: ok, final: true, data: { message: ok ? `Deleted contact ${key}.` : `No contact named ${key} found.` } };
-  }
+    // Include contacts if any
+    if (profile.contacts && Object.keys(profile.contacts).length > 0) {
+      summary += `\n**Contacts saved:** ${Object.keys(profile.contacts).length}\n`;
+      const contactList = Object.entries(profile.contacts)
+        .slice(0, 5)
+        .map(([key, c]) => `• ${c.name}: ${c.email || c.phone || 'No details'}`)
+        .join('\n');
+      summary += contactList;
+      if (Object.keys(profile.contacts).length > 5) {
+        summary += `\n• ... and ${Object.keys(profile.contacts).length - 5} more`;
+      }
+    }
 
-  // --- PROFILE RETRIEVAL ---
-  if (lower.includes("what do you remember") || lower.includes("show my profile") || lower.includes("what's in my profile") || lower.includes("what do you know about me") || lower.includes("tell me about myself")) {
-    const { text: summaryText, structured } = await buildSummary();
-    const profile = (await getMemory()).profile || {};
-    return { tool: "memorytool", success: true, final: true, data: { profile, message: summaryText, structured } };
-  }
-
-  // --- META: what can you remember ---
-  if (lower.includes("what can you remember") || lower.includes("what do you store") || lower.includes("what information do you keep")) {
     return {
       tool: "memorytool",
       success: true,
       final: true,
       data: {
-        message: `🧠 **Memory Capabilities:**\n\nI can remember:\n• Your name\n• Your location\n• Your email\n• Your preferred communication tone\n• Your contacts (with email/phone)\n\nTo save information, tell me:\n• "remember my name is [name]"\n• "remember my location is [city]"\n• "add [name] as a contact, email: [email]"\n\nTo retrieve information:\n• "what do you remember about me?"\n• "show my profile"\n• "list my contacts"\n\nTo forget information:\n• "forget my location"\n• "delete contact [name]"`
+        profile,
+        message: summary
       }
     };
   }
 
-  return { tool: "memorytool", success: false, final: true, error: "Memory request not understood.\n\nTry:\n• 'what do you remember about me?'\n• 'remember my location is Paris'\n• 'forget my location'" };
+  // FIX #5: META QUESTIONS - "what can you remember?"
+  if (
+    lower.includes("what can you remember") ||
+    lower.includes("what do you store") ||
+    lower.includes("what information do you keep")
+  ) {
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: {
+        message: `🧠 **Memory Capabilities:**
+
+I can remember:
+• Your name
+• Your location
+• Your email
+• Your preferred communication tone
+• Your contacts (with email/phone)
+
+**To save information, just tell me:**
+• "remember my name is [name]"
+• "remember my location is [city]"
+• "add [name] as a contact, email: [email]"
+
+**To retrieve information:**
+• "what do you remember about me?"
+• "show my profile"
+• "list my contacts"
+
+**To forget information:**
+• "forget my location"
+• "delete contact [name]"`
+      }
+    };
+  }
+
+  return {
+    tool: "memorytool",
+    success: false,
+    final: true,
+    error: "Memory request not understood.\n\nTry:\n• 'what do you remember about me?'\n• 'remember my location is Paris'\n• 'forget my location'"
+  };
 }

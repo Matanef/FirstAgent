@@ -1,6 +1,5 @@
 // server/planner.js
-// COMPREHENSIVE FIX: Multi-step planning + proper tool routing
-// Fixes: deterministic confirmation routing, no top-level returns, cleaned helpers
+// COMPLETE MULTI-STEP PLANNER with 6-step improvement sequence (now actually modifies code)
 
 import { llm } from "./tools/llm.js";
 
@@ -8,9 +7,13 @@ import { llm } from "./tools/llm.js";
 // IMPROVEMENT REQUEST DETECTION
 // ============================================================
 
+/**
+ * Detect improvement/self-improvement requests
+ * These require 6-step sequence: githubTrending → review → applyPatch → gitLocal status → add → commit
+ */
 function isImprovementRequest(message) {
   const lower = message.toLowerCase();
-
+  
   const patterns = [
     /improve.*(?:tool|code|file)/i,
     /suggest.*improvement/i,
@@ -22,50 +25,97 @@ function isImprovementRequest(message) {
     /commit[- ]?able.*improvement/i,
     /trending.*patterns.*review/i
   ];
-
+  
   return patterns.some(p => p.test(lower));
 }
 
+/**
+ * Extract target file from improvement request
+ */
 function extractImprovementTarget(message) {
   const lower = message.toLowerCase();
-
+  
+  // Match "our X tool" or "the X tool"
   const toolMatch = message.match(/(?:our|the)\s+([a-z]+)\s+tool/i);
-  if (toolMatch) return `${toolMatch[1]}.js`;
-
+  if (toolMatch) {
+    return `${toolMatch[1]}.js`;
+  }
+  
+  // Match specific tool names
   const tools = ['email', 'file', 'search', 'news', 'weather', 'finance', 'github', 'review', 'calculator'];
   for (const tool of tools) {
-    if (lower.includes(tool)) return `${tool}.js`;
+    if (lower.includes(tool)) {
+      return `${tool}.js`;
+    }
   }
-
-  return 'email.js';
+  
+  return 'email.js'; // Default fallback
 }
 
+/**
+ * Generate 6-step improvement sequence
+ * NOW INCLUDES applyPatch to actually modify the code!
+ */
 function generateImprovementSteps(message) {
   const target = extractImprovementTarget(message);
   const baseName = target.replace('.js', '');
-
+  
+  // Extract search query for githubTrending
   let searchQuery = `${baseName} patterns best practices`;
   const trendingMatch = message.match(/trending.*for\s+([^,]+?)(?:\s+patterns|\s+and|,|$)/i);
-  if (trendingMatch) searchQuery = trendingMatch[1].trim();
-
+  if (trendingMatch) {
+    searchQuery = trendingMatch[1].trim();
+  }
+  
   const commitMsg = `Improved ${baseName} tool based on trending patterns`;
-
-  console.log(`📋 Generating 5-step improvement sequence:`);
+  
+  console.log(`📋 Generating 6-step improvement sequence:`);
   console.log(`   Target: ${target}`);
   console.log(`   Search: ${searchQuery}`);
-
+  console.log(`   Commit: ${commitMsg}`);
+  
   return [
-    { tool: 'githubTrending', input: searchQuery, context: {}, reasoning: 'Search trending repositories' },
-    { tool: 'review', input: target, context: {}, reasoning: `Review current ${target}` },
-    { tool: 'applyPatch', input: target },
-    { tool: 'gitLocal', input: 'status', context: {}, reasoning: 'Check git status' },
-    { tool: 'gitLocal', input: `add ${target}`, context: {}, reasoning: `Stage ${target}` },
-    { tool: 'gitLocal', input: 'commit', context: { raw: commitMsg }, reasoning: 'Commit improvements' }
+    {
+      tool: 'githubTrending',
+      input: searchQuery,
+      context: {},
+      reasoning: 'Search trending repositories for patterns'
+    },
+    {
+      tool: 'review',
+      input: target,
+      context: {},
+      reasoning: `Review current ${target} implementation`
+    },
+    {
+      tool: 'applyPatch',
+      input: target,
+      context: { targetFile: target },
+      reasoning: `Apply improvements to ${target} based on review and patterns`
+    },
+    {
+      tool: 'gitLocal',
+      input: 'status',
+      context: {},
+      reasoning: 'Check git status after changes'
+    },
+    {
+      tool: 'gitLocal',
+      input: `add ${target}`,
+      context: {},
+      reasoning: `Stage ${target} for commit`
+    },
+    {
+      tool: 'gitLocal',
+      input: 'commit',
+      context: { raw: commitMsg },
+      reasoning: 'Commit improvements'
+    }
   ];
 }
 
 // ============================================================
-// SMALL HELPERS / CERTAINTY CHECKS
+// CERTAINTY LAYER
 // ============================================================
 
 function isMathExpression(msg) {
@@ -83,13 +133,12 @@ function isSimpleDateTime(msg) {
   );
 }
 
-function isCancelCommand(text) {
-  const t = text.trim().toLowerCase();
-  return t === "cancel" || t === "no" || t === "discard" || t === "don't send" || t === "dont send";
+function hasExplicitFilePath(text) {
+  return /[a-z]:[\\/]/i.test(text);
 }
 
 function isSendItCommand(text) {
-  const trimmed = (text || "").trim().toLowerCase();
+  const trimmed = text.trim().toLowerCase();
   return (
     trimmed === "send it" ||
     trimmed === "send" ||
@@ -97,16 +146,8 @@ function isSendItCommand(text) {
     trimmed === "yes, send it" ||
     trimmed === "send the email" ||
     trimmed === "confirm" ||
-    (trimmed === "yes" && (text || "").length < 10)
+    (trimmed === "yes" && text.length < 10)
   );
-}
-
-function hasExplicitFilePath(text) {
-  return /[a-z]:[\\/]/i.test(text) && !/[a-z]+:\/\//i.test(text);
-}
-
-function isUrl(text) {
-  return /^https?:\/\//i.test((text || "").trim());
 }
 
 const WEATHER_KEYWORDS = [
@@ -137,7 +178,6 @@ function hereIndicatesWeather(text) {
   return containsKeyword(lower, WEATHER_KEYWORDS);
 }
 
-// FIX #1 (Weather): Extract city ONLY from explicit "in <city>" patterns
 function extractCity(message) {
   const lower = message.toLowerCase().trim();
   const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
@@ -152,58 +192,23 @@ function formatCity(city) {
 }
 
 // ============================================================
-// DETERMINISTIC EMAIL CONFIRMATION CHECK
-// (kept as a helper to avoid top-level returns)
-// ============================================================
-
-/**
- * Returns an array of deterministic tool uses if the user text is a short
- * confirmation/cancel command for email drafts, otherwise null.
- */
-function checkEmailConfirm(userText, chatContext = {}) {
-  const trimmed = (userText || "").trim().toLowerCase();
-  const sessionId = chatContext?.sessionId || "default";
-
-  const sendCommands = new Set(["send it", "send", "yes send it", "confirm", "yes"]);
-  const cancelCommands = new Set(["cancel", "discard", "no", "dont send", "don't send"]);
-
-  if (sendCommands.has(trimmed)) {
-    return [{ tool: "email_confirm", input: "", context: { action: "send_confirmed", sessionId }, reasoning: "certainty_email_confirm" }];
-  }
-  if (cancelCommands.has(trimmed)) {
-    return [{ tool: "email_confirm", input: "", context: { action: "cancel", sessionId }, reasoning: "certainty_email_cancel" }];
-  }
-  return null;
-}
-
-// ============================================================
-// LLM CLASSIFIER
+// LLM CLASSIFIER (For single-step plans)
 // ============================================================
 
 function extractContextSignals(message) {
   const lower = message.toLowerCase();
   const signals = [];
-
+  
   if (hasExplicitFilePath(message)) signals.push("CONTAINS_FILE_PATH");
-  if (/\b(github|repo|repository)\b/i.test(lower)) signals.push("MENTIONS_GITHUB");
+  if (/\b(github|repo|repository)\b/i.test(message)) signals.push("MENTIONS_GITHUB");
   if (/\b(trending|popular|top)\b/i.test(lower)) signals.push("MENTIONS_TRENDING");
   if (/\b(stock|share|ticker)\b/i.test(lower)) signals.push("MENTIONS_FINANCE");
   if (containsKeyword(lower, WEATHER_KEYWORDS)) signals.push("MENTIONS_WEATHER");
   if (/\b(news|headline|article)\b/i.test(lower)) signals.push("MENTIONS_NEWS");
-  if (/\b(youtube|video|watch)\b/i.test(lower)) signals.push("MENTIONS_YOUTUBE");
   if (/\b(email|mail)\b/i.test(lower)) signals.push("MENTIONS_EMAIL");
-  if (/\b(file|folder|directory)\b/i.test(lower)) signals.push("MENTIONS_FILE_CONCEPTS");
   if (/\b(review|inspect|examine)\b/i.test(lower)) signals.push("MENTIONS_REVIEW");
-  if (/\b(search|look up|find|google)\b/i.test(lower)) signals.push("MENTIONS_SEARCH");
   if (/\b(improve|improvement|patch)\b/i.test(lower)) signals.push("MENTIONS_SELF_IMPROVEMENT");
-  if (/\b(remember|forget|profile)\b/i.test(lower)) signals.push("MENTIONS_MEMORY");
-  if (/\b(sport|score|match|game|league|team)\b/i.test(lower)) signals.push("MENTIONS_SPORTS");
-
-  // FIX #2: Detect LOTR joke requests
-  if (/\b(joke|tell me|funny|lotr|lord of the rings|gandalf|frodo|aragorn|sam|legolas|gimli|gollum)\b/i.test(lower)) {
-    signals.push("MENTIONS_LOTR_JOKE");
-  }
-
+  
   return signals;
 }
 
@@ -229,14 +234,13 @@ AVAILABLE TOOLS:
 - tasks: Task management
 - calculator: Math calculations
 - selfImprovement: Query improvements
-- github: GitHub API
+- github: GitHub API (repos, issues, PRs)
 - githubTrending: Trending repositories
 - gitLocal: Local git operations
 - review: Code review
+- applyPatch: Apply code improvements
 - memorytool: Manage profile
 - nlp_tool: Text analysis (ONLY when explicitly requested)
-- lotrJokes: Lord of the Rings jokes (ALWAYS use for LOTR/Gandalf/Aragorn/etc joke requests)
-- contacts: Contact management
 - llm: General conversation
 
 USER MESSAGE:
@@ -244,16 +248,11 @@ USER MESSAGE:
 ${signalText}
 
 CRITICAL RULES:
-1. "tell me an aragorn joke" → lotrJokes (NOT youtube)
-2. "tell me a gandalf joke" → lotrJokes (NOT youtube)
-3. "LOTR joke" → lotrJokes (NOT youtube)
-4. "list repos" → github (NOT file)
-5. "list D:/..." → file
-6. "trending" → githubTrending
-7. NEVER use nlp_tool unless explicitly asked for "sentiment" or "analyze text"
-8. For improvement requests, return "selfImprovement"
-9. "latest news about AI" → news (the news tool will handle filtering)
-10. Follow-up sports questions → sports (NOT github)
+1. "list repos" → github (NOT file)
+2. "list D:/..." → file
+3. "trending" → githubTrending
+4. NEVER use nlp_tool unless explicitly asked for "sentiment" or "analyze text"
+5. For improvement requests, return "selfImprovement"
 
 Respond with ONLY the tool name.`;
 
@@ -262,12 +261,12 @@ Respond with ONLY the tool name.`;
     if (!response.success || !response.data?.text) {
       return { intent: "llm", reason: "fallback" };
     }
-
+    
     const text = response.data.text.trim().toLowerCase();
     const intent = text.split("|")[0].trim().replace(/[^a-z_]/g, "");
-
+    
     console.log("🧠 LLM classified:", intent);
-
+    
     return { intent, reason: "llm_classified", context: {} };
   } catch (err) {
     console.error("LLM intent error:", err.message);
@@ -276,89 +275,84 @@ Respond with ONLY the tool name.`;
 }
 
 // ============================================================
-// MAIN PLAN FUNCTION
+// MAIN PLAN FUNCTION - Returns ARRAY of steps
 // ============================================================
 
-export async function plan({ message, chatContext = {} }) {
-  const trimmed = (message || "").trim();
+export async function plan({ message }) {
+  const trimmed = message.trim();
   const lower = trimmed.toLowerCase();
-
+  
   console.log("🧠 Planning steps for:", trimmed);
-
-  // Multi-step: Improvement requests
+  
+  // ──────────────────────────────────────────────────────────
+  // MULTI-STEP: Improvement Requests (6 steps now!)
+  // ──────────────────────────────────────────────────────────
   if (isImprovementRequest(trimmed)) {
-    console.log("🎯 Detected improvement request - generating 5-step sequence");
+    console.log("🎯 Detected improvement request - generating 6-step sequence");
     return generateImprovementSteps(trimmed);
   }
-
-  // Certainty: explicit "remember my ..." should go to memorytool
-  if (/\bremember(?: that)? my (name|email|phone|whatsapp|tone|location)\b/i.test(trimmed)) {
-    return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_explicit_remember" }];
-  }
-
-  // Deterministic short-command checks (email confirmations)
-  const certaintyEmail = checkEmailConfirm(trimmed, chatContext);
-  if (certaintyEmail) return certaintyEmail;
-
-  // Certainty Layer
+  
+  // ──────────────────────────────────────────────────────────
+  // SINGLE-STEP: Certainty Layer
+  // ──────────────────────────────────────────────────────────
+  
+  // Math
   if (isMathExpression(trimmed)) {
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_math" }];
   }
-
+  
+  // DateTime
   if (isSimpleDateTime(trimmed)) {
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_datetime" }];
   }
-
-  if (isSendItCommand(trimmed)) {
-    // If planner reaches here, route to email_confirm with sessionId from chatContext
-    return [{ tool: "email_confirm", input: trimmed, context: { action: "send_confirmed", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_email_confirm" }];
+  
+  // Email confirmation
+  if (isSendItCommand(lower)) {
+    return [{ tool: "email_confirm", input: trimmed, context: { action: "send_confirmed" }, reasoning: "certainty_email_confirm" }];
   }
-
+  
+  // Forget location
   if (locationWithForgetLike(lower)) {
     return [{ tool: "memorytool", input: trimmed, context: { raw: "forget_location" }, reasoning: "certainty_forget_location" }];
   }
-
-  // FIX #1 (Weather): Only use geolocation for "weather here"
+  
+  // Weather here
   if (hereIndicatesWeather(lower)) {
     return [{ tool: "weather", input: trimmed, context: { city: "__USE_GEOLOCATION__" }, reasoning: "certainty_here_weather" }];
   }
-
-  // FIX #1 (Weather): Extract city ONLY from explicit patterns
+  
+  // Weather with city
   if (containsKeyword(lower, WEATHER_KEYWORDS)) {
     const extracted = extractCity(trimmed);
-    const context = extracted ? { city: extracted } : { city: "__USE_GEOLOCATION__" };
+    const context = extracted ? { city: extracted } : {};
     return [{ tool: "weather", input: trimmed, context, reasoning: "certainty_weather" }];
   }
-
+  
+  // Explicit file path
   if (hasExplicitFilePath(trimmed)) {
     return [{ tool: "file", input: trimmed, context: {}, reasoning: "certainty_file_path" }];
   }
-
-  if (isUrl(trimmed)) {
-    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
-  }
-
-  if (isCancelCommand(trimmed)) {
-    return [{ tool: "email_confirm", input: trimmed, context: { action: "cancel", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_email_cancel" }];
-  }
-
-  // LLM Classifier
+  
+  // ──────────────────────────────────────────────────────────
+  // SINGLE-STEP: LLM Classifier
+  // ──────────────────────────────────────────────────────────
+  
   const contextSignals = extractContextSignals(trimmed);
   console.log("🧠 Context signals:", contextSignals);
-
+  
   const detection = await detectIntentWithLLM(trimmed, contextSignals);
   console.log("🎯 LLM classified:", detection.intent);
-
+  
   // Normalize tool name
   const toolMap = {
     'financefundamentals': 'financeFundamentals',
     'nlptool': 'nlp_tool',
     'githubtrendin': 'githubTrending',
     'gitlocal': 'gitLocal',
-    'lotrjokes': 'lotrJokes'
+    'applypatch': 'applyPatch'
   };
   const tool = toolMap[detection.intent] || detection.intent;
-
+  
   return [{
     tool,
     input: trimmed,

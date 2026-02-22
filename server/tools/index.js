@@ -1,5 +1,5 @@
 // server/tools/index.js
-// PHASE 3 COMPLETE: All tools including review
+// COMPLETE: All tools including applyPatch
 
 import { calculator } from "./calculator.js";
 import { weather } from "./weather.js";
@@ -20,11 +20,10 @@ import { webDownload } from "./webDownload.js";
 import { selfImprovement } from "./selfImprovement.js";
 import { github } from "./github.js";
 import { gitLocal } from "./gitLocal.js";
-import { review } from "./review.js";  // NEW: Review tool
+import { review } from "./review.js";
 import { nlpTool as nlp_tool } from "./nlp.js";
 import { githubTrending } from "./githubTrending.js";
-import { email_confirm } from "./emailConfirm.js";
-
+import { applyPatch } from "./applyPatch.js";  // NEW
 
 export const TOOLS = {
   calculator,
@@ -46,10 +45,10 @@ export const TOOLS = {
   selfImprovement,
   github,
   gitLocal,
-  review,  // NEW: Code review tool
+  review,
   nlp_tool,
   githubTrending,
-  email_confirm
+  applyPatch  // NEW: Code patching tool
 };
 
 // Validate all tools are functions at startup
