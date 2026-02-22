@@ -1,3 +1,4 @@
+Here is the improved code:
 
 // server/tools/selfImprovement.js
 import { getRecentImprovements, generateSummaryReport } from "../telemetryAudit.js";
@@ -35,20 +36,16 @@ export async function selfImprovement(query) {
         byCategory[cat].push(imp);
       }
 
-      const text = improvements
-        .slice(0, 10)
-        .map((imp) => `\u2022 ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
-        .join('\n');
-
       // Build HTML report
       const html = `
         <div class="improvements-report">
           <h2>🔧 Recent Self-Improvements</h2>
+          
           ${Object.entries(byCategory).map(([category, items]) => `
             <div class="improvement-category">
               <h3>${category.charAt(0).toUpperCase() + category.slice(1)}</h3>
               <ul class="improvement-list">
-                ${items.map((imp) => `
+                ${items.map(imp => `
                   <li class="improvement-item">
                     <div class="improvement-action">${imp.action}</div>
                     ${imp.reason ? `<div class="improvement-reason">${imp.reason}</div>` : ''}
@@ -59,13 +56,21 @@ export async function selfImprovement(query) {
               </ul>
             </div>
           `).join('')}
+          
           <div class="improvement-summary">
             <p><strong>Total improvements:</strong> ${improvements.length}</p>
             <p><strong>Categories:</strong> ${Object.keys(byCategory).join(', ')}</p>
           </div>
         </div>
+        
+        <style>
+          /* CSS styles */
+        </style>
 
-      `;
+      const text = improvements
+        .slice(0, 10)
+        .map(imp => `• ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
+        .join('\n');
 
       return {
         tool: "selfImprovement",
@@ -86,6 +91,7 @@ export async function selfImprovement(query) {
       const html = `
         <div class="accuracy-report">
           <h2>🎯 Routing Accuracy Report</h2>
+          
           <div class="accuracy-stats">
             <div class="stat-box">
               <div class="stat-value">${report.successRate.toFixed(1)}%</div>
@@ -100,18 +106,22 @@ export async function selfImprovement(query) {
               <div class="stat-label">Low Confidence</div>
             </div>
           </div>
+
           <h3>By Tool</h3>
           <table class="accuracy-table">
             <thead>
               <tr>
-                <th>Tool</th><th>Total</th><th>Successes</th>
-                <th>Success Rate</th><th>Avg Confidence</th>
+                <th>Tool</th>
+                <th>Total</th>
+                <th>Successes</th>
+                <th>Success Rate</th>
+                <th>Avg Confidence</th>
               </tr>
             </thead>
             <tbody>
               ${Object.entries(report.byTool)
-                .sort((a, b) => b[1].total - a[1].total)
-                .map(([tool, stats]) => `
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([tool, stats]) => `
                   <tr>
                     <td>${tool}</td>
                     <td>${stats.total}</td>
@@ -123,14 +133,19 @@ export async function selfImprovement(query) {
             </tbody>
           </table>
         </div>
-
-      `;
+        
+        <style>
+          /* CSS styles */
+        </style>
 
       return {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: { html, report }
+        data: {
+          html,
+          report
+        }
       };
     }
 
@@ -144,17 +159,20 @@ export async function selfImprovement(query) {
           tool: "selfImprovement",
           success: true,
           final: true,
-          data: { text: "✅ No significant issues detected! Routing performance looks good." }
+          data: {
+            text: "✅ No significant issues detected! Routing performance looks good."
+          }
         };
       }
 
       const html = `
         <div class="issues-report">
           <h2>⚠️ Detected Issues & Recommendations</h2>
+          
           ${patterns.length > 0 ? `
             <h3>Patterns Detected</h3>
             <ul class="issues-list">
-              ${patterns.map((p) => `
+              ${patterns.map(p => `
                 <li class="issue-item">
                   <div class="issue-type">${p.type.replace(/_/g, ' ').toUpperCase()}</div>
                   <div class="issue-recommendation">${p.recommendation}</div>
@@ -162,10 +180,11 @@ export async function selfImprovement(query) {
               `).join('')}
             </ul>
           ` : ''}
+
           ${recommendations.length > 0 ? `
             <h3>Recommendations</h3>
             <ul class="recommendations-list">
-              ${recommendations.map((r) => `
+              ${recommendations.map(r => `
                 <li class="recommendation-item priority-${r.priority}">
                   <div class="recommendation-header">
                     <span class="recommendation-priority">${r.priority.toUpperCase()}</span>
@@ -177,14 +196,20 @@ export async function selfImprovement(query) {
             </ul>
           ` : ''}
         </div>
-
-      `;
+        
+        <style>
+          /* CSS styles */
+        </style>
 
       return {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: { html, patterns, recommendations }
+        data: {
+          html,
+          patterns,
+          recommendations
+        }
       };
     }
 
@@ -192,9 +217,10 @@ export async function selfImprovement(query) {
     if (lower.includes("review your") || lower.includes("suggest improvement") || (lower.includes("make you") && (lower.includes("smarter") || lower.includes("faster")))) {
       const { review } = await import("./review.js");
 
+      // Default to reviewing the planner and executor
       const target = lower.includes("planner") ? "server/planner.js" :
         lower.includes("executor") ? "server/executor.js" :
-          "server/planner.js";
+          "server/planner.js"; // Default to planner as it's the most critical
 
       const reviewResult = await review(`review ${target}`);
 
@@ -222,7 +248,11 @@ export async function selfImprovement(query) {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: { html: htmlReport, text: "Weekly report generated. This can be sent via email.", report: htmlReport }
+        data: {
+          html: htmlReport,
+          text: "Weekly report generated. This can be sent via email.",
+          report: htmlReport
+        }
       };
     }
 
@@ -243,3 +273,4 @@ export async function selfImprovement(query) {
     };
   }
 }
+

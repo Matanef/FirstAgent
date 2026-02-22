@@ -7,8 +7,12 @@ import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
 import { getMemory } from "../memory.js";
 
+// FIX: Removed ^ and $ anchors — regex now matches email anywhere in a sentence.
 const emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+
 const subjectRegex = /subject[:\s]+([^\n]+)/i;
+
+// FIX: "saying" body extraction now cuts off trailing noise like "with the planner"
 const sayingRegex = /saying[:\s]+(.+?)(?:\s+with\s+(?:the\s+)?(?:planner|executor|subject|attachment)|$)/is;
 
 const attachmentPatterns = [
@@ -17,18 +21,25 @@ const attachmentPatterns = [
   /send\s+(?:the\s+)?(.+?\.(?:pdf|docx|xlsx|png|jpg|jpeg|txt|csv))/gi
 ];
 
+/**
+ * Strip markdown formatting characters that wrap email addresses.
+ * e.g.  __efratimatan@gmail.com__  →  efratimatan@gmail.com
+ *       **john@example.com**       →  john@example.com
+ */
 function stripMarkdown(text) {
   return text.replace(/[_*`~]/g, "");
 }
 
 async function parseEmailRequest(query) {
-  await getMemory();
+  await getMemory(); // keep memory warm; used by resolveContact
 
-  let to = null;
+  let to      = null;
   let subject = "Message from AI Agent";
-  let body = query;
+  let body    = query;
 
+  // FIX: clean markdown before matching email
   const cleanQuery = stripMarkdown(query);
+
   const emailMatch = cleanQuery.match(emailRegex);
   if (emailMatch) {
     to = emailMatch[0].toLowerCase();
@@ -44,22 +55,32 @@ async function parseEmailRequest(query) {
     }
   }
 
+  // Subject
   const subjectMatch = cleanQuery.match(subjectRegex);
   if (subjectMatch) {
     subject = subjectMatch[1].trim();
   }
 
-  let bodyMatch = query.match(sayingRegex);
-  if (bodyMatch) {
-    body = bodyMatch[1].trim();
+  // Body — prefer explicit "saying …" clause
+  const sayingMatch = query.match(sayingRegex);
+  if (sayingMatch) {
+    body = sayingMatch[1].trim();
   } else {
-    body = query
-      .replace(/send (?:an )?email to [^\s]+/i, "")
-      .replace(/with the planner/i, "")
-      .replace(/subject[:\s]+[^\n]+/i, "")
-      .trim();
+    // Fallback: text after "about <topic> saying <body>"
+    const aboutSayingMatch = query.match(/about\s+.+?\s+saying\s+(.+)/is);
+    if (aboutSayingMatch) {
+      body = aboutSayingMatch[1].trim();
+    } else {
+      // Last-resort: strip routing noise from the raw query
+      body = query
+        .replace(/send (?:an )?email to [^\s]+/i, "")
+        .replace(/with the planner/i, "")
+        .replace(/subject[:\s]+[^\n]+/i, "")
+        .trim();
+    }
   }
 
+  // Attachments
   const requestedAttachments = [];
   for (const pattern of attachmentPatterns) {
     let match;
@@ -73,9 +94,9 @@ async function parseEmailRequest(query) {
 
 async function findAttachment(filename) {
   const searchPaths = [
-    path.resolve(PROJECT_ROOT, "uploads", filename),
+    path.resolve(PROJECT_ROOT, "uploads",   filename),
     path.resolve(PROJECT_ROOT, "downloads", filename),
-    path.resolve(PROJECT_ROOT, filename)
+    path.resolve(PROJECT_ROOT,              filename)
   ];
   for (const p of searchPaths) {
     try { await fs.access(p); return p; } catch { /* try next */ }
@@ -83,6 +104,9 @@ async function findAttachment(filename) {
   return null;
 }
 
+// ─────────────────────────────────────────────
+// DRAFT
+// ─────────────────────────────────────────────
 export async function email(query) {
   try {
     const { to, subject, body, requestedAttachments } = await parseEmailRequest(query);
@@ -92,8 +116,7 @@ export async function email(query) {
         tool: "email",
         success: false,
         final: true,
-        error:
-          "Could not detect recipient email address.\n\nTry:\n• 'send email to john@example.com'\n• 'email mom about dinner' (if mom is a saved contact)"
+        error: "Could not detect recipient email address.\n\nTry:\n• 'send email to john@example.com'\n• 'email mom about dinner' (if mom is a saved contact)"
       };
     }
 
@@ -112,10 +135,7 @@ export async function email(query) {
       final: true,
       data: {
         mode: "draft",
-        to,
-        subject,
-        body,
-        attachments,
+        to, subject, body, attachments,
         pendingEmail: { to, subject, body, attachments },
         message:
           `📧 **Email Draft:**\n\n` +
@@ -134,9 +154,12 @@ export async function email(query) {
   }
 }
 
+// ─────────────────────────────────────────────
+// SEND
+// ─────────────────────────────────────────────
 export async function sendConfirmedEmail({ to, subject, body, attachments = [] }) {
   try {
-    const auth = await getAuthorizedClient();
+    const auth  = await getAuthorizedClient();
     const gmail = google.gmail({ version: "v1", auth });
 
     const raw = Buffer.from(
@@ -151,9 +174,7 @@ export async function sendConfirmedEmail({ to, subject, body, attachments = [] }
     const res = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
 
     return {
-      tool: "email",
-      success: true,
-      final: true,
+      tool: "email", success: true, final: true,
       data: { to, subject, body, messageId: res.data.id, message: `✅ Email sent successfully to ${to}` }
     };
   } catch (err) {
