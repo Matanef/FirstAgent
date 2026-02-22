@@ -178,6 +178,13 @@ Tool used: ${tool}
 Tool result (structured data):
 ${JSON.stringify(toolResult, null, 2)}
 
+${toolResult?.success === false ? `ERROR ANALYSIS INSTRUCTIONS:
+- Explain WHAT went wrong in plain language
+- Explain WHY it likely happened (root cause)
+- Suggest HOW to resolve it with specific steps
+- If applicable, provide a code snippet or command that would fix the issue
+- Be concise but actionable
+` : ''}
 Formatting instructions:
 - Produce a clear, natural-language answer
 - Use profile information naturally when relevant
@@ -412,13 +419,42 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const { tool, output: result } = stepResult;
 
+  // LLM-REVIEWED ERRORS: instead of returning raw error strings,
+  // pass errors through the LLM for explanation + fix suggestions
   if (!stepResult.success) {
-    return {
-      reply: result?.error || result?.data?.error || "Tool execution failed.",
-      tool,
-      success: false,
-      final: true
-    };
+    const errorText = result?.error || result?.data?.error || "Tool execution failed.";
+    try {
+      const errorExplanation = await summarizeWithLLM({
+        userQuestion: getMessageText(message),
+        toolResult: {
+          tool,
+          success: false,
+          error: errorText,
+          data: result?.data || {},
+          stateGraph
+        },
+        conversationId,
+        tool,
+        sentiment,
+        entities,
+        stateGraph,
+        onChunk
+      });
+      return {
+        reply: errorExplanation.reply,
+        tool,
+        success: false,
+        final: true
+      };
+    } catch (llmErr) {
+      console.warn("[finalizeStep] LLM error review failed, returning raw error:", llmErr.message);
+      return {
+        reply: errorText,
+        tool,
+        success: false,
+        final: true
+      };
+    }
   }
 
   // SPECIAL CASE: memorytool, selfImprovement, applyPatch - No LLM summarization

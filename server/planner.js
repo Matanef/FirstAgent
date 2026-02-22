@@ -27,7 +27,7 @@ function listAvailableTools(toolsDir = path.resolve(process.cwd(), "server", "to
 
 /**
  * Detect improvement/self-improvement requests
- * These require a multi-step sequence: githubTrending → review → (applyPatch or llm fallback) → gitLocal steps or llm fallback
+ * These require a multi-step sequence: githubTrending → review → applyPatch (or llm fallback)
  */
 function isImprovementRequest(message) {
   const lower = (message || "").toLowerCase();
@@ -85,20 +85,20 @@ function generateImprovementSteps(message, availableTools = []) {
     searchQuery = trendingMatch[1].trim();
   }
 
-  const commitMsg = `Improved ${baseName} tool based on trending patterns`;
-
   console.log(`📋 Generating safe improvement sequence:`);
   console.log(`   Target: ${target}`);
   console.log(`   Search: ${searchQuery}`);
-  console.log(`   Commit: ${commitMsg}`);
 
   const plan = [];
+
+  const substitutions = [];
 
   // Step 1: githubTrending (safe if available, otherwise llm fallback)
   if (availableTools.includes('githubTrending')) {
     plan.push({ tool: 'githubTrending', input: searchQuery, context: {}, reasoning: 'Search trending repositories for patterns' });
   } else {
     plan.push({ tool: 'llm', input: `Search summary: list best practices for ${baseName} patterns.`, context: {}, reasoning: 'fallback_githubTrending' });
+    substitutions.push('githubTrending → llm (not available)');
   }
 
   // Step 2: review (safe if available, otherwise llm fallback)
@@ -106,6 +106,7 @@ function generateImprovementSteps(message, availableTools = []) {
     plan.push({ tool: 'review', input: target, context: {}, reasoning: `Review current ${target} implementation` });
   } else {
     plan.push({ tool: 'llm', input: `Review summary: analyze ${target} and list issues and improvement suggestions.`, context: {}, reasoning: 'fallback_review' });
+    substitutions.push('review → llm (not available)');
   }
 
   // Step 3: applyPatch (only if available) else produce patch text via llm
@@ -113,15 +114,20 @@ function generateImprovementSteps(message, availableTools = []) {
     plan.push({ tool: 'applyPatch', input: target, context: { targetFile: target }, reasoning: `Apply improvements to ${target} based on review and patterns` });
   } else {
     plan.push({ tool: 'llm', input: `Propose a patch (diff) for ${target} that implements the suggested improvements from the review.`, context: {}, reasoning: 'generate_patch_text' });
+    substitutions.push('applyPatch → llm (not available)');
   }
 
-  // Step 4-6: gitLocal steps or llm fallback instructions
+  // Steps 4-5: gitLocal status + add (no commit - unreliable due to staging issues)
   if (availableTools.includes('gitLocal')) {
     plan.push({ tool: 'gitLocal', input: 'status', context: {}, reasoning: 'Check git status after changes' });
     plan.push({ tool: 'gitLocal', input: `add ${target}`, context: {}, reasoning: `Stage ${target} for commit` });
-    plan.push({ tool: 'gitLocal', input: 'commit', context: { raw: commitMsg }, reasoning: 'Commit improvements' });
   } else {
-    plan.push({ tool: 'llm', input: `Provide git commands to apply the patch for ${target} and commit with message: ${commitMsg}`, context: {}, reasoning: 'git_instructions_fallback' });
+    plan.push({ tool: 'llm', input: `Provide git commands to check status and stage ${target}`, context: {}, reasoning: 'git_instructions_fallback' });
+    substitutions.push('gitLocal → llm (not available)');
+  }
+
+  if (substitutions.length > 0) {
+    console.log(`⚠️ Tool substitutions: ${substitutions.join(', ')}`);
   }
 
   return plan;
@@ -161,6 +167,25 @@ function isSendItCommand(text) {
     trimmed === "confirm" ||
     (trimmed === "yes" && (text || "").length < 10)
   );
+}
+
+function isCancelCommand(text) {
+  const trimmed = (text || "").trim().toLowerCase();
+  return (
+    trimmed === "cancel" ||
+    trimmed === "discard" ||
+    trimmed === "don't send" ||
+    trimmed === "dont send" ||
+    trimmed === "never mind" ||
+    trimmed === "nevermind" ||
+    trimmed === "abort"
+  );
+}
+
+function isMemoryWriteCommand(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  return /^remember\s+(my\s+|that\s+|the\s+)?/i.test(lower);
 }
 
 const WEATHER_KEYWORDS = [
@@ -330,7 +355,7 @@ export async function plan({ message, chatContext = {} }) {
   // MULTI-STEP: Improvement Requests (safe plan)
   // ──────────────────────────────────────────────────────────
   if (isImprovementRequest(trimmed)) {
-    console.log("[planner] Detected improvement request - generating safe improvement sequence");
+    console.log(`🎯 Detected improvement request - generating 5-step sequence`);
     const planSteps = generateImprovementSteps(trimmed, availableTools);
     console.log("[planner] improvement plan steps:", planSteps.map(s => s.tool).join(" -> "));
     return planSteps;
@@ -356,6 +381,18 @@ export async function plan({ message, chatContext = {} }) {
   if (isSendItCommand(lower)) {
     console.log("[planner] certainty branch: email_confirm");
     return [{ tool: "email_confirm", input: trimmed, context: { action: "send_confirmed", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_email_confirm" }];
+  }
+
+  // Cancel / discard
+  if (isCancelCommand(lower)) {
+    console.log("[planner] certainty branch: cancel");
+    return [{ tool: "email_confirm", input: trimmed, context: { action: "cancel", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_cancel" }];
+  }
+
+  // Memory write ("remember my email is X", "remember that X")
+  if (isMemoryWriteCommand(lower)) {
+    console.log("[planner] certainty branch: memory_write");
+    return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_memory_write" }];
   }
 
   // Forget location

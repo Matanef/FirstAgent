@@ -73,9 +73,23 @@ export async function executeAgent({ message, conversationId, clientIp, onChunk,
         }
 
         // Build message object for this step
+        // CONTEXT PIPING: enrich step context with previous step outputs
+        // so downstream tools (e.g. applyPatch) can use review/trending results
+        const enrichedContext = { ...(step.context || {}) };
+        if (stateGraph.length > 0) {
+            for (const prev of stateGraph) {
+                if (prev.tool === 'review' && prev.success) {
+                    enrichedContext.reviewSuggestions = prev.output;
+                }
+                if (prev.tool === 'githubTrending' && prev.success) {
+                    enrichedContext.trendingPatterns = prev.output;
+                }
+            }
+        }
+
         const stepMessage = {
             text: step.input !== undefined ? step.input : queryText,
-            context: step.context || {}
+            context: enrichedContext
         };
 
         // Execute the tool

@@ -88,8 +88,34 @@ function getFileIcon(name, isDir) {
   return icons[ext] || "📄";
 }
 
+// Guard: refuse inputs that look like natural language, not file paths
+function looksLikeNaturalLanguage(input) {
+  if (!input || typeof input !== "string") return false;
+  const lower = input.toLowerCase().trim();
+  // If it contains an explicit drive path, it's not NL
+  if (/^[a-z]:[\\/]/i.test(lower)) return false;
+  // If it looks like a relative path with slashes, it's probably a path
+  if (/^[a-z0-9._\-]+[\\/]/i.test(lower)) return false;
+  // Count question-like or conversational words
+  const nlSignals = /\b(what|how|why|when|who|where|can|could|would|should|tell|help|explain|please|about|the weather|my email|trending|improve|review and)\b/gi;
+  const matches = lower.match(nlSignals) || [];
+  return matches.length >= 2;
+}
+
 export async function file(request) {
   try {
+    // NL guard: refuse ambiguous inputs that look like natural language
+    if (looksLikeNaturalLanguage(request)) {
+      console.log(`[file] ❌ NL guard: input looks like natural language, refusing: "${request}"`);
+      return {
+        tool: "file",
+        success: false,
+        final: true,
+        error: `This doesn't look like a file path: "${request}"\n\nTo browse files, try:\n- "server/tools" (relative path)\n- "D:/local-llm-ui/server" (absolute path)\n- "." (project root)`,
+        reasoning: "Input rejected by NL guard - looks like natural language, not a file path"
+      };
+    }
+
     const { cleaned, resolved, sandboxRoot } = resolveUserPath(request);
     const stat = await fs.stat(resolved);
     let data = {};
