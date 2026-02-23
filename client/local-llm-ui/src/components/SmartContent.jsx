@@ -4,8 +4,12 @@ import YouTubeVideoGrid from "./YouTubeVideoGrid";
 import FileSystemBrowser from "./FileSystemBrowser";
 import CodeBlock from "./CodeBlock";
 import WeatherWidget from "./WeatherWidget";
+import FileReviewPanel from "./FileReviewPanel";
+import DuplicateResultsPanel from "./DuplicateResultsPanel";
 
 function detectContentType(content, data, tool) {
+    if (tool === "duplicateScanner" && data?.groups) return "duplicateScanner";
+    if (tool === "fileReview" && data?.files) return "fileReview";
     if (tool === "youtube" && data?.videos) return "youtube";
     if (content.includes("```") || tool === "calculator") return "code";
     if (tool === "file" && data?.items) return "filesystem";
@@ -22,6 +26,12 @@ export default function SmartContent({ message, conversationId }) {
     );
 
     switch (contentType) {
+        case "duplicateScanner":
+            return <DuplicateResultsPanel content={message.content} data={message.data} />;
+
+        case "fileReview":
+            return <FileReviewPanel content={message.content} data={message.data} />;
+
         case "youtube":
             return <YouTubeVideoGrid videos={message.data.videos} />;
 

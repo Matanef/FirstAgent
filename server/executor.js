@@ -393,7 +393,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner"].includes(tool)) {
     toolInput = message;
   } else {
     toolInput = getMessageText(message);
@@ -468,6 +468,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
+  // SPECIAL CASE: duplicateScanner — return raw structured data for the panel to render
+  if (tool === "duplicateScanner") {
+    return {
+      reply: result.data?.text || "Scan completed.",
+      tool,
+      data: result.data,
+      success: true,
+      final: true
+    };
+  }
+
   // FIX: Email draft - preserve pendingEmail data
   if (tool === "email" && result.data?.mode === "draft") {
     return {
@@ -484,7 +495,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
-    "webDownload"
+    "webDownload", "fileReview"
   ];
 
   if (summarizeTools.includes(tool)) {

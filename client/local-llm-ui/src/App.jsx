@@ -4,6 +4,8 @@
 import { useState, useEffect, useRef } from "react";
 import DOMPurify from "dompurify";
 import SmartContent from "./components/SmartContent";
+import FileAttachmentBar from "./components/FileAttachmentBar";
+import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
 import "./App.css";
 
 const API_URL = "http://localhost:3000";
@@ -16,6 +18,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [metadata, setMetadata] = useState(null);
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [showDuplicateScanner, setShowDuplicateScanner] = useState(false);
 
   // Tone control
   const [toneExpanded, setToneExpanded] = useState(false);
@@ -62,10 +66,18 @@ function App() {
   async function sendMessage() {
     if (!input.trim() || !activeId || loading) return;
 
+    // Block send if any file is still uploading
+    if (attachedFiles.some(f => f.status === "uploading")) return;
+
+    const fileIds = attachedFiles
+      .filter(f => f.status === "uploaded" && f.id)
+      .map(f => f.id);
+
     const userMsg = {
       role: "user",
       content: input,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      fileIds: fileIds.length > 0 ? fileIds : undefined
     };
 
     setConversations(c => ({
@@ -74,17 +86,21 @@ function App() {
     }));
 
     setInput("");
+    setAttachedFiles([]);
     setLoading(true);
     setError(null);
 
     try {
+      const payload = {
+        message: userMsg.content,
+        conversationId: activeId
+      };
+      if (fileIds.length > 0) payload.fileIds = fileIds;
+
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userMsg.content,
-          conversationId: activeId
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -345,7 +361,43 @@ function App() {
             <div className="input-area">
               {error && <div className="error-banner">⚠️ {error}</div>}
 
+              {showDuplicateScanner && (
+                <DuplicateScannerPopup
+                  onClose={() => setShowDuplicateScanner(false)}
+                  onResults={(result) => {
+                    if (result.data && activeId) {
+                      const scanMsg = {
+                        role: "assistant",
+                        content: result.data?.text || "Scan complete.",
+                        timestamp: new Date().toISOString(),
+                        tool: "duplicateScanner",
+                        data: result.data,
+                        loading: false
+                      };
+                      setConversations(c => ({
+                        ...c,
+                        [activeId]: [...(c[activeId] || []), scanMsg]
+                      }));
+                    }
+                  }}
+                />
+              )}
+
+              <FileAttachmentBar
+                files={attachedFiles}
+                setFiles={setAttachedFiles}
+                disabled={loading}
+              />
+
               <div className="input-wrapper">
+                <button
+                  className="scanner-trigger-btn"
+                  onClick={() => setShowDuplicateScanner(!showDuplicateScanner)}
+                  title="Scan for duplicate files"
+                  disabled={loading}
+                >
+                  {"\u{1F50D}"}
+                </button>
                 <textarea
                   value={input}
                   onChange={e => setInput(e.target.value)}
@@ -357,7 +409,7 @@ function App() {
                 />
                 <button
                   onClick={sendMessage}
-                  disabled={loading || !input.trim()}
+                  disabled={loading || !input.trim() || attachedFiles.some(f => f.status === "uploading")}
                   className="send-btn"
                   title="Send"
                 >

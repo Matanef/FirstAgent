@@ -20,6 +20,7 @@
     "dotenv": "^17.3.1",
     "expr-eval": "^2.0.2",
     "express": "^5.2.1",
+    "file-type": "^21.3.0",
     "googleapis": "^171.4.0",
     "multer": "^2.0.2",
     "natural": "^8.1.0",
