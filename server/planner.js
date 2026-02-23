@@ -349,6 +349,33 @@ export async function plan({ message, chatContext = {} }) {
   console.log("[planner] availableTools:", availableTools.join(", "));
 
   // ──────────────────────────────────────────────────────────
+  // FILE REVIEW: route to fileReview when files are attached
+  // ──────────────────────────────────────────────────────────
+  if (chatContext.fileIds && chatContext.fileIds.length > 0) {
+    console.log(`[planner] certainty branch: fileReview (${chatContext.fileIds.length} files)`);
+    return [{ tool: "fileReview", input: trimmed, context: { fileIds: chatContext.fileIds }, reasoning: "certainty_file_review" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // DUPLICATE SCANNER: detect duplicate scan requests
+  // ──────────────────────────────────────────────────────────
+  if (/\b(duplicate|duplication|find\s+duplicate|scan\s+duplicate|duplicate\s+file)/i.test(lower)) {
+    console.log("[planner] certainty branch: duplicateScanner");
+    // Parse any context from the natural language
+    const dupContext = {};
+    const pathMatch = trimmed.match(/(?:in|under|at|from)\s+([a-zA-Z]:[\\\/][^\s,]+|[.\/][^\s,]+)/i);
+    if (pathMatch) dupContext.path = pathMatch[1];
+    const typeMatch = lower.match(/(?:that are|type)\s+(\.\w+|\w+)\s+files?/);
+    if (typeMatch) dupContext.type = typeMatch[1];
+    const extMatch = lower.match(/\.(txt|js|jsx|ts|tsx|json|css|md|py|html|xml|csv)\b/);
+    if (!dupContext.type && extMatch) dupContext.type = extMatch[0];
+    const nameMatch = trimmed.match(/(?:named?|called)\s+["']?([^"'\s,]+)["']?/i);
+    if (nameMatch) dupContext.name = nameMatch[1];
+
+    return [{ tool: "duplicateScanner", input: trimmed, context: dupContext, reasoning: "certainty_duplicate_scan" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
   // DIAGNOSTIC: handle meta/routing/accuracy questions first
   // ──────────────────────────────────────────────────────────
   const diagnosticDecision = checkDiagnosticQuestion(trimmed);

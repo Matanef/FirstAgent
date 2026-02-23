@@ -10,6 +10,7 @@ import chatRoutes from "./routes/chat.js";
 import conversationRoutes from "./routes/conversations.js";
 import fileRoutes from "./routes/files.js";
 import reviewRoutes from "./routes/review.js";
+import duplicateRoutes from "./routes/duplicates.js";
 import oauthCallback from "./routes/oauthCallback.js";
 
 const app = express();
@@ -41,6 +42,7 @@ app.use(chatRoutes);
 app.use(conversationRoutes);
 app.use(fileRoutes);
 app.use("/api", reviewRoutes);
+app.use("/api", duplicateRoutes);
 
 // ============================================================
 // START SERVER

@@ -10,7 +10,7 @@ import { resolveCityFromIp } from "./geo.js";
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
  */
-export async function executeAgent({ message, conversationId, clientIp, onChunk, onStep }) {
+export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep }) {
     const queryText = typeof message === "string" ? message : message?.text || "";
 
     // 1. Background NLP Analysis
@@ -18,7 +18,9 @@ export async function executeAgent({ message, conversationId, clientIp, onChunk,
 
     // 2. Multi-Step Planning
     console.log("🧠 Planning steps for:", queryText);
-    const planResult = await plan({ message: queryText });
+    const chatContext = {};
+    if (fileIds.length > 0) chatContext.fileIds = fileIds;
+    const planResult = await plan({ message: queryText, chatContext });
     
     // CRITICAL: Validate and normalize plan result
     let steps;
@@ -76,6 +78,11 @@ export async function executeAgent({ message, conversationId, clientIp, onChunk,
         // CONTEXT PIPING: enrich step context with previous step outputs
         // so downstream tools (e.g. applyPatch) can use review/trending results
         const enrichedContext = { ...(step.context || {}) };
+
+        // Pass fileIds to fileReview tool
+        if (step.tool === "fileReview" && fileIds.length > 0) {
+            enrichedContext.fileIds = fileIds;
+        }
         if (stateGraph.length > 0) {
             for (const prev of stateGraph) {
                 if (prev.tool === 'review' && prev.success) {

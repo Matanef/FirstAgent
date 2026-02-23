@@ -23,7 +23,9 @@ import { gitLocal } from "./gitLocal.js";
 import { review } from "./review.js";
 import { nlpTool as nlp_tool } from "./nlp.js";
 import { githubTrending } from "./githubTrending.js";
-import { applyPatch } from "./applyPatch.js";  // NEW
+import { applyPatch } from "./applyPatch.js";
+import { fileReview } from "./fileReview.js";
+import { duplicateScanner } from "./duplicateScanner.js";
 
 export const TOOLS = {
   calculator,
@@ -48,7 +50,9 @@ export const TOOLS = {
   review,
   nlp_tool,
   githubTrending,
-  applyPatch  // NEW: Code patching tool
+  applyPatch,
+  fileReview,
+  duplicateScanner
 };
 
 // Validate all tools are functions at startup

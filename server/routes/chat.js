@@ -22,9 +22,13 @@ const router = express.Router();
 router.post("/chat", async (req, res) => {
     const startTime = Date.now();
     try {
-        let { message, conversationId } = req.body;
+        let { message, conversationId, fileIds } = req.body;
         if (!message || typeof message !== "string") return res.status(400).json({ error: "Missing or invalid message" });
         if (message.length > 2000) return res.status(400).json({ error: "Message too long (max 2000 characters)" });
+
+        // Validate fileIds if present
+        if (fileIds && !Array.isArray(fileIds)) fileIds = undefined;
+        if (fileIds && fileIds.length > 10) fileIds = fileIds.slice(0, 10);
 
         // Set Headers for SSE
         res.setHeader('Content-Type', 'text/event-stream');
@@ -68,6 +72,7 @@ router.post("/chat", async (req, res) => {
             message,
             conversationId: id,
             clientIp: req.clientIp,
+            fileIds: fileIds || [],
             onChunk: (chunk) => {
                 res.write(`data: ${JSON.stringify({ type: 'chunk', chunk })}\n\n`);
             },
