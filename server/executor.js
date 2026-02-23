@@ -483,7 +483,8 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
-    "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes"
+    "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
+    "webDownload"
   ];
 
   if (summarizeTools.includes(tool)) {
