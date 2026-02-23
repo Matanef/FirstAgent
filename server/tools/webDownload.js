@@ -160,6 +160,21 @@ export async function webDownload(request) {
       };
     }
 
+    // For text-based files, also return content so LLM can read/summarize/follow instructions
+    let contentPreview = null;
+    const textExtensions = ['.md', '.txt', '.json', '.js', '.html', '.css', '.csv', '.xml', '.yaml', '.yml', '.py', '.sh', '.bat'];
+    const ext = path.extname(result.filepath).toLowerCase();
+    if (textExtensions.includes(ext) || !ext) {
+      try {
+        const fullContent = await fs.readFile(result.filepath, 'utf8');
+        // Provide full content for small files, preview for large ones
+        const MAX_CONTENT = 8000;
+        contentPreview = fullContent.length > MAX_CONTENT
+          ? fullContent.slice(0, MAX_CONTENT) + `\n\n... (truncated, ${fullContent.length} total chars)`
+          : fullContent;
+      } catch { /* ignore read errors */ }
+    }
+
     return {
       tool: "webDownload",
       success: true,
@@ -167,9 +182,13 @@ export async function webDownload(request) {
       data: {
         filepath: result.filepath,
         size: result.size,
-        sizeFormatted: `${(result.size / 1024).toFixed(2)} KB`
+        sizeFormatted: `${(result.size / 1024).toFixed(2)} KB`,
+        content: contentPreview,
+        text: contentPreview
+          ? `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)\n\nContent:\n${contentPreview}`
+          : `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`
       },
-      reasoning: `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`
+      reasoning: `Downloaded and read ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`
     };
 
   } catch (err) {

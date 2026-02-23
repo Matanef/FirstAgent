@@ -4,12 +4,17 @@
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { llm } from "./tools/llm.js";
+import { getMemory } from "./memory.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ============================================================
 // UTIL: list available tools (reads server/tools/*.js)
 // ============================================================
-function listAvailableTools(toolsDir = path.resolve(process.cwd(), "server", "tools")) {
+function listAvailableTools(toolsDir = path.resolve(__dirname, "tools")) {
   try {
     const files = fs.readdirSync(toolsDir, { withFileTypes: true });
     return files
@@ -216,7 +221,8 @@ function hereIndicatesWeather(text) {
 }
 
 function extractCity(message) {
-  const lower = (message || "").toLowerCase().trim();
+  // Strip trailing punctuation before matching
+  const lower = (message || "").toLowerCase().trim().replace(/[?.!,;:]+$/, '');
   const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
   if (inMatch) return formatCity(inMatch[1]);
   const forMatch = lower.match(/\bfor\s+([a-zA-Z\s\-]+)$/);
@@ -407,12 +413,39 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "weather", input: trimmed, context: { city: "__USE_GEOLOCATION__" }, reasoning: "certainty_here_weather" }];
   }
 
-  // Weather with city
+  // Weather with city (or from memory)
   if (containsKeyword(lower, WEATHER_KEYWORDS)) {
-    const extracted = extractCity(trimmed);
+    let extracted = extractCity(trimmed);
+    // If no city extracted, check memory for saved location
+    if (!extracted) {
+      try {
+        const memory = await getMemory();
+        const profile = memory.profile || {};
+        const savedLocation = profile.location || profile.city || null;
+        if (savedLocation) {
+          extracted = formatCity(savedLocation);
+          console.log(`[planner] Using saved location from memory: ${extracted}`);
+        }
+      } catch (e) {
+        console.warn("[planner] Could not read memory for location:", e.message);
+      }
+    }
     const context = extracted ? { city: extracted } : {};
-    console.log("[planner] certainty branch: weather");
+    console.log("[planner] certainty branch: weather, city:", extracted || "none");
     return [{ tool: "weather", input: trimmed, context, reasoning: "certainty_weather" }];
+  }
+
+  // News keywords (before file path to avoid misroute)
+  if (/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: news");
+    return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
+  }
+
+  // URL detection → webDownload (fetch and read/follow)
+  if (/https?:\/\/\S+/i.test(trimmed)) {
+    console.log("[planner] certainty branch: url_detected");
+    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
   }
 
   // Explicit file path
