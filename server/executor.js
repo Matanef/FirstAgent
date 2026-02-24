@@ -393,7 +393,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite"].includes(tool)) {
     toolInput = message;
   } else {
     toolInput = getMessageText(message);
@@ -506,7 +506,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
-    "webDownload", "fileReview", "webBrowser", "moltbook"
+    "webDownload", "fileReview", "webBrowser", "moltbook", "fileWrite"
   ];
 
   if (summarizeTools.includes(tool)) {

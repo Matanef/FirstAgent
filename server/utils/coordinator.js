@@ -18,7 +18,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     // 2. Multi-Step Planning
     console.log("🧠 Planning steps for:", queryText);
-    const chatContext = {};
+    const chatContext = { conversationId };
     if (fileIds.length > 0) chatContext.fileIds = fileIds;
     const planResult = await plan({ message: queryText, chatContext });
     
@@ -99,15 +99,33 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             context: enrichedContext
         };
 
-        // Execute the tool
-        const stepResult = await executeStep({
+        // Execute the tool (with retry on transient failures)
+        let stepResult = await executeStep({
             tool: step.tool,
             message: stepMessage,
             conversationId,
             sentiment,
             entities,
-            stateGraph  // Pass previous steps for context
+            stateGraph
         });
+
+        // ERROR RECOVERY: retry once on transient/timeout failures
+        if (!stepResult.success && step.tool !== "llm") {
+            const errorStr = (stepResult.output?.error || "").toLowerCase();
+            const isRetryable = /\b(timeout|econnreset|econnrefused|socket hang up|network|fetch failed|rate.?limit)\b/.test(errorStr);
+            if (isRetryable) {
+                console.log(`🔄 Retrying step ${stepNumber} (${step.tool}) after transient error...`);
+                await new Promise(r => setTimeout(r, 1000)); // brief delay before retry
+                stepResult = await executeStep({
+                    tool: step.tool,
+                    message: stepMessage,
+                    conversationId,
+                    sentiment,
+                    entities,
+                    stateGraph
+                });
+            }
+        }
 
         // Finalize (Summarize or Return Raw)
         // Only stream chunks for the LAST step to avoid mixing

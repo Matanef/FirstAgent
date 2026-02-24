@@ -247,6 +247,10 @@ function checkDiagnosticQuestion(message) {
   if (!message) return null;
   const lower = message.toLowerCase().trim();
 
+  // GUARD: if message contains a file path, it's NOT a diagnostic question
+  // (e.g., "Read D:/local-llm-ui/server/planner.js" should NOT match "planner")
+  if (hasExplicitFilePath(message)) return null;
+
   // common diagnostic patterns
   const diagPatterns = [
     /\bhow (accurate|reliable|precise)\b/,
@@ -259,9 +263,9 @@ function checkDiagnosticQuestion(message) {
   ];
 
   if (diagPatterns.some(rx => rx.test(lower))) {
-    // Prefer selfImprovement for explicit "improve" style questions,
-    // otherwise use llm for explanation/diagnostic.
-    if (/\b(improve|self[- ]?improve|suggest improvement|how can you improve)\b/.test(lower)) {
+    // Route accuracy/reliability/performance questions to selfImprovement
+    // (selfImprovement can report on telemetry and routing performance)
+    if (/\b(accurate|reliable|precise|accuracy|reliability|performance|improve|self[- ]?improve|suggest improvement|how can you improve)\b/.test(lower)) {
       return [{ tool: "selfImprovement", input: message, context: {}, reasoning: "certainty_diagnostic_self_improve" }];
     }
     return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
@@ -311,12 +315,16 @@ EXAMPLES (correct routing):
 - "weather in Paris" → weather
 - "latest news about AI" → news
 - "search for React tutorials" → search
+- "look up the history of the Eiffel Tower" → search
+- "who was Albert Einstein?" → search
+- "find information about quantum computing" → search
 - "email John saying meeting at 3pm" → email
 - "list repos" → github
 - "list D:/projects" → file
 - "trending repos" → githubTrending
 - "review server/planner.js" → review
 - "remember my name is Alex" → memorytool
+- "remember my email is alex@test.com" → memorytool
 - "login to moltbook" → moltbook
 - "browse example.com" → webBrowser
 - "git status" → gitLocal
@@ -327,13 +335,19 @@ EXAMPLES (correct routing):
 - "analyze the sentiment of this text" → nlp_tool
 - "youtube tutorials about node.js" → youtube
 - "store my moltbook password" → moltbook
+- "add task: review pull request by Friday" → tasks
+- "write a hello world script to D:/test.js" → fileWrite
+- "create a config file at D:/app/config.json" → fileWrite
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
-- "how accurate is your routing" → selfImprovement (NOT calculator, NOT weather)
+- "how accurate is your routing" → selfImprovement (NOT calculator, NOT llm)
 - "what's the weather like" → weather (NOT llm)
 - "tell me about stocks" → finance (NOT search)
 - "what do you know about me" → memorytool (NOT search)
+- "look up the history of X" → search (NOT webBrowser — no specific website)
+- "add task: review pull request" → tasks (NOT github — "task" takes priority)
+- "write a script to D:/test.js" → fileWrite (NOT file — write intent)
 
 RULES:
 1. Casual conversation, greetings, opinions, explanations → llm
@@ -343,7 +357,11 @@ RULES:
 5. "moltbook" → moltbook
 6. "browse/visit [website]" → webBrowser
 7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
-8. When unsure, return "llm" (the safest fallback)
+8. "look up / find information about / history of / who is" → search (NOT webBrowser)
+9. "write/create [content] to [path]" → fileWrite (NOT file)
+10. "add task / todo / reminder" → tasks (NOT github, even if "pull request" mentioned)
+11. "how accurate/reliable is your routing" → selfImprovement (NOT llm)
+12. When unsure, return "llm" (the safest fallback)
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -366,6 +384,55 @@ Respond with ONLY the tool name (one word, no explanation).`;
 }
 
 // ============================================================
+// MULTI-TURN CONTEXT: Follow-up detection
+// ============================================================
+
+/**
+ * Detect follow-up questions and inherit tool from previous turn.
+ * E.g., "what about Paris?" after a weather query → route to weather.
+ */
+async function checkFollowUpContext(message, conversationId) {
+  if (!conversationId) return null;
+  const lower = message.toLowerCase().trim();
+
+  // Only trigger on short messages or explicit follow-up signals
+  const isShort = message.length < 40;
+  const hasFollowUpSignal = /\b(what about|how about|and\s+(also|now)|do the same|same for|now try|another|instead|more about|tell me more|any more|and in|and for)\b/i.test(lower);
+
+  if (!isShort && !hasFollowUpSignal) return null;
+
+  try {
+    const memory = await getMemory();
+    const conversation = memory.conversations?.[conversationId] || [];
+    if (conversation.length < 2) return null;
+
+    // Find the last assistant message that used a specific tool
+    const lastToolMessage = [...conversation]
+      .reverse()
+      .find(m => m.role === 'assistant' && m.tool && m.tool !== 'llm');
+
+    if (!lastToolMessage) return null;
+
+    const prevTool = lastToolMessage.tool;
+
+    // Only route follow-ups for tools where it makes sense
+    const followUpTools = ['weather', 'search', 'news', 'finance', 'sports', 'file'];
+    if (!followUpTools.includes(prevTool)) return null;
+
+    console.log(`[planner] Follow-up detected: "${message}" → inheriting tool "${prevTool}" from conversation`);
+    return {
+      tool: prevTool,
+      input: message,
+      context: { followUp: true, previousTool: prevTool },
+      reasoning: "context_follow_up"
+    };
+  } catch (err) {
+    console.warn("[planner] Follow-up check failed:", err.message);
+    return null;
+  }
+}
+
+// ============================================================
 // MAIN PLAN FUNCTION - Returns ARRAY of steps
 // ============================================================
 
@@ -378,6 +445,16 @@ export async function plan({ message, chatContext = {} }) {
   // Compute available tools once per plan
   const availableTools = listAvailableTools();
   console.log("[planner] availableTools:", availableTools.join(", "));
+
+  // ──────────────────────────────────────────────────────────
+  // MULTI-TURN: Check for follow-up context from previous messages
+  // ──────────────────────────────────────────────────────────
+  if (chatContext.conversationId) {
+    const followUp = await checkFollowUpContext(trimmed, chatContext.conversationId);
+    if (followUp) {
+      return [followUp];
+    }
+  }
 
   // ──────────────────────────────────────────────────────────
   // FILE REVIEW: route to fileReview when files are attached
@@ -407,7 +484,30 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // DIAGNOSTIC: handle meta/routing/accuracy questions first
+  // FILE WRITE INTENT: "write/create X to [path]" → fileWrite
+  // Must come before generic file path check to avoid routing to read-only file tool
+  // ──────────────────────────────────────────────────────────
+  if (/\b(write|create|generate|save|make)\b/i.test(lower) && hasExplicitFilePath(trimmed) &&
+      !/\b(email|mail|moltbook)\b/i.test(lower)) {
+    const filePathMatch = trimmed.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
+    if (filePathMatch) {
+      console.log("[planner] certainty branch: fileWrite (write intent + path)");
+      return [{ tool: "fileWrite", input: trimmed, context: { targetPath: filePathMatch[1] }, reasoning: "certainty_file_write" }];
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // EXPLICIT FILE PATH: route D:/... or E:/... to file tool
+  // Must come before diagnostic to prevent "Read D:/server/planner.js" → diagnostic
+  // ──────────────────────────────────────────────────────────
+  if (hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: file_path");
+    return [{ tool: "file", input: trimmed, context: {}, reasoning: "certainty_file_path" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // DIAGNOSTIC: handle meta/routing/accuracy questions
+  // (now safe — file paths already handled above)
   // ──────────────────────────────────────────────────────────
   const diagnosticDecision = checkDiagnosticQuestion(trimmed);
   if (diagnosticDecision) {
@@ -557,11 +657,7 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
   }
 
-  // Explicit file path
-  if (hasExplicitFilePath(trimmed)) {
-    console.log("[planner] certainty branch: file_path");
-    return [{ tool: "file", input: trimmed, context: {}, reasoning: "certainty_file_path" }];
-  }
+  // NOTE: Explicit file path check moved ABOVE diagnostic section
 
   // ──────────────────────────────────────────────────────────
   // TOOL-SPECIFIC KEYWORD CLUSTERS (prevents LLM misclassification)
@@ -624,9 +720,16 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "youtube", input: trimmed, context: {}, reasoning: "certainty_youtube" }];
   }
 
-  // GitHub keywords
+  // Task management keywords (BEFORE github to prevent "add task: review pull request" misroute)
+  if (/\b(todo|task|reminder|schedule|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: tasks");
+    return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
+  }
+
+  // GitHub keywords (with task guard — skip if message is task-related)
   if (/\b(github|repo|repository|pull\s+request|issue|commit|branch|merge|fork)\b/i.test(lower) &&
-      !hasExplicitFilePath(trimmed)) {
+      !hasExplicitFilePath(trimmed) &&
+      !/\b(todo|task|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
     console.log("[planner] certainty branch: github");
     return [{ tool: "github", input: trimmed, context: {}, reasoning: "certainty_github" }];
   }
@@ -650,10 +753,15 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
   }
 
-  // Task management keywords
-  if (/\b(todo|task|reminder|schedule|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: tasks");
-    return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
+  // NOTE: Task management keywords moved ABOVE github section
+
+  // Search / knowledge queries: "look up X", "find information about X", "history of X", "who was X"
+  if (/\b(look\s+up|search\s+for|find\s+(information|info|details)\s+(about|on|for)|history\s+of|who\s+(is|was|are|were)\s+\w+|what\s+(is|was)\s+the\s+history|tell\s+me\s+about)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed) &&
+      !/\b(moltbook|browse|visit|go\s+to)\b/i.test(lower) &&
+      !/\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|co)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: search (knowledge query)");
+    return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_search_knowledge" }];
   }
 
   // Memory read keywords (what do you know about me, my name, etc.)
@@ -691,6 +799,10 @@ export async function plan({ message, chatContext = {} }) {
     'webbrowser': 'webBrowser',
     'web_browser': 'webBrowser',
     'web': 'webBrowser',
+    'filewrite': 'fileWrite',
+    'file_write': 'fileWrite',
+    'writefile': 'fileWrite',
+    'write': 'fileWrite',
   };
 
   let rawIntent = (detection.intent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");

@@ -20,44 +20,55 @@ function findSandboxRoot(request) {
   return SANDBOX_ROOTS[0];  // Default to project root
 }
 
-// FIX #6: Enhanced path resolution with project awareness
+// FIX #6+: Enhanced path resolution — absolute paths extracted first, NL cleanup as fallback
 function resolveUserPath(request) {
   if (!request || typeof request !== "string") throw new Error("Invalid file request");
 
-  // Natural language cleanup - remove common verbs/articles
+  // PRIORITY: Extract explicit absolute path (e.g., D:/local-llm-ui/server/tools)
+  // This avoids NL word-stripping bugs like "in D:/..." or "me of E:/..."
+  const absolutePathMatch = request.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
+  if (absolutePathMatch) {
+    let extracted = absolutePathMatch[1].replace(/[\\/]+$/, ''); // trim trailing slashes
+    const sandboxRoot = findSandboxRoot(request);
+    const resolved = path.resolve(extracted);
+
+    if (!isPathAllowed(resolved)) {
+      throw new Error("Access outside allowed directories denied");
+    }
+
+    const cleaned = path.relative(sandboxRoot, resolved) || '.';
+    console.log(`[file] Path resolution (absolute): "${request}" → resolved="${resolved}"`);
+    return { cleaned, resolved, sandboxRoot };
+  }
+
+  // FALLBACK: Natural language cleanup for relative paths
   let cleaned = request
-    .replace(/\b(scan|show|list|open|read|please|folder|directory|explore|look|into|the|a|an|subfolder|contents?|file|files|go\s+to|in\s+(your|my|the)\s+project)\b/gi, "")
+    .replace(/\b(scan|show|list|open|read|please|folder|directory|explore|look|into|the|a|an|at|in|of|me|my|from|to|for|subfolder|contents?|file|files|go\s+to|what'?s|what\s+is|in\s+(your|my|the)\s+project)\b/gi, "")
+    .replace(/\s+/g, ' ')
     .trim();
 
   // Determine sandbox root
   const sandboxRoot = findSandboxRoot(request);
-  const rootName = path.basename(sandboxRoot);  // "local-llm-ui"
+  const rootName = path.basename(sandboxRoot);
 
   if (cleaned === "" || cleaned === "/" || cleaned === ".") cleaned = ".";
 
-  // FIX #6: Handle "local-llm-ui/server" pattern intelligently
-  // If user says "local-llm-ui/server", they mean "./server" relative to project root
-  
-  // Check if request starts with root name (case-insensitive)
+  // Handle "local-llm-ui/server" pattern intelligently
   const rootPattern = new RegExp(`^${rootName}[\\/]`, 'i');
   if (rootPattern.test(cleaned)) {
-    // Remove "local-llm-ui/" and keep the rest
     cleaned = cleaned.replace(rootPattern, '');
     console.log(`[file] Detected project-relative path: "${cleaned}"`);
   }
 
-  // Handle edge cases
   if (!cleaned || cleaned === rootName.toLowerCase()) cleaned = ".";
 
-  // Resolve the final path
   const resolved = path.resolve(sandboxRoot, cleaned);
 
-  // Security check
   if (!isPathAllowed(resolved)) {
     throw new Error("Access outside allowed directories denied");
   }
 
-  console.log(`[file] Path resolution: "${request}" → cleaned="${cleaned}" → resolved="${resolved}"`);
+  console.log(`[file] Path resolution (relative): "${request}" → cleaned="${cleaned}" → resolved="${resolved}"`);
   return { cleaned, resolved, sandboxRoot };
 }
 

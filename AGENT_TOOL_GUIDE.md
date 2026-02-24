@@ -40,7 +40,7 @@ The LLM is the agent's brain. It handles all conversational queries, creative wr
 
 ### `memorytool` — User Profile & Long-Term Memory
 
-Stores and retrieves persistent user information: name, email, location, tone preferences, and contacts. This data persists across all conversations.
+Stores and retrieves persistent user information: name, email, location, timezone, tone preferences, contacts, and any custom fields. This data persists across all conversations. Supports a generic "remember my X is Y" pattern for any profile field.
 
 **Triggered by:** "remember", "forget", "what do you know about me", "my name/email/location"
 
@@ -48,12 +48,12 @@ Stores and retrieves persistent user information: name, email, location, tone pr
 1. `"Remember my name is Alex"` — Store name
 2. `"Remember my email is alex@example.com"` — Store email
 3. `"Remember my location is Tel Aviv"` — Store location (used by weather)
-4. `"Remember John's email is john@company.com"` — Store contact
-5. `"What do you know about me?"` — Retrieve full profile
-6. `"Who am I?"` — Quick profile recall
-7. `"Forget my location"` — Remove stored location
-8. `"Remember I prefer a professional and concise tone"` — Set tone preference
-9. `"What contacts do you have saved?"` — List stored contacts
+4. `"Remember that my timezone is UTC+3"` — Store timezone
+5. `"Remember John's email is john@company.com"` — Store contact
+6. `"What do you know about me?"` — Retrieve full profile
+7. `"Who am I?"` — Quick profile recall
+8. `"Forget my location"` — Remove stored location
+9. `"Remember I prefer a professional and concise tone"` — Set tone preference
 
 ---
 
@@ -91,27 +91,27 @@ Checks the agent's routing accuracy, detects misrouting patterns, generates perf
 
 ## 2. Information & Search
 
-### `search` — Web Search (Multi-Source)
+### `search` — Web Search (Multi-Source + LLM Synthesis)
 
-Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour.
+Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour. **Now synthesizes a coherent LLM-powered summary** from the combined search results, providing a unified answer rather than just raw links.
 
-**Triggered by:** "search", "look up", "find information", "what is", "who is" (when not matched by other tools)
+**Triggered by:** "search", "look up", "find information", "who is/was", "tell me about", "history of"
 
 **Example prompts:**
 1. `"Search for the latest developments in quantum computing"` — Current tech research
-2. `"Who is the CEO of Tesla?"` — Person lookup
+2. `"Who was Napoleon Bonaparte?"` — Historical figure lookup
 3. `"What is the population of Japan?"` — Factual query
 4. `"Search for best practices in Node.js error handling"` — Technical research
-5. `"Find information about the James Webb Space Telescope discoveries"` — Science news
-6. `"Look up the history of the Eiffel Tower"` — Historical research
-7. `"Search for healthy meal prep recipes"` — General search
+5. `"Look up the history of the Eiffel Tower"` — Historical research (synthesized answer)
+6. `"Tell me about quantum computing"` — Knowledge query (LLM synthesis)
+7. `"Find information about climate change"` — Topic research
 8. `"What are the system requirements for Windows 11?"` — Product info
 
 ---
 
-### `news` — Multi-Source News with LLM Summaries
+### `news` — Multi-Source News with LLM Summaries & Category Feeds
 
-Fetches from 9 RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports topic filtering. Articles are scraped and summarized by the LLM.
+Fetches from 9+ RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports **category-specific feeds** (technology, science, business, sports, health, entertainment) that are auto-detected from the query. Feeds are fetched in **parallel with timeouts** for fast responses. Articles are scraped and summarized by the LLM, with fallback to RSS descriptions when scraping fails.
 
 **Triggered by:** "news", "headlines", "articles", "latest news", "breaking"
 
@@ -171,12 +171,12 @@ Two-stage email: drafts the email first, then waits for your confirmation ("send
 
 ### `tasks` — Task & Todo Management
 
-Manages task lists with priorities, due dates, and status tracking.
+Manages task lists with priorities, due dates, and status tracking. **Note:** Task keywords (e.g., "todo", "task", "add task") take priority over github keywords during routing, so messages like "Add task: review pull request" correctly route to the tasks tool, not GitHub.
 
 **Triggered by:** "todo", "task", "reminder", "add task", "my tasks", "checklist"
 
 **Example prompts:**
-1. `"Add task: review pull request by Friday"` — Create task with deadline
+1. `"Add task: review pull request by Friday"` — Create task with deadline (routes here, NOT github)
 2. `"What are my current tasks?"` — List all tasks
 3. `"Mark the review task as done"` — Update status
 4. `"Add a high priority task to fix the login bug"` — Priority task
@@ -189,13 +189,13 @@ Manages task lists with priorities, due dates, and status tracking.
 
 ### `file` — File System Browser & Reader
 
-Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder.
+Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder. **Smart path extraction** correctly handles absolute paths embedded in natural language (e.g., "List files in D:/local-llm-ui/server/tools" → extracts `D:/local-llm-ui/server/tools`). File path checks take priority over all other routing, so paths containing words like "planner" won't misroute.
 
 **Triggered by:** Explicit file paths (e.g., `D:/...`), "list files", "read file", "show me"
 
 **Example prompts:**
-1. `"List files in D:/local-llm-ui/server/tools"` — Directory listing
-2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents
+1. `"List files in D:/local-llm-ui/server/tools"` — Absolute path extracted from natural language
+2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents (path priority over diagnostic)
 3. `"Show me the contents of E:/testFolder/config.json"` — Read external file
 4. `"What files are in the server directory?"` — Natural language listing
 5. `"List all JavaScript files in the tools folder"` — Filtered listing
@@ -204,16 +204,19 @@ Reads, lists, and navigates files and directories. Sandboxed to the project root
 
 ---
 
-### `fileWrite` — Write Files to Disk
+### `fileWrite` — Write Files to Disk (Natural Language Support)
 
-Creates or overwrites files on disk. Used for code generation, config files, etc.
+Creates or overwrites files on disk. **Now supports natural language input** — just describe what you want and specify the path. The LLM generates the file content automatically based on your request and the file extension. Also accepts structured input `{ path, content }` for programmatic use.
 
-**Triggered by:** "write file", "create file", "save to file" (typically invoked as part of multi-step flows)
+**Triggered by:** "write/create/generate/save/make" + file path (e.g., `D:/...`), or as part of multi-step flows
 
 **Example prompts:**
-1. `"Write a hello world script to D:/local-llm-ui/test.js"` — Create file
-2. `"Create a JSON config file at E:/testFolder/config.json"` — Config generation
-3. `"Save this code to D:/local-llm-ui/utils/helper.js"` — Save generated code
+1. `"Write a hello world script to D:/local-llm-ui/test.js"` — NL: generates JS content
+2. `"Create a config file at D:/local-llm-ui/config.json"` — NL: generates JSON config
+3. `"Generate a Python script at E:/testFolder/main.py"` — NL: generates Python code
+4. `"Save a basic HTML page to D:/local-llm-ui/index.html"` — NL: generates HTML
+5. `"Create a README at D:/local-llm-ui/README.md"` — NL: generates Markdown
+6. `"Write a bash script to E:/testFolder/setup.sh"` — NL: generates shell script
 
 ---
 
