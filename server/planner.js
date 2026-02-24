@@ -299,25 +299,53 @@ async function detectIntentWithLLM(message, contextSignals, availableTools = [])
   const toolsListText = availableTools.length > 0 ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}` : "";
 
   const prompt = `You are an intent classifier for an AI agent. Classify the user's message into ONE tool.
-
 ${toolsListText}
 
 USER MESSAGE:
 "${message}"
 ${signalText}
 
-CRITICAL RULES:
-1. If the user asks about the system's accuracy, reliability, routing, planner, or why a tool was chosen (phrases like "how accurate", "routing accuracy", "why did you choose"), return "llm" (explain) or "selfImprovement" (if the user explicitly asks to improve).
+EXAMPLES (correct routing):
+- "hey, how do you feel?" → llm
+- "what's 15% of 230?" → calculator
+- "weather in Paris" → weather
+- "latest news about AI" → news
+- "search for React tutorials" → search
+- "email John saying meeting at 3pm" → email
+- "list repos" → github
+- "list D:/projects" → file
+- "trending repos" → githubTrending
+- "review server/planner.js" → review
+- "remember my name is Alex" → memorytool
+- "login to moltbook" → moltbook
+- "browse example.com" → webBrowser
+- "git status" → gitLocal
+- "find duplicate files in D:/test" → duplicateScanner
+- "how accurate is your routing?" → selfImprovement
+- "what can you do?" → llm
+- "tell me a joke" → llm
+- "analyze the sentiment of this text" → nlp_tool
+- "youtube tutorials about node.js" → youtube
+- "store my moltbook password" → moltbook
+
+NEGATIVE EXAMPLES (common mistakes to avoid):
+- "how are you" → llm (NOT selfImprovement, NOT weather)
+- "how accurate is your routing" → selfImprovement (NOT calculator, NOT weather)
+- "what's the weather like" → weather (NOT llm)
+- "tell me about stocks" → finance (NOT search)
+- "what do you know about me" → memorytool (NOT search)
+
+RULES:
+1. Casual conversation, greetings, opinions, explanations → llm
 2. "list repos" → github (NOT file)
 3. "list D:/..." → file
-4. "trending" → githubTrending
-5. NEVER use nlp_tool unless explicitly asked for "sentiment" or "analyze text"
-6. For improvement requests, prefer "selfImprovement" or the safe improvement plan generator
-7. "moltbook" (any mention) → moltbook (site-specific web interaction tool)
-8. "browse/visit/navigate [website]" → webBrowser (general web browsing tool)
-9. "store/save/remember password/credentials" → moltbook or webBrowser (NOT memorytool)
+4. NEVER use nlp_tool unless explicitly asked for "sentiment" or "analyze text"
+5. "moltbook" → moltbook
+6. "browse/visit [website]" → webBrowser
+7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
+8. When unsure, return "llm" (the safest fallback)
 
-Respond with ONLY the tool name.`;
+Respond with ONLY the tool name (one word, no explanation).`;
 
   try {
     const response = await llm(prompt);
@@ -536,7 +564,113 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // SINGLE-STEP: LLM Classifier (fallback)
+  // TOOL-SPECIFIC KEYWORD CLUSTERS (prevents LLM misclassification)
+  // ──────────────────────────────────────────────────────────
+
+  // Meta-conversation: "how do you work", "what is your logic", "what can you do"
+  if (/\b(how do you (work|think|decide|choose)|what is your (logic|process|architecture)|what can you do|what tools|list.*tools|your capabilities)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: meta_conversation");
+    return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_meta_conversation" }];
+  }
+
+  // LLM-directed tasks: summarize, explain, rewrite, translate, write, compose
+  if (/^(summarize|explain|rewrite|translate|write|compose|paraphrase|elaborate|simplify|rephrase)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed) && !/\b(email|mail)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: llm_text_task");
+    return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_llm_text_task" }];
+  }
+
+  // Greetings & casual conversation: "hello", "hey", "how are you", "thanks"
+  if (/^(hi|hello|hey|good\s+(morning|afternoon|evening)|thanks|thank\s+you|how are you|how do you feel|what's up|howdy|yo)\b/i.test(lower) && lower.length < 60) {
+    console.log("[planner] certainty branch: casual_conversation");
+    return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
+  }
+
+  // Email keywords: "email", "mail", "send to", "draft"
+  if (/\b(email|e-mail|mail|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
+      !isSendItCommand(lower)) {
+    console.log("[planner] certainty branch: email");
+    return [{ tool: "email", input: trimmed, context: {}, reasoning: "certainty_email" }];
+  }
+
+  // NLP / text analysis keywords
+  if (/\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: nlp_tool");
+    return [{ tool: "nlp_tool", input: trimmed, context: {}, reasoning: "certainty_nlp" }];
+  }
+
+  // Calculator keywords (beyond math expressions)
+  if (/\b(calculate|compute|solve|what\s+is\s+\d|how\s+much\s+is|convert\s+\d|percentage\s+of)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: calculator");
+    return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
+  }
+
+  // Finance keywords
+  if (/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P|nasdaq|dow\s+jones)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: finance");
+    return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
+  }
+
+  // Sports keywords
+  if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: sports");
+    return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
+  }
+
+  // YouTube keywords
+  if (/\b(youtube|video|watch|tutorial\s+video|how\s+to\s+video)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: youtube");
+    return [{ tool: "youtube", input: trimmed, context: {}, reasoning: "certainty_youtube" }];
+  }
+
+  // GitHub keywords
+  if (/\b(github|repo|repository|pull\s+request|issue|commit|branch|merge|fork)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: github");
+    return [{ tool: "github", input: trimmed, context: {}, reasoning: "certainty_github" }];
+  }
+
+  // Git local keywords
+  if (/\b(git\s+(status|log|diff|add|commit|branch|checkout|stash|push|pull|reset))\b/i.test(lower)) {
+    console.log("[planner] certainty branch: gitLocal");
+    return [{ tool: "gitLocal", input: trimmed, context: {}, reasoning: "certainty_git_local" }];
+  }
+
+  // Code review keywords
+  if (/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: review");
+    return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review" }];
+  }
+
+  // Shopping keywords
+  if (/\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) &&
+      !/\b(stock|share|invest)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: shopping");
+    return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
+  }
+
+  // Task management keywords
+  if (/\b(todo|task|reminder|schedule|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: tasks");
+    return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
+  }
+
+  // Memory read keywords (what do you know about me, my name, etc.)
+  if (/\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower) &&
+      !/\b(password|credential)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: memory_read");
+    return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_memory_read" }];
+  }
+
+  // Self-improvement keywords
+  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: selfImprovement");
+    return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "certainty_self_improvement" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // SINGLE-STEP: LLM Classifier (fallback — only reached for truly ambiguous queries)
   // ──────────────────────────────────────────────────────────
 
   const contextSignals = extractContextSignals(trimmed);
@@ -545,27 +679,61 @@ export async function plan({ message, chatContext = {} }) {
   const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
   console.log("🎯 LLM classified:", detection.intent);
 
-  // Normalize tool name
-  const toolMap = {
-    'financefundamentals': 'financeFundamentals',
+  // Normalize tool name: case-insensitive match against all available tools
+  // Also handle special aliases (nlp_tool, etc.)
+  const aliasMap = {
     'nlptool': 'nlp_tool',
-    'githubtrendin': 'githubTrending',
-    'gitlocal': 'gitLocal',
-    'applypatch': 'applyPatch'
+    'nlp': 'nlp_tool',
+    'memory': 'memorytool',
+    'memorytool': 'memorytool',
+    'lotr': 'lotrJokes',
+    'lotrjokes': 'lotrJokes',
+    'webbrowser': 'webBrowser',
+    'web_browser': 'webBrowser',
+    'web': 'webBrowser',
   };
-  const tool = toolMap[detection.intent] || detection.intent;
 
-  // If the LLM chose a tool that doesn't exist, substitute a safe fallback
-  if (!availableTools.includes(tool)) {
-    console.warn(`[planner] LLM chose unavailable tool "${tool}". Substituting llm fallback.`);
+  let rawIntent = (detection.intent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+  // Step 1: Check alias map first
+  let tool = aliasMap[rawIntent] || null;
+
+  // Step 2: Case-insensitive match against available tools
+  if (!tool) {
+    tool = availableTools.find(t => t.toLowerCase() === rawIntent) || null;
+  }
+
+  // Step 3: Partial match — LLM sometimes truncates (e.g. "githubtrendin" for "githubTrending")
+  if (!tool) {
+    tool = availableTools.find(t => t.toLowerCase().startsWith(rawIntent) && rawIntent.length >= 4) || null;
+    if (tool) {
+      console.log(`[planner] Partial match: "${rawIntent}" → "${tool}"`);
+    }
+  }
+
+  // Step 4: Fallback to llm if no match found
+  if (!tool) {
+    console.warn(`[planner] LLM chose unrecognized tool "${rawIntent}". Substituting llm fallback.`);
     return [{
       tool: "llm",
-      input: `Fallback: the requested tool "${tool}" is not available. Please handle the user's request: ${trimmed}`,
+      input: `Fallback: the requested tool "${rawIntent}" is not available. Please handle the user's request: ${trimmed}`,
+      context: {},
+      reasoning: `fallback_unavailable_${rawIntent}`
+    }];
+  }
+
+  // Step 5: Verify tool exists in registry
+  if (!availableTools.includes(tool)) {
+    console.warn(`[planner] Resolved tool "${tool}" not in available tools. Substituting llm fallback.`);
+    return [{
+      tool: "llm",
+      input: `Fallback: the resolved tool "${tool}" is not available. Please handle the user's request: ${trimmed}`,
       context: {},
       reasoning: `fallback_unavailable_${tool}`
     }];
   }
 
+  console.log(`[planner] Tool resolved: "${rawIntent}" → "${tool}"`);
   return [{
     tool,
     input: trimmed,

@@ -1,0 +1,578 @@
+# Agent Tool Guide — Complete Reference
+
+> 27 tools across 8 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
+
+---
+
+## Table of Contents
+
+1. [General Intelligence (LLM)](#1-general-intelligence-llm)
+2. [Information & Search](#2-information--search)
+3. [Productivity & Communication](#3-productivity--communication)
+4. [File & Code Operations](#4-file--code-operations)
+5. [Developer Tools](#5-developer-tools)
+6. [Finance & Shopping](#6-finance--shopping)
+7. [Media & Entertainment](#7-media--entertainment)
+8. [Web Interaction & Automation](#8-web-interaction--automation)
+
+---
+
+## 1. General Intelligence (LLM)
+
+### `llm` — General Conversation & Text Generation
+
+The LLM is the agent's brain. It handles all conversational queries, creative writing, explanations, translations, and anything that doesn't need a specialized tool. It has access to your full conversation history and user profile.
+
+**Triggered by:** Greetings, open-ended questions, creative tasks, text manipulation, anything not matched by other tools.
+
+**Example prompts:**
+1. `"Hey, how are you doing today?"` — Casual conversation
+2. `"Explain how async/await works in JavaScript with examples"` — Technical explanation
+3. `"Summarize the key points of our last conversation"` — Context-aware summary (uses conversation history)
+4. `"Rewrite this paragraph in a more professional tone: [text]"` — Text transformation
+5. `"Write a short story about a robot learning to cook"` — Creative writing
+6. `"Translate 'good morning' to French, Spanish, and Japanese"` — Translation
+7. `"What are the pros and cons of React vs Vue?"` — Comparison/analysis
+8. `"What can you do? List all your capabilities"` — Meta-conversation (agent explains itself)
+9. `"Help me write a cover letter for a software engineer position"` — Guided writing
+
+---
+
+### `memorytool` — User Profile & Long-Term Memory
+
+Stores and retrieves persistent user information: name, email, location, tone preferences, and contacts. This data persists across all conversations.
+
+**Triggered by:** "remember", "forget", "what do you know about me", "my name/email/location"
+
+**Example prompts:**
+1. `"Remember my name is Alex"` — Store name
+2. `"Remember my email is alex@example.com"` — Store email
+3. `"Remember my location is Tel Aviv"` — Store location (used by weather)
+4. `"Remember John's email is john@company.com"` — Store contact
+5. `"What do you know about me?"` — Retrieve full profile
+6. `"Who am I?"` — Quick profile recall
+7. `"Forget my location"` — Remove stored location
+8. `"Remember I prefer a professional and concise tone"` — Set tone preference
+9. `"What contacts do you have saved?"` — List stored contacts
+
+---
+
+### `nlp_tool` — Text Analysis & Sentiment
+
+Performs NLP analysis: sentiment detection, entity extraction, text classification. Only activates for explicit analysis requests.
+
+**Triggered by:** "sentiment", "analyze text", "text analysis", "classify text", "extract entities"
+
+**Example prompts:**
+1. `"Analyze the sentiment of: I love this product, it changed my life!"` — Positive sentiment
+2. `"What's the sentiment of this review: The service was terrible and the food was cold"` — Negative sentiment
+3. `"Extract entities from: Apple CEO Tim Cook announced new products in Cupertino"` — Named entity recognition
+4. `"Analyze the text: The quarterly results exceeded expectations by 20%"` — Business text analysis
+5. `"Classify the tone of this message: We need to talk about your performance"` — Tone classification
+6. `"Sentiment analysis on: meh, it was okay I guess"` — Neutral/mixed sentiment
+
+---
+
+### `selfImprovement` — Agent Diagnostics & Self-Analysis
+
+Checks the agent's routing accuracy, detects misrouting patterns, generates performance reports, and reviews internal code.
+
+**Triggered by:** "how accurate", "routing accuracy", "self-improve", "what have you improved", "weekly report", "misrouting"
+
+**Example prompts:**
+1. `"How accurate is your routing?"` — Get intent accuracy report
+2. `"What have you improved recently?"` — View improvement history
+3. `"What issues have you detected?"` — Show misrouting patterns
+4. `"Generate a weekly performance report"` — HTML summary report
+5. `"Review your planner code"` — Code review of planner.js
+6. `"How can you improve your tool selection?"` — Get routing recommendations
+
+---
+
+## 2. Information & Search
+
+### `search` — Web Search (Multi-Source)
+
+Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour.
+
+**Triggered by:** "search", "look up", "find information", "what is", "who is" (when not matched by other tools)
+
+**Example prompts:**
+1. `"Search for the latest developments in quantum computing"` — Current tech research
+2. `"Who is the CEO of Tesla?"` — Person lookup
+3. `"What is the population of Japan?"` — Factual query
+4. `"Search for best practices in Node.js error handling"` — Technical research
+5. `"Find information about the James Webb Space Telescope discoveries"` — Science news
+6. `"Look up the history of the Eiffel Tower"` — Historical research
+7. `"Search for healthy meal prep recipes"` — General search
+8. `"What are the system requirements for Windows 11?"` — Product info
+
+---
+
+### `news` — Multi-Source News with LLM Summaries
+
+Fetches from 9 RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports topic filtering. Articles are scraped and summarized by the LLM.
+
+**Triggered by:** "news", "headlines", "articles", "latest news", "breaking"
+
+**Example prompts:**
+1. `"What's the latest news?"` — All sources, top headlines
+2. `"Latest news about technology"` — Topic-filtered news
+3. `"Breaking news from BBC"` — Source-specific (if matched in text)
+4. `"Any news about climate change?"` — Topic: environment
+5. `"Today's headlines about the economy"` — Topic: economy
+6. `"Recent news from Israel"` — Regional news (Israeli sources prioritized)
+7. `"What's happening in the world of sports?"` — Topic: sports (via news, not sports tool)
+8. `"Give me a news summary for today"` — General daily briefing
+
+---
+
+### `weather` — Forecast & Current Conditions
+
+Uses OpenWeather API. Supports city names, "here" (geolocation), and remembers your saved location from memory.
+
+**Triggered by:** "weather", "forecast", "temperature", "rain", "snow", "humidity", "wind", "sunny", "cloudy"
+
+**Requires:** `OPENWEATHER_KEY` in `.env`
+
+**Example prompts:**
+1. `"What's the weather in London?"` — City-specific forecast
+2. `"Weather here"` — Uses geolocation
+3. `"Is it going to rain in New York tomorrow?"` — Rain forecast
+4. `"Temperature in Tokyo"` — Temperature query
+5. `"What's the forecast for this week in Tel Aviv?"` — Extended forecast
+6. `"Is it snowing in Denver?"` — Condition check
+7. `"Weather"` — Uses saved location from memory (if set)
+8. `"How humid is it in Miami?"` — Humidity query
+
+---
+
+## 3. Productivity & Communication
+
+### `email` — Draft & Send Emails (Gmail OAuth)
+
+Two-stage email: drafts the email first, then waits for your confirmation ("send it") before sending. Supports attachments, contact resolution from memory, and natural language parsing.
+
+**Requires:** Gmail OAuth configured (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
+
+**Triggered by:** "email", "mail", "send to", "draft email"
+
+**Example prompts:**
+1. `"Email john@example.com saying the meeting is at 3pm"` — Direct email with body
+2. `"Draft an email to Sarah about the project deadline"` — Uses contacts from memory
+3. `"Send an email to my boss about taking Friday off"` — Natural language
+4. `"Email the team about the new release, attach the changelog"` — With attachment
+5. `"Write a professional email declining a meeting invitation"` — Tone-specific
+6. `"Send it"` — Confirm and send the last drafted email
+7. `"Cancel"` — Discard the draft
+8. `"Email Alex with subject 'Budget Review' body 'Please review the attached budget proposal'"` — Structured email
+
+---
+
+### `tasks` — Task & Todo Management
+
+Manages task lists with priorities, due dates, and status tracking.
+
+**Triggered by:** "todo", "task", "reminder", "add task", "my tasks", "checklist"
+
+**Example prompts:**
+1. `"Add task: review pull request by Friday"` — Create task with deadline
+2. `"What are my current tasks?"` — List all tasks
+3. `"Mark the review task as done"` — Update status
+4. `"Add a high priority task to fix the login bug"` — Priority task
+5. `"Remove the completed tasks"` — Clean up
+6. `"What tasks are due this week?"` — Filter by deadline
+
+---
+
+## 4. File & Code Operations
+
+### `file` — File System Browser & Reader
+
+Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder.
+
+**Triggered by:** Explicit file paths (e.g., `D:/...`), "list files", "read file", "show me"
+
+**Example prompts:**
+1. `"List files in D:/local-llm-ui/server/tools"` — Directory listing
+2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents
+3. `"Show me the contents of E:/testFolder/config.json"` — Read external file
+4. `"What files are in the server directory?"` — Natural language listing
+5. `"List all JavaScript files in the tools folder"` — Filtered listing
+6. `"Read the first 50 lines of server/executor.js"` — Partial read
+7. `"Show the directory structure of the client folder"` — Tree view
+
+---
+
+### `fileWrite` — Write Files to Disk
+
+Creates or overwrites files on disk. Used for code generation, config files, etc.
+
+**Triggered by:** "write file", "create file", "save to file" (typically invoked as part of multi-step flows)
+
+**Example prompts:**
+1. `"Write a hello world script to D:/local-llm-ui/test.js"` — Create file
+2. `"Create a JSON config file at E:/testFolder/config.json"` — Config generation
+3. `"Save this code to D:/local-llm-ui/utils/helper.js"` — Save generated code
+
+---
+
+### `fileReview` — LLM-Powered File Analysis
+
+When you attach files via drag-and-drop or the attachment bar, this tool summarizes each file with 3 bullet points and suggests 2 follow-up questions.
+
+**Triggered by:** Attaching files to a chat message (automatic routing)
+
+**Example prompts:**
+1. *Drag-and-drop a `.js` file* + `"Review this code"` — Code summary
+2. *Attach a `.json` file* + `"What does this config do?"` — Config analysis
+3. *Attach multiple files* + `"Compare these files"` — Multi-file analysis
+4. *Attach a `.csv` file* + `"Summarize this data"` — Data summary
+5. *Attach a log file* + `"Find errors in this log"` — Log analysis
+6. *Attach a `.md` file* + `"What are the key points?"` — Document summary
+
+---
+
+### `duplicateScanner` — Find Duplicate Files
+
+Scans directories for duplicate files using SHA256 hashing (two-stage: chunk then full), metadata matching, and Levenshtein fuzzy name detection. Results appear in a scrollable panel.
+
+**Triggered by:** "duplicate", "find duplicate", "scan duplicate"
+
+**Example prompts:**
+1. `"Find duplicate files in D:/local-llm-ui"` — Full project scan
+2. `"Scan for duplicates in E:/testFolder"` — External folder
+3. `"Find duplicate .js files in the server directory"` — Type-filtered
+4. `"Are there any duplicate files named config?"` — Name-filtered
+5. `"Find duplicate files in D:/local-llm-ui that are .json"` — Extension filter
+6. `"Scan for duplicate files"` — Default path scan
+
+---
+
+### `review` — Code Review & Analysis
+
+Reviews code files and generates detailed analysis: issues, suggestions, best practices, security concerns.
+
+**Triggered by:** "review code", "inspect code", "examine file", "audit code"
+
+**Example prompts:**
+1. `"Review server/planner.js"` — Full file review
+2. `"Review the executor code and suggest improvements"` — Review with suggestions
+3. `"Inspect server/tools/email.js for security issues"` — Security audit
+4. `"Examine the search tool implementation"` — Tool analysis
+5. `"Review my code for performance issues"` — Performance review
+6. `"Audit the authentication flow in the OAuth module"` — Specific concern
+7. `"Review server/utils/httpClient.js and check error handling"` — Targeted review
+
+---
+
+### `applyPatch` — Apply Code Patches
+
+Applies code patches/diffs to files. Used in multi-step improvement flows after review.
+
+**Triggered by:** Part of improvement pipeline (review → applyPatch), or "apply patch", "patch file"
+
+**Example prompts:**
+1. `"Apply the suggested improvements to server/tools/email.js"` — Post-review patch
+2. `"Patch the search tool with the recommended changes"` — Apply recommendations
+3. *Typically used automatically in multi-step improvement flows*
+
+---
+
+## 5. Developer Tools
+
+### `github` — GitHub Repository Management
+
+Full GitHub API access via Octokit: list repos, search repos, manage issues, read file contents, view profile.
+
+**Requires:** `GITHUB_TOKEN` or `GITHUB_API_KEY` in `.env`
+
+**Triggered by:** "github", "repo", "repository", "pull request", "issue", "commit"
+
+**Example prompts:**
+1. `"List my GitHub repositories"` — Show all repos
+2. `"Search GitHub for React component libraries"` — Search repos
+3. `"Show my open GitHub issues"` — List issues
+4. `"Get the contents of README.md from my FirstAgent repo"` — Read repo file
+5. `"Show my GitHub profile"` — View profile info
+6. `"What are the most starred repos for 'machine learning'?"` — Search by stars
+7. `"List recent commits on my FirstAgent repository"` — Commit history
+
+---
+
+### `githubTrending` — Trending Repositories
+
+Fetches trending GitHub repositories by topic, language, or time period. Used in improvement flows to discover best practices.
+
+**Triggered by:** "trending", "popular repos", "top repositories"
+
+**Example prompts:**
+1. `"Show trending GitHub repos"` — General trending
+2. `"Trending JavaScript repositories this week"` — Language-filtered
+3. `"Popular repos for machine learning"` — Topic search
+4. `"What's trending in TypeScript?"` — Language trends
+5. `"Show trending Node.js frameworks"` — Framework discovery
+6. `"Top repos for React best practices"` — Best practice research
+7. `"Trending repos for API design patterns"` — Architecture research
+
+---
+
+### `gitLocal` — Local Git Operations
+
+Executes Git commands on your local repository: status, log, diff, add, commit, branch, stash, etc.
+
+**Triggered by:** "git status", "git log", "git diff", "git add", "git commit", etc.
+
+**Example prompts:**
+1. `"git status"` — Check working directory
+2. `"git log"` — View recent commits
+3. `"git diff"` — Show unstaged changes
+4. `"git add server/planner.js"` — Stage a file
+5. `"git branch"` — List branches
+6. `"git stash"` — Stash current changes
+7. `"Show me the git log for the last 10 commits"` — Detailed history
+8. `"What files have changed since last commit?"` — Quick diff check
+
+---
+
+### `packageManager` — npm Package Management
+
+Install, update, and manage npm packages.
+
+**Triggered by:** "npm install", "install package", "add dependency"
+
+**Example prompts:**
+1. `"Install axios"` — Install a package
+2. `"What version of express is installed?"` — Check version
+3. `"Update all packages"` — Bulk update
+4. `"Install lodash as a dev dependency"` — Dev dependency
+5. `"Remove the unused chalk package"` — Uninstall
+6. `"List outdated packages"` — Check for updates
+
+---
+
+### `webDownload` — Download Files from URLs
+
+Downloads files from URLs (including GitHub raw URLs and npm package info). Returns content for text files.
+
+**Triggered by:** Any URL in the message (e.g., `https://...`)
+
+**Example prompts:**
+1. `"Download https://raw.githubusercontent.com/user/repo/main/README.md"` — GitHub raw file
+2. `"Fetch https://example.com/api/data.json"` — Download JSON
+3. `"Download the file at https://example.com/style.css"` — CSS download
+4. `"Get npm info for express"` — npm package lookup
+5. `"Download https://example.com/script.js and read it"` — Download + preview
+6. `"Fetch and summarize https://example.com/article.html"` — Download + LLM summary
+
+---
+
+## 6. Finance & Shopping
+
+### `finance` — Stock Prices & Market Data
+
+Fetches real-time stock prices, market data, and company information from Alpha Vantage, Finnhub, and FMP.
+
+**Requires:** At least one of `ALPHA_VANTAGE_KEY`, `FINNHUB_KEY`, `FMP_API_KEY` in `.env`
+
+**Triggered by:** "stock", "share price", "ticker", "market", "portfolio", "invest", "S&P"
+
+**Example prompts:**
+1. `"What's the stock price of Apple?"` — Current price
+2. `"How is Tesla doing today?"` — Stock status
+3. `"Show me the stock price for MSFT"` — By ticker symbol
+4. `"Compare Apple and Google stock prices"` — Multi-stock
+5. `"How did the S&P 500 perform today?"` — Market index
+6. `"What's the stock price of Amazon in the last week?"` — Historical
+7. `"Show me NVDA stock data"` — Nvidia by ticker
+
+---
+
+### `financeFundamentals` — Company Fundamentals
+
+Deep financial analysis: P/E ratio, market cap, revenue, earnings, debt ratios.
+
+**Triggered by:** "fundamentals", "financials", "earnings", "revenue", "P/E ratio"
+
+**Example prompts:**
+1. `"Show me Apple's financial fundamentals"` — Full fundamental analysis
+2. `"What's Tesla's P/E ratio?"` — Specific metric
+3. `"Revenue and earnings for Microsoft"` — Income data
+4. `"Compare fundamentals of Google and Amazon"` — Comparative analysis
+5. `"What's the market cap of NVIDIA?"` — Market cap
+6. `"Show me the debt-to-equity ratio for Meta"` — Balance sheet metric
+
+---
+
+### `shopping` — Product Search & Price Comparison
+
+Searches for products, prices, deals, and reviews.
+
+**Triggered by:** "buy", "shop", "price", "product", "deal", "discount", "purchase"
+
+**Example prompts:**
+1. `"Find the best price for a mechanical keyboard"` — Price search
+2. `"Compare prices for AirPods Pro"` — Price comparison
+3. `"Search for laptop deals under $1000"` — Budget shopping
+4. `"What are the best wireless headphones?"` — Product research
+5. `"Find deals on ergonomic office chairs"` — Deal hunting
+6. `"Shop for a 27 inch 4K monitor"` — Specific product search
+
+---
+
+## 7. Media & Entertainment
+
+### `youtube` — YouTube Video Search
+
+Searches YouTube for videos, tutorials, and content.
+
+**Requires:** `YOUTUBE_API_KEY` in `.env`
+
+**Triggered by:** "youtube", "video", "watch", "tutorial video"
+
+**Example prompts:**
+1. `"Search YouTube for Node.js tutorials"` — Tutorial search
+2. `"Find YouTube videos about machine learning"` — Topic search
+3. `"YouTube best cooking channels"` — Channel discovery
+4. `"Find videos about React hooks explained"` — Specific topic
+5. `"Search YouTube for live coding sessions"` — Content type
+6. `"YouTube tutorials about Docker for beginners"` — Skill level
+7. `"Find the latest tech review videos"` — Recent content
+
+---
+
+### `sports` — Live Scores & Sports Data
+
+Real-time scores, match data, league standings, and player stats.
+
+**Requires:** `SPORTS_API_KEY` in `.env`
+
+**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "basketball", "NBA"
+
+**Example prompts:**
+1. `"What are today's football scores?"` — Live scores
+2. `"Premier League standings"` — League table
+3. `"NBA scores tonight"` — Basketball scores
+4. `"When does Real Madrid play next?"` — Team schedule
+5. `"Who won the Champions League last night?"` — Recent results
+6. `"Show me the NFL scores"` — American football
+7. `"What's the score of the Barcelona game?"` — Specific match
+
+---
+
+### `lotrJokes` — Lord of the Rings Jokes
+
+Fun tool that tells Lord of the Rings themed jokes.
+
+**Triggered by:** "LOTR joke", "Lord of the Rings joke", "hobbit joke"
+
+**Example prompts:**
+1. `"Tell me a Lord of the Rings joke"` — Random LOTR joke
+2. `"Give me a hobbit joke"` — Hobbit-themed
+3. `"LOTR humor please"` — Fun request
+
+---
+
+## 8. Web Interaction & Automation
+
+### `webBrowser` — General Web Browsing
+
+Browse any website with persistent session cookies, form submission, CSRF handling, and structured data extraction. Each domain gets its own persistent session.
+
+**Triggered by:** "browse", "visit", "navigate", "go to" + a domain name
+
+**Example prompts:**
+1. `"Browse example.com"` — Simple page fetch
+2. `"Visit reddit.com and show me the top links"` — Extract links
+3. `"Navigate to github.com/trending and extract the content"` — Scrape content
+4. `"Go to news.ycombinator.com and show me the headlines"` — Extract text
+5. `"Extract all forms from example.com/login"` — Form discovery
+6. `"Login to example.com with username: test password: test123"` — Login flow
+7. `"Store credentials for example.com username: myuser password: mypass"` — Encrypted credential storage
+8. `"Submit form at example.com/contact with name: Alex email: alex@test.com"` — Form submission
+
+---
+
+### `moltbook` — Moltbook.com Interaction
+
+Domain-specific tool for all moltbook.com interactions: account management, browsing, searching, and social features. Uses persistent session with cookie management.
+
+**Triggered by:** Any message containing "moltbook"
+
+**Example prompts:**
+1. `"Login to moltbook"` — Login (uses stored credentials)
+2. `"Register on moltbook with username: myuser password: mypass email: me@test.com"` — Create account
+3. `"Store my moltbook credentials username: myuser password: mypass"` — Save credentials (encrypted)
+4. `"Browse moltbook profile"` — View profile page
+5. `"Search moltbook for interesting posts"` — Search within site
+6. `"Check my moltbook session status"` — Session health check
+7. `"Register on moltbook and verify my email"` — Multi-step: register + email verify + status check
+8. `"Logout from moltbook"` — End session
+9. `"Browse moltbook.com/dashboard"` — Navigate specific page
+
+---
+
+## Setup Requirements
+
+### Required API Keys (`.env` file)
+
+| Variable | Tool(s) | Required? |
+|----------|---------|-----------|
+| `LLM_MODEL` | All (defaults to `llama3.2`) | Optional |
+| `SERPAPI_KEY` | search | Recommended |
+| `OPENWEATHER_KEY` | weather | For weather |
+| `ALPHA_VANTAGE_KEY` or `FINNHUB_KEY` | finance, financeFundamentals | For finance |
+| `SPORTS_API_KEY` | sports | For sports |
+| `YOUTUBE_API_KEY` | youtube | For YouTube |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, emailVerification | For email |
+| `GITHUB_TOKEN` | github, githubTrending | For GitHub |
+| `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For credential encryption |
+| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://moltbook.com`) | Optional |
+
+### Generating a Credential Master Key
+
+The `CREDENTIAL_MASTER_KEY` is a random secret string you create yourself. Generate one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Add the output to your `.env` file:
+```
+CREDENTIAL_MASTER_KEY=<your-generated-key-here>
+```
+
+---
+
+## How the Agent Routes Your Messages
+
+1. **Certainty Layer** (deterministic, instant) — Pattern matching for keywords, file paths, URLs, tool-specific phrases. ~90% of messages are caught here.
+
+2. **Tool-Specific Keyword Clusters** (deterministic) — Expanded pattern matching for email, finance, sports, YouTube, GitHub, git, code review, shopping, tasks, memory, NLP, selfImprovement.
+
+3. **LLM Classifier** (AI-powered fallback) — For truly ambiguous queries, the LLM classifies intent using few-shot examples and negative examples.
+
+4. **Case-Insensitive Resolution** — The LLM's output is matched case-insensitively against all available tools, with alias support and partial matching.
+
+5. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation) which can handle anything.
+
+---
+
+## Multi-Step Flows
+
+The agent can chain multiple tools for complex tasks:
+
+- **Register + Verify**: `"Register on moltbook and verify my email"` → moltbook(register) → moltbook(verify_email) → moltbook(status)
+- **Improve Code**: `"Improve the search tool based on trending patterns"` → githubTrending → review → applyPatch → gitLocal(status) → gitLocal(add)
+- **Research + Email**: The planner can generate multi-step plans for complex requests.
+
+---
+
+## Tips for Best Results
+
+1. **Be specific** — "Weather in Paris" is better than "what's it like outside"
+2. **Name the tool** — "Search for..." or "Email John..." helps routing
+3. **Use stored memory** — Set your location once with "remember my location is Tel Aviv" and just say "weather" next time
+4. **Chain with confirmation** — Email always drafts first. Say "send it" to confirm.
+5. **Attach files** — Drag and drop files for automatic LLM analysis
+6. **Store credentials once** — "Store my moltbook credentials" encrypts them. Next time just say "login to moltbook"
