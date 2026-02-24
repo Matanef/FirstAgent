@@ -90,6 +90,12 @@ export const CONFIG = {
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,
 
+  // Credential Encryption
+  CREDENTIAL_MASTER_KEY: process.env.CREDENTIAL_MASTER_KEY,
+
+  // Moltbook
+  MOLTBOOK_BASE_URL: process.env.MOLTBOOK_BASE_URL || 'https://moltbook.com',
+
   // Cache
   SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'),
 
@@ -119,6 +125,11 @@ if (warnings.length > 0) {
   console.warn('='.repeat(60) + '\n');
 }
 
+// Credential encryption
+if (!process.env.CREDENTIAL_MASTER_KEY) {
+  warnings.push("  No CREDENTIAL_MASTER_KEY set - credential storage will be unavailable");
+}
+
 if (!process.env.LLM_MODEL) {
   console.info(`ℹ️  Using default LLM model: ${CONFIG.LLM_MODEL}`);
 }
@@ -136,4 +147,6 @@ if (CONFIG.isEmailAvailable()) {
   else if (CONFIG.SMTP_HOST) console.log('  ✓ SMTP configured');
   else console.log('  ✓ Email API configured');
 }
+if (CONFIG.CREDENTIAL_MASTER_KEY) console.log('  ✓ Credential encryption configured');
+if (CONFIG.MOLTBOOK_BASE_URL !== 'https://moltbook.com') console.log(`  ✓ Moltbook URL: ${CONFIG.MOLTBOOK_BASE_URL}`);
 console.log('='.repeat(60) + '\n');

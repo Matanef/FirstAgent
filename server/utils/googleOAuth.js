@@ -33,7 +33,10 @@ export function createOAuthClient() {
 
 export function getAuthUrl() {
   const oAuth2Client = createOAuthClient();
-  const scopes = ["https://www.googleapis.com/auth/gmail.send"];
+  const scopes = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly"
+  ];
 
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: "offline",

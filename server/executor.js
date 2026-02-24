@@ -393,7 +393,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook"].includes(tool)) {
     toolInput = message;
   } else {
     toolInput = getMessageText(message);
@@ -468,6 +468,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
+  // SPECIAL CASE: moltbook/webBrowser credential/registration previews — return raw data
+  if ((tool === "moltbook" || tool === "webBrowser") && (result.data?.mode === "preview" || result.data?.needsCredentials)) {
+    return {
+      reply: result.data?.text || "Action requires more information.",
+      tool,
+      data: result.data,
+      success: true,
+      final: true
+    };
+  }
+
   // SPECIAL CASE: duplicateScanner — return raw structured data for the panel to render
   if (tool === "duplicateScanner") {
     return {
@@ -495,7 +506,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
-    "webDownload", "fileReview"
+    "webDownload", "fileReview", "webBrowser", "moltbook"
   ];
 
   if (summarizeTools.includes(tool)) {
