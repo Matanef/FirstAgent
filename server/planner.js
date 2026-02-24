@@ -313,6 +313,9 @@ CRITICAL RULES:
 4. "trending" → githubTrending
 5. NEVER use nlp_tool unless explicitly asked for "sentiment" or "analyze text"
 6. For improvement requests, prefer "selfImprovement" or the safe improvement plan generator
+7. "moltbook" (any mention) → moltbook (site-specific web interaction tool)
+8. "browse/visit/navigate [website]" → webBrowser (general web browsing tool)
+9. "store/save/remember password/credentials" → moltbook or webBrowser (NOT memorytool)
 
 Respond with ONLY the tool name.`;
 
@@ -467,6 +470,57 @@ export async function plan({ message, chatContext = {} }) {
       !hasExplicitFilePath(trimmed)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // CREDENTIAL SAFETY GUARD: prevent passwords from going to memory tool
+  // ──────────────────────────────────────────────────────────
+  if (/\b(remember|save|store)\b/i.test(lower) && /\b(password|credential|login)\b/i.test(lower)) {
+    if (/\bmoltbook\b/i.test(lower)) {
+      console.log("[planner] certainty branch: moltbook credential store (safety guard)");
+      return [{ tool: "moltbook", input: trimmed, context: { action: "storeCredentials" }, reasoning: "certainty_credential_store" }];
+    }
+    // For other sites, route to webBrowser credential storage
+    console.log("[planner] certainty branch: webBrowser credential store (safety guard)");
+    const domainMatch = lower.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|app|co))\b/);
+    return [{ tool: "webBrowser", input: trimmed, context: { action: "setCredentials", service: domainMatch?.[1] || "default" }, reasoning: "certainty_credential_store" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // MOLTBOOK: Multi-step registration + verification
+  // ──────────────────────────────────────────────────────────
+  if (/\bmoltbook\b/i.test(lower) && /\b(register|sign\s*up)\b/i.test(lower) && /\b(verify|verification|confirm)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: moltbook register + verify (multi-step)");
+    return [
+      { tool: "moltbook", input: trimmed, context: { action: "register" }, reasoning: "moltbook_register" },
+      { tool: "moltbook", input: "check verification email and click link", context: { action: "verify_email" }, reasoning: "moltbook_verify" },
+      { tool: "moltbook", input: "check login status", context: { action: "status" }, reasoning: "moltbook_verify_status" }
+    ];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // MOLTBOOK: Single-action detection
+  // ──────────────────────────────────────────────────────────
+  if (/\bmoltbook\b/i.test(lower)) {
+    console.log("[planner] certainty branch: moltbook");
+    const context = {};
+    if (/\b(register|sign\s*up|create\s+account)\b/i.test(lower)) context.action = "register";
+    else if (/\b(log\s*in|sign\s*in)\b/i.test(lower)) context.action = "login";
+    else if (/\b(log\s*out|sign\s*out)\b/i.test(lower)) context.action = "logout";
+    else if (/\b(profile|my\s+account|settings)\b/i.test(lower)) context.action = "profile";
+    else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
+    else if (/\b(status|session|check)\b/i.test(lower)) context.action = "status";
+    else if (/\b(verify|verification)\s*(email)?\b/i.test(lower)) context.action = "verify_email";
+    else context.action = "browse";
+    return [{ tool: "moltbook", input: trimmed, context, reasoning: "certainty_moltbook" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // GENERAL WEB BROWSING: domain-like patterns with browse verbs
+  // ──────────────────────────────────────────────────────────
+  if (/\b(browse|navigate|visit|go\s+to|open)\b/i.test(lower) && /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|co)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: webBrowser");
+    return [{ tool: "webBrowser", input: trimmed, context: {}, reasoning: "certainty_web_browse" }];
   }
 
   // URL detection → webDownload (fetch and read/follow)

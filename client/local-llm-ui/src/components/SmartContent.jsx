@@ -6,8 +6,10 @@ import CodeBlock from "./CodeBlock";
 import WeatherWidget from "./WeatherWidget";
 import FileReviewPanel from "./FileReviewPanel";
 import DuplicateResultsPanel from "./DuplicateResultsPanel";
+import WebBrowserPanel from "./WebBrowserPanel";
 
 function detectContentType(content, data, tool) {
+    if ((tool === "moltbook" || tool === "webBrowser") && data) return "webBrowser";
     if (tool === "duplicateScanner" && data?.groups) return "duplicateScanner";
     if (tool === "fileReview" && data?.files) return "fileReview";
     if (tool === "youtube" && data?.videos) return "youtube";
@@ -26,6 +28,9 @@ export default function SmartContent({ message, conversationId }) {
     );
 
     switch (contentType) {
+        case "webBrowser":
+            return <WebBrowserPanel content={message.content} data={message.data} />;
+
         case "duplicateScanner":
             return <DuplicateResultsPanel content={message.content} data={message.data} />;
 

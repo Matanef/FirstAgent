@@ -26,6 +26,8 @@ import { githubTrending } from "./githubTrending.js";
 import { applyPatch } from "./applyPatch.js";
 import { fileReview } from "./fileReview.js";
 import { duplicateScanner } from "./duplicateScanner.js";
+import { webBrowser } from "./webBrowser.js";
+import { moltbook } from "./moltbook.js";
 
 export const TOOLS = {
   calculator,
@@ -52,7 +54,9 @@ export const TOOLS = {
   githubTrending,
   applyPatch,
   fileReview,
-  duplicateScanner
+  duplicateScanner,
+  webBrowser,
+  moltbook
 };
 
 // Validate all tools are functions at startup
