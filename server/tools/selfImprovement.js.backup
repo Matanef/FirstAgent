@@ -1,3 +1,4 @@
+
 // server/tools/selfImprovement.js
 import { getRecentImprovements, generateSummaryReport } from "../telemetryAudit.js";
 import { getIntentAccuracyReport, detectMisroutingPatterns, getRoutingRecommendations } from "../intentDebugger.js";
@@ -34,13 +35,12 @@ export async function selfImprovement(query) {
         byCategory[cat].push(imp);
       }
 
-      // FIX: text must be declared BEFORE the html template literal that references it
       const text = improvements
         .slice(0, 10)
-        .map(imp => `\u2022 ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
+        .map((imp) => `\u2022 ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
         .join('\n');
 
-      // Build HTML report — backtick closed with ` after </style>
+      // Build HTML report
       const html = `
         <div class="improvements-report">
           <h2>🔧 Recent Self-Improvements</h2>
@@ -48,7 +48,7 @@ export async function selfImprovement(query) {
             <div class="improvement-category">
               <h3>${category.charAt(0).toUpperCase() + category.slice(1)}</h3>
               <ul class="improvement-list">
-                ${items.map(imp => `
+                ${items.map((imp) => `
                   <li class="improvement-item">
                     <div class="improvement-action">${imp.action}</div>
                     ${imp.reason ? `<div class="improvement-reason">${imp.reason}</div>` : ''}
@@ -64,16 +64,7 @@ export async function selfImprovement(query) {
             <p><strong>Categories:</strong> ${Object.keys(byCategory).join(', ')}</p>
           </div>
         </div>
-        <style>
-          .improvements-report { font-family: sans-serif; }
-          .improvement-category { margin-bottom: 1rem; }
-          .improvement-item { margin-bottom: 0.5rem; }
-          .improvement-action { font-weight: bold; }
-          .improvement-reason { color: #666; font-size: 0.9em; }
-          .improvement-file { color: #888; font-size: 0.85em; }
-          .improvement-timestamp { color: #aaa; font-size: 0.8em; }
-          .improvement-summary { border-top: 1px solid #eee; padding-top: 0.5rem; margin-top: 1rem; }
-        </style>
+
       `;
 
       return {
@@ -92,7 +83,6 @@ export async function selfImprovement(query) {
     if (lower.includes("routing accuracy") || lower.includes("intent accuracy") || lower.includes("how accurate")) {
       const report = await getIntentAccuracyReport();
 
-      // FIX: backtick closed with ` after </style>
       const html = `
         <div class="accuracy-report">
           <h2>🎯 Routing Accuracy Report</h2>
@@ -133,16 +123,7 @@ export async function selfImprovement(query) {
             </tbody>
           </table>
         </div>
-        <style>
-          .accuracy-report { font-family: sans-serif; }
-          .accuracy-stats { display: flex; gap: 1rem; margin-bottom: 1rem; }
-          .stat-box { background: #f5f5f5; border-radius: 8px; padding: 1rem; text-align: center; }
-          .stat-value { font-size: 2rem; font-weight: bold; }
-          .stat-label { color: #666; font-size: 0.85em; }
-          .accuracy-table { width: 100%; border-collapse: collapse; }
-          .accuracy-table th, .accuracy-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-          .accuracy-table th { background: #f0f0f0; }
-        </style>
+
       `;
 
       return {
@@ -167,14 +148,13 @@ export async function selfImprovement(query) {
         };
       }
 
-      // FIX: backtick closed with ` after </style>
       const html = `
         <div class="issues-report">
           <h2>⚠️ Detected Issues & Recommendations</h2>
           ${patterns.length > 0 ? `
             <h3>Patterns Detected</h3>
             <ul class="issues-list">
-              ${patterns.map(p => `
+              ${patterns.map((p) => `
                 <li class="issue-item">
                   <div class="issue-type">${p.type.replace(/_/g, ' ').toUpperCase()}</div>
                   <div class="issue-recommendation">${p.recommendation}</div>
@@ -185,7 +165,7 @@ export async function selfImprovement(query) {
           ${recommendations.length > 0 ? `
             <h3>Recommendations</h3>
             <ul class="recommendations-list">
-              ${recommendations.map(r => `
+              ${recommendations.map((r) => `
                 <li class="recommendation-item priority-${r.priority}">
                   <div class="recommendation-header">
                     <span class="recommendation-priority">${r.priority.toUpperCase()}</span>
@@ -197,20 +177,7 @@ export async function selfImprovement(query) {
             </ul>
           ` : ''}
         </div>
-        <style>
-          .issues-report { font-family: sans-serif; }
-          .issue-item { margin-bottom: 0.75rem; padding: 0.5rem; background: #fff8e1; border-radius: 4px; }
-          .issue-type { font-weight: bold; color: #e65100; }
-          .issue-recommendation { color: #555; margin-top: 0.25rem; }
-          .recommendation-item { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; border-left: 4px solid #2196f3; }
-          .recommendation-item.priority-high { border-left-color: #f44336; }
-          .recommendation-item.priority-medium { border-left-color: #ff9800; }
-          .recommendation-item.priority-low { border-left-color: #4caf50; }
-          .recommendation-header { display: flex; gap: 0.5rem; margin-bottom: 0.25rem; }
-          .recommendation-priority { font-weight: bold; text-transform: uppercase; font-size: 0.8em; }
-          .recommendation-category { color: #666; font-size: 0.85em; }
-          .recommendation-details { color: #444; }
-        </style>
+
       `;
 
       return {
@@ -255,11 +222,7 @@ export async function selfImprovement(query) {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: {
-          html: htmlReport,
-          text: "Weekly report generated. This can be sent via email.",
-          report: htmlReport
-        }
+        data: { html: htmlReport, text: "Weekly report generated. This can be sent via email.", report: htmlReport }
       };
     }
 

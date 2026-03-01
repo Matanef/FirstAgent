@@ -27,6 +27,7 @@ Avoid slang and emotional language.
 Focus on clarity and structure.
 Keep sentences tight and information-dense.
 No unnecessary warmth.
+Provide source for new information.
 `
   },
 

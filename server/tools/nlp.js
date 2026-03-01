@@ -1,4 +1,3 @@
-Here is the improved code:
 // server/tools/nlp.js
 
 import natural from "natural";
@@ -40,15 +39,15 @@ class EntityExtractor {
   }
 
   extractEntities(text) {
-    const doc = this.compromise(text);
-
+    const doc = nlp(text);
+    
     return {
-      people: doc.people().out("array"),
-      places: doc.places().out("array"),
-      organizations: doc.organizations().out("array"),
-      dates: doc.dates().json().map(d => d.text),
-      emails: doc.emails().out("array"),
-      numbers: doc.numbers().out("array")
+      people: typeof doc.people === 'function' ? doc.people().out('array') : [],
+      places: typeof doc.places === 'function' ? doc.places().out('array') : [],
+      organizations: typeof doc.organizations === 'function' ? doc.organizations().out('array') : [],
+      dates: typeof doc.dates === 'function' ? doc.dates().json().map(d => d.text) : [],
+      emails: typeof doc.emails === 'function' ? doc.emails().out('array') : [],
+      numbers: typeof doc.numbers === 'function' ? doc.numbers().out('array') : []
     };
   }
 }
