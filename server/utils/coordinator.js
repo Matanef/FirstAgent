@@ -9,6 +9,119 @@ import { summarizeAndStoreConversation, shouldSummarize, getRelevantContext } fr
 import { detectSatisfaction, updatePreferencesFromFeedback, extractPreferences, applyExtractedPreferences, buildStyleInstructions } from "./styleEngine.js";
 import { appendSuggestion } from "./suggestions.js";
 
+// ============================================================
+// EMOTIONAL INTELLIGENCE LAYER (D5)
+// ============================================================
+
+const FRUSTRATION_WINDOW = 5; // Check last N messages for frustration patterns
+const FRUSTRATION_THRESHOLD = 3; // Number of signals needed to trigger adaptation
+
+/**
+ * Detect user frustration from conversation patterns
+ * Goes beyond basic sentiment — detects repeated queries, exasperation, confusion
+ */
+function detectFrustrationPatterns(queryText, conversationHistory) {
+  const lower = (queryText || "").toLowerCase();
+  const signals = [];
+
+  // 1. Explicit frustration language
+  if (/\b(doesn't work|not working|broken|useless|wrong|bad|terrible|frustrated|annoying|ugh|wtf|stop|enough)\b/i.test(lower)) {
+    signals.push("explicit_frustration");
+  }
+
+  // 2. Repeated clarification ("I said", "I already told you", "I meant")
+  if (/\b(i\s+said|i\s+already|i\s+meant|i\s+told\s+you|as\s+i\s+said|like\s+i\s+said|again|for\s+the\s+.+\s+time)\b/i.test(lower)) {
+    signals.push("repeated_clarification");
+  }
+
+  // 3. Question about why something failed ("why did", "why didn't", "why can't")
+  if (/\b(why\s+did(?:n't)?|why\s+can't|why\s+won't|why\s+isn't|why\s+not)\b/i.test(lower)) {
+    signals.push("failure_questioning");
+  }
+
+  // 4. All caps (shouting)
+  if (queryText.length > 5 && queryText === queryText.toUpperCase() && /[A-Z]/.test(queryText)) {
+    signals.push("shouting");
+  }
+
+  // 5. Excessive punctuation (!!!, ???)
+  if (/[!?]{2,}/.test(queryText)) {
+    signals.push("excessive_punctuation");
+  }
+
+  // 6. Repeated similar queries in conversation history
+  if (conversationHistory && conversationHistory.length >= 2) {
+    const recentUserMessages = conversationHistory
+      .filter(m => m.role === "user")
+      .slice(-FRUSTRATION_WINDOW)
+      .map(m => (m.content || "").toLowerCase());
+
+    const currentWords = new Set(lower.split(/\s+/).filter(w => w.length > 3));
+
+    let repeatCount = 0;
+    for (const prev of recentUserMessages) {
+      const prevWords = new Set(prev.split(/\s+/).filter(w => w.length > 3));
+      const overlap = [...currentWords].filter(w => prevWords.has(w)).length;
+      if (overlap >= currentWords.size * 0.6 && currentWords.size > 2) {
+        repeatCount++;
+      }
+    }
+    if (repeatCount >= 2) {
+      signals.push("repeated_queries");
+    }
+  }
+
+  // 7. Short terse messages after longer interactions
+  if (queryText.length < 15 && conversationHistory && conversationHistory.length > 6) {
+    const recentUserMsgs = conversationHistory.filter(m => m.role === "user").slice(-3);
+    const avgLength = recentUserMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0) / (recentUserMsgs.length || 1);
+    if (avgLength > 40 && queryText.length < 15) {
+      signals.push("terse_response");
+    }
+  }
+
+  const isFrustrated = signals.length >= 2;
+  const frustrationLevel = Math.min(signals.length / FRUSTRATION_THRESHOLD, 1.0);
+
+  return {
+    isFrustrated,
+    frustrationLevel,
+    signals,
+  };
+}
+
+/**
+ * Generate empathetic response modifications based on emotional state
+ */
+function getEmotionalAdaptation(frustration, sentiment) {
+  const adaptations = {
+    prependText: "",
+    toneModifier: "",
+    shouldAcknowledge: false,
+  };
+
+  if (frustration.isFrustrated) {
+    adaptations.shouldAcknowledge = true;
+
+    if (frustration.signals.includes("repeated_queries")) {
+      adaptations.prependText = "I understand this hasn't been working as expected. Let me try a different approach. ";
+      adaptations.toneModifier = "Be extra clear and specific. Avoid repeating previous unsuccessful approaches.";
+    } else if (frustration.signals.includes("explicit_frustration")) {
+      adaptations.prependText = "I'm sorry for the difficulty. ";
+      adaptations.toneModifier = "Be empathetic, direct, and solution-focused. Skip pleasantries and get to the answer.";
+    } else if (frustration.signals.includes("repeated_clarification")) {
+      adaptations.prependText = "";
+      adaptations.toneModifier = "Pay close attention to what the user is asking. Don't repeat your previous response. Focus precisely on what they're clarifying.";
+    } else {
+      adaptations.toneModifier = "Be extra helpful and patient. Show you understand the user's frustration.";
+    }
+  } else if (sentiment?.sentiment === "negative") {
+    adaptations.toneModifier = "Be warm and supportive while being helpful.";
+  }
+
+  return adaptations;
+}
+
 /**
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
@@ -52,6 +165,22 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
     const stateGraph = [];
     let lastFinalized = null;
 
+    // 2b. Emotional Intelligence — detect frustration from conversation patterns
+    let emotionalAdaptation = null;
+    try {
+        const { getMemory } = await import("../memory.js");
+        const memory = await getMemory();
+        const convoHistory = memory.conversations?.[conversationId] || [];
+        const frustration = detectFrustrationPatterns(queryText, convoHistory);
+
+        if (frustration.isFrustrated) {
+            console.log(`[coordinator] Frustration detected (level: ${(frustration.frustrationLevel * 100).toFixed(0)}%, signals: ${frustration.signals.join(", ")})`);
+            emotionalAdaptation = getEmotionalAdaptation(frustration, { sentiment });
+        }
+    } catch (e) {
+        console.warn("[coordinator] Emotional intelligence error:", e.message);
+    }
+
     // 3. Execution Loop
     for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
@@ -82,6 +211,11 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         // so downstream tools (e.g. applyPatch) can use review/trending results
         const enrichedContext = { ...(step.context || {}) };
 
+        // Pass emotional adaptation to LLM steps
+        if (emotionalAdaptation?.toneModifier) {
+            enrichedContext.emotionalTone = emotionalAdaptation.toneModifier;
+        }
+
         // Pass fileIds to fileReview tool
         if (step.tool === "fileReview" && fileIds.length > 0) {
             enrichedContext.fileIds = fileIds;
@@ -93,6 +227,27 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
                 }
                 if (prev.tool === 'githubTrending' && prev.success) {
                     enrichedContext.trendingPatterns = prev.output;
+                }
+            }
+
+            // TOOL CHAINING: pass previous step output as chainContext
+            if (step.context?.useChainContext || step.context?.chainedFrom !== undefined) {
+                const prevStep = stateGraph[stateGraph.length - 1];
+                if (prevStep) {
+                    enrichedContext.chainContext = {
+                        previousTool: prevStep.tool,
+                        previousOutput: prevStep.output,
+                        previousSuccess: prevStep.success,
+                    };
+                }
+            }
+
+            // LONG-HORIZON: pass dependency outputs
+            if (step.context?.dependsOn !== undefined) {
+                const depStep = stateGraph[step.context.dependsOn - 1];
+                if (depStep) {
+                    enrichedContext.dependencyOutput = depStep.output;
+                    enrichedContext.dependencyTool = depStep.tool;
                 }
             }
         }
@@ -210,8 +365,13 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         console.warn("[coordinator] Preference extraction error:", e.message);
     }
 
-    // 4c. Append proactive suggestions
+    // 4c. Apply emotional adaptation to response
     let finalReply = lastFinalized?.reply || "";
+    if (emotionalAdaptation?.shouldAcknowledge && emotionalAdaptation.prependText && finalReply) {
+        finalReply = emotionalAdaptation.prependText + finalReply;
+    }
+
+    // 4d. Append proactive suggestions
     try {
         if (lastFinalized?.success && lastFinalized?.tool) {
             finalReply = await appendSuggestion(
@@ -224,7 +384,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         console.warn("[coordinator] Suggestion engine error:", e.message);
     }
 
-    // 4d. Conversation memory — periodically summarize long conversations
+    // 4e. Conversation memory — periodically summarize long conversations
     try {
         const { getMemory } = await import("../memory.js");
         const memory = await getMemory();

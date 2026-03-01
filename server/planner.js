@@ -349,6 +349,10 @@ EXAMPLES (correct routing):
 - "add task: review pull request by Friday" → tasks
 - "write a hello world script to D:/test.js" → fileWrite
 - "create a config file at D:/app/config.json" → fileWrite
+- "what events do I have today" → calendar
+- "schedule a meeting tomorrow at 3pm" → calendar
+- "load document D:/report.txt" → documentQA
+- "ask about the project timeline from the docs" → documentQA
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
@@ -444,6 +448,150 @@ async function checkFollowUpContext(message, conversationId) {
 }
 
 // ============================================================
+// TOOL CHAINING: Detect multi-intent queries
+// ============================================================
+
+/**
+ * Detect if a query contains multiple intents that should be chained
+ * E.g., "search for X and email me the results", "check weather and also the news"
+ */
+function detectChainedIntents(message) {
+  const lower = (message || "").toLowerCase();
+
+  // Patterns that indicate multi-step requests
+  const chainPatterns = [
+    // "X and then Y", "X then Y"
+    /(.+?)\s+(?:and\s+)?then\s+(.+)/i,
+    // "X and also Y"
+    /(.+?)\s+and\s+also\s+(.+)/i,
+    // "X and email/send me the results"
+    /(.+?)\s+and\s+(email|send|mail)\s+(?:me\s+)?(?:the\s+)?(?:results?|findings?|info|information|summary|details)/i,
+    // "after X, Y" / "after X do Y"
+    /after\s+(.+?),?\s+(?:do\s+|please\s+)?(.+)/i,
+    // "X, then Y"
+    /(.+?),\s+then\s+(.+)/i,
+  ];
+
+  for (const pattern of chainPatterns) {
+    const match = message.match(pattern);
+    if (match) {
+      return {
+        isChained: true,
+        parts: [match[1].trim(), match[2].trim()],
+      };
+    }
+  }
+
+  // Check for comma-separated intents with different tool domains
+  const parts = message.split(/\s*(?:,\s*and\s+|,\s+and\s+|,\s+)\s*/).filter(Boolean);
+  if (parts.length >= 2) {
+    // Check if parts target different tools
+    const toolsForParts = parts.map(p => inferToolForChain(p.toLowerCase()));
+    const uniqueTools = new Set(toolsForParts);
+    if (uniqueTools.size >= 2) {
+      return { isChained: true, parts };
+    }
+  }
+
+  return { isChained: false };
+}
+
+/**
+ * Quick tool inference for chain detection (lighter than full routing)
+ */
+function inferToolForChain(text) {
+  if (/\b(weather|forecast|temperature)\b/.test(text)) return "weather";
+  if (/\b(email|mail|inbox|send)\b/.test(text)) return "email";
+  if (/\b(news|headline|article)\b/.test(text)) return "news";
+  if (/\b(stock|finance|market|price|ticker)\b/.test(text)) return "finance";
+  if (/\b(search|find|look\s+up|research)\b/.test(text)) return "search";
+  if (/\b(sport|score|match|league|team)\b/.test(text)) return "sports";
+  if (/\b(calendar|event|meeting|schedule)\b/.test(text)) return "calendar";
+  if (/\b(git|commit|branch|status)\b/.test(text)) return "gitLocal";
+  if (/\b(review|inspect|examine)\b/.test(text)) return "review";
+  if (/\b(file|read|write|create)\b/.test(text)) return "file";
+  if (/\b(moltbook|post|social)\b/.test(text)) return "moltbook";
+  if (/\b(task|todo|reminder)\b/.test(text)) return "tasks";
+  if (/\b(remember|memory|who am i)\b/.test(text)) return "memorytool";
+  if (/\b(calculate|compute|math|solve)\b/.test(text)) return "calculator";
+  return "llm";
+}
+
+// ============================================================
+// LONG-HORIZON TASK PLANNING
+// ============================================================
+
+/**
+ * Detect complex requests that need decomposition into sub-tasks
+ */
+function isComplexPlanningRequest(message) {
+  const lower = (message || "").toLowerCase();
+
+  const complexPatterns = [
+    /\b(plan|design|build|implement|create|develop)\s+(a|an|the)\s+(full|complete|entire|comprehensive)\b/i,
+    /\b(step[\s-]by[\s-]step|multi[\s-]?step|workflow|pipeline|process)\b/i,
+    /\b(research|analyze|compare)\s+.+\s+and\s+(write|create|draft|prepare)\b/i,
+    /\b(set\s+up|configure|deploy|migrate)\s+.+\s+(from|to|with)\b/i,
+  ];
+
+  return complexPatterns.some(p => p.test(lower));
+}
+
+/**
+ * Decompose a complex request into ordered sub-tasks using LLM
+ */
+async function decomposeComplexTask(message, availableTools) {
+  const toolList = availableTools.join(", ");
+
+  const prompt = `You are a task planning agent. Break this complex request into 2-5 sequential steps.
+
+Available tools: ${toolList}
+
+REQUEST: "${message}"
+
+For each step, specify:
+1. The tool to use
+2. The specific input/query for that tool
+3. Whether it depends on a previous step's output
+
+Format each step as:
+STEP: tool_name | input text | depends_on: none/step_N
+
+Be practical — only create steps for things the available tools can actually do.`;
+
+  try {
+    const response = await llm(prompt);
+    const text = response?.data?.text || "";
+    const steps = [];
+
+    const lines = text.split("\n").filter(l => /^STEP:/i.test(l.trim()));
+
+    for (const line of lines) {
+      const parts = line.replace(/^STEP:\s*/i, "").split("|").map(s => s.trim());
+      if (parts.length >= 2) {
+        const tool = parts[0].replace(/[^a-zA-Z_]/g, "");
+        const input = parts[1];
+        const dependency = parts[2]?.match(/step_?(\d+)/i)?.[1];
+
+        // Validate tool exists
+        const actualTool = availableTools.find(t => t.toLowerCase() === tool.toLowerCase());
+
+        steps.push({
+          tool: actualTool || "llm",
+          input,
+          context: dependency ? { dependsOn: parseInt(dependency) } : {},
+          reasoning: `complex_plan_step_${steps.length + 1}`,
+        });
+      }
+    }
+
+    return steps.length > 0 ? steps : null;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================
 // MAIN PLAN FUNCTION - Returns ARRAY of steps
 // ============================================================
 
@@ -465,6 +613,39 @@ export async function plan({ message, chatContext = {} }) {
     if (followUp) {
       return [followUp];
     }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // TOOL CHAINING: detect multi-intent queries ("X and then Y")
+  // ──────────────────────────────────────────────────────────
+  const chainResult = detectChainedIntents(trimmed);
+  if (chainResult.isChained && chainResult.parts.length >= 2) {
+    console.log(`[planner] Detected chained intents: ${chainResult.parts.length} parts`);
+    const chainSteps = [];
+    for (const part of chainResult.parts) {
+      const tool = inferToolForChain(part.toLowerCase());
+      chainSteps.push({
+        tool,
+        input: part,
+        context: chainSteps.length > 0 ? { chainedFrom: chainSteps.length - 1, useChainContext: true } : {},
+        reasoning: `chained_step_${chainSteps.length + 1}`,
+      });
+    }
+    console.log("[planner] Chain plan:", chainSteps.map(s => s.tool).join(" -> "));
+    return chainSteps;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // COMPLEX TASK DECOMPOSITION: multi-step planning for complex requests
+  // ──────────────────────────────────────────────────────────
+  if (isComplexPlanningRequest(trimmed)) {
+    console.log("[planner] Detected complex planning request, decomposing...");
+    const complexSteps = await decomposeComplexTask(trimmed, availableTools);
+    if (complexSteps && complexSteps.length > 1) {
+      console.log("[planner] Complex plan:", complexSteps.map(s => s.tool).join(" -> "));
+      return complexSteps;
+    }
+    // If decomposition failed, fall through to normal routing
   }
 
   // ──────────────────────────────────────────────────────────
@@ -774,6 +955,30 @@ export async function plan({ message, chatContext = {} }) {
   if ((hasSportsKeyword || hasTeamWithSportsIntent) && !hasExplicitFilePath(trimmed)) {
     console.log("[planner] certainty branch: sports");
     return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
+  }
+
+  // Calendar keywords
+  if (/\b(calendar|my\s+events?|schedule|meeting|appointment|free\s+time|availability|busy)\b/i.test(lower) &&
+      !/\b(moltbook|sports?|league)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: calendar");
+    const context = {};
+    if (/\b(create|add|schedule|set\s+up|book|make)\b/i.test(lower)) context.action = "create";
+    else if (/\b(free|busy|available|availability)\b/i.test(lower)) context.action = "freebusy";
+    else context.action = "list";
+    return [{ tool: "calendar", input: trimmed, context, reasoning: "certainty_calendar" }];
+  }
+
+  // Document QA keywords
+  if (/\b(document|knowledge\s+base|ingest|index\s+(a\s+)?file)\b/i.test(lower) &&
+      /\b(ask|question|load|ingest|index|search|query|find\s+in)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: documentQA");
+    return [{ tool: "documentQA", input: trimmed, context: {}, reasoning: "certainty_document_qa" }];
+  }
+
+  // Workflow keywords
+  if (/\b(workflow|morning\s+briefing|daily\s+routine|run\s+(the\s+)?workflow|execute\s+workflow)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: workflow");
+    return [{ tool: "workflow", input: trimmed, context: {}, reasoning: "certainty_workflow" }];
   }
 
   // YouTube keywords

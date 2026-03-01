@@ -28,11 +28,15 @@ import { fileReview } from "./fileReview.js";
 import { duplicateScanner } from "./duplicateScanner.js";
 import { webBrowser } from "./webBrowser.js";
 import { moltbook } from "./moltbook.js";
-import { contacts } from "./contacts.js"
+import { contacts } from "./contacts.js";
+import { calendar } from "./calendar.js";
+import { documentQA } from "./documentQA.js";
 
 export const TOOLS = {
   calculator,
   contacts,
+  calendar,
+  documentQA,
   weather,
   finance,
   financeFundamentals,

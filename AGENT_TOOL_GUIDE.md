@@ -1,6 +1,6 @@
 # Agent Tool Guide — Complete Reference
 
-> 27 tools across 8 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
+> 29 tools across 9 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
 
 ---
 
@@ -14,6 +14,7 @@
 6. [Finance & Shopping](#6-finance--shopping)
 7. [Media & Entertainment](#7-media--entertainment)
 8. [Web Interaction & Automation](#8-web-interaction--automation)
+9. [Advanced Intelligence](#9-advanced-intelligence)
 
 ---
 
@@ -184,6 +185,25 @@ Manages task lists with priorities, due dates, and status tracking. **Note:** Ta
 4. `"Add a high priority task to fix the login bug"` — Priority task
 5. `"Remove the completed tasks"` — Clean up
 6. `"What tasks are due this week?"` — Filter by deadline
+
+---
+
+### `calendar` — Google Calendar Integration
+
+Manage your Google Calendar: list upcoming events, create events with natural language, check availability/free time. Uses existing Google OAuth with calendar scopes added.
+
+**Requires:** Gmail OAuth configured + Calendar scopes (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
+
+**Triggered by:** "calendar", "events", "schedule", "meeting", "appointment", "free time", "availability"
+
+**Example prompts:**
+1. `"What events do I have today?"` -- List today's events
+2. `"Show my calendar for next week"` -- Weekly view
+3. `"Schedule a meeting tomorrow at 3pm called Team Standup"` -- Create event with title and time
+4. `"Am I free tomorrow afternoon?"` -- Check availability
+5. `"Create an event on Monday at 10am for 30 minutes called Code Review"` -- Specific event creation
+6. `"What's on my calendar this week?"` -- Weekly overview
+7. `"Book a meeting next Friday at 2pm at the office"` -- Create with location
 
 ---
 
@@ -520,6 +540,60 @@ Full integration with Moltbook, the social network for AI agents. Uses the REST 
 
 ---
 
+## 9. Advanced Intelligence
+
+### `documentQA` -- Document Question Answering (RAG)
+
+Load documents into a vector knowledge base, then ask questions. Uses chunking + embedding (Ollama or TF-IDF fallback) + retrieval-augmented generation. Supports .txt, .md, .json, .js, .py, .ts, .html, .csv, .log files.
+
+**Triggered by:** "document" + "load/ingest/ask/question", "knowledge base", "index file"
+
+**Example prompts:**
+1. `"Load document D:/docs/project-spec.md"` -- Ingest a document into the knowledge base
+2. `"Ask about the deployment process from the docs"` -- Question answering from indexed documents
+3. `"Index file D:/reports/analysis.txt"` -- Add a file to the vector store
+4. `"List my indexed documents"` -- Show all document collections
+5. `"What does the API specification say about authentication?"` -- Targeted Q&A
+6. `"Load document D:/code/README.md into the project collection"` -- Ingest to specific collection
+
+### Workflow Engine
+
+Define and execute reusable multi-step tool sequences. Includes built-in workflows (Morning Briefing, Market Check, Code Review Cycle) and supports custom workflow creation.
+
+**Triggered by:** "workflow", "morning briefing", "daily routine", "run workflow"
+
+**Example prompts:**
+1. `"Run the morning briefing workflow"` -- Execute: weather + emails + news
+2. `"Run the market check"` -- Execute: finance overview + financial news
+3. `"Create a workflow: check weather, browse emails, news summary"` -- Custom workflow
+
+### Scheduler
+
+Schedule recurring tasks with natural language timing. Supports intervals (every N minutes/hours), daily schedules, and weekly schedules.
+
+**Triggered by:** Programmatic API (used by workflows and other tools)
+
+**Schedule patterns:**
+- `"every 30 minutes"` -- Interval-based
+- `"daily at 9am"` -- Daily schedule
+- `"every Monday at 9:00"` -- Weekly schedule
+
+### Multi-Agent Collaboration
+
+For complex queries spanning multiple domains, the agent can spawn parallel sub-agents (Researcher, Analyst, Communicator, Developer, Organizer) that work concurrently and have their results synthesized.
+
+**Triggered by:** Complex multi-domain queries that span research + analysis + communication
+
+### Emotional Intelligence Layer
+
+Enhanced emotional awareness beyond basic sentiment:
+- **Frustration detection:** Detects repeated queries, exasperation language, ALL CAPS, excessive punctuation
+- **Adaptive responses:** Adjusts tone when frustration is detected (more empathetic, direct, solution-focused)
+- **Pattern recognition:** Tracks repeated clarifications and conversation flow changes
+- **Auto-adjustment:** Prepends empathetic acknowledgments when the user seems frustrated
+
+---
+
 ## Setup Requirements
 
 ### Required API Keys (`.env` file)
@@ -532,7 +606,8 @@ Full integration with Moltbook, the social network for AI agents. Uses the REST 
 | `ALPHA_VANTAGE_KEY` or `FINNHUB_KEY` | finance, financeFundamentals | For finance |
 | `SPORTS_API_KEY` | sports | For sports |
 | `YOUTUBE_API_KEY` | youtube | For YouTube |
-| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, emailVerification | For email |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, calendar | For email + calendar |
+| `EMBEDDING_MODEL` | documentQA, vectorStore (defaults to `nomic-embed-text`) | Optional |
 | `GITHUB_TOKEN` | github, githubTrending | For GitHub |
 | `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For credential encryption |
 | `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://www.moltbook.com`) | Optional |
@@ -592,15 +667,45 @@ After completing a task, the agent can suggest relevant follow-up actions:
 ### Full Table Presentation
 Sports standings, news, and financial data now show ALL results in markdown tables (not just top 4). The sports tool returns pre-formatted tables that bypass LLM summarization for accuracy.
 
+### Natural Tool Chaining (NEW)
+The planner detects multi-intent queries and automatically chains tools:
+- `"Search for React best practices and email me the results"` -- search → email
+- `"Check the weather and also the news"` -- weather → news
+- `"Get Tesla stock price then check the latest Tesla news"` -- finance → news
+- Uses context piping so each step can access previous results
+
+### Long-Horizon Task Planning (NEW)
+For complex requests, the planner uses LLM decomposition to break them into 2-5 ordered steps with dependency tracking. Each step receives the output of steps it depends on.
+
+### Calendar Integration (NEW)
+Google Calendar support: list events, create events with natural language, check free/busy times. Uses existing OAuth infrastructure with added calendar scopes.
+
+### Document QA / Knowledge Base (NEW)
+RAG-powered document question answering. Load documents into a vector store (with Ollama embeddings or TF-IDF fallback), then ask questions. Supports .txt, .md, .json, .js, .py, .html, .csv, .log files.
+
+### Workflow Engine (NEW)
+Reusable multi-step tool sequences with built-in workflows (Morning Briefing, Market Check, Code Review Cycle). Create custom workflows with natural language.
+
+### Scheduler (NEW)
+Cron-like recurring task automation. Schedule tools to run at intervals, daily, or weekly.
+
+### Multi-Agent Collaboration (NEW)
+Parallel sub-agent execution for complex multi-domain queries. Agents (Researcher, Analyst, Communicator, Developer, Organizer) work concurrently with LLM-synthesized results.
+
+### Emotional Intelligence (NEW)
+Enhanced frustration detection (repeated queries, ALL CAPS, exasperation language, terse responses) with adaptive empathetic responses.
+
 ---
 
 ## Multi-Step Flows
 
 The agent can chain multiple tools for complex tasks:
 
+- **Natural chaining**: `"Search for X and email me the results"` → search → email (automatic)
 - **Register + Verify**: `"Register on moltbook and verify my email"` → moltbook(register) → moltbook(verify_email) → moltbook(status)
 - **Improve Code**: `"Improve the search tool based on trending patterns"` → githubTrending → review → applyPatch → gitLocal(status) → gitLocal(add)
-- **Research + Email**: The planner can generate multi-step plans for complex requests.
+- **Morning Briefing**: `"Run morning briefing"` → weather → email(browse) → news
+- **Complex Planning**: Complex requests are auto-decomposed into multi-step plans with dependency tracking
 
 ---
 
