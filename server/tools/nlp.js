@@ -1,6 +1,5 @@
+Here is the improved code:
 // server/tools/nlp.js
-// FIXED: Natural Language Processing - Sentiment Analysis & Entity Recognition
-// Returns text for LLM summarization, HTML in data field for UI
 
 import natural from "natural";
 import nlp from "compromise";
@@ -9,68 +8,70 @@ import nlpDates from "compromise-dates";
 // Extend compromise with dates plugin
 nlp.extend(nlpDates);
 
-const Analyzer = natural.SentimentAnalyzer;
-const stemmer = natural.PorterStemmer;
-const analyzer = new Analyzer("English", stemmer, "afinn");
+class Analyzer {
+  constructor() {
+    this.stemmer = new natural.PorterStemmer();
+    this.analyzer = new natural.SentimentAnalyzer("English", this.stemmer, "afinn");
+  }
 
-/**
- * analyzeSentiment
- * Returns a score between -5 and 5
- */
+  analyzeSentiment(text) {
+    if (!text) return { score: 0, sentiment: "neutral" };
+
+    const tokenizer = new natural.WordTokenizer();
+    const tokens = tokenizer.tokenize(text);
+    const score = this.analyzer.getSentiment(tokens) || 0;
+
+    let sentiment = "neutral";
+    if (score > 0.5) sentiment = "positive";
+    else if (score < -0.5) sentiment = "negative";
+
+    const divisor = tokens.length || 1;
+    return {
+      score: Math.round(score * 100) / 100,
+      sentiment,
+      comparative: score / divisor
+    };
+  }
+}
+
+class EntityExtractor {
+  constructor() {
+    this.compromise = nlp;
+  }
+
+  extractEntities(text) {
+    const doc = this.compromise(text);
+
+    return {
+      people: doc.people().out("array"),
+      places: doc.places().out("array"),
+      organizations: doc.organizations().out("array"),
+      dates: doc.dates().json().map(d => d.text),
+      emails: doc.emails().out("array"),
+      numbers: doc.numbers().out("array")
+    };
+  }
+}
+
 export function analyzeSentiment(text) {
-  if (!text) return { score: 0, sentiment: "neutral" };
-
-  const tokenizer = new natural.WordTokenizer();
-  const tokens = tokenizer.tokenize(text);
-  const score = analyzer.getSentiment(tokens) || 0;
-
-  let sentiment = "neutral";
-  if (score > 0.5) sentiment = "positive";
-  else if (score < -0.5) sentiment = "negative";
-
-  const divisor = tokens.length || 1;
-  return {
-    score: Math.round(score * 100) / 100,
-    sentiment,
-    comparative: score / divisor
-  };
+  const analyzer = new Analyzer();
+  return analyzer.analyzeSentiment(text);
 }
 
-/**
- * extractEntities
- * Uses compromise to pull out names, places, etc.
- */
 export function extractEntities(text) {
-  const doc = nlp(text);
-
-  return {
-    people: typeof doc.people === 'function' ? doc.people().out('array') : [],
-    places: typeof doc.places === 'function' ? doc.places().out('array') : [],
-    organizations: typeof doc.organizations === 'function' ? doc.organizations().out('array') : [],
-    dates: typeof doc.dates === 'function' ? doc.dates().json().map(d => d.text) : [],
-    emails: typeof doc.emails === 'function' ? doc.emails().out('array') : [],
-    numbers: typeof doc.numbers === 'function' ? doc.numbers().out('array') : []
-  };
+  const extractor = new EntityExtractor();
+  return extractor.extractEntities(text);
 }
 
-/**
- * NLP Tool
- * FIXED: Returns text summary for LLM, HTML in data field only
- */
 export async function nlpTool(query) {
   try {
     const textToAnalyze = query.text || query;
 
-    if (typeof textToAnalyze !== 'string' || textToAnalyze.length < 2) {
-      return {
-        tool: "nlp_tool",
-        success: false,
-        final: true,
-        error: "Please provide text to analyze."
-      };
+    if (typeof textToAnalyze !== "string" || textToAnalyze.length < 2) {
+      throw new Error("Please provide text to analyze.");
     }
 
-    const sentiment = analyzeSentiment(textToAnalyze);
+    const sentiment = await analyzeSentiment(textToAnalyze);
     const entities = extractEntities(textToAnalyze);
 
     // Build text summary for LLM
@@ -79,12 +80,12 @@ export async function nlpTool(query) {
 Sentiment: ${sentiment.sentiment.toUpperCase()} (score: ${sentiment.score})
 
 Entities Detected:
-${entities.people.length > 0 ? `• People: ${entities.people.join(', ')}` : ''}
-${entities.places.length > 0 ? `• Places: ${entities.places.join(', ')}` : ''}
-${entities.organizations.length > 0 ? `• Organizations: ${entities.organizations.join(', ')}` : ''}
-${entities.dates.length > 0 ? `• Dates: ${entities.dates.join(', ')}` : ''}
-${entities.emails.length > 0 ? `• Emails: ${entities.emails.join(', ')}` : ''}
-${Object.values(entities).every(arr => arr.length === 0) ? '• No entities detected' : ''}`;
+${entities.people.length > 0 ? `• People: ${entities.people.join(", ")}` : ""}
+${entities.places.length > 0 ? `• Places: ${entities.places.join(", ")}` : ""}
+${entities.organizations.length > 0 ? `• Organizations: ${entities.organizations.join(", ")}` : ""}
+${entities.dates.length > 0 ? `• Dates: ${entities.dates.join(", ")}` : ""}
+${entities.emails.length > 0 ? `• Emails: ${entities.emails.join(", ")}` : ""}
+${Object.values(entities).every(arr => arr.length === 0) ? "• No entities detected" : ""}`;
 
     // Build HTML for rich display (stored in data, not returned as main text)
     const html = `
@@ -99,11 +100,11 @@ ${Object.values(entities).every(arr => arr.length === 0) ? '• No entities dete
           <h4>Entities Detected:</h4>
           ${entities.people.length > 0 || entities.places.length > 0 || entities.organizations.length > 0 || entities.dates.length > 0 || entities.emails.length > 0 ? `
           <ul>
-            ${entities.people.length > 0 ? `<li>👤 <strong>People:</strong> ${entities.people.join(', ')}</li>` : ''}
-            ${entities.places.length > 0 ? `<li>📍 <strong>Places:</strong> ${entities.places.join(', ')}</li>` : ''}
-            ${entities.organizations.length > 0 ? `<li>🏢 <strong>Orgs:</strong> ${entities.organizations.join(', ')}</li>` : ''}
-            ${entities.dates.length > 0 ? `<li>📅 <strong>Dates:</strong> ${entities.dates.join(', ')}</li>` : ''}
-            ${entities.emails.length > 0 ? `<li>📧 <strong>Emails:</strong> ${entities.emails.join(', ')}</li>` : ''}
+            ${entities.people.length > 0 ? `<li>👤 <strong>People:</strong> ${entities.people.join(", ")}</li>` : ""}
+            ${entities.places.length > 0 ? `<li>📍 <strong>Places:</strong> ${entities.places.join(", ")}</li>` : ""}
+            ${entities.organizations.length > 0 ? `<li>🏢 <strong>Orgs:</strong> ${entities.organizations.join(", ")}</li>` : ""}
+            ${entities.dates.length > 0 ? `<li>📅 <strong>Dates:</strong> ${entities.dates.join(", ")}</li>` : ""}
+            ${entities.emails.length > 0 ? `<li>📧 <strong>Emails:</strong> ${entities.emails.join(", ")}</li>` : ""}
           </ul>
           ` : '<p>No entities detected.</p>'}
         </div>

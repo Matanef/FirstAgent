@@ -91,8 +91,13 @@ export async function memorytool(request) {
     }
   }
 
-  // FIX #5: PROFILE RETRIEVAL - "what do you remember about me?"
+  // FIX #5: PROFILE RETRIEVAL - "what do you remember about me?", "who am i?"
   if (
+    lower.includes("who am i") ||
+    lower.includes("who i am") ||
+    lower.includes("do you know me") ||
+    lower.includes("my info") ||
+    lower.includes("my details") ||
     lower.includes("what do you remember") ||
     lower.includes("what do you know about me") ||
     lower.includes("tell me about myself") ||

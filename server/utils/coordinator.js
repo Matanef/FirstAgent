@@ -5,6 +5,9 @@ import { plan } from "../planner.js";
 import { executeStep, finalizeStep } from "../executor.js";
 import { getBackgroundNLP } from "./nlpUtils.js";
 import { resolveCityFromIp } from "./geo.js";
+import { summarizeAndStoreConversation, shouldSummarize, getRelevantContext } from "./conversationMemory.js";
+import { detectSatisfaction, updatePreferencesFromFeedback, extractPreferences, applyExtractedPreferences, buildStyleInstructions } from "./styleEngine.js";
+import { appendSuggestion } from "./suggestions.js";
 
 /**
  * Autonomous Coordinator
@@ -141,6 +144,18 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             onChunk: isLastStep ? onChunk : null
         });
 
+        // SELF-REFLECTION: Check for hallucinated placeholders in the reply
+        if (finalized.reply && finalized.success) {
+            const placeholderPattern = /\[(Date|Time|Opponent|Location|Team|Player|Score|Name|TBD|TBA)\]/gi;
+            const placeholders = finalized.reply.match(placeholderPattern);
+            if (placeholders && placeholders.length > 0) {
+                console.warn(`🔍 Self-reflection: Detected ${placeholders.length} hallucinated placeholders in response: ${placeholders.join(", ")}`);
+                // Replace placeholders with "information not available" notice
+                finalized.reply = finalized.reply.replace(placeholderPattern, "*(data not available)*");
+                finalized.reply += "\n\n⚠️ *Some information was not available from the data source and has been marked accordingly.*";
+            }
+        }
+
         // Add to state graph
         stateGraph.push({
             step: stepNumber,
@@ -171,8 +186,62 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     console.log(`📊 Execution complete: ${stateGraph.length} steps executed`);
 
+    // ──────────────────────────────────────────────────────────
+    // POST-EXECUTION: Style, Satisfaction, Suggestions, Memory
+    // ──────────────────────────────────────────────────────────
+
+    // 4a. Track user satisfaction signals
+    try {
+        const satisfaction = detectSatisfaction(queryText);
+        if (satisfaction.signal !== "neutral") {
+            await updatePreferencesFromFeedback(satisfaction.signal);
+        }
+    } catch (e) {
+        console.warn("[coordinator] Satisfaction tracking error:", e.message);
+    }
+
+    // 4b. Extract and apply implicit style preferences
+    try {
+        const prefs = extractPreferences(queryText);
+        if (prefs) {
+            await applyExtractedPreferences(prefs);
+        }
+    } catch (e) {
+        console.warn("[coordinator] Preference extraction error:", e.message);
+    }
+
+    // 4c. Append proactive suggestions
+    let finalReply = lastFinalized?.reply || "";
+    try {
+        if (lastFinalized?.success && lastFinalized?.tool) {
+            finalReply = await appendSuggestion(
+                finalReply,
+                lastFinalized.tool,
+                lastFinalized
+            );
+        }
+    } catch (e) {
+        console.warn("[coordinator] Suggestion engine error:", e.message);
+    }
+
+    // 4d. Conversation memory — periodically summarize long conversations
+    try {
+        const { getMemory } = await import("../memory.js");
+        const memory = await getMemory();
+        const convo = memory.conversations?.[conversationId] || [];
+        if (shouldSummarize(convo.length)) {
+            // Run async — don't block the response
+            summarizeAndStoreConversation(conversationId).catch(e =>
+                console.warn("[coordinator] Conversation summary failed:", e.message)
+            );
+        }
+    } catch (e) {
+        console.warn("[coordinator] Conversation memory error:", e.message);
+    }
+
     return {
         ...lastFinalized,
+        reply: finalReply,
         stateGraph,
         tool: lastFinalized?.tool || steps[0]?.tool || "unknown"
     };
