@@ -144,6 +144,10 @@ function generateImprovementSteps(message, availableTools = []) {
 
 function isMathExpression(msg) {
   const trimmed = (msg || "").trim();
+  // Guard: URLs and domain-like strings are NOT math (the / in URLs triggers math regex)
+  if (/https?:\/\/|www\.|[a-z0-9-]+\.(com|org|net|io|dev|co)\b/i.test(trimmed)) return false;
+  // Guard: file paths are not math (the / in paths triggers math regex)
+  if (/\b\w+\/\w+\.\w{1,5}\b/.test(trimmed)) return false;
   if (!/[0-9]/.test(trimmed)) return false;
   if (/[+\-*/^=()]/.test(trimmed)) return true;
   return /^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed);
@@ -158,7 +162,14 @@ function isSimpleDateTime(msg) {
 }
 
 function hasExplicitFilePath(text) {
-  return /[a-z]:[\\/]/i.test(text || "");
+  if (!text) return false;
+  // Absolute paths: D:/..., C:\...
+  if (/[a-z]:[\\/]/i.test(text)) return true;
+  // Relative paths with file extensions: server/planner.js, ./utils/config.js, ../dir/file.py
+  if (/(?:^|\s)\.{0,2}\/?[\w][\w.-]*\/[\w][\w.-]*\.\w{1,5}\b/.test(text)) return true;
+  // Direct filename with common code extensions: planner.js, config.json (but not single words like "apple.com")
+  if (/\b[\w-]+\.(js|ts|py|json|md|txt|html|css|jsx|tsx|java|go|rs|sh|yml|yaml|toml|xml|sql|rb|mjs|cjs)\b/i.test(text)) return true;
+  return false;
 }
 
 function isSendItCommand(text) {
@@ -489,7 +500,9 @@ export async function plan({ message, chatContext = {} }) {
   // ──────────────────────────────────────────────────────────
   if (/\b(write|create|generate|save|make)\b/i.test(lower) && hasExplicitFilePath(trimmed) &&
       !/\b(email|mail|moltbook)\b/i.test(lower)) {
-    const filePathMatch = trimmed.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
+    // Match absolute paths (D:/...) or relative paths (server/file.js, ./utils/config.js)
+    const filePathMatch = trimmed.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/) ||
+                          trimmed.match(/(\.{0,2}\/?[\w][\w.\/-]*\.\w{1,5})\b/);
     if (filePathMatch) {
       console.log("[planner] certainty branch: fileWrite (write intent + path)");
       return [{ tool: "fileWrite", input: trimmed, context: { targetPath: filePathMatch[1] }, reasoning: "certainty_file_write" }];
@@ -497,7 +510,16 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // EXPLICIT FILE PATH: route D:/... or E:/... to file tool
+  // REVIEW/INSPECT + FILE PATH: "review server/planner.js" → review tool
+  // Must come before generic file path check to avoid routing to read-only file tool
+  // ──────────────────────────────────────────────────────────
+  if (/\b(review|inspect|examine|audit|analyze)\b/i.test(lower) && hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: review (file path detected)");
+    return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review_filepath" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // EXPLICIT FILE PATH: route file paths to file tool (read/browse)
   // Must come before diagnostic to prevent "Read D:/server/planner.js" → diagnostic
   // ──────────────────────────────────────────────────────────
   if (hasExplicitFilePath(trimmed)) {
@@ -528,6 +550,26 @@ export async function plan({ message, chatContext = {} }) {
   // ──────────────────────────────────────────────────────────
   // SINGLE-STEP: Certainty Layer (deterministic short commands)
   // ──────────────────────────────────────────────────────────
+
+  // URL/Web browsing (MUST come before math — URLs contain / which triggers isMathExpression)
+  if (/\b(browse|navigate|visit|go\s+to|open)\b/i.test(lower) && /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|co)\b/i.test(lower) &&
+      !/\bmoltbook\b/i.test(lower)) {
+    console.log("[planner] certainty branch: webBrowser");
+    return [{ tool: "webBrowser", input: trimmed, context: {}, reasoning: "certainty_web_browse" }];
+  }
+
+  // Raw URL detection → webDownload (fetch and read/follow)
+  if (/https?:\/\/\S+/i.test(trimmed) && !/\bmoltbook\b/i.test(lower)) {
+    console.log("[planner] certainty branch: url_detected");
+    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
+  }
+
+  // Domain-like string without browse verb but with "read", "fetch", "check" → webDownload
+  if (/\b(read|fetch|check|get)\b/i.test(lower) && /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|co)\b/i.test(lower) &&
+      !/\bmoltbook\b/i.test(lower) && !hasExplicitFilePath(trimmed)) {
+    console.log("[planner] certainty branch: webDownload (domain + read verb)");
+    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_web_read" }];
+  }
 
   // Math
   if (isMathExpression(trimmed)) {
@@ -632,30 +674,25 @@ export async function plan({ message, chatContext = {} }) {
   if (/\bmoltbook\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook");
     const context = {};
-    if (/\b(register|sign\s*up|create\s+account)\b/i.test(lower)) context.action = "register";
+    if (/\b(register|sign\s*up|create\s+account|join)\b/i.test(lower)) context.action = "register";
     else if (/\b(log\s*in|sign\s*in)\b/i.test(lower)) context.action = "login";
     else if (/\b(log\s*out|sign\s*out)\b/i.test(lower)) context.action = "logout";
-    else if (/\b(profile|my\s+account|settings)\b/i.test(lower)) context.action = "profile";
+    else if (/\b(profile|my\s+account|settings|about\s+me)\b/i.test(lower)) context.action = "profile";
     else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
+    else if (/\b(post|publish|share)\b/i.test(lower) && !/\bprofile\b/i.test(lower)) context.action = "post";
+    else if (/\b(comment|reply)\b/i.test(lower)) context.action = "comment";
+    else if (/\b(upvote|downvote|vote|like)\b/i.test(lower)) context.action = "vote";
+    else if (/\b(feed|timeline|what's\s+new|browse\s+posts)\b/i.test(lower)) context.action = "feed";
+    else if (/\b(follow|unfollow)\b/i.test(lower)) context.action = "follow";
+    else if (/\b(submolt|communit)/i.test(lower)) context.action = "submolts";
     else if (/\b(status|session|check)\b/i.test(lower)) context.action = "status";
-    else if (/\b(verify|verification)\s*(email)?\b/i.test(lower)) context.action = "verify_email";
+    else if (/\b(verify|verification|claim)\b/i.test(lower)) context.action = "verify";
     else context.action = "browse";
     return [{ tool: "moltbook", input: trimmed, context, reasoning: "certainty_moltbook" }];
   }
 
-  // ──────────────────────────────────────────────────────────
-  // GENERAL WEB BROWSING: domain-like patterns with browse verbs
-  // ──────────────────────────────────────────────────────────
-  if (/\b(browse|navigate|visit|go\s+to|open)\b/i.test(lower) && /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|co)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: webBrowser");
-    return [{ tool: "webBrowser", input: trimmed, context: {}, reasoning: "certainty_web_browse" }];
-  }
-
-  // URL detection → webDownload (fetch and read/follow)
-  if (/https?:\/\/\S+/i.test(trimmed)) {
-    console.log("[planner] certainty branch: url_detected");
-    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
-  }
+  // NOTE: Web browsing + URL detection moved ABOVE math check to prevent
+  // URLs (which contain /) from triggering isMathExpression()
 
   // NOTE: Explicit file path check moved ABOVE diagnostic section
 
@@ -682,6 +719,14 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
   }
 
+  // Email browsing: "check my emails", "go over my inbox", "read my emails", "list unread emails"
+  if (/\b(check|go\s+over|browse|list|show|read)\s+(my\s+)?(emails?|inbox|mail)\b/i.test(lower) &&
+      !/\b(send|draft|compose|write)\b/i.test(lower) &&
+      !isSendItCommand(lower)) {
+    console.log("[planner] certainty branch: email_browse");
+    return [{ tool: "email", input: trimmed, context: { action: "browse" }, reasoning: "certainty_email_browse" }];
+  }
+
   // Email keywords: "email", "mail", "send to", "draft"
   if (/\b(email|e-mail|mail|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
       !isSendItCommand(lower)) {
@@ -701,15 +746,32 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
   }
 
-  // Finance keywords
-  if (/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P|nasdaq|dow\s+jones)\b/i.test(lower)) {
+  // Finance keywords + well-known company/ticker names with financial intent
+  const FINANCE_COMPANIES = [
+    'tesla', 'apple', 'google', 'alphabet', 'amazon', 'microsoft', 'meta',
+    'nvidia', 'amd', 'intel', 'netflix', 'disney', 'boeing', 'ford', 'uber',
+    'spotify', 'paypal', 'shopify', 'coinbase', 'robinhood', 'palantir',
+    'tsla', 'aapl', 'googl', 'amzn', 'msft', 'nvda', 'nflx', 'intc', 'amd'
+  ];
+  const hasFinanceKeyword = /\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P|nasdaq|dow\s+jones|trading|IPO|market\s+cap|bull|bear)\b/i.test(lower);
+  const hasCompanyWithFinanceIntent = FINANCE_COMPANIES.some(c => new RegExp(`\\b${c}\\b`, 'i').test(lower)) &&
+    /\b(doing|price|worth|trading|performance|value|stock|share|market|up|down|buy|sell|earnings|rally|drop|crash|surge)\b/i.test(lower);
+  if (hasFinanceKeyword || hasCompanyWithFinanceIntent) {
     console.log("[planner] certainty branch: finance");
     return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
   }
 
-  // Sports keywords
-  if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
-      !hasExplicitFilePath(trimmed)) {
+  // Sports keywords + team names
+  const SPORTS_TEAMS = [
+    'arsenal', 'chelsea', 'liverpool', 'tottenham', 'spurs', 'man city', 'man united',
+    'barcelona', 'real madrid', 'juventus', 'bayern', 'psg', 'inter milan', 'napoli',
+    'dortmund', 'newcastle', 'aston villa', 'brighton', 'west ham', 'crystal palace',
+    'everton', 'wolves', 'fulham', 'brentford', 'bournemouth', 'nottingham forest'
+  ];
+  const hasSportsKeyword = /\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion|fixture|standings?|table|la\s+liga|serie\s+a|bundesliga|ligue\s+1|eredivisie|live\s+score|top\s+scor|golden\s+boot)\b/i.test(lower);
+  const hasTeamWithSportsIntent = SPORTS_TEAMS.some(t => lower.includes(t)) &&
+    /\b(play|score|match|win|lose|drew|beat|next|result|standing|fixture|league|live|vs|against)\b/i.test(lower);
+  if ((hasSportsKeyword || hasTeamWithSportsIntent) && !hasExplicitFilePath(trimmed)) {
     console.log("[planner] certainty branch: sports");
     return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
   }

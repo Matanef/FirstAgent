@@ -149,23 +149,25 @@ Uses OpenWeather API. Supports city names, "here" (geolocation), and remembers y
 
 ## 3. Productivity & Communication
 
-### `email` — Draft & Send Emails (Gmail OAuth)
+### `email` — Draft, Send & Browse Emails (Gmail OAuth)
 
-Two-stage email: drafts the email first, then waits for your confirmation ("send it") before sending. Supports attachments, contact resolution from memory, and natural language parsing.
+Full email tool: draft & send emails (two-stage confirmation), browse inbox, read emails, and download attachments. Uses Gmail OAuth with send + readonly scopes.
 
 **Requires:** Gmail OAuth configured (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
 
-**Triggered by:** "email", "mail", "send to", "draft email"
+**Triggered by:** "email", "mail", "send to", "draft email", "check my emails", "inbox", "read my emails"
 
 **Example prompts:**
 1. `"Email john@example.com saying the meeting is at 3pm"` — Direct email with body
 2. `"Draft an email to Sarah about the project deadline"` — Uses contacts from memory
 3. `"Send an email to my boss about taking Friday off"` — Natural language
 4. `"Email the team about the new release, attach the changelog"` — With attachment
-5. `"Write a professional email declining a meeting invitation"` — Tone-specific
-6. `"Send it"` — Confirm and send the last drafted email
-7. `"Cancel"` — Discard the draft
-8. `"Email Alex with subject 'Budget Review' body 'Please review the attached budget proposal'"` — Structured email
+5. `"Send it"` — Confirm and send the last drafted email
+6. `"Cancel"` — Discard the draft
+7. `"Check my recent emails"` — Browse inbox (NEW)
+8. `"Show my unread emails from last week"` — Search emails by date/status (NEW)
+9. `"Read email #3"` — View full email content (NEW)
+10. `"Go over my emails and find attachments named 'bills'"` — Search with attachment filter (NEW)
 
 ---
 
@@ -444,22 +446,24 @@ Searches YouTube for videos, tutorials, and content.
 
 ---
 
-### `sports` — Live Scores & Sports Data
+### `sports` — Live Scores, Fixtures, Standings & Sports Data
 
-Real-time scores, match data, league standings, and player stats.
+Full sports tool using API-Football v3. Supports: upcoming fixtures, past results, live scores, full league standings, and top scorers. Returns pre-formatted markdown tables showing ALL data (not truncated). Recognizes team names (Arsenal, Barcelona, Bayern, etc.) and league names (Premier League, La Liga, Serie A, etc.).
 
-**Requires:** `SPORTS_API_KEY` in `.env`
+**Requires:** `SPORTS_API_KEY` in `.env` (API-Football key)
 
-**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "basketball", "NBA"
+**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "standings", "fixture", "Premier League", team names (Arsenal, Chelsea, etc.)
 
 **Example prompts:**
-1. `"What are today's football scores?"` — Live scores
-2. `"Premier League standings"` — League table
-3. `"NBA scores tonight"` — Basketball scores
-4. `"When does Real Madrid play next?"` — Team schedule
-5. `"Who won the Champions League last night?"` — Recent results
-6. `"Show me the NFL scores"` — American football
-7. `"What's the score of the Barcelona game?"` — Specific match
+1. `"When does Arsenal play next?"` — Upcoming fixtures for a team
+2. `"Premier League standings"` — Full 20-team league table
+3. `"What were Liverpool's last 5 results?"` — Recent match results
+4. `"Live scores right now"` — Currently live matches
+5. `"La Liga top scorers"` — Top scorer leaderboard
+6. `"Champions League fixtures"` — Upcoming UCL matches
+7. `"Did Barcelona win their last game?"` — Recent result for team
+8. `"Bundesliga table"` — Full standings for German league
+9. `"When does Man City play next in the Premier League?"` — Team + league specific
 
 ---
 
@@ -496,22 +500,23 @@ Browse any website with persistent session cookies, form submission, CSRF handli
 
 ---
 
-### `moltbook` — Moltbook.com Interaction
+### `moltbook` — Moltbook.com Social Network (REST API)
 
-Domain-specific tool for all moltbook.com interactions: account management, browsing, searching, and social features. Uses persistent session with cookie management.
+Full integration with Moltbook, the social network for AI agents. Uses the REST API documented in skill.md. Supports: registration, posting, commenting, voting, feeds, semantic search, following, submolt communities, and profile management. Authentication via API key (stored in encrypted credential store).
 
 **Triggered by:** Any message containing "moltbook"
 
 **Example prompts:**
-1. `"Login to moltbook"` — Login (uses stored credentials)
-2. `"Register on moltbook with username: myuser password: mypass email: me@test.com"` — Create account
-3. `"Store my moltbook credentials username: myuser password: mypass"` — Save credentials (encrypted)
-4. `"Browse moltbook profile"` — View profile page
-5. `"Search moltbook for interesting posts"` — Search within site
-6. `"Check my moltbook session status"` — Session health check
-7. `"Register on moltbook and verify my email"` — Multi-step: register + email verify + status check
-8. `"Logout from moltbook"` — End session
-9. `"Browse moltbook.com/dashboard"` — Navigate specific page
+1. `"Register on moltbook"` — Register via REST API, get API key + claim URL
+2. `"Post on moltbook title: Hello World content: My first post!"` — Create a post
+3. `"Check my moltbook feed"` — Browse personalized feed
+4. `"Search moltbook for AI memory techniques"` — Semantic search
+5. `"Upvote post abc123 on moltbook"` — Vote on a post
+6. `"Comment on moltbook post abc123 saying Great insight!"` — Add a comment
+7. `"Follow ClawdClawderberg on moltbook"` — Follow another agent
+8. `"View my moltbook profile"` — See your profile and stats
+9. `"List moltbook communities"` — Browse submolts
+10. `"Store moltbook api_key: moltbook_xxx"` — Save API key securely
 
 ---
 
@@ -530,7 +535,8 @@ Domain-specific tool for all moltbook.com interactions: account management, brow
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, emailVerification | For email |
 | `GITHUB_TOKEN` | github, githubTrending | For GitHub |
 | `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For credential encryption |
-| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://moltbook.com`) | Optional |
+| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://www.moltbook.com`) | Optional |
+| `MOLTBOOK_API_KEY` | moltbook (or use credential store) | For Moltbook API |
 
 ### Generating a Credential Master Key
 
@@ -558,6 +564,33 @@ CREDENTIAL_MASTER_KEY=<your-generated-key-here>
 4. **Case-Insensitive Resolution** — The LLM's output is matched case-insensitively against all available tools, with alias support and partial matching.
 
 5. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation) which can handle anything.
+
+---
+
+## New Capabilities (Phase 4)
+
+### Persistent Conversation Memory
+The agent automatically summarizes long conversations and stores summaries for cross-session context. When relevant, past conversation summaries are retrieved to provide context-aware responses. Stored in `memory.meta.conversationSummaries`.
+
+### Conversational Style Engine
+The agent learns and adapts to your preferred communication style:
+- **Explicit style changes:** Say "be more formal" or "be brief" to change response style
+- **Implicit learning:** The engine detects satisfaction signals (re-asking = dissatisfied, "thanks" = satisfied) and auto-adjusts verbosity
+- **Style presets:** formal, casual, brief, detailed, technical, friendly
+- **Preferences stored in:** `memory.profile.preferences`
+
+### Self-Correction & Reflection
+After generating a response, the coordinator checks for hallucinated placeholders (like `[Date]`, `[Opponent]`, `[Location]`) and replaces them with "data not available" notices. This prevents the LLM from inventing data the tool didn't provide.
+
+### Proactive Suggestions
+After completing a task, the agent can suggest relevant follow-up actions:
+- Weather query: "Would you like the forecast for tomorrow?"
+- Email sent: "Want me to set a reminder to follow up?"
+- Sports fixtures: "Want to see the current standings?"
+- **Disabled by default.** Enable with: "remember my preference enableSuggestions is true"
+
+### Full Table Presentation
+Sports standings, news, and financial data now show ALL results in markdown tables (not just top 4). The sports tool returns pre-formatted tables that bypass LLM summarization for accuracy.
 
 ---
 

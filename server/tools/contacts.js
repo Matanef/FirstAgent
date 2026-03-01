@@ -36,22 +36,20 @@ function fuzzyMatchContact(query, contacts) {
 
 /**
  * Extract contact reference from natural language
- * Examples: "send email to mom", "call john", "text my boss"
  */
 export function extractContactRef(query) {
     const lower = query.toLowerCase();
 
-    // Patterns: "to X", "contact X", "call X", "text X", "email X", "send X an email"
     const patterns = [
-        /(?:to|email|send|call|text|message|contact)\s+(?:my\s+)?([a-z0-9]+(?:\s+[a-z0-9]+)?)(?:\s+an\s+email|\s+a\s+message|\s+contact|\s+as\s+a\s+contact)?/i,
-        /(?:for|with)\s+([a-z0-9]+(?:\s+[a-z0-9]+)?)\b/i
+        /([a-z]+(?:\s+[a-z]+)?)['’]s\s+(?:phone|email|number)/i,
+        /(?:to|email|send|call|text|message|contact)\s+(?:my\s+)?([a-z0-9]+(?:\s+[a-z0-9]+)?)/i,
+        /(?:for|with)\s+([a-z0-9]+(?:\s+[a-z0-9]+)?)/i
     ];
 
     for (const pattern of patterns) {
         const match = lower.match(pattern);
         if (match) {
             const ref = match[1].trim();
-            // Filter out common words and short junk
             const stopwords = ["the", "a", "an", "about", "saying", "that", "with", "from", "it", "this", "my"];
             if (!stopwords.includes(ref) && ref.length > 1) {
                 return ref;
@@ -63,49 +61,241 @@ export function extractContactRef(query) {
 }
 
 /**
- * Resolve contact by name/alias to email/phone
+ * Extract phone/email/name from natural language
+ */
+function extractDetails(query) {
+    const emailMatch = query.match(/email(?:\s+is|[:=\s]+)\s*([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
+    const phoneMatch = query.match(/phone(?:\s+number)?(?:\s+is|[:=\s]+)\s*([\+\d\s\(\)-]+)/i);
+    const nameMatch = query.match(/name(?:\s+is|[:=\s]+)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i);
+
+    return {
+        email: emailMatch ? emailMatch[1] : null,
+        phone: phoneMatch ? phoneMatch[1].replace(/\s+/g, "") : null,
+        name: nameMatch ? nameMatch[1] : null
+    };
+}
+
+/**
+ * Resolve contact by name/alias
  */
 export async function resolveContact(contactRef) {
     const memory = await getMemory();
     const contacts = memory.profile?.contacts || {};
 
-    if (Object.keys(contacts).length === 0) {
-        return null;
-    }
+    if (Object.keys(contacts).length === 0) return null;
 
     return fuzzyMatchContact(contactRef, contacts);
 }
 
+/**
+ * Main contact tool
+ */
 export async function contacts(query) {
     try {
         const memory = await getMemory();
         const lower = query.toLowerCase();
 
-        // Ensure contacts exist in profile
         if (!memory.profile) memory.profile = {};
-        if (!memory.profile.contacts) {
-            memory.profile.contacts = {};
-        }
+        if (!memory.profile.contacts) memory.profile.contacts = {};
+        if (!memory.contactState) memory.contactState = {};
+        const contacts = memory.profile.contacts;
 
-        // ADD CONTACT
-        if (lower.includes("add") || lower.includes("save") || lower.includes("remember") && (lower.includes("contact") || lower.includes("name"))) {
-            // Parse: "add john smith as a contact, email: john@example.com, phone: +1234567890"
-            const nameMatch = query.match(/(?:add|save|remember)\s+(?:contact\s+)?(?:name[:\s]+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i) ||
-                query.match(/(?:add|save|remember)\s+(?:that\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:to\s+contacts|as\s+a\s+contact)/i);
+        // ---------------------------------------
+        // HANDLE PENDING ACTIONS
+        // ---------------------------------------
+        if (memory.contactState.pendingAction) {
+            const action = memory.contactState.pendingAction;
 
-            const emailMatch = query.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
-            const phoneMatch = query.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
+            // User chooses option 1: update existing
+            if (["1", "update", "yes"].includes(lower.trim())) {
+                const contact = contacts[action.contactKey];
+                if (action.newPhone) contact.phone = action.newPhone;
+                if (action.newEmail) contact.email = action.newEmail;
+                if (action.newName) contact.name = action.newName;
 
-            if (nameMatch || emailMatch) {
-                let name = nameMatch ? nameMatch[1].trim() : (emailMatch ? emailMatch[1].split('@')[0] : "Unknown");
-                const key = name.toLowerCase().replace(/\s+/g, "_");
+                memory.contactState.pendingAction = null;
+                await saveJSON(MEMORY_FILE, memory);
 
-                memory.profile.contacts[key] = {
-                    name: name,
-                    email: emailMatch ? emailMatch[1] : null,
-                    phone: phoneMatch ? phoneMatch[1].replace(/\s+/g, "") : null,
+                return {
+                    tool: "contacts",
+                    success: true,
+                    final: true,
+                    data: {
+                        message: `Updated contact "${contact.name}".`,
+                        contact
+                    }
+                };
+            }
+
+            // User chooses option 2: add new contact with new name
+            if (["2", "add", "new", "add new"].includes(lower.trim())) {
+                memory.contactState.pendingAction.awaitingNewName = true;
+
+                await saveJSON(MEMORY_FILE, memory);
+
+                return {
+                    tool: "contacts",
+                    success: true,
+                    final: true,
+                    data: {
+                        message: `What should I name the new contact?`
+                    }
+                };
+            }
+
+            // User provides the new name
+            if (action.awaitingNewName) {
+                const newName = query.trim();
+                const key = newName.toLowerCase().replace(/\s+/g, "_");
+
+                contacts[key] = {
+                    name: newName,
+                    email: action.newEmail,
+                    phone: action.newPhone,
                     aliases: [],
                     dateAdded: new Date().toISOString()
+                };
+
+                memory.contactState.pendingAction = null;
+                await saveJSON(MEMORY_FILE, memory);
+
+                return {
+                    tool: "contacts",
+                    success: true,
+                    final: true,
+                    data: {
+                        message: `Added new contact "${newName}".`,
+                        contact: contacts[key]
+                    }
+                };
+            }
+
+            // User chooses option 3: cancel
+            if (["3", "cancel", "stop"].includes(lower.trim())) {
+                memory.contactState.pendingAction = null;
+                await saveJSON(MEMORY_FILE, memory);
+
+                return {
+                    tool: "contacts",
+                    success: true,
+                    final: true,
+                    data: { message: "Cancelled." }
+                };
+            }
+        }
+
+        // ---------------------------------------
+        // DELETE CONTACT
+        // ---------------------------------------
+        if (lower.includes("delete contact") || lower.includes("remove contact")) {
+            const ref = extractContactRef(query);
+            if (!ref) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: "I couldn't identify which contact to delete." }
+                };
+            }
+
+            const match = fuzzyMatchContact(ref, contacts);
+            if (!match) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: `No contact found matching "${ref}".` }
+                };
+            }
+
+            delete contacts[match.key];
+            await saveJSON(MEMORY_FILE, memory);
+
+            return {
+                tool: "contacts",
+                success: true,
+                final: true,
+                data: { message: `Deleted contact "${match.contact.name}".` }
+            };
+        }
+
+        // ---------------------------------------
+        // ADD ALIAS
+        // ---------------------------------------
+        if (lower.includes("alias") || lower.includes("nickname")) {
+            const ref = extractContactRef(query);
+            if (!ref) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: "I couldn't identify which contact to add an alias to." }
+                };
+            }
+
+            const match = fuzzyMatchContact(ref, contacts);
+            if (!match) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: `No contact found matching "${ref}".` }
+                };
+            }
+
+            const aliasMatch = query.match(/alias[:\s]+([A-Za-z0-9\s]+)/i);
+            if (!aliasMatch) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: "I couldn't find the alias to add." }
+                };
+            }
+
+            const alias = aliasMatch[1].trim();
+            match.contact.aliases.push(alias);
+
+            await saveJSON(MEMORY_FILE, memory);
+
+            return {
+                tool: "contacts",
+                success: true,
+                final: true,
+                data: {
+                    message: `Added alias "${alias}" to contact "${match.contact.name}".`,
+                    contact: match.contact
+                }
+            };
+        }
+
+        // ---------------------------------------
+        // ADD OR UPDATE CONTACT (AMBIGUOUS)
+        // ---------------------------------------
+        if (lower.includes("remember") || lower.includes("add") || lower.includes("save")) {
+            const ref = extractContactRef(query);
+            const details = extractDetails(query);
+
+            if (!ref && !details.email && !details.phone) {
+                return {
+                    tool: "contacts",
+                    success: false,
+                    final: true,
+                    data: { message: "I couldn't understand which contact to add or update." }
+                };
+            }
+
+            const match = ref ? fuzzyMatchContact(ref, contacts) : null;
+
+            // Contact exists → ask user what to do
+            if (match) {
+                memory.contactState.pendingAction = {
+                    type: "update_or_add",
+                    contactKey: match.key,
+                    newPhone: details.phone,
+                    newEmail: details.email,
+                    newName: details.name,
+                    awaitingNewName: false
                 };
 
                 await saveJSON(MEMORY_FILE, memory);
@@ -115,29 +305,54 @@ export async function contacts(query) {
                     success: true,
                     final: true,
                     data: {
-                        action: "added",
-                        contact: memory.profile.contacts[key],
-                        message: `✅ Added contact: ${name}\n${emailMatch ? `📧 Email: ${emailMatch[1]}\n` : ""}${phoneMatch ? `📱 Phone: ${phoneMatch[1]}\n` : ""}\n\nYou can now reference "${name}" in messages and emails!`
+                        message:
+`I already have a contact named "${match.contact.name}".  
+What should I do?
+
+1. Update the existing contact  
+2. Add a new contact with a different name  
+3. Cancel`
                     }
                 };
             }
+
+            // New contact
+            const name = details.name || ref || (details.email ? details.email.split("@")[0] : "Unknown");
+            const key = name.toLowerCase().replace(/\s+/g, "_");
+
+            contacts[key] = {
+                name,
+                email: details.email,
+                phone: details.phone,
+                aliases: [],
+                dateAdded: new Date().toISOString()
+            };
+
+            await saveJSON(MEMORY_FILE, memory);
+
+            return {
+                tool: "contacts",
+                success: true,
+                final: true,
+                data: {
+                    message: `Added contact "${name}".`,
+                    contact: contacts[key]
+                }
+            };
         }
 
+        // ---------------------------------------
         // LIST CONTACTS
+        // ---------------------------------------
         if (lower.includes("list") || (lower.includes("show") && lower.includes("contact"))) {
-            const contactList = Object.entries(memory.profile.contacts).map(([key, c]) => ({
-                key,
-                ...c
-            }));
+            const list = Object.entries(contacts).map(([key, c]) => ({ key, ...c }));
 
-            if (contactList.length === 0) {
+            if (list.length === 0) {
                 return {
                     tool: "contacts",
                     success: true,
                     final: true,
-                    data: {
-                        message: "📇 No contacts saved yet.\n\nAdd a contact with: 'add Mom as a contact, email: mom@example.com'"
-                    }
+                    data: { message: "No contacts saved yet." }
                 };
             }
 
@@ -146,22 +361,34 @@ export async function contacts(query) {
                 success: true,
                 final: true,
                 data: {
-                    contacts: contactList,
-                    message: `Found ${contactList.length} contacts:\n${contactList.map(c => `• ${c.name}: ${c.email || c.phone || 'No details'}`).join('\n')}`
+                    contacts: list,
+                    message: `Found ${list.length} contacts:\n${list
+                        .map(c => `• ${c.name}: ${c.email || c.phone || "No details"}`)
+                        .join("\n")}`
                 }
             };
         }
 
-        // DEFAULT: Show help
+        // ---------------------------------------
+        // DEFAULT HELP
+        // ---------------------------------------
         return {
             tool: "contacts",
             success: true,
             final: true,
             data: {
-                message: `📇 Contact Management\n\n**Commands:**\n• "add Mom as a contact, email: mom@example.com"\n• "list contacts"\n• "what's john's email?"\n• "delete contact john"`
+                message:
+`Contact Management
+
+Commands:
+• add Mom as a contact, email: mom@example.com
+• mom's phone is 0501234567
+• update John's email to john@new.com
+• add alias to Mom: Mama
+• delete contact John
+• list contacts`
             }
         };
-
     } catch (err) {
         console.error("Contacts error:", err);
         return {
