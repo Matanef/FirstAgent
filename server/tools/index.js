@@ -31,12 +31,16 @@ import { moltbook } from "./moltbook.js";
 import { contacts } from "./contacts.js";
 import { calendar } from "./calendar.js";
 import { documentQA } from "./documentQA.js";
+import { lotrJokes } from "./lotrJokes.js";
+import { workflow } from "./workflowTool.js";
 
 export const TOOLS = {
   calculator,
   contacts,
   calendar,
   documentQA,
+  lotrJokes,
+  workflow,
   weather,
   finance,
   financeFundamentals,

@@ -15,10 +15,18 @@ const __dirname = path.dirname(__filename);
 // UTIL: list available tools (reads server/tools/*.js)
 // ============================================================
 function listAvailableTools(toolsDir = path.resolve(__dirname, "tools")) {
+  // Filenames to exclude: test files, backups, duplicates, index, and non-tool utilities
+  const EXCLUDE = new Set([
+    "index.js", "llm.js",  // infrastructure, not user-facing tools
+    "calculator.test.js",  // test file
+    "math-intent.js",      // test utility
+    "email1.js", "email2backup.js", "emailConfirm.js", // backups/duplicates
+  ]);
+
   try {
     const files = fs.readdirSync(toolsDir, { withFileTypes: true });
     return files
-      .filter(f => f.isFile() && f.name.endsWith(".js"))
+      .filter(f => f.isFile() && f.name.endsWith(".js") && !f.name.includes(".backup") && !EXCLUDE.has(f.name))
       .map(f => f.name.replace(/\.js$/, ""));
   } catch (e) {
     console.warn("[planner] listAvailableTools failed:", e?.message || e);
@@ -163,6 +171,9 @@ function isSimpleDateTime(msg) {
 
 function hasExplicitFilePath(text) {
   if (!text) return false;
+  // GUARD: If text contains a URL or domain, it's NOT a file path
+  if (/https?:\/\//i.test(text)) return false;
+  if (/\b[a-z0-9-]+\.(com|org|net|io|dev|co|app|gov|edu)\b/i.test(text)) return false;
   // Absolute paths: D:/..., C:\...
   if (/[a-z]:[\\/]/i.test(text)) return true;
   // Relative paths with file extensions: server/planner.js, ./utils/config.js, ../dir/file.py
@@ -353,9 +364,14 @@ EXAMPLES (correct routing):
 - "schedule a meeting tomorrow at 3pm" → calendar
 - "load document D:/report.txt" → documentQA
 - "ask about the project timeline from the docs" → documentQA
+- "show my contacts" → contacts
+- "what's John's phone number" → contacts
+- "run the morning briefing workflow" → workflow
+- "list available workflows" → workflow
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
+- "what's the weather" → weather (NOT follow-up from previous tool)
 - "how accurate is your routing" → selfImprovement (NOT calculator, NOT llm)
 - "what's the weather like" → weather (NOT llm)
 - "tell me about stocks" → finance (NOT search)
@@ -405,16 +421,30 @@ Respond with ONLY the tool name (one word, no explanation).`;
 /**
  * Detect follow-up questions and inherit tool from previous turn.
  * E.g., "what about Paris?" after a weather query → route to weather.
+ *
+ * CRITICAL GUARD: The new message must NOT clearly belong to a DIFFERENT tool.
+ * Without this, "what's the weather?" after a finance query inherits finance.
  */
 async function checkFollowUpContext(message, conversationId) {
   if (!conversationId) return null;
   const lower = message.toLowerCase().trim();
 
-  // Only trigger on short messages or explicit follow-up signals
-  const isShort = message.length < 40;
+  // Only trigger on explicit follow-up signals — NOT just short messages.
+  // Short messages like "what's the weather?" are clearly new intents, not follow-ups.
   const hasFollowUpSignal = /\b(what about|how about|and\s+(also|now)|do the same|same for|now try|another|instead|more about|tell me more|any more|and in|and for)\b/i.test(lower);
 
-  if (!isShort && !hasFollowUpSignal) return null;
+  if (!hasFollowUpSignal) return null;
+
+  // GUARD: If the message has clear keywords for a DIFFERENT domain, it's a new intent
+  const domainPatterns = {
+    weather: /\b(weather|forecast|temperature|rain|snow|humidity|wind|sunny|cloudy)\b/i,
+    finance: /\b(stock|share|price|ticker|market|portfolio|invest|dividend|earnings|trading)\b/i,
+    news: /\b(news|headline|article|breaking)\b/i,
+    sports: /\b(score|match|game|league|team|player|football|soccer|standings?|fixture)\b/i,
+    search: /\b(search|look\s+up|find\s+info|history\s+of|who\s+(is|was))\b/i,
+    email: /\b(email|mail|inbox|send)\b/i,
+    calculator: /\b(calculate|compute|solve)\b/i,
+  };
 
   try {
     const memory = await getMemory();
@@ -433,6 +463,14 @@ async function checkFollowUpContext(message, conversationId) {
     // Only route follow-ups for tools where it makes sense
     const followUpTools = ['weather', 'search', 'news', 'finance', 'sports', 'file'];
     if (!followUpTools.includes(prevTool)) return null;
+
+    // CRITICAL: Check if message has keywords for a DIFFERENT domain → new intent, not follow-up
+    for (const [domain, pattern] of Object.entries(domainPatterns)) {
+      if (domain !== prevTool && pattern.test(lower)) {
+        console.log(`[planner] Follow-up BLOCKED: message has "${domain}" keywords, not inheriting "${prevTool}"`);
+        return null;
+      }
+    }
 
     console.log(`[planner] Follow-up detected: "${message}" → inheriting tool "${prevTool}" from conversation`);
     return {
@@ -900,6 +938,22 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
   }
 
+  // Contacts keywords: "my contacts", "add contact", "John's phone", "contact list"
+  if (/\b(contacts?|address\s*book|phone\s*book)\b/i.test(lower) &&
+      (/\b(list|show|add|update|delete|remove|find|search|look\s+up)\b/i.test(lower) ||
+       /\b(phone|number|email|address)\b/i.test(lower)) &&
+      !/\b(email|mail|send|draft)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: contacts");
+    return [{ tool: "contacts", input: trimmed, context: {}, reasoning: "certainty_contacts" }];
+  }
+
+  // Contact lookup patterns: "John's phone number", "what's mom's email"
+  if (/(['']s\s+(?:phone|email|number|address))\b/i.test(lower) &&
+      !/\b(moltbook|weather|news)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: contacts (possessive lookup)");
+    return [{ tool: "contacts", input: trimmed, context: {}, reasoning: "certainty_contacts_lookup" }];
+  }
+
   // Email browsing: "check my emails", "go over my inbox", "read my emails", "list unread emails"
   if (/\b(check|go\s+over|browse|list|show|read)\s+(my\s+)?(emails?|inbox|mail)\b/i.test(lower) &&
       !/\b(send|draft|compose|write)\b/i.test(lower) &&
@@ -1070,6 +1124,12 @@ export async function plan({ message, chatContext = {} }) {
     'file_write': 'fileWrite',
     'writefile': 'fileWrite',
     'write': 'fileWrite',
+    'contact': 'contacts',
+    'addressbook': 'contacts',
+    'documentqa': 'documentQA',
+    'document_qa': 'documentQA',
+    'doc_qa': 'documentQA',
+    'workflowtool': 'workflow',
   };
 
   let rawIntent = (detection.intent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");

@@ -317,7 +317,9 @@ async function checkAvailability(query) {
  */
 export async function calendar(query) {
   const input = typeof query === "object" ? query.text || query.input || "" : query;
-  const intent = detectCalendarIntent(input);
+  // Use planner's pre-detected action if available, otherwise detect from text
+  const contextAction = typeof query === "object" ? query.context?.action : null;
+  const intent = contextAction || detectCalendarIntent(input);
 
   console.log(`[calendar] Intent: ${intent}, Query: "${input}"`);
 

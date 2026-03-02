@@ -5,8 +5,8 @@ import { plan } from "../planner.js";
 import { executeStep, finalizeStep } from "../executor.js";
 import { getBackgroundNLP } from "./nlpUtils.js";
 import { resolveCityFromIp } from "./geo.js";
-import { summarizeAndStoreConversation, shouldSummarize, getRelevantContext } from "./conversationMemory.js";
-import { detectSatisfaction, updatePreferencesFromFeedback, extractPreferences, applyExtractedPreferences, buildStyleInstructions } from "./styleEngine.js";
+import { summarizeAndStoreConversation, shouldSummarize } from "./conversationMemory.js";
+import { detectSatisfaction, updatePreferencesFromFeedback, extractPreferences, applyExtractedPreferences } from "./styleEngine.js";
 import { appendSuggestion } from "./suggestions.js";
 
 // ============================================================
