@@ -9,3 +9,4 @@ server/data/sessions/
 utils/**
 downloads/**
 uploads/**
+.claude/worktrees
