@@ -8,7 +8,7 @@ import { CONFIG } from "../utils/config.js";
 const router = express.Router();
 const TOKEN_PATH = path.join(process.cwd(), "server", "tokens", "google_oauth_token.json");
 
-router.get("/oauth/callback", async (req, res) => {
+router.get("/oauth2callback", async (req, res) => {
   try {
     const code = req.query.code;
     if (!code) {
