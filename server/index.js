@@ -12,6 +12,7 @@ import fileRoutes from "./routes/files.js";
 import reviewRoutes from "./routes/review.js";
 import duplicateRoutes from "./routes/duplicates.js";
 import oauthCallback from "./routes/oauthCallback.js";
+import browseRoutes from "./routes/browse.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +44,7 @@ app.use(conversationRoutes);
 app.use(fileRoutes);
 app.use("/api", reviewRoutes);
 app.use("/api", duplicateRoutes);
+app.use("/api/browse", browseRoutes);
 
 // ============================================================
 // START SERVER

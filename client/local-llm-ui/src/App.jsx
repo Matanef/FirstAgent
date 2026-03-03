@@ -6,6 +6,7 @@ import DOMPurify from "dompurify";
 import SmartContent from "./components/SmartContent";
 import FileAttachmentBar from "./components/FileAttachmentBar";
 import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
+import FolderPicker from "./components/FolderPicker";
 import "./App.css";
 
 const API_URL = "http://localhost:3000";
@@ -390,6 +391,12 @@ function App() {
               />
 
               <div className="input-wrapper">
+                <FolderPicker
+                  onSelectFolder={(folderPath) => {
+                    setInput(prev => prev ? `${prev} ${folderPath}` : folderPath);
+                  }}
+                  disabled={loading}
+                />
                 <button
                   className="scanner-trigger-btn"
                   onClick={() => setShowDuplicateScanner(!showDuplicateScanner)}

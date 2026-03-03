@@ -337,6 +337,20 @@ EXAMPLES (correct routing):
 - "schedule weather check every 30 minutes" → scheduler
 - "remind me to check emails at 9am" → scheduler
 - "list my schedules" → scheduler
+- "show me the folder structure of D:/project" → folderAccess
+- "code review D:/project/server" → codeReview
+- "security audit of my server code" → codeReview
+- "refactor D:/project/utils.js" → codeTransform
+- "add error handling to server.js" → codeTransform
+- "show dependency graph" → projectGraph
+- "find circular dependencies" → projectGraph
+- "index the project" → projectIndex
+- "find the handleRequest function" → projectIndex
+- "scan github for new tools" → githubScanner
+- "discover tools for web scraping" → githubScanner
+- "evolve yourself" → selfEvolve
+- "improve your own code" → selfEvolve
+- "scan github and upgrade your tools" → selfEvolve
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
@@ -345,6 +359,11 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "tell me about stocks" → finance (NOT search)
 - "what do you know about me" → memorytool (NOT search)
 - "schedule a task every hour" → scheduler (NOT tasks)
+- "refactor my code" → codeTransform (NOT review, NOT file)
+- "security review" → codeReview (NOT review)
+- "show project structure" → folderAccess (NOT file)
+- "improve yourself" → selfEvolve (NOT selfImprovement)
+- "scan github for patterns" → githubScanner (NOT github, NOT githubTrending)
 
 RULES:
 1. Casual conversation, greetings, opinions, explanations → llm
@@ -355,6 +374,11 @@ RULES:
 6. "browse/visit [website]" → webBrowser
 7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
 8. When unsure, return "llm" (the safest fallback)
+9. "refactor/optimize/rewrite code" → codeTransform (NOT review)
+10. "code review/security review/audit" → codeReview (NOT review)
+11. "folder structure/tree/scan directory" → folderAccess (NOT file)
+12. "dependency graph/circular deps/dead code" → projectGraph
+13. "evolve yourself/improve your code" → selfEvolve (NOT selfImprovement)
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -633,6 +657,101 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
   }
 
+  // ──────────────────────────────────────────────────────────
+  // CODE GURU TOOLS — must come BEFORE general review to prevent collision
+  // ──────────────────────────────────────────────────────────
+
+  // Self-Evolution — active code modification (NOT diagnostics)
+  // Must come BEFORE selfImprovement to catch "evolve", "improve my code", "scan github and improve"
+  if (/\b(self[- ]?evolv|evolve\s+(yourself|your|my)|improve\s+(yourself|your\s+code|my\s+code)|scan\s+github\s+and\s+(improve|evolve|upgrade)|upgrade\s+(yourself|your\s+tools)|autonomous\s+improv|make\s+yourself\s+better|evolution\s+cycle)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: selfEvolve");
+    const evolveContext = {};
+    if (/\b(dry.?run|preview|plan)\b/i.test(lower)) evolveContext.action = "dryrun";
+    else if (/\b(history|log|previous)\b/i.test(lower)) evolveContext.action = "history";
+    else if (/\b(status|last)\b/i.test(lower)) evolveContext.action = "status";
+    else evolveContext.action = "run";
+    return [{ tool: "selfEvolve", input: trimmed, context: evolveContext, reasoning: "certainty_self_evolve" }];
+  }
+
+  // Code Transform — refactor, optimize, rewrite, improve code in a file
+  // Must come BEFORE review (which is read-only) since transforms are write operations
+  if (/\b(refactor|rewrite|transform|optimize\s+code|optimize\s+the|improve\s+the\s+code|add\s+error\s+handling|add\s+types?|add\s+jsdoc|add\s+comments?|modernize|migrate|convert\s+to|simplify\s+the\s+code|clean\s+up\s+the\s+code)\b/i.test(lower) &&
+      (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))) {
+    console.log("[planner] certainty branch: codeTransform");
+    const ctContext = {};
+    if (/\brefactor\b/i.test(lower)) ctContext.action = "refactor";
+    else if (/\boptimize\b/i.test(lower)) ctContext.action = "optimize";
+    else if (/\brewrite\b/i.test(lower)) ctContext.action = "upgrade";
+    else if (/\bdocument|jsdoc|comment/i.test(lower)) ctContext.action = "document";
+    else if (/\btest|spec\b/i.test(lower)) ctContext.action = "test";
+    else ctContext.action = "transform";
+    return [{ tool: "codeTransform", input: trimmed, context: ctContext, reasoning: "certainty_code_transform" }];
+  }
+
+  // Deep Code Review — quality, security, performance analysis
+  // More specific than general "review": triggers on explicit review types or "code review"
+  if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint|code\s+analysis|security\s+audit|code\s+audit)\b/i.test(lower) ||
+      (/\b(review|analyze|audit)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code)\b/i.test(lower))) {
+    console.log("[planner] certainty branch: codeReview");
+    const crContext = {};
+    if (/\bsecur/i.test(lower)) crContext.reviewType = "security";
+    else if (/\bperform/i.test(lower)) crContext.reviewType = "performance";
+    else if (/\barchitect/i.test(lower)) crContext.reviewType = "architecture";
+    else if (/\bquality|smell|lint/i.test(lower)) crContext.reviewType = "quality";
+    else crContext.reviewType = "full";
+    return [{ tool: "codeReview", input: trimmed, context: crContext, reasoning: "certainty_code_review" }];
+  }
+
+  // Folder Access — browse any folder, directory tree, folder structure
+  // Must come BEFORE file tool to catch "scan folder", "browse directory", "show tree"
+  if (/\b(folder\s*(structure|tree|scan|browse|explore|access|content)|directory\s*(tree|structure|listing|layout)|project\s*(structure|tree|layout|hierarchy)|show\s+(the\s+)?(tree|folder|directory)|browse\s+(folder|directory)|scan\s+(folder|directory|the\s+folder|the\s+directory)|list\s+(all\s+)?(files\s+in|folder|directory|recursiv))\b/i.test(lower)) {
+    console.log("[planner] certainty branch: folderAccess");
+    const faContext = {};
+    if (/\btree|structure|hierarchy|layout\b/i.test(lower)) faContext.action = "tree";
+    else if (/\bstat|overview|summary\b/i.test(lower)) faContext.action = "stats";
+    else if (/\bsearch|find|grep\b/i.test(lower)) faContext.action = "search";
+    else faContext.action = "list";
+    return [{ tool: "folderAccess", input: trimmed, context: faContext, reasoning: "certainty_folder_access" }];
+  }
+
+  // Project Graph — dependency analysis, circular deps, dead code detection
+  if (/\b(dependency\s+graph|project\s+graph|module\s+graph|import\s+graph|circular\s+dep|dead\s+code|unused\s+file|orphan\s+file|coupling\s+metric|module\s+relationship|dependency\s+analy)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: projectGraph");
+    const pgContext = {};
+    if (/\bcircular/i.test(lower)) pgContext.action = "circular";
+    else if (/\bdead|unused|orphan/i.test(lower)) pgContext.action = "dead";
+    else if (/\bmetric|coupling/i.test(lower)) pgContext.action = "metrics";
+    else pgContext.action = "full";
+    return [{ tool: "projectGraph", input: trimmed, context: pgContext, reasoning: "certainty_project_graph" }];
+  }
+
+  // Project Index — semantic code search, function/class lookup
+  if (/\b(index\s+(the\s+)?project|project\s+index|build\s+(an?\s+)?index|reindex|search\s+(for\s+)?function|find\s+(the\s+)?class|symbol\s+search|search\s+symbol|function\s+list|class\s+list)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: projectIndex");
+    const piContext = {};
+    if (/\bbuild|create|rebuild|reindex/i.test(lower)) piContext.action = "build";
+    else if (/\bsymbol|function|class|method/i.test(lower)) piContext.action = "symbols";
+    else if (/\boverview|summary|stat/i.test(lower)) piContext.action = "overview";
+    else piContext.action = "search";
+    return [{ tool: "projectIndex", input: trimmed, context: piContext, reasoning: "certainty_project_index" }];
+  }
+
+  // GitHub Scanner — scan repos for patterns, tool discovery, AI analysis
+  // Must come BEFORE githubTrending to catch "scan github for improvements"
+  if (/\b(scan\s+github|github\s+scan|analyze\s+github|discover\s+tool|find\s+new\s+tool|github\s+intelligence|repo\s+scan|scan\s+repos?\s+for|github\s+pattern)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: githubScanner");
+    const gsContext = {};
+    if (/\btrending|popular|hot\b/i.test(lower)) gsContext.action = "trending";
+    else if (/\bdiscover|find/i.test(lower)) gsContext.action = "discover";
+    else if (/\bpattern|practice/i.test(lower)) gsContext.action = "patterns";
+    else gsContext.action = "scan";
+    return [{ tool: "githubScanner", input: trimmed, context: gsContext, reasoning: "certainty_github_scanner" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // ORIGINAL TOOL ROUTING CONTINUES BELOW
+  // ──────────────────────────────────────────────────────────
+
   // Code review keywords — expanded to catch "tool", "implementation", "flow", "logic"
   // Must come BEFORE finance/sports/github to prevent "examine the search tool" → search
   if (/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script|tool|implementation|flow|logic)\b/i.test(lower) ||
@@ -709,9 +828,19 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
   }
 
-  // Scheduler / recurring tasks / workflows
+  // Workflow management — "run morning briefing workflow", "list workflows", "create workflow"
+  // Must come BEFORE scheduler to prevent "run workflow" → scheduler
+  if (/\b(run|execute|start|create|list|show|delete|remove)\s+(the\s+)?(a\s+)?workflow/i.test(lower) ||
+      /\bworkflow\s+(named?|called)\b/i.test(lower) ||
+      /\b(morning\s+briefing|market\s+check|code\s+review\s+cycle)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: workflow");
+    return [{ tool: "workflow", input: trimmed, context: {}, reasoning: "certainty_workflow" }];
+  }
+
+  // Scheduler / recurring tasks
   // Must come BEFORE task management to prevent "schedule X every Y" → tasks
-  if (/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|workflow|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
+  // Removed "workflow" keyword — that now routes to the workflow tool above
+  if (/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
       !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower)) {
     console.log("[planner] certainty branch: scheduler");
     const schedContext = {};
