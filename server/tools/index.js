@@ -34,6 +34,13 @@ import { calendar } from "./calendar.js";
 import { documentQA } from "./documentQA.js";
 import { lotrJokes } from "./lotrJokes.js";
 import { workflow } from "./workflowTool.js";
+import { folderAccess } from "./folderAccess.js";
+import { codeReview } from "./codeReview.js";
+import { codeTransform } from "./codeTransform.js";
+import { projectGraph } from "./projectGraph.js";
+import { projectIndex } from "./projectIndex.js";
+import { githubScanner } from "./githubScanner.js";
+import { selfEvolve } from "./selfEvolve.js";
 
 export const TOOLS = {
   calculator,
@@ -68,7 +75,14 @@ export const TOOLS = {
   duplicateScanner,
   webBrowser,
   moltbook,
-  scheduler
+  scheduler,
+  folderAccess,
+  codeReview,
+  codeTransform,
+  projectGraph,
+  projectIndex,
+  githubScanner,
+  selfEvolve
 };
 
 // Validate all tools are functions at startup

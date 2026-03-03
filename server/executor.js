@@ -412,7 +412,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler"].includes(tool)) {
     // For email, split: pass query text + context separately
     if (tool === "email" && typeof message === "object") {
       const queryText = message.text || message.input || "";
