@@ -1,0 +1,9 @@
+{"timestamp":"2026-02-23T17:32:07.524Z","action":"scan_duplicates","fileId":null,"fileName":null,"ip":"::ffff:127.0.0.1","details":{"path":"server/tools","type":".js","groups":5}}
+{"timestamp":"2026-02-23T17:32:55.858Z","action":"upload","fileId":"b1a5e466-7141-4e90-95db-34a7e74cfc69-calculator.js","fileName":"calculator.js","ip":"::ffff:127.0.0.1","details":null}
+{"timestamp":"2026-02-23T17:33:59.337Z","action":"access","fileId":"b1a5e466-7141-4e90-95db-34a7e74cfc69-calculator.js","fileName":"calculator.js","ip":"::ffff:127.0.0.1","details":null}
+{"timestamp":"2026-02-23T17:36:06.954Z","action":"upload","fileId":"c13943e7-4f43-4e12-84e1-0d0aa02028bf-llm.js","fileName":"llm.js","ip":"::ffff:127.0.0.1","details":null}
+{"timestamp":"2026-02-23T17:38:11.895Z","action":"upload","fileId":"09b9a284-3dd6-45f9-a700-972ae4f8ee15-00-COMPLETE-SOLUTION-GUIDE.md","fileName":"00-COMPLETE-SOLUTION-GUIDE.md","ip":"::ffff:127.0.0.1","details":null}
+{"timestamp":"2026-02-23T17:49:44.427Z","action":"scan_duplicates","fileId":null,"fileName":null,"ip":"::ffff:127.0.0.1","details":{"path":"server","type":".txt","groups":1}}
+{"timestamp":"2026-02-23T17:51:07.843Z","action":"scan_duplicates","fileId":null,"fileName":null,"ip":"::ffff:127.0.0.1","details":{"name":"test","groups":0}}
+{"timestamp":"2026-02-23T17:51:30.355Z","action":"scan_duplicates","fileId":null,"fileName":null,"ip":"::ffff:127.0.0.1","details":{"type":".js","groups":25}}
+{"timestamp":"2026-02-23T21:52:01.421Z","action":"upload","fileId":"b2836f03-53a6-45b0-965f-d354da964e32-duplicateScanner.js","fileName":"duplicateScanner.js","ip":"::ffff:127.0.0.1","details":null}

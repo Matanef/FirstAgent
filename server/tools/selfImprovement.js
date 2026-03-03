@@ -1,4 +1,5 @@
 
+
 // server/tools/selfImprovement.js
 import { getRecentImprovements, generateSummaryReport } from "../telemetryAudit.js";
 import { getIntentAccuracyReport, detectMisroutingPatterns, getRoutingRecommendations } from "../intentDebugger.js";
@@ -7,7 +8,7 @@ import { getIntentAccuracyReport, detectMisroutingPatterns, getRoutingRecommenda
  * Self-improvement tool
  * Handles queries about agent's self-modifications and improvements
  */
-export async function selfImprovement(query) {
+async function selfImprovement(query) {
   const lower = query.toLowerCase();
 
   try {
@@ -243,3 +244,6 @@ export async function selfImprovement(query) {
     };
   }
 }
+
+export { selfImprovement };
+

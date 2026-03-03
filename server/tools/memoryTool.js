@@ -105,6 +105,50 @@ export async function memorytool(request) {
   // PROFILE RETRIEVAL - "what do you remember about me?", "who am i?"
   if (
     lower.includes("who am i") ||
+  // --- GENERIC REMEMBER: "remember my [field] is [value]" ---
+  const genericRememberMatch = text.match(/remember(?:\s+that)?\s+my\s+([\w][\w\s]*?)\s+is\s+(.+)$/i);
+  if (genericRememberMatch) {
+    const field = genericRememberMatch[1].trim().toLowerCase();
+    const value = genericRememberMatch[2].trim();
+
+    if (value) {
+      // Map common field variations to standard profile keys
+      const fieldMap = {
+        'email': 'email', 'email address': 'email', 'e-mail': 'email',
+        'name': 'name', 'first name': 'name', 'full name': 'name',
+        'location': 'location', 'city': 'location', 'town': 'location',
+        'tone': 'tone', 'preferred tone': 'tone', 'communication style': 'tone',
+        'phone': 'phone', 'phone number': 'phone',
+        'birthday': 'birthday', 'birth date': 'birthday',
+        'job': 'job', 'occupation': 'job', 'role': 'job',
+        'company': 'company', 'workplace': 'company',
+        'language': 'language', 'timezone': 'timezone',
+        'favorite color': 'favoriteColor', 'favourite colour': 'favoriteColor'
+      };
+
+      const profileKey = fieldMap[field] || field.replace(/\s+/g, '_');
+
+      const memory = await getMemory();
+      memory.profile = memory.profile || {};
+      memory.profile[profileKey] = value;
+      await saveJSON(MEMORY_FILE, memory);
+
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `I've saved your ${field} as "${value}".` }
+      };
+    }
+  }
+
+  // FIX #5: PROFILE RETRIEVAL - "what do you remember about me?", "who am i?"
+  if (
+    lower.includes("who am i") ||
+    lower.includes("who i am") ||
+    lower.includes("do you know me") ||
+    lower.includes("my info") ||
+    lower.includes("my details") ||
     lower.includes("what do you remember") ||
     lower.includes("what do you know about me") ||
     lower.includes("tell me about myself") ||

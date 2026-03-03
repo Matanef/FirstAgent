@@ -1,6 +1,6 @@
 # Agent Tool Guide — Complete Reference
 
-> 27 tools across 8 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
+> 29 tools across 9 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
 
 ---
 
@@ -14,6 +14,7 @@
 6. [Finance & Shopping](#6-finance--shopping)
 7. [Media & Entertainment](#7-media--entertainment)
 8. [Web Interaction & Automation](#8-web-interaction--automation)
+9. [Advanced Intelligence](#9-advanced-intelligence)
 
 ---
 
@@ -40,7 +41,7 @@ The LLM is the agent's brain. It handles all conversational queries, creative wr
 
 ### `memorytool` — User Profile & Long-Term Memory
 
-Stores and retrieves persistent user information: name, email, location, tone preferences, and contacts. This data persists across all conversations.
+Stores and retrieves persistent user information: name, email, location, timezone, tone preferences, contacts, and any custom fields. This data persists across all conversations. Supports a generic "remember my X is Y" pattern for any profile field.
 
 **Triggered by:** "remember", "forget", "what do you know about me", "my name/email/location"
 
@@ -48,12 +49,12 @@ Stores and retrieves persistent user information: name, email, location, tone pr
 1. `"Remember my name is Alex"` — Store name
 2. `"Remember my email is alex@example.com"` — Store email
 3. `"Remember my location is Tel Aviv"` — Store location (used by weather)
-4. `"Remember John's email is john@company.com"` — Store contact
-5. `"What do you know about me?"` — Retrieve full profile
-6. `"Who am I?"` — Quick profile recall
-7. `"Forget my location"` — Remove stored location
-8. `"Remember I prefer a professional and concise tone"` — Set tone preference
-9. `"What contacts do you have saved?"` — List stored contacts
+4. `"Remember that my timezone is UTC+3"` — Store timezone
+5. `"Remember John's email is john@company.com"` — Store contact
+6. `"What do you know about me?"` — Retrieve full profile
+7. `"Who am I?"` — Quick profile recall
+8. `"Forget my location"` — Remove stored location
+9. `"Remember I prefer a professional and concise tone"` — Set tone preference
 
 ---
 
@@ -91,27 +92,27 @@ Checks the agent's routing accuracy, detects misrouting patterns, generates perf
 
 ## 2. Information & Search
 
-### `search` — Web Search (Multi-Source)
+### `search` — Web Search (Multi-Source + LLM Synthesis)
 
-Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour.
+Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour. **Now synthesizes a coherent LLM-powered summary** from the combined search results, providing a unified answer rather than just raw links.
 
-**Triggered by:** "search", "look up", "find information", "what is", "who is" (when not matched by other tools)
+**Triggered by:** "search", "look up", "find information", "who is/was", "tell me about", "history of"
 
 **Example prompts:**
 1. `"Search for the latest developments in quantum computing"` — Current tech research
-2. `"Who is the CEO of Tesla?"` — Person lookup
+2. `"Who was Napoleon Bonaparte?"` — Historical figure lookup
 3. `"What is the population of Japan?"` — Factual query
 4. `"Search for best practices in Node.js error handling"` — Technical research
-5. `"Find information about the James Webb Space Telescope discoveries"` — Science news
-6. `"Look up the history of the Eiffel Tower"` — Historical research
-7. `"Search for healthy meal prep recipes"` — General search
+5. `"Look up the history of the Eiffel Tower"` — Historical research (synthesized answer)
+6. `"Tell me about quantum computing"` — Knowledge query (LLM synthesis)
+7. `"Find information about climate change"` — Topic research
 8. `"What are the system requirements for Windows 11?"` — Product info
 
 ---
 
-### `news` — Multi-Source News with LLM Summaries
+### `news` — Multi-Source News with LLM Summaries & Category Feeds
 
-Fetches from 9 RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports topic filtering. Articles are scraped and summarized by the LLM.
+Fetches from 9+ RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports **category-specific feeds** (technology, science, business, sports, health, entertainment) that are auto-detected from the query. Feeds are fetched in **parallel with timeouts** for fast responses. Articles are scraped and summarized by the LLM, with fallback to RSS descriptions when scraping fails.
 
 **Triggered by:** "news", "headlines", "articles", "latest news", "breaking"
 
@@ -149,34 +150,36 @@ Uses OpenWeather API. Supports city names, "here" (geolocation), and remembers y
 
 ## 3. Productivity & Communication
 
-### `email` — Draft & Send Emails (Gmail OAuth)
+### `email` — Draft, Send & Browse Emails (Gmail OAuth)
 
-Two-stage email: drafts the email first, then waits for your confirmation ("send it") before sending. Supports attachments, contact resolution from memory, and natural language parsing.
+Full email tool: draft & send emails (two-stage confirmation), browse inbox, read emails, and download attachments. Uses Gmail OAuth with send + readonly scopes.
 
 **Requires:** Gmail OAuth configured (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
 
-**Triggered by:** "email", "mail", "send to", "draft email"
+**Triggered by:** "email", "mail", "send to", "draft email", "check my emails", "inbox", "read my emails"
 
 **Example prompts:**
 1. `"Email john@example.com saying the meeting is at 3pm"` — Direct email with body
 2. `"Draft an email to Sarah about the project deadline"` — Uses contacts from memory
 3. `"Send an email to my boss about taking Friday off"` — Natural language
 4. `"Email the team about the new release, attach the changelog"` — With attachment
-5. `"Write a professional email declining a meeting invitation"` — Tone-specific
-6. `"Send it"` — Confirm and send the last drafted email
-7. `"Cancel"` — Discard the draft
-8. `"Email Alex with subject 'Budget Review' body 'Please review the attached budget proposal'"` — Structured email
+5. `"Send it"` — Confirm and send the last drafted email
+6. `"Cancel"` — Discard the draft
+7. `"Check my recent emails"` — Browse inbox (NEW)
+8. `"Show my unread emails from last week"` — Search emails by date/status (NEW)
+9. `"Read email #3"` — View full email content (NEW)
+10. `"Go over my emails and find attachments named 'bills'"` — Search with attachment filter (NEW)
 
 ---
 
 ### `tasks` — Task & Todo Management
 
-Manages task lists with priorities, due dates, and status tracking.
+Manages task lists with priorities, due dates, and status tracking. **Note:** Task keywords (e.g., "todo", "task", "add task") take priority over github keywords during routing, so messages like "Add task: review pull request" correctly route to the tasks tool, not GitHub.
 
 **Triggered by:** "todo", "task", "reminder", "add task", "my tasks", "checklist"
 
 **Example prompts:**
-1. `"Add task: review pull request by Friday"` — Create task with deadline
+1. `"Add task: review pull request by Friday"` — Create task with deadline (routes here, NOT github)
 2. `"What are my current tasks?"` — List all tasks
 3. `"Mark the review task as done"` — Update status
 4. `"Add a high priority task to fix the login bug"` — Priority task
@@ -185,17 +188,36 @@ Manages task lists with priorities, due dates, and status tracking.
 
 ---
 
+### `calendar` — Google Calendar Integration
+
+Manage your Google Calendar: list upcoming events, create events with natural language, check availability/free time. Uses existing Google OAuth with calendar scopes added.
+
+**Requires:** Gmail OAuth configured + Calendar scopes (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
+
+**Triggered by:** "calendar", "events", "schedule", "meeting", "appointment", "free time", "availability"
+
+**Example prompts:**
+1. `"What events do I have today?"` -- List today's events
+2. `"Show my calendar for next week"` -- Weekly view
+3. `"Schedule a meeting tomorrow at 3pm called Team Standup"` -- Create event with title and time
+4. `"Am I free tomorrow afternoon?"` -- Check availability
+5. `"Create an event on Monday at 10am for 30 minutes called Code Review"` -- Specific event creation
+6. `"What's on my calendar this week?"` -- Weekly overview
+7. `"Book a meeting next Friday at 2pm at the office"` -- Create with location
+
+---
+
 ## 4. File & Code Operations
 
 ### `file` — File System Browser & Reader
 
-Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder.
+Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder. **Smart path extraction** correctly handles absolute paths embedded in natural language (e.g., "List files in D:/local-llm-ui/server/tools" → extracts `D:/local-llm-ui/server/tools`). File path checks take priority over all other routing, so paths containing words like "planner" won't misroute.
 
 **Triggered by:** Explicit file paths (e.g., `D:/...`), "list files", "read file", "show me"
 
 **Example prompts:**
-1. `"List files in D:/local-llm-ui/server/tools"` — Directory listing
-2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents
+1. `"List files in D:/local-llm-ui/server/tools"` — Absolute path extracted from natural language
+2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents (path priority over diagnostic)
 3. `"Show me the contents of E:/testFolder/config.json"` — Read external file
 4. `"What files are in the server directory?"` — Natural language listing
 5. `"List all JavaScript files in the tools folder"` — Filtered listing
@@ -204,16 +226,19 @@ Reads, lists, and navigates files and directories. Sandboxed to the project root
 
 ---
 
-### `fileWrite` — Write Files to Disk
+### `fileWrite` — Write Files to Disk (Natural Language Support)
 
-Creates or overwrites files on disk. Used for code generation, config files, etc.
+Creates or overwrites files on disk. **Now supports natural language input** — just describe what you want and specify the path. The LLM generates the file content automatically based on your request and the file extension. Also accepts structured input `{ path, content }` for programmatic use.
 
-**Triggered by:** "write file", "create file", "save to file" (typically invoked as part of multi-step flows)
+**Triggered by:** "write/create/generate/save/make" + file path (e.g., `D:/...`), or as part of multi-step flows
 
 **Example prompts:**
-1. `"Write a hello world script to D:/local-llm-ui/test.js"` — Create file
-2. `"Create a JSON config file at E:/testFolder/config.json"` — Config generation
-3. `"Save this code to D:/local-llm-ui/utils/helper.js"` — Save generated code
+1. `"Write a hello world script to D:/local-llm-ui/test.js"` — NL: generates JS content
+2. `"Create a config file at D:/local-llm-ui/config.json"` — NL: generates JSON config
+3. `"Generate a Python script at E:/testFolder/main.py"` — NL: generates Python code
+4. `"Save a basic HTML page to D:/local-llm-ui/index.html"` — NL: generates HTML
+5. `"Create a README at D:/local-llm-ui/README.md"` — NL: generates Markdown
+6. `"Write a bash script to E:/testFolder/setup.sh"` — NL: generates shell script
 
 ---
 
@@ -441,22 +466,24 @@ Searches YouTube for videos, tutorials, and content.
 
 ---
 
-### `sports` — Live Scores & Sports Data
+### `sports` — Live Scores, Fixtures, Standings & Sports Data
 
-Real-time scores, match data, league standings, and player stats.
+Full sports tool using API-Football v3. Supports: upcoming fixtures, past results, live scores, full league standings, and top scorers. Returns pre-formatted markdown tables showing ALL data (not truncated). Recognizes team names (Arsenal, Barcelona, Bayern, etc.) and league names (Premier League, La Liga, Serie A, etc.).
 
-**Requires:** `SPORTS_API_KEY` in `.env`
+**Requires:** `SPORTS_API_KEY` in `.env` (API-Football key)
 
-**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "basketball", "NBA"
+**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "standings", "fixture", "Premier League", team names (Arsenal, Chelsea, etc.)
 
 **Example prompts:**
-1. `"What are today's football scores?"` — Live scores
-2. `"Premier League standings"` — League table
-3. `"NBA scores tonight"` — Basketball scores
-4. `"When does Real Madrid play next?"` — Team schedule
-5. `"Who won the Champions League last night?"` — Recent results
-6. `"Show me the NFL scores"` — American football
-7. `"What's the score of the Barcelona game?"` — Specific match
+1. `"When does Arsenal play next?"` — Upcoming fixtures for a team
+2. `"Premier League standings"` — Full 20-team league table
+3. `"What were Liverpool's last 5 results?"` — Recent match results
+4. `"Live scores right now"` — Currently live matches
+5. `"La Liga top scorers"` — Top scorer leaderboard
+6. `"Champions League fixtures"` — Upcoming UCL matches
+7. `"Did Barcelona win their last game?"` — Recent result for team
+8. `"Bundesliga table"` — Full standings for German league
+9. `"When does Man City play next in the Premier League?"` — Team + league specific
 
 ---
 
@@ -493,22 +520,77 @@ Browse any website with persistent session cookies, form submission, CSRF handli
 
 ---
 
-### `moltbook` — Moltbook.com Interaction
+### `moltbook` — Moltbook.com Social Network (REST API)
 
-Domain-specific tool for all moltbook.com interactions: account management, browsing, searching, and social features. Uses persistent session with cookie management.
+Full integration with Moltbook, the social network for AI agents. Uses the REST API documented in skill.md. Supports: registration, posting, commenting, voting, feeds, semantic search, following, submolt communities, and profile management. Authentication via API key (stored in encrypted credential store).
 
 **Triggered by:** Any message containing "moltbook"
 
 **Example prompts:**
-1. `"Login to moltbook"` — Login (uses stored credentials)
-2. `"Register on moltbook with username: myuser password: mypass email: me@test.com"` — Create account
-3. `"Store my moltbook credentials username: myuser password: mypass"` — Save credentials (encrypted)
-4. `"Browse moltbook profile"` — View profile page
-5. `"Search moltbook for interesting posts"` — Search within site
-6. `"Check my moltbook session status"` — Session health check
-7. `"Register on moltbook and verify my email"` — Multi-step: register + email verify + status check
-8. `"Logout from moltbook"` — End session
-9. `"Browse moltbook.com/dashboard"` — Navigate specific page
+1. `"Register on moltbook"` — Register via REST API, get API key + claim URL
+2. `"Post on moltbook title: Hello World content: My first post!"` — Create a post
+3. `"Check my moltbook feed"` — Browse personalized feed
+4. `"Search moltbook for AI memory techniques"` — Semantic search
+5. `"Upvote post abc123 on moltbook"` — Vote on a post
+6. `"Comment on moltbook post abc123 saying Great insight!"` — Add a comment
+7. `"Follow ClawdClawderberg on moltbook"` — Follow another agent
+8. `"View my moltbook profile"` — See your profile and stats
+9. `"List moltbook communities"` — Browse submolts
+10. `"Store moltbook api_key: moltbook_xxx"` — Save API key securely
+
+---
+
+## 9. Advanced Intelligence
+
+### `documentQA` -- Document Question Answering (RAG)
+
+Load documents into a vector knowledge base, then ask questions. Uses chunking + embedding (Ollama or TF-IDF fallback) + retrieval-augmented generation. Supports .txt, .md, .json, .js, .py, .ts, .html, .csv, .log files.
+
+**Triggered by:** "document" + "load/ingest/ask/question", "knowledge base", "index file"
+
+**Example prompts:**
+1. `"Load document D:/docs/project-spec.md"` -- Ingest a document into the knowledge base
+2. `"Ask about the deployment process from the docs"` -- Question answering from indexed documents
+3. `"Index file D:/reports/analysis.txt"` -- Add a file to the vector store
+4. `"List my indexed documents"` -- Show all document collections
+5. `"What does the API specification say about authentication?"` -- Targeted Q&A
+6. `"Load document D:/code/README.md into the project collection"` -- Ingest to specific collection
+
+### Workflow Engine
+
+Define and execute reusable multi-step tool sequences. Includes built-in workflows (Morning Briefing, Market Check, Code Review Cycle) and supports custom workflow creation.
+
+**Triggered by:** "workflow", "morning briefing", "daily routine", "run workflow"
+
+**Example prompts:**
+1. `"Run the morning briefing workflow"` -- Execute: weather + emails + news
+2. `"Run the market check"` -- Execute: finance overview + financial news
+3. `"Create a workflow: check weather, browse emails, news summary"` -- Custom workflow
+
+### Scheduler
+
+Schedule recurring tasks with natural language timing. Supports intervals (every N minutes/hours), daily schedules, and weekly schedules.
+
+**Triggered by:** Programmatic API (used by workflows and other tools)
+
+**Schedule patterns:**
+- `"every 30 minutes"` -- Interval-based
+- `"daily at 9am"` -- Daily schedule
+- `"every Monday at 9:00"` -- Weekly schedule
+
+### Multi-Agent Collaboration
+
+For complex queries spanning multiple domains, the agent can spawn parallel sub-agents (Researcher, Analyst, Communicator, Developer, Organizer) that work concurrently and have their results synthesized.
+
+**Triggered by:** Complex multi-domain queries that span research + analysis + communication
+
+### Emotional Intelligence Layer
+
+Enhanced emotional awareness beyond basic sentiment:
+- **Frustration detection:** Detects repeated queries, exasperation language, ALL CAPS, excessive punctuation
+- **Adaptive responses:** Adjusts tone when frustration is detected (more empathetic, direct, solution-focused)
+- **Pattern recognition:** Tracks repeated clarifications and conversation flow changes
+- **Auto-adjustment:** Prepends empathetic acknowledgments when the user seems frustrated
 
 ---
 
@@ -524,10 +606,12 @@ Domain-specific tool for all moltbook.com interactions: account management, brow
 | `ALPHA_VANTAGE_KEY` or `FINNHUB_KEY` | finance, financeFundamentals | For finance |
 | `SPORTS_API_KEY` | sports | For sports |
 | `YOUTUBE_API_KEY` | youtube | For YouTube |
-| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, emailVerification | For email |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, calendar | For email + calendar |
+| `EMBEDDING_MODEL` | documentQA, vectorStore (defaults to `nomic-embed-text`) | Optional |
 | `GITHUB_TOKEN` | github, githubTrending | For GitHub |
 | `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For credential encryption |
-| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://moltbook.com`) | Optional |
+| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://www.moltbook.com`) | Optional |
+| `MOLTBOOK_API_KEY` | moltbook (or use credential store) | For Moltbook API |
 
 ### Generating a Credential Master Key
 
@@ -558,13 +642,70 @@ CREDENTIAL_MASTER_KEY=<your-generated-key-here>
 
 ---
 
+## New Capabilities (Phase 4)
+
+### Persistent Conversation Memory
+The agent automatically summarizes long conversations and stores summaries for cross-session context. When relevant, past conversation summaries are retrieved to provide context-aware responses. Stored in `memory.meta.conversationSummaries`.
+
+### Conversational Style Engine
+The agent learns and adapts to your preferred communication style:
+- **Explicit style changes:** Say "be more formal" or "be brief" to change response style
+- **Implicit learning:** The engine detects satisfaction signals (re-asking = dissatisfied, "thanks" = satisfied) and auto-adjusts verbosity
+- **Style presets:** formal, casual, brief, detailed, technical, friendly
+- **Preferences stored in:** `memory.profile.preferences`
+
+### Self-Correction & Reflection
+After generating a response, the coordinator checks for hallucinated placeholders (like `[Date]`, `[Opponent]`, `[Location]`) and replaces them with "data not available" notices. This prevents the LLM from inventing data the tool didn't provide.
+
+### Proactive Suggestions
+After completing a task, the agent can suggest relevant follow-up actions:
+- Weather query: "Would you like the forecast for tomorrow?"
+- Email sent: "Want me to set a reminder to follow up?"
+- Sports fixtures: "Want to see the current standings?"
+- **Disabled by default.** Enable with: "remember my preference enableSuggestions is true"
+
+### Full Table Presentation
+Sports standings, news, and financial data now show ALL results in markdown tables (not just top 4). The sports tool returns pre-formatted tables that bypass LLM summarization for accuracy.
+
+### Natural Tool Chaining (NEW)
+The planner detects multi-intent queries and automatically chains tools:
+- `"Search for React best practices and email me the results"` -- search → email
+- `"Check the weather and also the news"` -- weather → news
+- `"Get Tesla stock price then check the latest Tesla news"` -- finance → news
+- Uses context piping so each step can access previous results
+
+### Long-Horizon Task Planning (NEW)
+For complex requests, the planner uses LLM decomposition to break them into 2-5 ordered steps with dependency tracking. Each step receives the output of steps it depends on.
+
+### Calendar Integration (NEW)
+Google Calendar support: list events, create events with natural language, check free/busy times. Uses existing OAuth infrastructure with added calendar scopes.
+
+### Document QA / Knowledge Base (NEW)
+RAG-powered document question answering. Load documents into a vector store (with Ollama embeddings or TF-IDF fallback), then ask questions. Supports .txt, .md, .json, .js, .py, .html, .csv, .log files.
+
+### Workflow Engine (NEW)
+Reusable multi-step tool sequences with built-in workflows (Morning Briefing, Market Check, Code Review Cycle). Create custom workflows with natural language.
+
+### Scheduler (NEW)
+Cron-like recurring task automation. Schedule tools to run at intervals, daily, or weekly.
+
+### Multi-Agent Collaboration (NEW)
+Parallel sub-agent execution for complex multi-domain queries. Agents (Researcher, Analyst, Communicator, Developer, Organizer) work concurrently with LLM-synthesized results.
+
+### Emotional Intelligence (NEW)
+Enhanced frustration detection (repeated queries, ALL CAPS, exasperation language, terse responses) with adaptive empathetic responses.
+
+---
+
 ## Multi-Step Flows
 
 The agent can chain multiple tools for complex tasks:
 
+- **Natural chaining**: `"Search for X and email me the results"` → search → email (automatic)
 - **Register + Verify**: `"Register on moltbook and verify my email"` → moltbook(register) → moltbook(verify_email) → moltbook(status)
 - **Improve Code**: `"Improve the search tool based on trending patterns"` → githubTrending → review → applyPatch → gitLocal(status) → gitLocal(add)
-- **Research + Email**: The planner can generate multi-step plans for complex requests.
+- **Morning Briefing**: `"Run morning briefing"` → weather → email(browse) → news
+- **Complex Planning**: Complex requests are auto-decomposed into multi-step plans with dependency tracking
 
 ---
 

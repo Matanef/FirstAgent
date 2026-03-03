@@ -1,7 +1,8 @@
-// server/tools/search.js (ENHANCED - Yandex added as 4th source)
+// server/tools/search.js (ENHANCED - Yandex + LLM synthesis)
 import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
+import { llm } from "./llm.js";
 
 const CACHE_FILE = "./search_cache.json";
 const CACHE_TTL = 3600000; // 1 hour
@@ -181,7 +182,40 @@ async function fetchYandex(query) {
   }
 }
 
-// Enhanced search with 4 sources including Yandex
+// LLM-powered synthesis: generate a coherent answer from search results
+async function synthesizeSearchSummary(query, topResults) {
+  if (topResults.length === 0) return null;
+
+  const context = topResults.slice(0, 5).map((r, i) =>
+    `[${i + 1}] ${r.title}\n${r.snippet}\nSource: ${r.source}`
+  ).join('\n\n');
+
+  const prompt = `Based on these search results, provide a concise, informative summary answering the query: "${query}"
+
+Search Results:
+${context}
+
+Instructions:
+- Synthesize information from multiple sources into a coherent 3-5 sentence answer
+- Be factual and reference which sources the information comes from
+- If the results don't contain enough information, say so
+- Do NOT make up facts not present in the search results
+
+Summary:`;
+
+  try {
+    const result = await llm(prompt);
+    if (result.success && result.data?.text) {
+      return result.data.text.trim();
+    }
+    return null;
+  } catch (err) {
+    console.warn("Search synthesis failed:", err.message);
+    return null;
+  }
+}
+
+// Enhanced search with 4 sources including Yandex + LLM synthesis
 export async function search(query) {
   console.log("🔎 Search query:", query);
   
@@ -227,16 +261,21 @@ export async function search(query) {
   // Take top results
   const topResults = allResults.slice(0, 10);
 
-  // Generate summary text
+  // Generate raw summary text
   const summary = topResults.length > 0
     ? topResults
         .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Source: ${r.source} | ${r.url}`)
         .join("\n\n")
     : "No reliable results were found for this query from the sources I checked.";
 
+  // LLM synthesis: generate a coherent answer from top results
+  console.log("🧠 Synthesizing search results with LLM...");
+  const synthesis = await synthesizeSearchSummary(query, topResults);
+
   const data = {
     results: topResults,
-    text: summary,
+    synthesis,  // LLM-generated coherent summary
+    text: synthesis ? `${synthesis}\n\n---\n\n${summary}` : summary,
     totalSources: [wiki, ddg, google, yandex].filter(arr => arr.length > 0).length,
     query: query,
     normalizedQuery: normalizedQuery

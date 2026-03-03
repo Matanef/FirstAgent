@@ -125,6 +125,12 @@ function extractExpression(input) {
   const parenMatch = input.match(/\([^()]+\)[0-9+\-*/^().\s%]*/);
   if (parenMatch) return parenMatch[0];
 
+  // Variable expressions: 2x/7, 3x+5, x^2-4 (includes letters mixed with numbers and operators)
+  const varExprMatch = input.match(/\d*[a-zA-Z][\w]*(?:\s*[+\-*/^%]\s*[\d]*[a-zA-Z\d][\w]*)*(?:\s*[+\-*/^%]\s*\d+)*/);
+  if (varExprMatch && /\d/.test(varExprMatch[0]) && /[a-zA-Z]/.test(varExprMatch[0])) {
+    return varExprMatch[0].trim();
+  }
+
   const arithMatch = input.match(/[0-9]+(?:\s*[\+\-\*\/%^]\s*[0-9]+)+/);
   if (arithMatch) return arithMatch[0];
 
@@ -304,6 +310,37 @@ export function calculator(message) {
       final: true,
       error: "No valid math expression found"
     };
+  }
+
+  // 2️⃣ Check if expression contains variables (e.g. "2x/7") — cannot evaluate numerically
+  const variable = detectVariable(expr);
+  if (variable) {
+    // Try symbolic simplification with nerdamer
+    try {
+      const withMul = insertImplicitMultiplication(expr);
+      const simplified = nerdamer(withMul).toString();
+      return {
+        tool: "calculator",
+        success: true,
+        final: true,
+        data: {
+          expression: expr,
+          result: simplified,
+          text: `The expression **${expr}** simplifies to **${simplified}**.\n\nTo solve for ${variable}, provide an equation like: \`${expr} = <value>\``
+        }
+      };
+    } catch {
+      return {
+        tool: "calculator",
+        success: true,
+        final: true,
+        data: {
+          expression: expr,
+          result: null,
+          text: `The expression **${expr}** contains variable '${variable}' and cannot be evaluated to a number.\n\nTo solve for ${variable}, provide an equation like: \`${expr} = <value>\``
+        }
+      };
+    }
   }
 
   const evaluation = evaluateExpression(expr);

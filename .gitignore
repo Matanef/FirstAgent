@@ -6,4 +6,7 @@ server/Claude
 server/Antigravity
 server/tokens/
 server/data/sessions/
-utils/**
+utils/
+downloads/
+uploads/
+.claude/worktrees

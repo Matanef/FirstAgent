@@ -1,566 +1,309 @@
 
 
 ======================================================================
-FILE: D:/local-llm-ui/server/tools/search.js
+FILE: server/tools/news.js
 ======================================================================
 
-// server/tools/search.js (ENHANCED - Yandex added as 4th source)
+// server/tools/news.js
+// COMPLETE FIX: News with topic extraction and filtering
+
+import Parser from "rss-parser";
 import { safeFetch } from "../utils/fetch.js";
-import { CONFIG } from "../utils/config.js";
-import { loadJSON, saveJSON } from "../memory.js";
-
-const CACHE_FILE = "./search_cache.json";
-const CACHE_TTL = 3600000; // 1 hour
-
-function normalizeQuery(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function calculateSimilarity(str1, str2) {
-  const set1 = new Set(str1.toLowerCase().split(/\s+/));
-  const set2 = new Set(str2.toLowerCase().split(/\s+/));
-  
-  const intersection = new Set([...set1].filter(x => set2.has(x)));
-  const union = new Set([...set1, ...set2]);
-  
-  return intersection.size / union.size;
-}
-
-function deduplicateResults(results) {
-  const seen = new Set();
-  const deduplicated = [];
-
-  for (const result of results) {
-    if (seen.has(result.url)) continue;
-    
-    const isDuplicate = deduplicated.some(existing => {
-      const titleSim = calculateSimilarity(result.title, existing.title);
-      const snippetSim = calculateSimilarity(result.snippet, existing.snippet);
-      return titleSim > 0.8 || snippetSim > 0.9;
-    });
-
-    if (!isDuplicate) {
-      seen.add(result.url);
-      deduplicated.push(result);
-    }
-  }
-
-  return deduplicated;
-}
-
-function scoreRelevance(result, query) {
-  const queryTerms = query.toLowerCase().split(/\s+/);
-  const titleLower = result.title.toLowerCase();
-  const snippetLower = result.snippet.toLowerCase();
-  
-  let score = 0;
-  
-  for (const term of queryTerms) {
-    if (titleLower.includes(term)) score += 3;
-    if (snippetLower.includes(term)) score += 1;
-  }
-  
-  if (titleLower.includes(query.toLowerCase())) score += 10;
-  if (snippetLower.includes(query.toLowerCase())) score += 5;
-  
-  const credibleDomains = [
-    'wikipedia.org', 'britannica.com', 'edu', 'gov',
-    'reuters.com', 'bbc.com', 'cnn.com', 'nytimes.com'
-  ];
-  
-  if (credibleDomains.some(domain => result.url.includes(domain))) {
-    score += 2;
-  }
-  
-  return score;
-}
-
-// Wikipedia summary fetch
-async function fetchWikipedia(query) {
-  try {
-    const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.extract) return [];
-
-    return [
-      {
-        title: data.title || query,
-        snippet: data.extract,
-        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(data.title || query)}`,
-        source: "Wikipedia"
-      }
-    ];
-  } catch (err) {
-    console.warn("Wikipedia fetch failed:", err.message);
-    return [];
-  }
-}
-
-// DuckDuckGo Instant Answer API
-async function fetchDuckDuckGo(query) {
-  try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.RelatedTopics) return [];
-
-    const results = data.RelatedTopics
-      .filter(r => r.Text && r.FirstURL)
-      .slice(0, 5)
-      .map(r => ({
-        title: r.Text.split(" - ")[0] || r.Text,
-        snippet: r.Text,
-        url: r.FirstURL,
-        source: "DuckDuckGo"
-      }));
-    
-    if (data.Abstract && data.AbstractURL) {
-      results.unshift({
-        title: data.Heading || query,
-        snippet: data.Abstract,
-        url: data.AbstractURL,
-        source: "DuckDuckGo"
-      });
-    }
-
-    return results;
-  } catch (err) {
-    console.warn("DuckDuckGo fetch failed:", err.message);
-    return [];
-  }
-}
-
-// Google / SerpAPI search
-async function fetchGoogle(query) {
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured");
-      return [];
-    }
-
-    const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${apiKey}&num=10`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.organic_results) return [];
-
-    return data.organic_results.slice(0, 10).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || "",
-      url: r.link || "",
-      source: "Google"
-    }));
-  } catch (err) {
-    console.warn("Google/SerpAPI fetch failed:", err.message);
-    return [];
-  }
-}
-
-// NEW: Yandex search via SerpAPI
-async function fetchYandex(query) {
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured for Yandex");
-      return [];
-    }
-
-    const url = `https://serpapi.com/search.json?engine=yandex&text=${encodeURIComponent(query)}&api_key=${apiKey}`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.organic_results) return [];
-
-    return data.organic_results.slice(0, 8).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || r.description || "",
-      url: r.link || "",
-      source: "Yandex"
-    }));
-  } catch (err) {
-    console.warn("Yandex/SerpAPI fetch failed:", err.message);
-    return [];
-  }
-}
-
-// Enhanced search with 4 sources including Yandex
-export async function search(query) {
-  console.log("🔎 Search query:", query);
-  
-  const normalizedQuery = normalizeQuery(query);
-
-  // Check cache
-  const cache = loadJSON(CACHE_FILE, {});
-  const cached = cache[normalizedQuery];
-  
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    console.log("📦 Using cached result");
-    return {
-      tool: "search",
-      success: true,
-      final: true,
-      data: cached.data,
-      reasoning: "Retrieved from cache"
-    };
-  }
-
-  // Fetch from FOUR sources in parallel (Wikipedia, DuckDuckGo, Google, Yandex)
-  console.log("🌐 Fetching from 4 sources (Wikipedia, DuckDuckGo, Google, Yandex)...");
-  const [wiki, ddg, google, yandex] = await Promise.all([
-    fetchWikipedia(query),
-    fetchDuckDuckGo(query),
-    fetchGoogle(query),
-    fetchYandex(query)
-  ]);
-
-  console.log(`📊 Results: Wikipedia(${wiki.length}), DuckDuckGo(${ddg.length}), Google(${google.length}), Yandex(${yandex.length})`);
-
-  // Combine and deduplicate
-  let allResults = [...wiki, ...ddg, ...google, ...yandex];
-  allResults = deduplicateResults(allResults);
-
-  // Score and sort by relevance
-  allResults.forEach(result => {
-    result.relevanceScore = scoreRelevance(result, query);
-  });
-
-  allResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
-
-  // Take top results
-  const topResults = allResults.slice(0, 10);
-
-  // Generate summary text
-  const summary = topResults.length > 0
-    ? topResults
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Source: ${r.source} | ${r.url}`)
-        .join("\n\n")
-    : "No reliable results were found for this query from the sources I checked.";
-
-  const data = {
-    results: topResults,
-    text: summary,
-    totalSources: [wiki, ddg, google, yandex].filter(arr => arr.length > 0).length,
-    query: query,
-    normalizedQuery: normalizedQuery
-  };
-
-  // Cache the result
-  cache[normalizedQuery] = {
-    data,
-    timestamp: Date.now()
-  };
-  saveJSON(CACHE_FILE, cache);
-
-  console.log(`✅ Returning ${topResults.length} deduplicated results from ${data.totalSources} sources`);
-
-  return {
-    tool: "search",
-    success: true,
-    final: true,
-    data,
-    reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex), found ${topResults.length} relevant results`
-  };
-}
-
-export function extractTopic(text) {
-  return normalizeQuery(text);
-}
-
-
-
-======================================================================
-FILE: D:/local-llm-ui/server/tools/review.js
-======================================================================
-
-// server/tools/review.js
-// COMPLETE FIX #4, #5: Review tool that actually reads files (no hallucination)
-
-import fs from "fs/promises";
-import path from "path";
 import { llm } from "./llm.js";
 
-const SANDBOX_ROOTS = [
-  path.resolve("D:/local-llm-ui"),
-  path.resolve("E:/testFolder")
-];
+const parser = new Parser();
 
-const MAX_FILE_SIZE = 200 * 1024; // 200KB
+const FEEDS = {
+  ynet: "https://www.ynet.co.il/Integration/StoryRss2.xml",
+  kan: "https://www.kan.org.il/Rss.aspx?pid=News",
+  n12: "https://www.mako.co.il/rss/news-israel.xml",
+  jpost: "https://www.jpost.com/Rss/RssFeedsHeadlines.aspx",
+  toi: "https://www.timesofisrael.com/feed/",
+  bbc: "http://feeds.bbci.co.uk/news/rss.xml",
+  cnn: "http://rss.cnn.com/rss/edition.rss",
+  reuters: "http://feeds.reuters.com/reuters/topNews",
+  aljazeera: "https://www.aljazeera.com/xml/rss/all.xml"
+};
 
-function isPathAllowed(resolvedPath) {
-  return SANDBOX_ROOTS.some(root => resolvedPath.startsWith(root));
-}
-
-// Extract file path from natural language
-function extractFilePath(query) {
-  const lower = query.toLowerCase();
+// FIX #4: Extract topic from user query
+function extractTopic(query) {
+  const text = typeof query === "string" ? query : query?.text || "";
+  const lower = text.toLowerCase();
   
-  // Pattern 1: "review news.js in tools folder"
-  let match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)\s+in\s+(the\s+)?([a-zA-Z0-9_\-\/\s]+)/i);
-  if (match) {
-    const filename = match[1];
-    let folder = match[3].trim();
-    
-    // Clean up folder path
-    folder = folder.replace(/\s+folder\s*$/i, '').replace(/\s+/g, '/');
-    
-    return { filename, folder, fullPath: `${folder}/${filename}` };
+  // Remove common phrases
+  let cleaned = lower
+    .replace(/give me|show me|get|fetch|latest|recent|breaking|top/gi, '')
+    .replace(/news|headlines|articles|stories/gi, '')
+    .replace(/about|regarding|on|for/gi, '')
+    .trim();
+  
+  // Extract specific topic patterns
+  const topicMatch = lower.match(/(?:about|regarding|on|for)\s+([a-z0-9\s]+)$/i);
+  if (topicMatch) {
+    return topicMatch[1].trim();
   }
   
-  // Pattern 2: "review server/tools/news.js"
-  match = query.match(/review\s+([a-zA-Z0-9_\-\.\/\\]+)/i);
-  if (match) {
-    const fullPath = match[1].trim();
-    return { fullPath };
+  // Extract from "X news"
+  const newsMatch = lower.match(/([a-z0-9\s]+)\s+news/i);
+  if (newsMatch) {
+    const topic = newsMatch[1].trim();
+    if (topic.length > 2 && !['the', 'latest', 'breaking', 'top'].includes(topic)) {
+      return topic;
+    }
   }
   
-  // Pattern 3: Just a filename
-  match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)/i);
-  if (match) {
-    return { filename: match[1] };
+  // If we have a meaningful cleaned string
+  if (cleaned.length > 2 && cleaned.split(/\s+/).length <= 4) {
+    return cleaned;
   }
   
   return null;
 }
 
-// Resolve file path with sandbox validation
-async function resolveFilePath(pathInfo) {
-  if (!pathInfo) return null;
+// Filter headlines by topic
+function filterByTopic(items, topic) {
+  if (!topic) return items;
   
-  const sandboxRoot = SANDBOX_ROOTS[0]; // Default to project root
+  const keywords = topic.toLowerCase().split(/\s+/);
   
-  // Try direct path first
-  if (pathInfo.fullPath) {
-    let resolved = path.resolve(sandboxRoot, pathInfo.fullPath);
-    if (isPathAllowed(resolved)) {
+  return items.filter(item => {
+    const searchText = `${item.title} ${item.description || ''}`.toLowerCase();
+    return keywords.some(keyword => searchText.includes(keyword));
+  });
+}
+
+async function scrapeArticle(url) {
+  try {
+    const html = await safeFetch(url, { 
+      method: "GET",
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    if (!html || typeof html !== 'string') return null;
+    
+    let text = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    return text.substring(0, 2000);
+  } catch (err) {
+    console.warn(`Failed to scrape ${url}:`, err.message);
+    return null;
+  }
+}
+
+async function summarizeArticle(title, content) {
+  if (!content) return null;
+  
+  const prompt = `Summarize this news article in 2-3 sentences. Be concise and factual.
+
+Title: ${title}
+
+Content:
+${content}
+
+Summary (2-3 sentences):`;
+
+  try {
+    const result = await llm(prompt);
+    if (result.success && result.data?.text) {
+      return result.data.text.trim();
+    }
+    return null;
+  } catch (err) {
+    console.warn("LLM summarization failed:", err.message);
+    return null;
+  }
+}
+
+export async function news(request) {
+  try {
+    const query = typeof request === "string" ? request : request?.text || "";
+    
+    // FIX #4: Extract topic from query
+    const topic = extractTopic(query);
+    console.log(`📰 News tool - Topic extracted: "${topic || 'general'}"`);
+    
+    const results = [];
+    const allItems = [];
+
+    // Fetch all RSS feeds
+    for (const [name, url] of Object.entries(FEEDS)) {
       try {
-        await fs.access(resolved);
-        return resolved;
-      } catch {
-        // Try without extension
-        resolved = path.resolve(sandboxRoot, pathInfo.fullPath + '.js');
-        if (isPathAllowed(resolved)) {
-          try {
-            await fs.access(resolved);
-            return resolved;
-          } catch {}
+        const feed = await parser.parseURL(url);
+        const items = (feed.items || []).slice(0, 10).map(i => ({
+          title: i.title,
+          link: i.link,
+          date: i.pubDate,
+          description: i.contentSnippet || i.description,
+          source: name
+        }));
+
+        results.push({
+          source: name,
+          items,
+          error: null
+        });
+
+        allItems.push(...items);
+      } catch (err) {
+        results.push({
+          source: name,
+          error: err.message,
+          items: []
+        });
+      }
+    }
+
+    // FIX #4: Filter by topic if specified
+    const filteredItems = topic ? filterByTopic(allItems, topic) : allItems;
+    
+    console.log(`📊 Total items: ${allItems.length}, Filtered: ${filteredItems.length}`);
+
+    // Scrape and summarize top 3 filtered articles
+    const summaries = [];
+    for (let i = 0; i < Math.min(3, filteredItems.length); i++) {
+      const article = filteredItems[i];
+      console.log(`  Scraping: ${article.title}`);
+      
+      const content = await scrapeArticle(article.link);
+      if (content) {
+        const summary = await summarizeArticle(article.title, content);
+        if (summary) {
+          summaries.push({
+            title: article.title,
+            link: article.link,
+            source: article.source,
+            summary
+          });
         }
       }
     }
-  }
-  
-  // Try filename + folder
-  if (pathInfo.filename && pathInfo.folder) {
-    const resolved = path.resolve(sandboxRoot, pathInfo.folder, pathInfo.filename);
-    if (isPathAllowed(resolved)) {
-      try {
-        await fs.access(resolved);
-        return resolved;
-      } catch {}
-    }
-  }
-  
-  // Try just filename (search common locations)
-  if (pathInfo.filename) {
-    const commonPaths = [
-      path.resolve(sandboxRoot, 'server/tools', pathInfo.filename),
-      path.resolve(sandboxRoot, 'server', pathInfo.filename),
-      path.resolve(sandboxRoot, 'client/src', pathInfo.filename),
-      path.resolve(sandboxRoot, pathInfo.filename)
-    ];
-    
-    for (const testPath of commonPaths) {
-      if (isPathAllowed(testPath)) {
-        try {
-          await fs.access(testPath);
-          return testPath;
-        } catch {}
-      }
-    }
-  }
-  
-  return null;
-}
 
-export async function review(query) {
-  try {
-    console.log("🔍 Review tool called with:", query);
-    
-    // Extract file path
-    const pathInfo = extractFilePath(query);
-    if (!pathInfo) {
-      return {
-        tool: "review",
-        success: false,
-        final: true,
-        error: "Could not determine which file to review. Please specify a file path like:\n- 'review news.js in tools folder'\n- 'review server/tools/news.js'\n- 'review news.js'"
-      };
-    }
-    
-    console.log("📂 Extracted path info:", pathInfo);
-    
-    // Resolve to actual file path
-    const resolvedPath = await resolveFilePath(pathInfo);
-    if (!resolvedPath) {
-      return {
-        tool: "review",
-        success: false,
-        final: true,
-        error: `Could not find file: ${pathInfo.filename || pathInfo.fullPath}\n\nSearched in:\n- server/tools/\n- server/\n- client/src/\n- project root\n\nPlease check the file name and path.`
-      };
-    }
-    
-    console.log("✅ Resolved to:", resolvedPath);
-    
-    // Check file size
-    const stat = await fs.stat(resolvedPath);
-    if (stat.size > MAX_FILE_SIZE) {
-      return {
-        tool: "review",
-        success: false,
-        final: true,
-        error: `File too large: ${Math.round(stat.size / 1024)}KB (max 200KB)\n\nPlease review smaller files or request specific sections.`
-      };
-    }
-    
-    // Read file content
-    const content = await fs.readFile(resolvedPath, "utf8");
-    const lines = content.split('\n').length;
-    
-    console.log(`📄 Read file: ${lines} lines, ${content.length} bytes`);
-    
-    // Build LLM review prompt
-    const filename = path.basename(resolvedPath);
-    const relativePath = path.relative("D:/local-llm-ui", resolvedPath);
-    
-    const prompt = `You are a senior software engineer conducting a code review.
-
-FILE: ${relativePath}
-PROJECT CONTEXT: Local LLM UI (Node.js/Express backend + React frontend)
-LINES: ${lines}
-SIZE: ${Math.round(content.length / 1024)}KB
-
-TASK: Provide a structured, professional code review with:
-
-1. **Summary** (2-3 sentences):
-   - What this file does
-   - How it fits into the project architecture
-   - Its role and responsibilities
-
-2. **Key Observations** (3-5 points):
-   - Important design patterns used
-   - Critical functionality
-   - Notable implementation details
-
-3. **Strengths** (2-3 points):
-   - What's done well
-   - Good practices observed
-
-4. **Suggestions for Improvement** (3-5 points):
-   - Specific, actionable improvements
-   - Security considerations
-   - Performance optimizations
-   - Code quality enhancements
-
-FILE CONTENT:
-\`\`\`javascript
-${content}
-\`\`\`
-
-IMPORTANT: 
-- Be specific and reference actual code
-- Provide actionable suggestions
-- Keep professional tone
-- Focus on substance, not style`;
-
-    // Get LLM review
-    console.log("🤖 Calling LLM for review...");
-    const llmResponse = await llm(prompt);
-    
-    if (!llmResponse.success) {
-      throw new Error("LLM review failed: " + (llmResponse.error || "Unknown error"));
-    }
-    
-    const reviewText = llmResponse.data?.text || "Review could not be generated.";
-    
-    console.log("✅ Review generated:", reviewText.slice(0, 100) + "...");
-    
-    // Format response
-    const html = `
-      <div class="review-panel">
-        <div class="review-header">
-          <h3>🔍 Code Review: ${filename}</h3>
-          <p class="review-path">📂 ${relativePath}</p>
-          <p class="review-meta">📏 ${lines} lines • ${Math.round(content.length / 1024)}KB</p>
+    // Build HTML
+    const summaryCards = summaries.map(s => `
+      <div class="news-summary-card">
+        <div class="news-summary-header">
+          <span class="news-source">${s.source.toUpperCase()}</span>
         </div>
-        <div class="review-content">
-          ${reviewText.replace(/\n\n/g, '</p><p>').replace(/^/, '<p>').replace(/$/, '</p>')}
+        <h3 class="news-summary-title">${s.title}</h3>
+        <p class="news-summary-text">${s.summary}</p>
+        <a href="${s.link}" target="_blank" class="news-summary-link">Read full article →</a>
+      </div>
+    `).join('');
+
+    const html = `
+      <div class="news-container">
+        ${topic ? `<div class="news-topic-banner">📰 News about: <strong>${topic}</strong></div>` : ''}
+        
+        ${summaries.length > 0 ? `
+          <div class="news-summaries">
+            <h2>Top Stories</h2>
+            ${summaryCards}
+          </div>
+        ` : ''}
+        
+        <div class="ai-table-wrapper">
+          <h3>${topic ? 'All Related Headlines' : 'All Headlines'}</h3>
+          <table class="ai-table">
+            <thead>
+              <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
+            </thead>
+            <tbody>
+              ${filteredItems.slice(0, 20).map(i => `
+                <tr>
+                  <td>${i.source}</td>
+                  <td><a href="${i.link}" target="_blank">${i.title}</a></td>
+                  <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
         </div>
       </div>
       
       <style>
-        .review-panel {
+        .news-topic-banner {
+          background: var(--accent);
+          color: white;
+          padding: 0.75rem 1rem;
+          border-radius: 6px;
+          margin-bottom: 1rem;
+          font-size: 1.1rem;
+        }
+        .news-container {
+          display: flex;
+          flex-direction: column;
+          gap: 2rem;
+        }
+        .news-summaries {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+        .news-summary-card {
           background: var(--bg-tertiary);
           border: 1px solid var(--border);
           border-radius: 8px;
           padding: 1.5rem;
-          margin: 1rem 0;
         }
-        .review-header h3 {
-          color: var(--accent);
+        .news-summary-header {
           margin-bottom: 0.5rem;
         }
-        .review-path {
-          color: var(--text-secondary);
-          font-family: monospace;
-          font-size: 0.9rem;
-          margin: 0.25rem 0;
+        .news-source {
+          background: var(--accent);
+          color: white;
+          padding: 0.25rem 0.75rem;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          font-weight: 600;
         }
-        .review-meta {
-          color: var(--text-muted);
-          font-size: 0.85rem;
-          margin: 0.25rem 0;
-        }
-        .review-content {
-          margin-top: 1rem;
+        .news-summary-title {
+          margin: 0.5rem 0;
+          font-size: 1.2rem;
           color: var(--text-primary);
-          line-height: 1.6;
         }
-        .review-content p {
-          margin: 0.75rem 0;
+        .news-summary-text {
+          margin: 1rem 0;
+          line-height: 1.6;
+          color: var(--text-secondary);
+        }
+        .news-summary-link {
+          color: var(--accent);
+          text-decoration: none;
+          font-weight: 500;
+        }
+        .news-summary-link:hover {
+          text-decoration: underline;
         }
       </style>
     `;
-    
+
     return {
-      tool: "review",
+      tool: "news",
       success: true,
       final: true,
-      data: {
-        file: filename,
-        path: relativePath,
-        lines,
-        size: content.length,
-        reviewText,
-        html,
-        text: `Code Review: ${filename}\n\n${reviewText}`
+      data: { 
+        results, 
+        summaries,
+        topic,
+        totalItems: allItems.length,
+        filteredItems: filteredItems.length,
+        html
       },
-      reasoning: `Reviewed ${filename} (${lines} lines)`
+      reasoning: `Fetched ${allItems.length} headlines, ${topic ? `filtered to ${filteredItems.length} about "${topic}"` : 'showing all'}, summarized top ${summaries.length} articles`
     };
-    
   } catch (err) {
-    console.error("❌ Review tool error:", err);
     return {
-      tool: "review",
+      tool: "news",
       success: false,
       final: true,
-      error: `Review failed: ${err.message}\n\nPlease check:\n1. File path is correct\n2. File exists and is readable\n3. File is under 200KB`,
-      data: {
-        errorDetails: err.message
-      }
+      error: err.message
     };
   }
 }

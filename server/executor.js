@@ -8,6 +8,7 @@ import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
 import { PROJECT_ROOT } from "./utils/config.js";
 import { getBackgroundNLP } from "./utils/nlpUtils.js";
+import { buildStyleInstructions } from "./utils/styleEngine.js";
 import {
   convertMarkdownTablesToHTML,
   wantsTableFormat,
@@ -129,6 +130,12 @@ async function summarizeWithLLM({
   const profile = memory.profile || {};
   const toneText = getToneDescription(profile || {});
 
+  // Style engine integration
+  let styleText = "";
+  try {
+    styleText = await buildStyleInstructions();
+  } catch { styleText = ""; }
+
   const conversation = memory.conversations?.[conversationId] || [];
   const allMessages = conversation;
 
@@ -174,6 +181,7 @@ ${contextSummary}
 
 Tone instructions:
 ${toneText}
+${styleText ? `\nStyle preferences:\n${styleText}` : ""}
 
 User question:
 ${userQuestion}
@@ -198,6 +206,9 @@ ${tableRequested
       ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
       : "- Use normal paragraph formatting unless different structure is better"
     }
+${['sports', 'news', 'finance', 'financeFundamentals'].includes(tool)
+      ? "- IMPORTANT: Present ALL data rows from the tool result. Do NOT truncate or show only top 4/5 results.\n- Use markdown tables for standings, scores, financial data. Show the FULL table.\n- If data contains 20 teams in standings, show ALL 20 teams."
+      : ""}
 - If no reliable information, say so clearly - do NOT invent facts
 - Do NOT mention tools or internal steps
 - Be aware of full conversation context and reference previous messages if relevant
@@ -321,16 +332,17 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
       const sendResult = await sendConfirmedEmail({ to, subject, body, attachments });
 
       return {
-        tool: "email",
+        tool: "email_confirm",
         input: message,
         output: sendResult,
+        data: sendResult.data || sendResult, // Preserve send result data for finalizeStep
         success: sendResult.success,
         final: true
       };
     } else {
       console.log("❌ No pending email draft found in history.");
       return {
-        tool: "email",
+        tool: "email_confirm",
         input: message,
         output: {
           tool: "email",
@@ -400,7 +412,24 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "packageManager", "email", "scheduler"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow"].includes(tool)) {
+    // For email, split: pass query text + context separately
+    if (tool === "email" && typeof message === "object") {
+      const queryText = message.text || message.input || "";
+      const ctx = message.context || {};
+      toolInput = queryText;
+      // Call email(query, context) with two args
+      console.log(`🔧 Executing tool: ${tool} (with context: ${JSON.stringify(ctx)})`);
+      const result = await TOOLS[tool](toolInput, ctx);
+      return {
+        tool,
+        input: toolInput,
+        output: result,
+        data: result.data,
+        success: result.success,
+        final: result?.final ?? true
+      };
+    }
     toolInput = message;
   } else {
     toolInput = getMessageText(message);
@@ -519,12 +548,35 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
+  // FIX: Email confirmation (send/cancel) - skip LLM summarization (LLM refuses to reproduce draft)
+  if (tool === "email_confirm" || (tool === "email" && result.data?.messageId)) {
+    return {
+      reply: result.data?.message || result.data?.text || result.output?.data?.message || "Email operation completed.",
+      tool,
+      data: result.data || result.output?.data,
+      success: true,
+      final: true
+    };
+  }
+
+  // FIX: Preformatted tool results - skip LLM summarization, return raw text
+  if (result.data?.preformatted && result.data?.text) {
+    return {
+      reply: result.data.text,
+      tool,
+      data: result.data,
+      success: true,
+      final: true
+    };
+  }
+
   // Tools that should be summarized
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "email", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
-    "webDownload", "fileReview", "webBrowser", "moltbook"
+    "webDownload", "fileReview", "webBrowser", "moltbook", "fileWrite",
+    "calendar", "documentQA", "contacts", "workflow"
   ];
 
   if (summarizeTools.includes(tool)) {

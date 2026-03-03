@@ -7,6 +7,7 @@ import { llm } from "./llm.js";
 
 const parser = new Parser();
 
+// ── GENERAL NEWS FEEDS ──
 const FEEDS = {
   ynet: "https://www.ynet.co.il/Integration/StoryRss2.xml",
   kan: "https://www.kan.org.il/Rss.aspx?pid=News",
@@ -18,6 +19,58 @@ const FEEDS = {
   reuters: "http://feeds.reuters.com/reuters/topNews",
   aljazeera: "https://www.aljazeera.com/xml/rss/all.xml"
 };
+
+// ── CATEGORY-SPECIFIC FEEDS ──
+const CATEGORY_FEEDS = {
+  technology: {
+    bbc_tech: "http://feeds.bbci.co.uk/news/technology/rss.xml",
+    // verge: "https://www.theverge.com/rss/index.xml",          // stub
+    // arstechnica: "https://feeds.arstechnica.com/arstechnica",  // stub
+    // hackernews: "https://hnrss.org/frontpage",                 // stub
+  },
+  science: {
+    bbc_science: "http://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+    // nature: "https://www.nature.com/nature.rss",               // stub
+    // newscientist: "https://www.newscientist.com/feed/home",    // stub
+  },
+  business: {
+    bbc_business: "http://feeds.bbci.co.uk/news/business/rss.xml",
+    // bloomberg: "https://feeds.bloomberg.com/markets/news.rss", // stub
+    // cnbc: "https://www.cnbc.com/id/100003114/device/rss/rss.html", // stub
+  },
+  sports: {
+    bbc_sport: "http://feeds.bbci.co.uk/sport/rss.xml",
+    // espn: "https://www.espn.com/espn/rss/news",               // stub
+  },
+  health: {
+    bbc_health: "http://feeds.bbci.co.uk/news/health/rss.xml",
+    // who: "https://www.who.int/feeds/entity/mediacentre/news/en/rss.xml", // stub
+  },
+  entertainment: {
+    bbc_entertainment: "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+    // variety: "https://variety.com/feed/",                      // stub
+  }
+};
+
+/**
+ * Detect if the user is asking for a specific news category
+ */
+function detectCategory(query) {
+  const lower = (query || "").toLowerCase();
+  const categoryMap = {
+    technology: /\b(tech|technology|software|ai|artificial intelligence|programming|cyber|startup)\b/,
+    science: /\b(science|scientific|research|space|physics|biology|climate|environment)\b/,
+    business: /\b(business|economy|economic|market|stock|finance|trade|gdp)\b/,
+    sports: /\b(sport|sports|football|soccer|basketball|tennis|cricket|nba|nfl)\b/,
+    health: /\b(health|medical|medicine|disease|covid|pandemic|hospital|drug)\b/,
+    entertainment: /\b(entertainment|movie|film|music|celebrity|tv|television|show)\b/
+  };
+
+  for (const [category, regex] of Object.entries(categoryMap)) {
+    if (regex.test(lower)) return category;
+  }
+  return null;
+}
 
 // FIX #4: Extract topic from user query
 function extractTopic(query) {
@@ -118,18 +171,30 @@ Summary (2-3 sentences):`;
 export async function news(request) {
   try {
     const query = typeof request === "string" ? request : request?.text || "";
-    
-    // FIX #4: Extract topic from query
+
+    // Extract topic and detect category
     const topic = extractTopic(query);
-    console.log(`📰 News tool - Topic extracted: "${topic || 'general'}"`);
-    
+    const category = detectCategory(query);
+    console.log(`📰 News tool - Topic: "${topic || 'general'}", Category: "${category || 'all'}"`);
+
+    // Build feed list: general + category-specific if detected
+    const feedsToFetch = { ...FEEDS };
+    if (category && CATEGORY_FEEDS[category]) {
+      Object.assign(feedsToFetch, CATEGORY_FEEDS[category]);
+      console.log(`📰 Added ${Object.keys(CATEGORY_FEEDS[category]).length} category feeds for: ${category}`);
+    }
+
     const results = [];
     const allItems = [];
 
-    // Fetch all RSS feeds
-    for (const [name, url] of Object.entries(FEEDS)) {
+    // Fetch all RSS feeds in parallel (with per-feed timeout)
+    const feedEntries = Object.entries(feedsToFetch);
+    const feedPromises = feedEntries.map(async ([name, url]) => {
       try {
-        const feed = await parser.parseURL(url);
+        const feed = await Promise.race([
+          parser.parseURL(url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+        ]);
         const items = (feed.items || []).slice(0, 10).map(i => ({
           title: i.title,
           link: i.link,
@@ -137,21 +202,17 @@ export async function news(request) {
           description: i.contentSnippet || i.description,
           source: name
         }));
-
-        results.push({
-          source: name,
-          items,
-          error: null
-        });
-
-        allItems.push(...items);
+        return { source: name, items, error: null };
       } catch (err) {
-        results.push({
-          source: name,
-          error: err.message,
-          items: []
-        });
+        console.warn(`📰 Feed ${name} failed: ${err.message}`);
+        return { source: name, error: err.message, items: [] };
       }
+    });
+
+    const feedResults = await Promise.all(feedPromises);
+    for (const result of feedResults) {
+      results.push(result);
+      allItems.push(...result.items);
     }
 
     // FIX #4: Filter by topic if specified
@@ -160,24 +221,25 @@ export async function news(request) {
     console.log(`📊 Total items: ${allItems.length}, Filtered: ${filteredItems.length}`);
 
     // Scrape and summarize top 3 filtered articles
+    // Falls back to RSS description if scraping fails
     const summaries = [];
-    for (let i = 0; i < Math.min(3, filteredItems.length); i++) {
-      const article = filteredItems[i];
+    const scrapePromises = filteredItems.slice(0, 3).map(async (article) => {
       console.log(`  Scraping: ${article.title}`);
-      
       const content = await scrapeArticle(article.link);
-      if (content) {
-        const summary = await summarizeArticle(article.title, content);
+      // Use scraped content, or fall back to RSS description
+      const textForSummary = content || article.description || null;
+      if (textForSummary && textForSummary.length > 50) {
+        const summary = await summarizeArticle(article.title, textForSummary);
         if (summary) {
-          summaries.push({
-            title: article.title,
-            link: article.link,
-            source: article.source,
-            summary
-          });
+          return { title: article.title, link: article.link, source: article.source, summary };
         }
       }
-    }
+      // If no content at all, create a minimal summary from the title
+      return { title: article.title, link: article.link, source: article.source, summary: article.description || article.title };
+    });
+
+    const scrapeResults = await Promise.all(scrapePromises);
+    summaries.push(...scrapeResults.filter(Boolean));
 
     // Build HTML
     const summaryCards = summaries.map(s => `
