@@ -82,36 +82,15 @@ router.post("/chat", async (req, res) => {
         });
 
         const elapsed = Date.now() - startTime;
-        const reply = result.reply; // Contains full formatted reply (with tables etc)
+        const reply = result.reply;
         const stateGraph = result.stateGraph;
 
-        // Calculate confidence
+        // Calculate confidence (fast, in-memory)
         const confidence = calculateConfidence(stateGraph);
-        await logTelemetry({
-            tool: result.tool,
-            success: result.success,
-            executionTime: elapsed,
-            conversationId: id
-        });
 
-        // RELOAD MEMORY BEFORE SAVING
-        try { memory = await reloadMemory(); } catch (e) { }
-        memory.conversations[id] ??= [];
-
-        // Save assistant reply
-        memory.conversations[id].push({
-            role: "assistant",
-            content: reply,
-            timestamp: new Date().toISOString(),
-            confidence,
-            tool: result.tool,
-            data: result.data,
-            metadata: { steps: stateGraph.length, reasoning: result.reasoning }
-        });
-
-        await saveJSON(MEMORY_FILE, memory);
-
-        // Final SSE event
+        // ─── SEND DONE EVENT FIRST ───
+        // Send the final SSE event and close the stream BEFORE doing heavy I/O
+        // This unblocks the frontend immediately instead of waiting for 3.6MB memory saves
         res.write(`data: ${JSON.stringify({
             type: 'done',
             reply,
@@ -124,10 +103,40 @@ router.post("/chat", async (req, res) => {
                 steps: stateGraph.length,
                 executionTime: elapsed,
                 reasoning: result.reasoning,
-                messageCount: memory.conversations[id].length
+                messageCount: (memory.conversations[id]?.length || 0) + 1
             }
         })}\n\n`);
         res.end();
+
+        // ─── ASYNC: Heavy I/O after stream closed ───
+        // These run after the user already sees the response
+        try {
+            // Reload memory to avoid stale data conflicts
+            try { memory = await reloadMemory(); } catch (e) { }
+            memory.conversations[id] ??= [];
+
+            // Save assistant reply
+            memory.conversations[id].push({
+                role: "assistant",
+                content: reply,
+                timestamp: new Date().toISOString(),
+                confidence,
+                tool: result.tool,
+                data: result.data,
+                metadata: { steps: stateGraph.length, reasoning: result.reasoning }
+            });
+
+            await saveJSON(MEMORY_FILE, memory);
+
+            await logTelemetry({
+                tool: result.tool,
+                success: result.success,
+                executionTime: elapsed,
+                conversationId: id
+            });
+        } catch (saveErr) {
+            console.error("⚠️ Post-response save error (non-blocking):", saveErr.message);
+        }
 
     } catch (err) {
         console.error("❌ CHAT ERROR:", err);

@@ -145,8 +145,26 @@ function generateImprovementSteps(message, availableTools = []) {
 function isMathExpression(msg) {
   const trimmed = (msg || "").trim();
   if (!/[0-9]/.test(trimmed)) return false;
-  if (/[+\-*/^=()]/.test(trimmed)) return true;
-  return /^\s*[\d\.\,\s()+\-*/^=]+$/.test(trimmed);
+
+  // Reject if the message is clearly natural language (> 60 chars or many words)
+  if (trimmed.length > 80) return false;
+  const wordCount = trimmed.split(/\s+/).length;
+  if (wordCount > 10) return false;
+
+  // Reject if message contains file paths (D:/, C:\, etc.)
+  if (/[a-z]:[\\\/]/i.test(trimmed)) return false;
+
+  // Reject if parentheses contain words (natural language, not math)
+  // e.g., "(about 100 words)" → reject; "(100 + 50)" → accept
+  if (/\([^)]*[a-zA-Z]{2,}[^)]*\)/.test(trimmed)) return false;
+
+  // Only match if the core of the message is mathematical
+  // Must have a math operator adjacent to or between numbers
+  if (/\d\s*[+\-*/^]\s*\d/.test(trimmed)) return true;
+  if (/\d\s*%\s*(of\s+)?\d/.test(trimmed)) return true;
+
+  // Pure numeric expression: "15 * (3 + 2)"
+  return /^\s*[\d\.\,\s()+\-*/^=%]+$/.test(trimmed);
 }
 
 function isSimpleDateTime(msg) {
