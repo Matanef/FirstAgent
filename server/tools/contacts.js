@@ -79,7 +79,9 @@ export async function resolveContact(contactRef) {
 export async function contacts(query) {
     try {
         const memory = await getMemory();
-        const lower = query.toLowerCase();
+        // Handle both string and object input to prevent toLowerCase crash
+        const queryText = typeof query === "string" ? query : (query?.text || query?.input || String(query));
+        const lower = queryText.toLowerCase();
 
         // Ensure contacts exist in profile
         if (!memory.profile) memory.profile = {};
@@ -90,11 +92,11 @@ export async function contacts(query) {
         // ADD CONTACT
         if (lower.includes("add") || lower.includes("save") || lower.includes("remember") && (lower.includes("contact") || lower.includes("name"))) {
             // Parse: "add john smith as a contact, email: john@example.com, phone: +1234567890"
-            const nameMatch = query.match(/(?:add|save|remember)\s+(?:contact\s+)?(?:name[:\s]+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i) ||
-                query.match(/(?:add|save|remember)\s+(?:that\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:to\s+contacts|as\s+a\s+contact)/i);
+            const nameMatch = queryText.match(/(?:add|save|remember)\s+(?:contact\s+)?(?:name[:\s]+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i) ||
+                queryText.match(/(?:add|save|remember)\s+(?:that\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:to\s+contacts|as\s+a\s+contact)/i);
 
-            const emailMatch = query.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
-            const phoneMatch = query.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
+            const emailMatch = queryText.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
+            const phoneMatch = queryText.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
 
             if (nameMatch || emailMatch) {
                 let name = nameMatch ? nameMatch[1].trim() : (emailMatch ? emailMatch[1].split('@')[0] : "Unknown");

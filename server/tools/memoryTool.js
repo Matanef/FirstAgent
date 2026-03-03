@@ -35,27 +35,76 @@ export async function memorytool(request) {
     };
   }
 
-  // --- REMEMBER LOCATION ---
-  if (lower.includes("remember my location is ") || lower.includes("remember that my location is ")) {
-    const match = text.match(/remember(?: that)? my location is (.+)$/i);
-    if (match) {
-      const city = match[1].trim();
-      if (city) {
-        const memory = await getMemory();
-        memory.profile.location = city;
-        await saveJSON(MEMORY_FILE, memory);
-        return {
-          tool: "memorytool",
-          success: true,
-          final: true,
-          data: { message: `I've saved your location as ${city}.` }
-        };
-      }
-    }
+  // --- REMEMBER PROFILE FIELDS ---
+  // Handles: "remember my name is X", "my email is X", "remember my location is London",
+  //          "remember my phone is 050...", "save my tone as friendly"
+  const profileFieldMatch = text.match(/(?:remember(?:\s+that)?|save|set|update|store)?\s*my\s+(name|email|e-mail|location|city|phone|number|tone|whatsapp|address)\s+(?:is|to|as|=)\s+(.+)$/i);
+  if (profileFieldMatch) {
+    let [, rawField, value] = profileFieldMatch;
+    value = value.trim().replace(/[.!]+$/, '');
+    const memory = await getMemory();
+    if (!memory.profile) memory.profile = {};
+
+    // Normalize field name
+    let field = rawField.toLowerCase();
+    if (field === "e-mail") field = "email";
+    if (field === "city") field = "location";
+    if (field === "number" || field === "whatsapp") field = "phone";
+
+    memory.profile[field] = value;
+    await saveJSON(MEMORY_FILE, memory);
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: { message: `I've saved your ${field} as "${value}".` }
+    };
   }
 
-  // FIX #5: PROFILE RETRIEVAL - "what do you remember about me?"
+  // --- UPDATE CONTACT DETAILS ---
+  // "remember mom's phone is 0505576150", "save John's email as john@x.com",
+  // "mom's number is 050...", "update Dad's address to 123 Main St"
+  const contactUpdateMatch = lower.match(/(?:remember|save|update|set|store)?\s*(\w+?)[''\u2019]?s?\s+(phone|email|e-mail|address|number|whatsapp)\s+(?:is|number\s+is|to|as|=)\s+(.+)/i);
+  if (contactUpdateMatch) {
+    const [, contactName, field, value] = contactUpdateMatch;
+    const memory = await getMemory();
+    if (!memory.profile) memory.profile = {};
+    if (!memory.profile.contacts) memory.profile.contacts = {};
+
+    // Find existing contact by fuzzy match
+    const contactKey = Object.keys(memory.profile.contacts).find(
+      k => k.toLowerCase() === contactName.toLowerCase() ||
+           memory.profile.contacts[k]?.name?.toLowerCase() === contactName.toLowerCase()
+    );
+
+    const fieldName = (field === "number" || field === "whatsapp") ? "phone" : (field === "e-mail" ? "email" : field);
+    const cleanValue = value.trim().replace(/[.!]+$/, '');
+
+    if (contactKey) {
+      memory.profile.contacts[contactKey][fieldName] = cleanValue;
+    } else {
+      // Create new contact entry
+      const key = contactName.toLowerCase();
+      memory.profile.contacts[key] = {
+        name: contactName.charAt(0).toUpperCase() + contactName.slice(1),
+        [fieldName]: cleanValue,
+        aliases: [],
+        dateAdded: new Date().toISOString()
+      };
+    }
+
+    await saveJSON(MEMORY_FILE, memory);
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: { message: `✅ Saved ${contactKey || contactName}'s ${fieldName}: ${cleanValue}` }
+    };
+  }
+
+  // PROFILE RETRIEVAL - "what do you remember about me?", "who am i?"
   if (
+    lower.includes("who am i") ||
     lower.includes("what do you remember") ||
     lower.includes("what do you know about me") ||
     lower.includes("tell me about myself") ||
@@ -84,6 +133,8 @@ export async function memorytool(request) {
     if (profile.name) summary += `• **Name:** ${profile.name}\n`;
     if (profile.location) summary += `• **Location:** ${profile.location}\n`;
     if (profile.email) summary += `• **Email:** ${profile.email}\n`;
+    if (profile.phone) summary += `• **Phone:** ${profile.phone}\n`;
+    if (profile.address) summary += `• **Address:** ${profile.address}\n`;
     if (profile.tone) summary += `• **Preferred tone:** ${profile.tone}\n`;
 
     // Include contacts if any
@@ -147,10 +198,59 @@ I can remember:
     };
   }
 
+  // --- CONTACT LOOKUP: "what's mom's phone?", "John's email?" ---
+  const contactLookupMatch = lower.match(/(?:what(?:'s| is))?\s*(\w+?)[''\u2019]?s?\s+(phone|email|address|number|contact)/i);
+  if (contactLookupMatch) {
+    const [, contactName, queryField] = contactLookupMatch;
+    const memory = await getMemory();
+    const contacts = memory.profile?.contacts || {};
+    const contactKey = Object.keys(contacts).find(
+      k => k.toLowerCase() === contactName.toLowerCase() ||
+           contacts[k]?.name?.toLowerCase() === contactName.toLowerCase()
+    );
+    if (contactKey) {
+      const contact = contacts[contactKey];
+      const lookupField = (queryField === "number") ? "phone" : queryField;
+      const val = lookupField === "contact" ? JSON.stringify(contact) : (contact[lookupField] || "not saved");
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `${contact.name || contactKey}'s ${lookupField}: ${val}` }
+      };
+    }
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: { message: `I don't have a contact named "${contactName}" saved.` }
+    };
+  }
+
+  // --- GENERIC "REMEMBER THAT ..." ---
+  // Save arbitrary facts to durable memory
+  const genericRemember = text.match(/(?:remember|save|note|store)\s+(?:that\s+)?(.{5,})$/i);
+  if (genericRemember) {
+    const fact = genericRemember[1].trim().replace(/[.!]+$/, '');
+    const memory = await getMemory();
+    if (!memory.durable) memory.durable = [];
+    memory.durable.push({
+      fact,
+      savedAt: new Date().toISOString()
+    });
+    await saveJSON(MEMORY_FILE, memory);
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: { message: `I'll remember: "${fact}"` }
+    };
+  }
+
   return {
     tool: "memorytool",
     success: false,
     final: true,
-    error: "Memory request not understood.\n\nTry:\n• 'what do you remember about me?'\n• 'remember my location is Paris'\n• 'forget my location'"
+    error: "Memory request not understood.\n\nTry:\n• 'what do you remember about me?'\n• 'remember my name is John'\n• 'remember my location is Paris'\n• 'forget my location'"
   };
 }

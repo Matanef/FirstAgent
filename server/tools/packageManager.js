@@ -114,7 +114,37 @@ async function listPackages() {
  */
 export async function packageManager(request) {
   try {
-    const { action, package: packageName, flags = "" } = request;
+    let action, packageName, flags = "";
+
+    if (typeof request === "string") {
+      // Parse natural language: "install express", "uninstall lodash", "list packages"
+      const lower = request.toLowerCase();
+      if (/\binstall\b/.test(lower)) action = "install";
+      else if (/\buninstall|remove\b/.test(lower)) action = "uninstall";
+      else if (/\bupdate\b/.test(lower)) action = "update";
+      else action = "list";
+      const pkgMatch = request.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
+      if (pkgMatch) packageName = pkgMatch[1];
+    } else {
+      // Object input from planner context
+      const text = request?.text || "";
+      action = request?.context?.action || request?.action;
+      packageName = request?.context?.package || request?.package;
+      flags = request?.context?.flags || request?.flags || "";
+
+      // If no action from context, try parsing the text
+      if (!action && text) {
+        const lower = text.toLowerCase();
+        if (/\binstall\b/.test(lower)) action = "install";
+        else if (/\buninstall|remove\b/.test(lower)) action = "uninstall";
+        else if (/\bupdate\b/.test(lower)) action = "update";
+        else action = "list";
+        if (!packageName) {
+          const pkgMatch = text.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
+          if (pkgMatch) packageName = pkgMatch[1];
+        }
+      }
+    }
 
     if (!action) {
       return {

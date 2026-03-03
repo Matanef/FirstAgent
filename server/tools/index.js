@@ -28,6 +28,7 @@ import { fileReview } from "./fileReview.js";
 import { duplicateScanner } from "./duplicateScanner.js";
 import { webBrowser } from "./webBrowser.js";
 import { moltbook } from "./moltbook.js";
+import { scheduler } from "./scheduler.js";
 
 export const TOOLS = {
   calculator,
@@ -56,7 +57,8 @@ export const TOOLS = {
   fileReview,
   duplicateScanner,
   webBrowser,
-  moltbook
+  moltbook,
+  scheduler
 };
 
 // Validate all tools are functions at startup

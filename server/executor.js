@@ -59,8 +59,13 @@ PREVIOUS STEPS IN THIS SEQUENCE:
 ${stateGraph && stateGraph.length > 0 ? JSON.stringify(stateGraph, null, 2) : "none"}
 `;
 
+  // Resolve user's actual name (not GitHub username)
+  const userName = profile?.self?.name || profile?.name || "User";
+
   return `${awarenessContext}
 ${CONTEXT_ENRICHMENT}
+
+The user's name is ${userName}. Always address them as ${userName}.
 
 User profile (long-term memory):
 ${JSON.stringify(profile || {}, null, 2)}
@@ -196,6 +201,8 @@ ${tableRequested
 - If no reliable information, say so clearly - do NOT invent facts
 - Do NOT mention tools or internal steps
 - Be aware of full conversation context and reference previous messages if relevant
+${(tool === "finance" || tool === "financeFundamentals") ? "- CRITICAL: If the tool data shows no price/financial data or an error, say the data is unavailable. NEVER invent or guess stock prices, percentages, or financial figures." : ""}
+${(tool === "sports") ? "- CRITICAL: If the tool data shows an error or no results, say the data is unavailable. NEVER invent match scores, dates, or standings." : ""}
 
 Generate the response:
 `;
@@ -393,7 +400,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "packageManager", "email", "scheduler"].includes(tool)) {
     toolInput = message;
   } else {
     toolInput = getMessageText(message);
@@ -455,6 +462,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
         final: true
       };
     }
+  }
+
+  // SPECIAL CASE: preformatted results — skip LLM summarization
+  if (result.data?.preformatted && result.data?.text) {
+    return {
+      reply: result.data.text,
+      tool,
+      data: result.data,
+      success: true,
+      final: true
+    };
   }
 
   // SPECIAL CASE: memorytool, selfImprovement, applyPatch - No LLM summarization

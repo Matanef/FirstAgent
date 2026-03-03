@@ -151,6 +151,52 @@ export async function github(request) {
       };
     }
 
+    // List commits
+    if (/\bcommit/i.test(lower)) {
+      // Extract repo name from query
+      const repoMatch = lower.match(/(?:in|for|from|of)\s+(?:repo\s+)?([a-z0-9_\-]+(?:\/[a-z0-9_\-]+)?)/i);
+      let owner, repo;
+
+      if (repoMatch) {
+        const parts = repoMatch[1].split('/');
+        if (parts.length === 2) {
+          [owner, repo] = parts;
+        } else {
+          repo = parts[0];
+          owner = (await octokit.users.getAuthenticated()).data.login;
+        }
+      } else {
+        // Default to first repo
+        const { data: repos } = await octokit.repos.listForAuthenticatedUser({ sort: 'updated', per_page: 1 });
+        if (repos.length > 0) {
+          owner = repos[0].owner.login;
+          repo = repos[0].name;
+        }
+      }
+
+      if (owner && repo) {
+        const { data } = await octokit.repos.listCommits({ owner, repo, per_page: 15 });
+
+        const commits = data.map(c => ({
+          sha: c.sha.substring(0, 7),
+          message: c.commit.message.split('\n')[0],
+          author: c.commit.author.name,
+          date: c.commit.author.date,
+          url: c.html_url
+        }));
+
+        const text = `**Recent commits** (${owner}/${repo}):\n\n` +
+          commits.map(c => `\`${c.sha}\` ${c.message} — *${c.author}* (${new Date(c.date).toLocaleDateString()})`).join('\n');
+
+        return {
+          tool: 'github',
+          success: true,
+          final: true,
+          data: { commits, repo: `${owner}/${repo}`, preformatted: true, text }
+        };
+      }
+    }
+
     // List issues
     if (/list.*issue/i.test(lower) || /my.*issue/i.test(lower)) {
       const { data } = await octokit.issues.listForAuthenticatedUser({ filter: 'all', state: 'open', sort: 'updated', per_page: 20 });
