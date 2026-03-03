@@ -1,0 +1,13 @@
+[
+  {
+    "id": "sched_1772555249222",
+    "task": "Generate aperformance report",
+    "type": "interval",
+    "intervalMs": 604800000,
+    "description": "weekly",
+    "status": "active",
+    "createdAt": "2026-03-03T16:27:29.222Z",
+    "lastRun": null,
+    "runCount": 0
+  }
+]
