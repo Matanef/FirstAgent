@@ -210,20 +210,63 @@ function mergeFundamentals(symbol, sources) {
 }
 
 /**
- * Normalize ticker symbols from user input.
+ * Company name → ticker symbol mapping
+ */
+const COMPANY_TO_TICKER = {
+  tesla: "TSLA", apple: "AAPL", google: "GOOGL", alphabet: "GOOGL",
+  amazon: "AMZN", microsoft: "MSFT", meta: "META", nvidia: "NVDA",
+  amd: "AMD", intel: "INTC", netflix: "NFLX", disney: "DIS",
+  boeing: "BA", ford: "F", paypal: "PYPL", uber: "UBER",
+  spotify: "SPOT", shopify: "SHOP"
+};
+
+const TICKER_STOPWORDS = new Set([
+  "I", "A", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF", "IN",
+  "IS", "IT", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "WE",
+  "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HAD",
+  "HER", "WAS", "ONE", "OUR", "OUT", "HOW", "HAS", "ITS", "HIS", "HIM",
+  "GET", "GOT", "LET", "MAY", "NEW", "NOW", "OLD", "SEE", "WAY", "WHO",
+  "DID", "SAY", "SHE", "TWO", "USE", "SHOW", "TELL", "WHAT", "WHEN",
+  "WELL", "ALSO", "BACK", "BEEN", "COME", "EACH", "FIND", "FROM",
+  "GIVE", "HAVE", "HERE", "HIGH", "JUST", "KNOW", "LAST", "LIKE",
+  "LONG", "LOOK", "MAKE", "MANY", "MUCH", "MUST", "NAME", "OVER",
+  "PART", "SOME", "TAKE", "THAN", "THAT", "THEM", "THEN", "THIS",
+  "TIME", "VERY", "WILL", "WITH", "WORK", "YEAR", "YOUR", "DOES",
+  "DONE", "GOOD", "BEST", "REAL", "FREE", "HELP", "KEEP", "ME"
+]);
+
+/**
+ * Normalize ticker symbols from user input — supports company names.
  */
 function extractTickers(message) {
   const tickers = new Set();
 
+  // Parenthesized tickers: (TSLA)
   const parenMatches = message.match(/\(([A-Z]{1,5})\)/g) || [];
   for (const m of parenMatches) {
     const t = m.replace(/[()]/g, "");
-    tickers.add(t);
+    if (!TICKER_STOPWORDS.has(t)) tickers.add(t);
   }
 
+  // Uppercase word tickers (filtered)
   const wordMatches = message.match(/\b[A-Z]{1,5}\b/g) || [];
   for (const w of wordMatches) {
-    tickers.add(w);
+    if (!TICKER_STOPWORDS.has(w)) tickers.add(w);
+  }
+
+  // Company name resolution
+  const lower = message.toLowerCase();
+  for (const [name, ticker] of Object.entries(COMPANY_TO_TICKER)) {
+    if (new RegExp(`\\b${name}\\b`, "i").test(lower)) {
+      tickers.add(ticker);
+    }
+  }
+
+  // S&P 500 special handling
+  if (/s\s*&\s*p\s*500|s&p/i.test(lower)) {
+    tickers.add("SPY");
+    tickers.delete("S");
+    tickers.delete("P");
   }
 
   return [...tickers];

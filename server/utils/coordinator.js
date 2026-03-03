@@ -199,7 +199,18 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
         // GEOLOCATION for weather
         if (step.tool === "weather" && step.context?.city === "__USE_GEOLOCATION__") {
-            const city = await resolveCityFromIp(clientIp);
+            let city = await resolveCityFromIp(clientIp);
+            // Fallback for localhost: use saved location from memory
+            if (!city && (clientIp === "127.0.0.1" || clientIp === "::1" || clientIp === "::ffff:127.0.0.1")) {
+                try {
+                    const { getMemory } = await import("../memory.js");
+                    const memory = await getMemory();
+                    city = memory.profile?.location || memory.profile?.city || null;
+                    if (city) console.log(`📍 Localhost detected, using saved location: ${city}`);
+                } catch (e) {
+                    console.warn("[coordinator] Could not read memory for location fallback:", e.message);
+                }
+            }
             if (city) {
                 step.context.city = city;
                 console.log(`📍 Resolved geolocation: ${city}`);

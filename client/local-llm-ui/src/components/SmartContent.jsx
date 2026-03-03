@@ -38,7 +38,14 @@ export default function SmartContent({ message, conversationId }) {
             return <FileReviewPanel content={message.content} data={message.data} />;
 
         case "youtube":
-            return <YouTubeVideoGrid videos={message.data.videos} />;
+            return (
+                <>
+                    <YouTubeVideoGrid videos={message.data.videos} />
+                    {message.content && (
+                        <div className="message-note">{message.content}</div>
+                    )}
+                </>
+            );
 
         case "code":
             const codeMatch = (message.content || "").match(/```(\w+)?\n([\s\S]*?)```/);
@@ -47,10 +54,15 @@ export default function SmartContent({ message, conversationId }) {
             }
             if (message.tool === "calculator" && message.data?.expression) {
                 return (
-                    <div className="calc-result">
-                        <div className="calc-expression">{message.data.expression}</div>
-                        <div className="calc-answer">= {message.data.result}</div>
-                    </div>
+                    <>
+                        <div className="calc-result">
+                            <div className="calc-expression">{message.data.expression}</div>
+                            <div className="calc-answer">= {message.data.result}</div>
+                        </div>
+                        {message.content && !message.content.includes("```") && (
+                            <div className="message-note">{message.content}</div>
+                        )}
+                    </>
                 );
             }
             return <div className="message-text">{message.content}</div>;
@@ -69,7 +81,7 @@ export default function SmartContent({ message, conversationId }) {
             return (
                 <>
                     <WeatherWidget data={message.data} />
-                    {message.content && !message.content.toLowerCase().includes("weather") && (
+                    {message.content && (
                         <div className="message-note">{message.content}</div>
                     )}
                 </>

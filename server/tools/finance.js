@@ -3,11 +3,68 @@ import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 
 /**
- * Extract uppercase tickers (1–5 letters)
+ * Company name → ticker symbol mapping
+ */
+const COMPANY_TO_TICKER = {
+  tesla: "TSLA", apple: "AAPL", google: "GOOGL", alphabet: "GOOGL",
+  amazon: "AMZN", microsoft: "MSFT", meta: "META", nvidia: "NVDA",
+  amd: "AMD", intel: "INTC", netflix: "NFLX", disney: "DIS",
+  boeing: "BA", ford: "F", paypal: "PYPL", uber: "UBER",
+  spotify: "SPOT", shopify: "SHOP", twitter: "X", snap: "SNAP",
+  coinbase: "COIN", palantir: "PLTR", rivian: "RIVN", lucid: "LCID"
+};
+
+/**
+ * Common English stopwords to filter out from uppercase matches
+ */
+const TICKER_STOPWORDS = new Set([
+  "I", "A", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF", "IN",
+  "IS", "IT", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "WE",
+  "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HAD",
+  "HER", "WAS", "ONE", "OUR", "OUT", "HOW", "HAS", "ITS", "HIS", "HIM",
+  "GET", "GOT", "LET", "MAY", "NEW", "NOW", "OLD", "SEE", "WAY", "WHO",
+  "DID", "SAY", "SHE", "TWO", "USE", "HEY", "SHOW", "TELL", "WHAT",
+  "WHEN", "WELL", "ALSO", "BACK", "BEEN", "COME", "EACH", "FIND",
+  "FROM", "GIVE", "HAVE", "HERE", "HIGH", "JUST", "KNOW", "LAST",
+  "LIKE", "LONG", "LOOK", "MAKE", "MANY", "MUCH", "MUST", "NAME",
+  "OVER", "PART", "SOME", "TAKE", "THAN", "THAT", "THEM", "THEN",
+  "THIS", "TIME", "VERY", "WILL", "WITH", "WORK", "YEAR", "YOUR",
+  "DOES", "DONE", "GOOD", "BEST", "REAL", "FREE", "HELP", "KEEP"
+]);
+
+/**
+ * Extract tickers from text — supports both direct symbols and company names
  */
 function extractTickers(text) {
-  const matches = text.match(/\b[A-Z]{1,5}\b/g);
-  return matches || [];
+  const tickers = [];
+
+  // 1. Direct ticker symbols (uppercase 1-5 letters, filtered)
+  const directMatches = text.match(/\b[A-Z]{1,5}\b/g) || [];
+  for (const m of directMatches) {
+    if (!TICKER_STOPWORDS.has(m) && !tickers.includes(m)) {
+      tickers.push(m);
+    }
+  }
+
+  // 2. Company name → ticker resolution
+  const lower = text.toLowerCase();
+  for (const [name, ticker] of Object.entries(COMPANY_TO_TICKER)) {
+    if (new RegExp(`\\b${name}\\b`, "i").test(lower) && !tickers.includes(ticker)) {
+      tickers.push(ticker);
+    }
+  }
+
+  // 3. S&P 500 special handling (avoid splitting "S" and "P")
+  if (/s\s*&\s*p\s*500|s&p/i.test(lower) && !tickers.includes("SPY")) {
+    tickers.push("SPY");
+    // Remove any erroneous "S" or "P" entries that came from splitting "S&P"
+    const sIdx = tickers.indexOf("S");
+    if (sIdx !== -1) tickers.splice(sIdx, 1);
+    const pIdx = tickers.indexOf("P");
+    if (pIdx !== -1) tickers.splice(pIdx, 1);
+  }
+
+  return tickers;
 }
 
 /**

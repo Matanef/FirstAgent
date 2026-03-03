@@ -102,6 +102,22 @@ async function browseEmails(query, options = {}) {
     const auth = await getAuthorizedClient();
     const gmail = google.gmail({ version: "v1", auth });
 
+    const lower = queryText.toLowerCase();
+    let q = "";
+
+    if (/\bunread\b/.test(lower)) q = "is:unread";
+    else if (/\bsent\b/.test(lower)) q = "in:sent";
+    else if (/\bstarred?\b/.test(lower)) q = "is:starred";
+    else if (/\bimportant\b/.test(lower)) q = "is:important";
+    else q = "in:inbox";
+
+    // Extract search terms (e.g., "emails about invoices")
+    const aboutMatch = lower.match(/(?:about|regarding|from|subject)\s+(.+?)(?:\s+in\s+|\s+from\s+|$)/i);
+    if (aboutMatch) q += ` ${aboutMatch[1].trim()}`;
+
+    const res = await gmail.users.messages.list({ userId: "me", q, maxResults: 10 });
+
+    if (!res.data.messages || res.data.messages.length === 0) {
     const maxResults = options.maxResults || 20;
     const q = options.searchQuery || buildSearchQuery(query);
 
@@ -120,6 +136,35 @@ async function browseEmails(query, options = {}) {
         tool: "email",
         success: true,
         final: true,
+        data: { message: "No emails found matching your criteria.", emails: [], preformatted: true, text: "No emails found matching your criteria." }
+      };
+    }
+
+    const emails = [];
+    for (const msg of res.data.messages.slice(0, 10)) {
+      const detail = await gmail.users.messages.get({
+        userId: "me", id: msg.id, format: "metadata",
+        metadataHeaders: ["From", "To", "Subject", "Date"]
+      });
+      const headers = detail.data.payload?.headers || [];
+      const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || "";
+
+      emails.push({
+        id: msg.id,
+        from: getHeader("From"),
+        to: getHeader("To"),
+        subject: getHeader("Subject") || "(no subject)",
+        date: getHeader("Date"),
+        snippet: detail.data.snippet || "",
+        unread: (detail.data.labelIds || []).includes("UNREAD")
+      });
+    }
+
+    const summary = emails.map((e, i) =>
+      `${i + 1}. ${e.unread ? "[UNREAD] " : ""}**${e.subject}**\n   From: ${e.from}\n   ${e.date}\n   ${e.snippet.substring(0, 80)}...`
+    ).join("\n\n");
+
+    const text = `**Your emails** (${emails.length} results):\n\n${summary}`;
         data: {
           mode: "browse",
           text: `📧 No emails found matching "${q}".`,
@@ -344,6 +389,15 @@ async function downloadEmailAttachment(messageId, attachmentId, filename) {
       tool: "email",
       success: true,
       final: true,
+      data: { emails, message: text, preformatted: true, text }
+    };
+  } catch (err) {
+    console.error("[email] Browse error:", err);
+    return { tool: "email", success: false, final: true, error: `Failed to browse emails: ${err.message}` };
+  }
+}
+
+export async function email(query) {
       data: {
         mode: "download",
         text: `📎 Downloaded **${filename}** (${(data.length / 1024).toFixed(1)} KB) to ${filePath}`,
@@ -463,7 +517,28 @@ function inferEmailAction(query) {
 
 async function sendEmailDraft(query) {
   try {
-    const { to, subject, body, requestedAttachments } = await parseEmailRequest(query);
+    // Handle both string and object input
+    const queryText = typeof query === "string" ? query : (query?.text || query?.input || "");
+    const context = (typeof query === "object") ? (query?.context || {}) : {};
+    const action = context.action || "";
+
+    // BROWSE/READ emails
+    if (action === "browse" || /\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(queryText.toLowerCase())) {
+      return await browseEmails(queryText);
+    }
+
+    // DELETE emails (not supported yet)
+    if (action === "delete") {
+      return {
+        tool: "email",
+        success: false,
+        final: true,
+        error: "Email deletion is not currently supported. The Gmail API requires additional permissions (gmail.modify scope) for this operation."
+      };
+    }
+
+    // COMPOSE email (original behavior)
+    const { to, subject, body, requestedAttachments } = await parseEmailRequest(queryText);
 
     if (!to) {
       return {

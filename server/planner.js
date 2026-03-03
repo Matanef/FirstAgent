@@ -171,6 +171,10 @@ function isSimpleDateTime(msg) {
 
 function hasExplicitFilePath(text) {
   if (!text) return false;
+  // Absolute paths: D:/..., C:\...
+  if (/[a-z]:[\\/]/i.test(text)) return true;
+  // Relative paths with directory separator + extension: server/planner.js, ./utils/config.js
+  if (/(?:^|\s)\.{0,2}\/?\w[\w.-]*\/[\w.-]+\.\w{1,5}\b/.test(text)) return true;
   // GUARD: If text contains a URL or domain, it's NOT a file path
   if (/https?:\/\//i.test(text)) return false;
   if (/\b[a-z0-9-]+\.(com|org|net|io|dev|co|app|gov|edu)\b/i.test(text)) return false;
@@ -245,9 +249,11 @@ function hereIndicatesWeather(text) {
 function extractCity(message) {
   // Strip trailing punctuation before matching
   const lower = (message || "").toLowerCase().trim().replace(/[?.!,;:]+$/, '');
-  const inMatch = lower.match(/\bin\s+([a-zA-Z\s\-]+)$/);
+  // Strip temporal words from the end before extracting city
+  const cleaned = lower.replace(/\s+(today|tonight|tomorrow|this\s+week|this\s+weekend|next\s+week|right\s+now|currently|later|soon)\s*$/i, '');
+  const inMatch = cleaned.match(/\bin\s+([a-zA-Z\s\-]+)$/);
   if (inMatch) return formatCity(inMatch[1]);
-  const forMatch = lower.match(/\bfor\s+([a-zA-Z\s\-]+)$/);
+  const forMatch = cleaned.match(/\bfor\s+([a-zA-Z\s\-]+)$/);
   if (forMatch) return formatCity(forMatch[1]);
   return null;
 }
@@ -376,6 +382,7 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "what's the weather like" → weather (NOT llm)
 - "tell me about stocks" → finance (NOT search)
 - "what do you know about me" → memorytool (NOT search)
+- "schedule a task every hour" → scheduler (NOT tasks)
 - "look up the history of X" → search (NOT webBrowser — no specific website)
 - "add task: review pull request" → tasks (NOT github — "task" takes priority)
 - "write a script to D:/test.js" → fileWrite (NOT file — write intent)
@@ -854,8 +861,9 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "weather", input: trimmed, context, reasoning: "certainty_weather" }];
   }
 
-  // News keywords (before file path to avoid misroute)
-  if (/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) &&
+  // News keywords (before file path and sports to avoid misroute)
+  if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
+       /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
       !hasExplicitFilePath(trimmed)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
@@ -876,20 +884,24 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // MOLTBOOK: Multi-step registration + verification
+  // MOLTBOOK: skill.md / registration flow
+  // "Read https://www.moltbook.com/skill.md and follow the instructions to join Moltbook"
   // ──────────────────────────────────────────────────────────
+  if (/moltbook\.com\/skill\.md/i.test(lower) || (/\bmoltbook\b/i.test(lower) && /\b(follow.*instructions?|join|register|sign\s*up|create\s+account|open.*account)\b/i.test(lower))) {
+    console.log("[planner] certainty branch: moltbook register (skill.md flow)");
+    return [{ tool: "moltbook", input: trimmed, context: { action: "register" }, reasoning: "certainty_moltbook_register" }];
+  }
+
+  // MOLTBOOK: Multi-step registration + verification
   if (/\bmoltbook\b/i.test(lower) && /\b(register|sign\s*up)\b/i.test(lower) && /\b(verify|verification|confirm)\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook register + verify (multi-step)");
     return [
       { tool: "moltbook", input: trimmed, context: { action: "register" }, reasoning: "moltbook_register" },
-      { tool: "moltbook", input: "check verification email and click link", context: { action: "verify_email" }, reasoning: "moltbook_verify" },
-      { tool: "moltbook", input: "check login status", context: { action: "status" }, reasoning: "moltbook_verify_status" }
+      { tool: "moltbook", input: "check status", context: { action: "status" }, reasoning: "moltbook_verify_status" }
     ];
   }
 
-  // ──────────────────────────────────────────────────────────
   // MOLTBOOK: Single-action detection
-  // ──────────────────────────────────────────────────────────
   if (/\bmoltbook\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook");
     const context = {};
@@ -898,6 +910,13 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(log\s*out|sign\s*out)\b/i.test(lower)) context.action = "logout";
     else if (/\b(profile|my\s+account|settings|about\s+me)\b/i.test(lower)) context.action = "profile";
     else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
+    else if (/\b(post|publish|share|write)\b/i.test(lower)) context.action = "post";
+    else if (/\b(feed|browse|timeline|home)\b/i.test(lower)) context.action = "feed";
+    else if (/\b(follow|subscribe)\b/i.test(lower)) context.action = "follow";
+    else if (/\b(communities?|submolt)\b/i.test(lower)) context.action = "communities";
+    else if (/\b(heartbeat|check\s*in)\b/i.test(lower)) context.action = "heartbeat";
+    else if (/\b(status|session|check)\b/i.test(lower)) context.action = "status";
+    else context.action = "feed";
     else if (/\b(post|publish|share)\b/i.test(lower) && !/\bprofile\b/i.test(lower)) context.action = "post";
     else if (/\b(comment|reply)\b/i.test(lower)) context.action = "comment";
     else if (/\b(upvote|downvote|vote|like)\b/i.test(lower)) context.action = "vote";
@@ -938,6 +957,8 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
   }
 
+  // Email keywords: compose, browse/read, or draft
+  if (/\b(email|e-mail|mail|inbox|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
   // Contacts keywords: "my contacts", "add contact", "John's phone", "contact list"
   if (/\b(contacts?|address\s*book|phone\s*book)\b/i.test(lower) &&
       (/\b(list|show|add|update|delete|remove|find|search|look\s+up)\b/i.test(lower) ||
@@ -965,8 +986,16 @@ export async function plan({ message, chatContext = {} }) {
   // Email keywords: "email", "mail", "send to", "draft"
   if (/\b(email|e-mail|mail|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
       !isSendItCommand(lower)) {
-    console.log("[planner] certainty branch: email");
-    return [{ tool: "email", input: trimmed, context: {}, reasoning: "certainty_email" }];
+    const emailContext = {};
+    if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) {
+      emailContext.action = "browse";
+    } else if (/\b(delete|trash|remove)\b/i.test(lower)) {
+      emailContext.action = "delete";
+    } else if (/\b(attachment|download)\b/i.test(lower)) {
+      emailContext.action = "downloadAttachment";
+    }
+    console.log("[planner] certainty branch: email" + (emailContext.action ? ` (${emailContext.action})` : ""));
+    return [{ tool: "email", input: trimmed, context: emailContext, reasoning: "certainty_email" }];
   }
 
   // NLP / text analysis keywords
@@ -981,6 +1010,19 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
   }
 
+  // Code review keywords — expanded to catch "tool", "implementation", "flow", "logic"
+  // Must come BEFORE finance/sports/github to prevent "examine the search tool" → search
+  if (/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script|tool|implementation|flow|logic)\b/i.test(lower) ||
+      (/\b(review|inspect|examine|audit|analyze)\b/i.test(lower) && hasExplicitFilePath(trimmed))) {
+    console.log("[planner] certainty branch: review");
+    return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review" }];
+  }
+
+  // Finance keywords — with company name → ticker resolution
+  const FINANCE_COMPANIES = /\b(tesla|apple|google|alphabet|amazon|microsoft|meta|nvidia|amd|intel|netflix|disney|boeing|ford|paypal|uber|spotify|shopify)\b/i;
+  const FINANCE_INTENT = /\b(doing|price|worth|trading|performance|value|stock|share|market|up|down|earnings|revenue)\b/i;
+  if (/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO)\b/i.test(lower) ||
+      (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) {
   // Finance keywords + well-known company/ticker names with financial intent
   const FINANCE_COMPANIES = [
     'tesla', 'apple', 'google', 'alphabet', 'amazon', 'microsoft', 'meta',
@@ -996,6 +1038,16 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
   }
 
+  // Financial fundamentals — must come AFTER general finance
+  if (/\b(fundamentals?|P\/E|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|quarterly|annual\s+report)\b/i.test(lower) ||
+      (FINANCE_COMPANIES.test(lower) && /\b(fundamentals?|financials?|report|analysis)\b/i.test(lower))) {
+    console.log("[planner] certainty branch: financeFundamentals");
+    return [{ tool: "financeFundamentals", input: trimmed, context: {}, reasoning: "certainty_fundamentals" }];
+  }
+
+  // Sports keywords
+  if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
+      !hasExplicitFilePath(trimmed)) {
   // Sports keywords + team names
   const SPORTS_TEAMS = [
     'arsenal', 'chelsea', 'liverpool', 'tottenham', 'spurs', 'man city', 'man united',
@@ -1041,6 +1093,13 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "youtube", input: trimmed, context: {}, reasoning: "certainty_youtube" }];
   }
 
+  // GitHub Trending — must come BEFORE general github
+  if (/\b(trending|popular|top)\b/i.test(lower) && /\b(repo|repository|github|project|open\s*source)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: githubTrending");
+    return [{ tool: "githubTrending", input: trimmed, context: {}, reasoning: "certainty_github_trending" }];
+  }
+
+  // GitHub keywords
   // Task management keywords (BEFORE github to prevent "add task: review pull request" misroute)
   if (/\b(todo|task|reminder|schedule|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
     console.log("[planner] certainty branch: tasks");
@@ -1061,10 +1120,17 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "gitLocal", input: trimmed, context: {}, reasoning: "certainty_git_local" }];
   }
 
-  // Code review keywords
-  if (/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: review");
-    return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review" }];
+  // Package manager keywords
+  if (/\b(npm\s+(install|uninstall|list|remove|update)|install\s+package|uninstall\s+package|list\s+packages|package\s+manager)\b/i.test(lower)) {
+    const pkgContext = {};
+    if (/\binstall\b/i.test(lower)) pkgContext.action = "install";
+    else if (/\buninstall|remove\b/i.test(lower)) pkgContext.action = "uninstall";
+    else if (/\blist|show|installed\b/i.test(lower)) pkgContext.action = "list";
+    else if (/\bupdate\b/i.test(lower)) pkgContext.action = "update";
+    const pkgMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
+    if (pkgMatch) pkgContext.package = pkgMatch[1];
+    console.log("[planner] certainty branch: packageManager");
+    return [{ tool: "packageManager", input: trimmed, context: pkgContext, reasoning: "certainty_package_manager" }];
   }
 
   // Shopping keywords
@@ -1074,6 +1140,23 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
   }
 
+  // Scheduler / recurring tasks / workflows
+  // Must come BEFORE task management to prevent "schedule X every Y" → tasks
+  if (/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|workflow|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
+      !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: scheduler");
+    const schedContext = {};
+    if (/\b(list|show|view|my)\s*(schedule|recurring)/i.test(lower)) schedContext.action = "list";
+    else if (/\b(cancel|stop|remove|delete)\s*(schedule|timer|recurring)/i.test(lower)) schedContext.action = "cancel";
+    else if (/\b(pause|disable)\b/i.test(lower)) schedContext.action = "pause";
+    else if (/\b(resume|enable)\b/i.test(lower)) schedContext.action = "resume";
+    return [{ tool: "scheduler", input: trimmed, context: schedContext, reasoning: "certainty_scheduler" }];
+  }
+
+  // Task management keywords
+  if (/\b(todo|task|reminder|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: tasks");
+    return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
   // NOTE: Task management keywords moved ABOVE github section
 
   // Search / knowledge queries: "look up X", "find information about X", "history of X", "who was X"
@@ -1092,8 +1175,8 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_memory_read" }];
   }
 
-  // Self-improvement keywords
-  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting)\b/i.test(lower)) {
+  // Self-improvement keywords — expanded patterns
+  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting|what issues|performance report|diagnose|diagnostic report|how well are you doing)\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfImprovement");
     return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "certainty_self_improvement" }];
   }
