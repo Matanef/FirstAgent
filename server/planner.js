@@ -586,20 +586,48 @@ export async function plan({ message, chatContext = {} }) {
     ];
   }
 
-  // MOLTBOOK: Single-action detection
+  // MOLTBOOK: Single-action detection — expanded for full API coverage
   if (/\bmoltbook\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook");
     const context = {};
+    // Registration & Auth
     if (/\b(register|sign\s*up|create\s+account)\b/i.test(lower)) context.action = "register";
     else if (/\b(log\s*in|sign\s*in)\b/i.test(lower)) context.action = "login";
     else if (/\b(log\s*out|sign\s*out)\b/i.test(lower)) context.action = "logout";
-    else if (/\b(profile|my\s+account|settings)\b/i.test(lower)) context.action = "profile";
-    else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
+    // DMs & Messaging
+    else if (/\b(dm\s+request|pending\s+request|approve\s+dm|reject\s+dm)\b/i.test(lower)) context.action = "dm_requests";
+    else if (/\b(inbox|messages|conversations|my\s+dms|check\s+dms)\b/i.test(lower)) context.action = "dm_inbox";
+    else if (/\b(dm|direct\s+message|private\s+message|send\s+dm|send\s+message)\b/i.test(lower)) context.action = "dm";
+    // Profile
+    else if (/\b(update\s+profile|change\s+description|edit\s+profile)\b/i.test(lower)) context.action = "updateProfile";
+    else if (/\b(view\s+profile|profile\s+of|who\s+is|agent\s+profile)\b/i.test(lower)) context.action = "viewProfile";
+    else if (/\b(my\s+profile|my\s+account)\b/i.test(lower)) context.action = "profile";
+    // Posts
+    else if (/\b(delete\s+post|remove\s+post)\b/i.test(lower)) context.action = "deletePost";
+    else if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/i.test(lower)) context.action = "getPost";
     else if (/\b(post|publish|share|write)\b/i.test(lower)) context.action = "post";
-    else if (/\b(feed|browse|timeline|home)\b/i.test(lower)) context.action = "feed";
-    else if (/\b(follow|subscribe)\b/i.test(lower)) context.action = "follow";
-    else if (/\b(communities?|submolt)\b/i.test(lower)) context.action = "communities";
-    else if (/\b(heartbeat|check\s*in)\b/i.test(lower)) context.action = "heartbeat";
+    // Comments
+    else if (/\b(comments?\s+(on|for)|show\s+comments|read\s+comments)\b/i.test(lower)) context.action = "getComments";
+    else if (/\b(comment|reply)\b/i.test(lower)) context.action = "comment";
+    // Voting
+    else if (/\b(upvote|downvote|vote)\b/i.test(lower)) context.action = "vote";
+    // Following
+    else if (/\b(unfollow|unsubscribe)\b/i.test(lower)) context.action = "unfollow";
+    else if (/\b(subscribe\s+to|join\s+submolt|join\s+community)\b/i.test(lower)) context.action = "subscribe";
+    else if (/\b(follow)\b/i.test(lower)) context.action = "follow";
+    // Communities
+    else if (/\b(create\s+submolt|create\s+community|new\s+submolt)\b/i.test(lower)) context.action = "createSubmolt";
+    else if (/\b(submolt\s+feed|community\s+feed)\b/i.test(lower)) context.action = "submoltFeed";
+    else if (/\b(communities?|submolts?)\b/i.test(lower)) context.action = "communities";
+    // Search
+    else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
+    // Notifications
+    else if (/\b(notification|read\s+all|mark\s+read|clear\s+notification)\b/i.test(lower)) context.action = "notifications";
+    // Feed & Home
+    else if (/\b(home|dashboard)\b/i.test(lower)) context.action = "home";
+    else if (/\b(feed|browse|timeline)\b/i.test(lower)) context.action = "feed";
+    // Heartbeat & Status
+    else if (/\b(heartbeat|check\s*in|routine|engage)\b/i.test(lower)) context.action = "heartbeat";
     else if (/\b(status|session|check)\b/i.test(lower)) context.action = "status";
     else context.action = "feed";
     return [{ tool: "moltbook", input: trimmed, context, reasoning: "certainty_moltbook" }];

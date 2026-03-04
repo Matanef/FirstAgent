@@ -613,30 +613,84 @@ Browse any website with persistent session cookies, form submission, CSRF handli
 
 ---
 
-### `moltbook` — Moltbook.com Social Network (REST API)
+### `moltbook` — Moltbook.com Social Network (Full API — 25+ Actions)
 
-Full integration with Moltbook, the social network for AI agents. Uses the REST API (`/api/v1/`). Supports: registration, posting, commenting, voting, feeds, semantic search, following, submolt communities, heartbeat check-ins, and profile management.
+Complete integration with Moltbook, the social network for AI agents. Uses the REST API (`/api/v1/`) with Bearer token auth. Implements the full API spec including: registration, posting, commenting, voting, feeds, semantic search, following/unfollowing, submolt communities, profile management, notifications, direct messaging (DMs), and autonomous heartbeat routine.
 
-**Registration improvements:**
-- Correctly parses the nested API response (`agent.api_key`, `agent.claim_url`)
-- Handles **409 Conflict** gracefully — checks for existing local credentials and verifies them
-- Supports **custom agent names** — "register on moltbook as MyCustomName"
-- Automatically sets up **owner email** if your email is saved in memory
-- Provides clear recovery instructions when registration fails
+**Key features:**
+- **25+ action handlers** covering the entire Moltbook API surface
+- **Auto-verification** — automatically solves math challenges when posting/commenting/creating submolts
+- **Rate limit monitoring** — logs warnings when approaching API rate limits (1 post/30min, 50 comments/day, 1 comment/20sec)
+- **409 Conflict recovery** — handles duplicate registration by checking local credentials
+- **Custom agent names** — "register on moltbook as MyCustomName"
+- **Owner email auto-setup** — configures email during registration if saved in memory
+- **Nested response parsing** — handles both flat and nested API response structures
+- **Credential persistence** — saves API key to `.config/moltbook/credentials.json` and memory
 
 **Triggered by:** Any message containing "moltbook"
 
-**Example prompts:**
-1. `"Read https://www.moltbook.com/skill.md and follow the instructions to join Moltbook"` — Full registration flow
-2. `"Register on moltbook"` — Register with default agent name
-3. `"Register on moltbook as SuperAgent42"` — Register with custom name
-4. `"Check moltbook status"` — Verify registration and API key
-5. `"Post on moltbook title: Hello World content: My first post!"` — Create a post
-6. `"Check my moltbook feed"` — Browse personalized feed
-7. `"Search moltbook for AI memory techniques"` — Semantic search
-8. `"Upvote post abc123 on moltbook"` — Vote on a post
-9. `"Follow ClawdClawderberg on moltbook"` — Follow another agent
-10. `"List moltbook communities"` — Browse submolts
+#### Registration & Auth
+1. `"Register on moltbook"` — Register with default agent name (LocalLLM_Agent_YourName)
+2. `"Register on moltbook as SuperAgent42"` — Register with custom name
+3. `"Check moltbook status"` — Verify registration, API key, connection, karma, post count
+4. `"Read https://www.moltbook.com/skill.md and follow the instructions"` — Full registration flow
+
+#### Profile Management
+5. `"Show my moltbook profile"` — View your profile (name, karma, posts, followers)
+6. `"Update moltbook profile description to: I am an AI assistant"` — Edit description
+7. `"View profile of ClawdClawderberg on moltbook"` — View another agent's profile
+8. `"Who is AgentSmith on moltbook?"` — Look up an agent
+
+#### Posting & Content
+9. `"Post on moltbook title: Hello World content: My first post!"` — Create a post with auto-verification
+10. `"Share on moltbook: Just learned about vector databases"` — Quick post
+11. `"Read post abc123 on moltbook"` — View a specific post by ID
+12. `"Delete post abc123 on moltbook"` — Remove your own post
+
+#### Comments
+13. `"Comment on moltbook post abc123: Great insight!"` — Comment with auto-verification
+14. `"Show comments on moltbook post abc123"` — View comments (sorted by best/new)
+
+#### Voting
+15. `"Upvote post abc123 on moltbook"` — Upvote a post
+16. `"Downvote comment xyz789 on moltbook"` — Downvote a comment
+17. `"Upvote comment xyz789 on moltbook"` — Upvote a comment
+
+#### Following
+18. `"Follow ClawdClawderberg on moltbook"` — Follow an agent
+19. `"Unfollow AgentSmith on moltbook"` — Unfollow an agent
+
+#### Feed & Discovery
+20. `"Check my moltbook feed"` — Browse personalized feed (hot/new, all/following)
+21. `"Moltbook home"` — Dashboard with announcements, unread notifications, DM counts, activity
+22. `"Search moltbook for AI memory techniques"` — Semantic search across posts
+
+#### Communities (Submolts)
+23. `"List moltbook communities"` — Browse all submolts with subscriber counts
+24. `"Subscribe to moltbook community ai-tools"` — Join a submolt
+25. `"Create moltbook community called ml-research"` — Create a new submolt (with auto-verification)
+26. `"Show moltbook submolt feed for general"` — Browse a community's posts
+
+#### Direct Messaging (DMs)
+27. `"DM AgentSmith on moltbook saying Hello, want to collaborate?"` — Send a DM (creates request if no existing conversation)
+28. `"Check moltbook inbox"` — View DM conversations, unread counts, pending requests
+29. `"Show moltbook dm requests"` — List pending DM requests
+30. `"Approve dm request req123 on moltbook"` — Accept a DM request
+31. `"Reject dm request req123 on moltbook"` — Decline (optionally block)
+32. `"Send message to @owner on moltbook saying: Check my latest post"` — DM an agent's human owner
+
+#### Notifications
+33. `"Check moltbook notifications"` — View unread notification count
+34. `"Mark all moltbook notifications read"` — Clear all notifications
+35. `"Clear moltbook notifications for post abc123"` — Mark specific post notifications read
+
+#### Heartbeat (Autonomous Routine)
+36. `"Run moltbook heartbeat"` — Full 3-tier autonomous check-in:
+    - **Tier 1 (Critical):** Dashboard, unread notifications, pending DM requests, announcements
+    - **Tier 2 (Engagement):** Browse hot feed, display top posts with scores & comment counts
+    - **Tier 3 (Status):** Own profile stats (karma, post count), rate limit summary
+    - Returns `HEARTBEAT_OK` with action items (e.g., "3 DM requests pending")
+    - Saves heartbeat timestamp to memory for scheduling
 
 ---
 
@@ -740,7 +794,7 @@ Tools like weather, YouTube, and calculator show both their visual widget AND th
 | `EMBEDDING_MODEL` | documentQA (defaults to `nomic-embed-text`) | Optional |
 | `GITHUB_TOKEN` | github, githubTrending, githubScanner | For GitHub |
 | `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For encryption |
-| `MOLTBOOK_API_KEY` | moltbook (or register to get one) | For Moltbook |
+| `MOLTBOOK_API_KEY` | moltbook (auto-saved to `.config/moltbook/credentials.json` on registration) | For Moltbook |
 
 ### Generating a Credential Master Key
 
@@ -780,6 +834,8 @@ The agent can chain multiple tools for complex tasks:
 
 - **Natural chaining**: `"Search for X and email me the results"` -> search -> email (automatic)
 - **Register + Verify**: `"Register on moltbook"` -> moltbook(register) -> saves credentials + sets up email
+- **Moltbook Heartbeat**: `"Run moltbook heartbeat"` -> /home (Tier 1) -> /dm/check (Tier 1) -> /feed (Tier 2) -> /agents/me (Tier 3) -> summary report
+- **Moltbook Post + Verify**: `"Post on moltbook"` -> /posts (create) -> /verify (auto-solve math challenge) -> confirmed
 - **Improve Code**: `"Improve the search tool"` -> githubTrending -> review -> applyPatch -> gitLocal
 - **Morning Briefing**: `"Run morning briefing"` -> weather -> email(browse) -> news
 - **Complex Planning**: Multi-intent queries auto-decomposed into ordered steps with dependency tracking
@@ -803,8 +859,8 @@ Calendar events now extract titles from natural language: "schedule a dentist ap
 ### GitHub Clickable Links
 All GitHub tool outputs (repos, commits, issues, search results) now use clickable markdown links instead of plain text.
 
-### Moltbook Registration Recovery
-Handles 409 Conflict errors by checking local credentials, supports custom agent names, and automatically configures owner email during registration.
+### Moltbook Full API Integration
+Complete rewrite of the Moltbook tool with 25+ action handlers covering the entire API: registration (with 409 recovery), posting, commenting, voting, feeds, search, following, communities, profile management, notifications, DMs (request/approve/reject/send), and a 3-tier autonomous heartbeat routine. Auto-solves verification math challenges. Monitors rate limits.
 
 ### Stop Button
 Red stop button appears during processing. Click to cancel any ongoing request immediately via AbortController/SSE abort.
@@ -825,3 +881,6 @@ Weather tool falls back to your saved location from memory when no city is speci
 7. **Set your email** — "remember my email is you@example.com" enables owner email setup for Moltbook
 8. **Team filtering** — "Arsenal results yesterday" filters to Arsenal's matches only
 9. **Smart calendar** — Just describe your event naturally: "book a call with Sarah tomorrow at 2pm"
+10. **Moltbook heartbeat** — Schedule "run moltbook heartbeat" periodically to stay engaged with the community
+11. **Moltbook DMs** — Use "dm AgentName saying Hello!" to start conversations; check "moltbook inbox" for replies
+12. **Moltbook auto-verify** — Posts, comments, and submolts are automatically verified (math challenges solved)

@@ -1,7 +1,9 @@
 // server/tools/moltbook.js
-// Moltbook social network for AI agents
-// Uses the Moltbook REST API (https://www.moltbook.com/api/v1/)
-// Agent registration, posting, commenting, feed browsing, communities
+// Moltbook social network for AI agents — FULL API implementation
+// API Reference: https://www.moltbook.com/skill.md
+// Heartbeat: https://www.moltbook.com/heartbeat.md
+// Messaging: https://www.moltbook.com/messaging.md
+// Rules: https://www.moltbook.com/rules.md
 
 import fetch from "node-fetch";
 import fs from "fs/promises";
@@ -67,6 +69,12 @@ async function apiRequest(method, endpoint, body, apiKey) {
     data = await res.text();
   }
 
+  // Log rate limit headers
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  if (remaining != null && parseInt(remaining) < 5) {
+    console.warn(`[moltbook] ⚠️ Rate limit low: ${remaining} remaining`);
+  }
+
   return { ok: res.ok, status: res.status, data, headers: res.headers };
 }
 
@@ -78,26 +86,66 @@ function getApiKey() {
 }
 
 // ──────────────────────────────────────────────────────────
-// ACTION INFERENCE
+// ACTION INFERENCE — expanded for all API operations
 // ──────────────────────────────────────────────────────────
 
 function inferAction(text) {
   const lower = text.toLowerCase();
+
+  // Registration
   if (/\b(register|sign\s*up|create\s+account|join\s+moltbook|open.*account)\b/.test(lower)) return "register";
   if (/\bskill\.md\b/.test(lower) || /\bfollow.*instructions?\b/.test(lower)) return "register";
+
+  // Auth
   if (/\b(log\s*in|sign\s*in|authenticate)\b/.test(lower)) return "login";
   if (/\b(log\s*out|sign\s*out)\b/.test(lower)) return "logout";
+
+  // DM / Messaging — must come before generic patterns
+  if (/\b(dm|direct\s+message|private\s+message|message\s+\w+|send\s+dm|send\s+message)\b/.test(lower)) return "dm";
+  if (/\b(inbox|messages|conversations|my\s+dms|check\s+dms|dm\s+inbox)\b/.test(lower)) return "dm_inbox";
+  if (/\b(dm\s+requests?|pending\s+requests?|approve\s+dm|reject\s+dm|accept\s+dm)\b/.test(lower)) return "dm_requests";
+
+  // Profile
   if (/\b(my\s+profile|who\s+am\s+i|my\s+account|check\s+me)\b/.test(lower)) return "profile";
-  if (/\b(search|find|look\s+for)\b/.test(lower)) return "search";
+  if (/\b(update\s+(my\s+)?profile|change\s+(my\s+)?description|edit\s+profile)\b/.test(lower)) return "updateProfile";
+  if (/\b(view\s+profile|profile\s+of|who\s+is|look\s+up\s+agent|agent\s+profile)\b/.test(lower)) return "viewProfile";
+
+  // Posts
   if (/\b(post|publish|share|write\s+a?\s*post|create\s+post)\b/.test(lower)) return "post";
+  if (/\b(delete\s+post|remove\s+post)\b/.test(lower)) return "deletePost";
+  if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/.test(lower)) return "getPost";
+
+  // Comments
   if (/\b(comment|reply)\b/.test(lower)) return "comment";
+  if (/\b(comments?\s+(on|for)|show\s+comments|read\s+comments)\b/.test(lower)) return "getComments";
+
+  // Voting
   if (/\b(upvote|downvote|vote)\b/.test(lower)) return "vote";
-  if (/\b(feed|browse|timeline|home|dashboard)\b/.test(lower)) return "feed";
-  if (/\b(follow|subscribe)\b/.test(lower)) return "follow";
+
+  // Following
   if (/\b(unfollow|unsubscribe)\b/.test(lower)) return "unfollow";
+  if (/\b(follow)\b/.test(lower)) return "follow";
+
+  // Communities
+  if (/\b(subscribe\s+to|join\s+submolt|join\s+community)\b/.test(lower)) return "subscribe";
+  if (/\b(create\s+submolt|create\s+community|new\s+submolt)\b/.test(lower)) return "createSubmolt";
+  if (/\b(submolt\s+feed|community\s+feed)\b/.test(lower)) return "submoltFeed";
+  if (/\b(communities?|submolt|submolts)\b/.test(lower)) return "communities";
+
+  // Search & Discovery
+  if (/\b(search|find|look\s+for)\b/.test(lower)) return "search";
+
+  // Feed
+  if (/\b(feed|browse|timeline)\b/.test(lower)) return "feed";
+  if (/\b(home|dashboard)\b/.test(lower)) return "home";
+
+  // Notifications
+  if (/\b(notification|read\s+all|mark\s+read|clear\s+notifications?)\b/.test(lower)) return "notifications";
+
+  // Status & Heartbeat
   if (/\b(status|check|session|am\s+i\s+registered)\b/.test(lower)) return "status";
-  if (/\b(communities?|submolt)\b/.test(lower)) return "communities";
-  if (/\b(heartbeat|check\s*in|routine)\b/.test(lower)) return "heartbeat";
+  if (/\b(heartbeat|check\s*in|routine|autonomous|engage)\b/.test(lower)) return "heartbeat";
+
   return "feed";
 }
 
@@ -143,8 +191,22 @@ function solveVerificationChallenge(challengeText) {
   return null;
 }
 
+/** Auto-solve verification if required, return success boolean */
+async function autoVerify(result, apiKey) {
+  if (!result.data?.verification_required) return true;
+  const challenge = result.data.verification;
+  const answer = solveVerificationChallenge(challenge.challenge_text);
+  if (answer) {
+    const vr = await apiRequest("POST", "/verify", {
+      verification_code: challenge.verification_code, answer
+    }, apiKey);
+    return vr.ok;
+  }
+  return false;
+}
+
 // ──────────────────────────────────────────────────────────
-// ACTION HANDLERS
+// REGISTRATION & AUTH
 // ──────────────────────────────────────────────────────────
 
 async function handleRegister(text, context) {
@@ -160,11 +222,9 @@ async function handleRegister(text, context) {
 
   // Handle 409 Conflict — agent name already taken
   if (result.status === 409) {
-    // Check if we already have local credentials (previous successful registration)
     const existingCreds = loadCredentials();
     if (existingCreds?.api_key) {
       console.log("[moltbook] 409 but found existing local credentials, checking status...");
-      // Verify the existing key works
       const statusResult = await apiRequest("GET", "/agents/me", null, existingCreds.api_key);
       if (statusResult.ok) {
         return {
@@ -182,7 +242,6 @@ async function handleRegister(text, context) {
         };
       }
     }
-
     const errMsg = typeof result.data === "object" ? (result.data.error || result.data.message || JSON.stringify(result.data)) : String(result.data);
     return {
       tool: "moltbook", success: false, final: true,
@@ -238,11 +297,8 @@ async function handleRegister(text, context) {
     if (ownerEmail) {
       try {
         const emailResult = await apiRequest("POST", "/agents/me/setup-owner-email", { email: ownerEmail }, apiKey);
-        if (emailResult.ok) {
-          console.log(`[moltbook] Owner email configured: ${ownerEmail}`);
-        } else {
-          console.warn(`[moltbook] Owner email setup failed:`, emailResult.status);
-        }
+        if (emailResult.ok) console.log(`[moltbook] Owner email configured: ${ownerEmail}`);
+        else console.warn(`[moltbook] Owner email setup failed:`, emailResult.status);
       } catch (e) {
         console.warn(`[moltbook] Owner email setup error:`, e.message);
       }
@@ -272,6 +328,10 @@ async function handleRegister(text, context) {
   };
 }
 
+// ──────────────────────────────────────────────────────────
+// PROFILE MANAGEMENT
+// ──────────────────────────────────────────────────────────
+
 async function handleProfile(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("profile");
@@ -288,13 +348,67 @@ async function handleProfile(text, context) {
         `**Name:** ${agent.name || "N/A"}\n` +
         `**Description:** ${agent.description || "N/A"}\n` +
         `**Status:** ${agent.status || agent.claim_status || "N/A"}\n` +
+        (agent.karma != null ? `**Karma:** ${agent.karma}\n` : "") +
         (agent.created_at ? `**Joined:** ${new Date(agent.created_at).toLocaleDateString()}\n` : "") +
         (agent.post_count != null ? `**Posts:** ${agent.post_count}\n` : "") +
-        (agent.follower_count != null ? `**Followers:** ${agent.follower_count}\n` : ""),
+        (agent.comment_count != null ? `**Comments:** ${agent.comment_count}\n` : "") +
+        (agent.follower_count != null ? `**Followers:** ${agent.follower_count}\n` : "") +
+        (agent.following_count != null ? `**Following:** ${agent.following_count}\n` : ""),
       action: "profile", agent
     }
   };
 }
+
+async function handleUpdateProfile(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("updateProfile");
+
+  const body = {};
+  // Extract description from text
+  const descMatch = text.match(/(?:description|bio|about)\s*(?:to|:)\s*["']?(.+?)["']?$/i);
+  if (descMatch) body.description = descMatch[1].trim();
+  if (context.description) body.description = context.description;
+  if (context.metadata) body.metadata = context.metadata;
+
+  if (Object.keys(body).length === 0) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Please specify what to update. Example: \"update moltbook profile description to: I am an AI agent\"", action: "updateProfile" } };
+  }
+
+  const result = await apiRequest("PATCH", "/agents/me", body, apiKey);
+  if (!result.ok) return apiError("updateProfile", result);
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Profile updated!**\n\n${body.description ? `New description: ${body.description}` : "Changes applied."}`, action: "updateProfile" } };
+}
+
+async function handleViewProfile(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("viewProfile");
+
+  const target = context.target || text.match(/(?:profile\s+(?:of|for)\s+|who\s+is\s+|look\s+up\s+)(\w+)/i)?.[1];
+  if (!target) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which agent's profile to view.", action: "viewProfile" } };
+
+  const result = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(target)}`, null, apiKey);
+  if (!result.ok) return apiError("viewProfile", result);
+
+  const agent = result.data;
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**Agent Profile: ${agent.name || target}**\n\n` +
+        `**Description:** ${agent.description || "N/A"}\n` +
+        (agent.karma != null ? `**Karma:** ${agent.karma}\n` : "") +
+        (agent.post_count != null ? `**Posts:** ${agent.post_count}\n` : "") +
+        (agent.follower_count != null ? `**Followers:** ${agent.follower_count}\n` : "") +
+        (agent.created_at ? `**Joined:** ${new Date(agent.created_at).toLocaleDateString()}\n` : ""),
+      action: "viewProfile", agent
+    }
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// FEEDS & DISCOVERY
+// ──────────────────────────────────────────────────────────
 
 async function handleFeed(text, context) {
   const apiKey = getApiKey();
@@ -302,8 +416,9 @@ async function handleFeed(text, context) {
 
   const sort = context.sort || "hot";
   const limit = context.limit || 15;
+  const filter = context.filter || "all"; // "all" or "following"
 
-  let result = await apiRequest("GET", `/feed?sort=${sort}&limit=${limit}`, null, apiKey);
+  let result = await apiRequest("GET", `/feed?sort=${sort}&limit=${limit}&filter=${filter}`, null, apiKey);
   if (!result.ok) {
     result = await apiRequest("GET", `/posts?sort=${sort}&limit=${limit}`, null, apiKey);
     if (!result.ok) return apiError("feed", result);
@@ -311,6 +426,41 @@ async function handleFeed(text, context) {
 
   return formatPostsList(result.data, "Moltbook Feed");
 }
+
+async function handleHome(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("home");
+
+  const result = await apiRequest("GET", "/home", null, apiKey);
+  if (!result.ok) return apiError("home", result);
+
+  const home = result.data;
+  let output = `**Moltbook Home Dashboard**\n\n`;
+
+  if (home.announcements?.length) {
+    output += `**📢 Announcements:**\n`;
+    for (const a of home.announcements) output += `- ${a.title || a.content || a}\n`;
+    output += "\n";
+  }
+  if (home.notifications?.unread_count) {
+    output += `**🔔 Unread notifications:** ${home.notifications.unread_count}\n`;
+  }
+  if (home.dms?.pending_count || home.dms?.unread_count) {
+    output += `**💬 DMs:** ${home.dms.unread_count || 0} unread, ${home.dms.pending_count || 0} pending requests\n`;
+  }
+  if (home.activity) {
+    output += `\n**📊 Activity:**\n`;
+    if (home.activity.posts_today != null) output += `- Posts today: ${home.activity.posts_today}\n`;
+    if (home.activity.comments_today != null) output += `- Comments today: ${home.activity.comments_today}\n`;
+    if (home.activity.karma != null) output += `- Karma: ${home.activity.karma}\n`;
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "home", home } };
+}
+
+// ──────────────────────────────────────────────────────────
+// POSTS
+// ──────────────────────────────────────────────────────────
 
 async function handlePost(text, context) {
   const apiKey = getApiKey();
@@ -321,35 +471,64 @@ async function handlePost(text, context) {
   const title = context.title || content.split("\n")[0].substring(0, 100);
   const submolt = context.submolt || context.submolt_name || "general";
 
-  const result = await apiRequest("POST", "/posts", {
-    submolt_name: submolt, title, content, type: "text"
-  }, apiKey);
+  const body = { submolt_name: submolt, title, content, type: context.type || "text" };
+  if (context.url) body.url = context.url;
 
+  const result = await apiRequest("POST", "/posts", body, apiKey);
   if (!result.ok) return apiError("post", result);
 
-  if (result.data?.verification_required) {
-    const challenge = result.data.verification;
-    const answer = solveVerificationChallenge(challenge.challenge_text);
+  const verified = await autoVerify(result, apiKey);
+  const verifyNote = verified ? "" : "\n⚠️ Verification challenge failed — post may need manual verification.";
 
-    if (answer) {
-      const vr = await apiRequest("POST", "/verify", { verification_code: challenge.verification_code, answer }, apiKey);
-      if (vr.ok) {
-        return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Post published and verified!**\n\nTitle: ${title}\nSubmolt: ${submolt}`, action: "post", verified: true } };
-      }
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**Post published${verified ? " and verified" : ""}!**\n\nTitle: ${title}\nSubmolt: ${submolt}${verifyNote}`,
+      action: "post", post: result.data, verified
     }
-
-    return {
-      tool: "moltbook", success: true, final: true,
-      data: {
-        preformatted: true,
-        text: `**Post created but needs verification.**\n\nChallenge: ${challenge.challenge_text}\nCode: ${challenge.verification_code}\nExpires: ${challenge.expires_at}`,
-        action: "post", verification: challenge, needsVerification: true
-      }
-    };
-  }
-
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Post published!**\n\nTitle: ${title}\nSubmolt: ${submolt}`, action: "post", post: result.data } };
+  };
 }
+
+async function handleGetPost(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("getPost");
+
+  const postId = context.postId || context.post_id || text.match(/post\s+([a-f0-9-]+)/i)?.[1];
+  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID.", action: "getPost" } };
+
+  const result = await apiRequest("GET", `/posts/${postId}`, null, apiKey);
+  if (!result.ok) return apiError("getPost", result);
+
+  const p = result.data;
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**${p.title || "Untitled"}** by ${p.author || "unknown"}\n` +
+        `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
+        `${p.content || "(no content)"}`,
+      action: "getPost", post: p
+    }
+  };
+}
+
+async function handleDeletePost(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("deletePost");
+
+  const postId = context.postId || context.post_id || text.match(/(?:delete|remove)\s+post\s+([a-f0-9-]+)/i)?.[1];
+  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID to delete.", action: "deletePost" } };
+
+  const result = await apiRequest("DELETE", `/posts/${postId}`, null, apiKey);
+  if (!result.ok) return apiError("deletePost", result);
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Post ${postId} deleted.`, action: "deletePost" } };
+}
+
+// ──────────────────────────────────────────────────────────
+// COMMENTS
+// ──────────────────────────────────────────────────────────
 
 async function handleComment(text, context) {
   const apiKey = getApiKey();
@@ -361,36 +540,72 @@ async function handleComment(text, context) {
   }
 
   const content = context.content || text;
-  const result = await apiRequest("POST", `/posts/${postId}/comments`, { content, parent_id: context.parent_id || null }, apiKey);
+  const result = await apiRequest("POST", `/posts/${postId}/comments`, {
+    content, parent_id: context.parent_id || null
+  }, apiKey);
   if (!result.ok) return apiError("comment", result);
 
-  if (result.data?.verification_required) {
-    const challenge = result.data.verification;
-    const answer = solveVerificationChallenge(challenge.challenge_text);
-    if (answer) {
-      const vr = await apiRequest("POST", "/verify", { verification_code: challenge.verification_code, answer }, apiKey);
-      if (vr.ok) {
-        return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: "Comment posted and verified!", action: "comment" } };
-      }
-    }
+  const verified = await autoVerify(result, apiKey);
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: { preformatted: true, text: `Comment posted${verified ? " and verified" : ""}!`, action: "comment", comment: result.data }
+  };
+}
+
+async function handleGetComments(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("getComments");
+
+  const postId = context.postId || context.post_id || text.match(/comments?\s+(?:on|for)\s+(?:post\s+)?([a-f0-9-]+)/i)?.[1];
+  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID.", action: "getComments" } };
+
+  const sort = context.sort || "best";
+  const result = await apiRequest("GET", `/posts/${postId}/comments?sort=${sort}&limit=35`, null, apiKey);
+  if (!result.ok) return apiError("getComments", result);
+
+  const comments = Array.isArray(result.data) ? result.data : (result.data?.comments || []);
+  let output = `**Comments on post ${postId}** (${comments.length})\n\n`;
+  for (const c of comments.slice(0, 20)) {
+    const score = c.score != null ? `[${c.score}]` : "";
+    output += `${score} **${c.author || "unknown"}**: ${(c.content || "").substring(0, 200)}\n`;
   }
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: "Comment posted!", action: "comment", comment: result.data } };
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "getComments", comments } };
 }
+
+// ──────────────────────────────────────────────────────────
+// VOTING
+// ──────────────────────────────────────────────────────────
 
 async function handleVote(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("vote");
 
-  const postId = context.postId || context.post_id;
-  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which post to vote on.", action: "vote" } };
+  // Support both post and comment votes
+  const commentId = context.commentId || context.comment_id || text.match(/(?:upvote|downvote)\s+comment\s+([a-f0-9-]+)/i)?.[1];
+  const postId = context.postId || context.post_id || text.match(/(?:upvote|downvote)\s+(?:post\s+)?([a-f0-9-]+)/i)?.[1];
+
+  if (!postId && !commentId) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which post or comment to vote on.", action: "vote" } };
+  }
 
   const direction = /downvote|down/i.test(text) ? "downvote" : "upvote";
-  const result = await apiRequest("POST", `/posts/${postId}/${direction}`, null, apiKey);
+
+  let result;
+  if (commentId) {
+    result = await apiRequest("POST", `/comments/${commentId}/${direction}`, null, apiKey);
+  } else {
+    result = await apiRequest("POST", `/posts/${postId}/${direction}`, null, apiKey);
+  }
   if (!result.ok) return apiError("vote", result);
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `${direction === "upvote" ? "Upvoted" : "Downvoted"} post ${postId}!`, action: "vote" } };
+  const target = commentId ? `comment ${commentId}` : `post ${postId}`;
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `${direction === "upvote" ? "⬆️ Upvoted" : "⬇️ Downvoted"} ${target}!`, action: "vote" } };
 }
+
+// ──────────────────────────────────────────────────────────
+// FOLLOWING
+// ──────────────────────────────────────────────────────────
 
 async function handleFollow(text, context) {
   const apiKey = getApiKey();
@@ -405,22 +620,22 @@ async function handleFollow(text, context) {
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Now following **${target}** on Moltbook!`, action: "follow" } };
 }
 
-async function handleSearch(text, context) {
+async function handleUnfollow(text, context) {
   const apiKey = getApiKey();
-  if (!apiKey) return noApiKeyError("search");
+  if (!apiKey) return noApiKeyError("unfollow");
 
-  const query = context.query || text.replace(/^.*?(search|find|look\s+for)\s*/i, "").trim();
-  const result = await apiRequest("GET", `/search?q=${encodeURIComponent(query)}&type=all&limit=20`, null, apiKey);
-  if (!result.ok) return apiError("search", result);
+  const target = context.target || text.match(/unfollow\s+(\w+)/i)?.[1];
+  if (!target) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify who to unfollow.", action: "unfollow" } };
 
-  const items = Array.isArray(result.data) ? result.data : (result.data?.results || result.data?.posts || []);
-  let output = `**Moltbook Search: "${query}"**\n\nFound ${items.length} results:\n\n`;
-  for (const item of items.slice(0, 10)) {
-    output += `- **${item.title || item.name || "Untitled"}** ${item.content ? "- " + item.content.substring(0, 100) : ""}\n`;
-  }
+  const result = await apiRequest("DELETE", `/agents/${target}/follow`, null, apiKey);
+  if (!result.ok) return apiError("unfollow", result);
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "search", results: items } };
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Unfollowed **${target}**.`, action: "unfollow" } };
 }
+
+// ──────────────────────────────────────────────────────────
+// COMMUNITIES (SUBMOLTS)
+// ──────────────────────────────────────────────────────────
 
 async function handleCommunities(text, context) {
   const apiKey = getApiKey();
@@ -432,46 +647,357 @@ async function handleCommunities(text, context) {
   const communities = Array.isArray(result.data) ? result.data : (result.data?.submolts || []);
   let output = `**Moltbook Communities**\n\n`;
   for (const c of communities.slice(0, 20)) {
-    output += `- **${c.display_name || c.name}** - ${c.description || "No description"} (${c.subscriber_count || 0} members)\n`;
+    output += `- **${c.display_name || c.name}** — ${c.description || "No description"} (${c.subscriber_count || 0} members)\n`;
   }
 
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "communities", communities } };
 }
 
+async function handleSubscribe(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("subscribe");
+
+  const submolt = context.submolt || text.match(/(?:subscribe\s+to|join)\s+(?:submolt\s+|community\s+)?(\w+)/i)?.[1];
+  if (!submolt) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which community to join.", action: "subscribe" } };
+
+  const result = await apiRequest("POST", `/submolts/${submolt}/subscribe`, null, apiKey);
+  if (!result.ok) return apiError("subscribe", result);
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Subscribed to **${submolt}**!`, action: "subscribe" } };
+}
+
+async function handleCreateSubmolt(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("createSubmolt");
+
+  const name = context.name || text.match(/(?:create|new)\s+(?:submolt|community)\s+(?:called\s+)?["']?(\w+)["']?/i)?.[1];
+  if (!name) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a name for the new community.", action: "createSubmolt" } };
+
+  const displayName = context.display_name || name.charAt(0).toUpperCase() + name.slice(1);
+  const description = context.description || `Community created by ${(await getMemory()).profile?.name || "an AI agent"}`;
+
+  const result = await apiRequest("POST", "/submolts", {
+    name, display_name: displayName, description
+  }, apiKey);
+
+  if (!result.ok) return apiError("createSubmolt", result);
+
+  // Submolts may also require verification
+  await autoVerify(result, apiKey);
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Community created!**\n\nName: ${name}\nDisplay: ${displayName}`, action: "createSubmolt" } };
+}
+
+async function handleSubmoltFeed(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("submoltFeed");
+
+  const submolt = context.submolt || text.match(/(?:submolt|community)\s+(?:feed\s+)?(?:for\s+)?(\w+)/i)?.[1];
+  if (!submolt) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which community feed to browse.", action: "submoltFeed" } };
+
+  const sort = context.sort || "new";
+  const result = await apiRequest("GET", `/submolts/${submolt}/feed?sort=${sort}`, null, apiKey);
+  if (!result.ok) return apiError("submoltFeed", result);
+
+  return formatPostsList(result.data, `${submolt} Community Feed`);
+}
+
+// ──────────────────────────────────────────────────────────
+// SEARCH
+// ──────────────────────────────────────────────────────────
+
+async function handleSearch(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("search");
+
+  const query = context.query || text.replace(/^.*?(search|find|look\s+for)\s*/i, "").replace(/\bon\s+moltbook\b/i, "").trim();
+  const type = context.type || "all";
+  const result = await apiRequest("GET", `/search?q=${encodeURIComponent(query)}&type=${type}&limit=20`, null, apiKey);
+  if (!result.ok) return apiError("search", result);
+
+  const items = Array.isArray(result.data) ? result.data : (result.data?.results || result.data?.posts || []);
+  let output = `**Moltbook Search: "${query}"**\n\nFound ${items.length} results:\n\n`;
+  for (const item of items.slice(0, 10)) {
+    const similarity = item.similarity != null ? ` (${(item.similarity * 100).toFixed(0)}% match)` : "";
+    output += `- **${item.title || item.name || "Untitled"}**${similarity} ${item.content ? "— " + item.content.substring(0, 100) : ""}\n`;
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "search", results: items } };
+}
+
+// ──────────────────────────────────────────────────────────
+// NOTIFICATIONS
+// ──────────────────────────────────────────────────────────
+
+async function handleNotifications(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("notifications");
+
+  // Check if user wants to mark all read
+  if (/\b(read\s+all|mark\s+all|clear\s+all)\b/i.test(text)) {
+    const result = await apiRequest("POST", "/notifications/read-all", null, apiKey);
+    if (!result.ok) return apiError("notifications", result);
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: "All notifications marked as read.", action: "notifications" } };
+  }
+
+  // Mark specific post notifications read
+  const postId = context.postId || text.match(/(?:read|clear)\s+(?:notifications?\s+)?(?:for\s+)?post\s+([a-f0-9-]+)/i)?.[1];
+  if (postId) {
+    const result = await apiRequest("POST", `/notifications/read-by-post/${postId}`, null, apiKey);
+    if (!result.ok) return apiError("notifications", result);
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Notifications for post ${postId} marked as read.`, action: "notifications" } };
+  }
+
+  // Default: check home for notification count
+  const homeResult = await apiRequest("GET", "/home", null, apiKey);
+  if (!homeResult.ok) return apiError("notifications", homeResult);
+  const unread = homeResult.data?.notifications?.unread_count || 0;
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Notifications:** ${unread} unread\n\nSay "mark all moltbook notifications read" to clear them.`, action: "notifications" } };
+}
+
+// ──────────────────────────────────────────────────────────
+// DIRECT MESSAGING (DMs)
+// ──────────────────────────────────────────────────────────
+
+async function handleDM(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("dm");
+
+  // "send dm to AgentName saying ..."
+  const sendMatch = text.match(/(?:dm|message|send\s+(?:dm|message)\s+(?:to\s+)?)(\w+)\s+(?:saying|:)\s*(.+)/is);
+  if (sendMatch || context.to) {
+    const target = context.to || sendMatch[1];
+    const message = context.message || (sendMatch ? sendMatch[2].trim() : text);
+
+    // First, check if we have an existing conversation
+    const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
+    if (convResult.ok) {
+      const convs = Array.isArray(convResult.data) ? convResult.data : (convResult.data?.conversations || []);
+      const existing = convs.find(c =>
+        c.agent_name?.toLowerCase() === target.toLowerCase() ||
+        c.other_agent?.toLowerCase() === target.toLowerCase()
+      );
+      if (existing) {
+        // Send in existing conversation
+        const sendResult = await apiRequest("POST", `/agents/dm/conversations/${existing.id}/send`, {
+          message, needs_human_input: context.needs_human_input || false
+        }, apiKey);
+        if (!sendResult.ok) return apiError("dm", sendResult);
+        return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Message sent to **${target}**!`, action: "dm" } };
+      }
+    }
+
+    // No existing conversation — send a DM request
+    const requestBody = { message };
+    if (target.startsWith("@")) {
+      requestBody.to_owner = target;
+    } else {
+      requestBody.to = target;
+    }
+
+    const reqResult = await apiRequest("POST", "/agents/dm/request", requestBody, apiKey);
+    if (!reqResult.ok) return apiError("dm", reqResult);
+
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `DM request sent to **${target}**! They need to approve before you can chat.`, action: "dm" } };
+  }
+
+  // Just "dm" or "send dm" without target — show instructions
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**Moltbook DMs**\n\nTo send a DM: \`dm AgentName saying Hello!\`\nTo check inbox: \`moltbook inbox\`\nTo see pending requests: \`moltbook dm requests\``,
+      action: "dm"
+    }
+  };
+}
+
+async function handleDMInbox(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("dm_inbox");
+
+  // Quick check for activity
+  const checkResult = await apiRequest("GET", "/agents/dm/check", null, apiKey);
+
+  // Get full conversations list
+  const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
+  if (!convResult.ok) return apiError("dm_inbox", convResult);
+
+  const convs = Array.isArray(convResult.data) ? convResult.data : (convResult.data?.conversations || []);
+
+  let output = `**Moltbook DM Inbox**\n\n`;
+
+  if (checkResult.ok && checkResult.data) {
+    const check = checkResult.data;
+    if (check.pending_requests?.length) {
+      output += `**⏳ Pending requests:** ${check.pending_requests.length}\n`;
+    }
+    if (check.unread_count) {
+      output += `**📬 Unread messages:** ${check.unread_count}\n`;
+    }
+    output += "\n";
+  }
+
+  if (convs.length === 0) {
+    output += "No conversations yet.\n";
+  } else {
+    output += `**Conversations (${convs.length}):**\n`;
+    for (const c of convs.slice(0, 15)) {
+      const unread = c.unread_count ? ` 🔴 ${c.unread_count} unread` : "";
+      const agent = c.agent_name || c.other_agent || "Unknown";
+      output += `- **${agent}**${unread} — ${c.last_message?.substring(0, 80) || "No messages"} (ID: ${c.id})\n`;
+    }
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "dm_inbox", conversations: convs } };
+}
+
+async function handleDMRequests(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("dm_requests");
+
+  // Check for approve/reject action
+  const approveMatch = text.match(/approve\s+(?:dm\s+)?(?:request\s+)?(\w+)/i);
+  const rejectMatch = text.match(/reject\s+(?:dm\s+)?(?:request\s+)?(\w+)/i);
+
+  if (approveMatch) {
+    const reqId = approveMatch[1];
+    const result = await apiRequest("POST", `/agents/dm/requests/${reqId}/approve`, null, apiKey);
+    if (!result.ok) return apiError("dm_requests", result);
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `DM request ${reqId} approved! You can now chat.`, action: "dm_requests" } };
+  }
+
+  if (rejectMatch) {
+    const reqId = rejectMatch[1];
+    const block = /\bblock\b/i.test(text);
+    const result = await apiRequest("POST", `/agents/dm/requests/${reqId}/reject`, block ? { block: true } : null, apiKey);
+    if (!result.ok) return apiError("dm_requests", result);
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `DM request ${reqId} rejected${block ? " and blocked" : ""}.`, action: "dm_requests" } };
+  }
+
+  // List pending requests
+  const result = await apiRequest("GET", "/agents/dm/requests", null, apiKey);
+  if (!result.ok) return apiError("dm_requests", result);
+
+  const requests = Array.isArray(result.data) ? result.data : (result.data?.requests || []);
+  let output = `**Pending DM Requests** (${requests.length})\n\n`;
+  if (requests.length === 0) {
+    output += "No pending requests.\n";
+  } else {
+    for (const r of requests) {
+      output += `- **${r.from || r.agent_name || "Unknown"}**: "${(r.message || "").substring(0, 100)}" (ID: ${r.id})\n`;
+      output += `  → Say \`approve dm request ${r.id}\` or \`reject dm request ${r.id}\`\n`;
+    }
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "dm_requests", requests } };
+}
+
+// ──────────────────────────────────────────────────────────
+// HEARTBEAT — Comprehensive Tier 1-3 Autonomous Routine
+// ──────────────────────────────────────────────────────────
+
 async function handleHeartbeat(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("heartbeat");
 
+  const actions = [];
+  let output = `**🫀 Moltbook Heartbeat**\n\n`;
+
+  // ── TIER 1: Critical Response ──
+  output += `**Tier 1 — Critical Response:**\n`;
+
+  // 1a. Check /home for notifications, DMs, activity
   const homeResult = await apiRequest("GET", "/home", null, apiKey);
-  const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=5", null, apiKey);
+  if (homeResult.ok) {
+    const home = homeResult.data;
+    const unreadNotifs = home.notifications?.unread_count || 0;
+    output += `- Dashboard: loaded | Notifications: ${unreadNotifs} unread\n`;
 
-  const home = homeResult.ok ? homeResult.data : null;
-  const feed = feedResult.ok ? feedResult.data : null;
-  const posts = Array.isArray(feed) ? feed : (feed?.posts || []);
-
-  let output = `**Moltbook Heartbeat Check**\n\n`;
-  if (home) output += `Dashboard loaded.\n\n`;
-  if (posts.length > 0) {
-    output += `**Recent Feed:**\n`;
-    for (const p of posts.slice(0, 5)) output += `- ${p.title || "Post"} by ${p.author || "unknown"}\n`;
+    if (home.dms?.pending_count) {
+      output += `- ⚠️ **${home.dms.pending_count} pending DM requests** — say "moltbook dm requests" to review\n`;
+      actions.push(`${home.dms.pending_count} DM requests pending`);
+    }
+    if (home.dms?.unread_count) {
+      output += `- 💬 ${home.dms.unread_count} unread DM messages\n`;
+    }
+    if (home.announcements?.length) {
+      output += `- 📢 ${home.announcements.length} announcement(s)\n`;
+    }
+  } else {
+    output += `- Dashboard: failed to load (HTTP ${homeResult.status})\n`;
   }
 
+  // 1b. Check DMs
+  const dmCheck = await apiRequest("GET", "/agents/dm/check", null, apiKey);
+  if (dmCheck.ok && dmCheck.data) {
+    const dm = dmCheck.data;
+    if (dm.pending_requests?.length) {
+      output += `- 📨 ${dm.pending_requests.length} new DM request(s) — **needs human approval**\n`;
+      actions.push("New DM requests need approval");
+    }
+  }
+
+  // ── TIER 2: Community Engagement ──
+  output += `\n**Tier 2 — Community Engagement:**\n`;
+
+  // 2a. Browse feed
+  const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=10", null, apiKey);
+  if (feedResult.ok) {
+    const posts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+    output += `- Feed: ${posts.length} posts loaded\n`;
+
+    // Show top posts
+    if (posts.length > 0) {
+      output += `\n**Hot Posts:**\n`;
+      for (const p of posts.slice(0, 5)) {
+        const score = p.score != null ? `[${p.score}]` : "";
+        const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
+        output += `  ${score} **${p.title || "Untitled"}** by ${p.author || "unknown"} ${comments}\n`;
+      }
+    }
+  } else {
+    output += `- Feed: failed to load\n`;
+  }
+
+  // ── TIER 3: Content Creation Status ──
+  output += `\n**Tier 3 — Content Status:**\n`;
+
+  // Check own profile for post count and activity
+  const profileResult = await apiRequest("GET", "/agents/me", null, apiKey);
+  if (profileResult.ok) {
+    const me = profileResult.data;
+    output += `- Agent: ${me.name || "N/A"} | Karma: ${me.karma ?? "N/A"} | Posts: ${me.post_count ?? "N/A"}\n`;
+  }
+
+  // Rate limit note
+  output += `\n**Rate limits:** 1 post/30min, 50 comments/day, 1 comment/20sec\n`;
+
+  // Summary
+  output += `\n**Summary:** ${actions.length > 0 ? actions.join("; ") : "All clear — no urgent actions needed."}\n`;
+  output += `\nHEARTBEAT_OK`;
+
+  // Save heartbeat timestamp
   const mem = await getMemory();
   if (!mem.meta) mem.meta = {};
   if (!mem.meta.moltbook) mem.meta.moltbook = {};
   mem.meta.moltbook.lastHeartbeat = new Date().toISOString();
   await saveJSON(MEMORY_FILE, mem);
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "heartbeat" } };
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "heartbeat", actions } };
 }
+
+// ──────────────────────────────────────────────────────────
+// STATUS
+// ──────────────────────────────────────────────────────────
 
 async function handleStatus() {
   const creds = loadCredentials();
   const apiKey = getApiKey();
 
   let statusText = "**Moltbook Status**\n\n";
-  statusText += `Credentials file: ${fsSync.existsSync(CREDS_FILE) ? "exists" : "not found"}\n`;
-  statusText += `API Key: ${apiKey ? "configured (" + apiKey.substring(0, 10) + "...)" : "not configured"}\n`;
+  statusText += `Credentials file: ${fsSync.existsSync(CREDS_FILE) ? "✅ exists" : "❌ not found"}\n`;
+  statusText += `API Key: ${apiKey ? "✅ configured (" + apiKey.substring(0, 10) + "...)" : "❌ not configured"}\n`;
 
   if (creds) {
     statusText += `Agent name: ${creds.agent_name || "N/A"}\n`;
@@ -480,10 +1006,23 @@ async function handleStatus() {
   }
 
   if (apiKey) {
-    const result = await apiRequest("GET", "/agents/me", null, apiKey);
-    statusText += result.ok
-      ? `\nAPI Connection: **Active**\nAccount status: ${result.data?.status || result.data?.claim_status || "unknown"}\n`
-      : `\nAPI Connection: **Failed** (HTTP ${result.status})\n`;
+    // Check API connection
+    const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+    if (meResult.ok) {
+      const me = meResult.data;
+      statusText += `\nAPI Connection: **✅ Active**\n`;
+      statusText += `Account status: ${me.status || me.claim_status || "unknown"}\n`;
+      if (me.karma != null) statusText += `Karma: ${me.karma}\n`;
+      if (me.post_count != null) statusText += `Posts: ${me.post_count}\n`;
+    } else {
+      statusText += `\nAPI Connection: **❌ Failed** (HTTP ${meResult.status})\n`;
+    }
+
+    // Check claim status
+    const claimResult = await apiRequest("GET", "/agents/status", null, apiKey);
+    if (claimResult.ok) {
+      statusText += `Claim status: ${claimResult.data?.status || claimResult.data?.claim_status || JSON.stringify(claimResult.data)}\n`;
+    }
   } else {
     statusText += `\nTo register: say "Register on Moltbook"`;
   }
@@ -505,7 +1044,8 @@ function formatPostsList(data, title) {
     for (const p of posts.slice(0, 15)) {
       const score = p.score != null ? `[${p.score}]` : "";
       const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
-      output += `${score} **${p.title || "Untitled"}** - ${p.author || "unknown"} ${comments}\n`;
+      const id = p.id ? ` \`${p.id.substring(0, 8)}\`` : "";
+      output += `${score} **${p.title || "Untitled"}** — ${p.author || "unknown"} ${comments}${id}\n`;
       if (p.content) output += `  ${p.content.substring(0, 120)}...\n`;
     }
   }
@@ -529,7 +1069,7 @@ function apiError(action, result) {
 }
 
 // ──────────────────────────────────────────────────────────
-// MAIN TOOL
+// MAIN TOOL — Routes to all handlers
 // ──────────────────────────────────────────────────────────
 
 export async function moltbook(input) {
@@ -548,18 +1088,54 @@ export async function moltbook(input) {
     console.log(`[moltbook] Action: ${action}`);
 
     switch (action) {
-      case "register":     return await handleRegister(text, context);
-      case "profile":      return await handleProfile(text, context);
-      case "feed":         return await handleFeed(text, context);
-      case "post":         return await handlePost(text, context);
-      case "comment":      return await handleComment(text, context);
-      case "vote":         return await handleVote(text, context);
-      case "follow":       return await handleFollow(text, context);
-      case "search":       return await handleSearch(text, context);
-      case "communities":  return await handleCommunities(text, context);
-      case "heartbeat":    return await handleHeartbeat(text, context);
-      case "status":       return await handleStatus();
-      default:             return await handleFeed(text, context);
+      // Registration & Auth
+      case "register":       return await handleRegister(text, context);
+
+      // Profile
+      case "profile":        return await handleProfile(text, context);
+      case "updateProfile":  return await handleUpdateProfile(text, context);
+      case "viewProfile":    return await handleViewProfile(text, context);
+
+      // Feeds & Discovery
+      case "feed":           return await handleFeed(text, context);
+      case "home":           return await handleHome(text, context);
+      case "search":         return await handleSearch(text, context);
+
+      // Posts
+      case "post":           return await handlePost(text, context);
+      case "getPost":        return await handleGetPost(text, context);
+      case "deletePost":     return await handleDeletePost(text, context);
+
+      // Comments
+      case "comment":        return await handleComment(text, context);
+      case "getComments":    return await handleGetComments(text, context);
+
+      // Voting
+      case "vote":           return await handleVote(text, context);
+
+      // Following
+      case "follow":         return await handleFollow(text, context);
+      case "unfollow":       return await handleUnfollow(text, context);
+
+      // Communities
+      case "communities":    return await handleCommunities(text, context);
+      case "subscribe":      return await handleSubscribe(text, context);
+      case "createSubmolt":  return await handleCreateSubmolt(text, context);
+      case "submoltFeed":    return await handleSubmoltFeed(text, context);
+
+      // DMs
+      case "dm":             return await handleDM(text, context);
+      case "dm_inbox":       return await handleDMInbox(text, context);
+      case "dm_requests":    return await handleDMRequests(text, context);
+
+      // Notifications
+      case "notifications":  return await handleNotifications(text, context);
+
+      // Status & Heartbeat
+      case "heartbeat":      return await handleHeartbeat(text, context);
+      case "status":         return await handleStatus();
+
+      default:               return await handleFeed(text, context);
     }
   } catch (err) {
     console.error("[moltbook] Error:", err);
