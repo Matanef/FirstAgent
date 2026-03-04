@@ -185,7 +185,7 @@ async function getStandings(leagueId, season) {
   };
 }
 
-async function getFixtures(leagueId, date, label) {
+async function getFixtures(leagueId, date, label, teamFilter = null) {
   const params = { date };
   if (leagueId) {
     params.league = leagueId;
@@ -193,12 +193,26 @@ async function getFixtures(leagueId, date, label) {
   }
 
   const data = await apiFetch("fixtures", params);
-  const fixtures = data?.response || [];
+  let fixtures = data?.response || [];
+
+  // Filter by team name if specified
+  if (teamFilter && fixtures.length > 0) {
+    const teamLower = teamFilter.toLowerCase();
+    const filtered = fixtures.filter(f =>
+      f.teams.home.name.toLowerCase().includes(teamLower) ||
+      f.teams.away.name.toLowerCase().includes(teamLower)
+    );
+    if (filtered.length > 0) {
+      fixtures = filtered;
+      label = `${label} — ${teamFilter}`;
+    }
+  }
 
   if (fixtures.length === 0) {
+    const teamNote = teamFilter ? ` for ${teamFilter}` : "";
     return {
       success: true,
-      data: { preformatted: true, text: `No matches found for ${label}.` }
+      data: { preformatted: true, text: `No matches found${teamNote} for ${label}.` }
     };
   }
 
@@ -382,6 +396,11 @@ export async function sports(query) {
 
     let result;
 
+    // If a team is detected and intent is team-specific, use searchTeam for detailed info
+    if (team && (intent === "today" || intent === "fixtures" || intent === "results" || intent === "live")) {
+      // Pass team filter to getFixtures for team-specific results
+    }
+
     switch (intent) {
       case "standings": {
         const leagueId = league?.id || 39;
@@ -394,19 +413,28 @@ export async function sports(query) {
       }
       case "today": {
         const today = formatDate(new Date());
-        result = await getFixtures(league?.id || null, today, "Today");
+        if (team && !league) {
+          // Team mentioned without league: search team for upcoming matches
+          result = await searchTeam(team);
+        } else {
+          result = await getFixtures(league?.id || null, today, "Today", team);
+        }
         break;
       }
       case "fixtures": {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
-        result = await getFixtures(league?.id || null, formatDate(tomorrow), "Upcoming");
+        if (team && !league) {
+          result = await searchTeam(team);
+        } else {
+          result = await getFixtures(league?.id || null, formatDate(tomorrow), "Upcoming", team);
+        }
         break;
       }
       case "results": {
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
-        result = await getFixtures(league?.id || null, formatDate(yesterday), "Yesterday's Results");
+        result = await getFixtures(league?.id || null, formatDate(yesterday), "Yesterday's Results", team);
         break;
       }
       case "topscorers": {

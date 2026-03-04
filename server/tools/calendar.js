@@ -85,11 +85,50 @@ function parseDateTimeHints(query) {
     hints.durationMinutes = unit.startsWith("h") ? val * 60 : val;
   }
 
-  // Title extraction: text after "called/titled/named" or between quotes
-  const titleMatch = query.match(/(?:called|titled|named|about)\s+["']?([^"'\n,]+?)["']?(?:\s+(?:at|on|from|tomorrow|today|next)|$)/i) ||
-                     query.match(/"([^"]+)"/);
-  if (titleMatch) {
-    hints.title = titleMatch[1].trim();
+  // Title extraction: multi-pattern with priority order
+  // 1. Explicit "called/titled/named" patterns
+  const explicitTitle = query.match(/(?:called|titled|named)\s+["']?([^"'\n,]+?)["']?(?:\s+(?:at|on|from|tomorrow|today|next)|$)/i);
+  if (explicitTitle) {
+    hints.title = explicitTitle[1].trim();
+    return hints;
+  }
+
+  // 2. Quoted text
+  const quotedTitle = query.match(/"([^"]+)"/);
+  if (quotedTitle) {
+    hints.title = quotedTitle[1].trim();
+    return hints;
+  }
+
+  // 3. "schedule/create/set up/book [a/an] TITLE [at/on/tomorrow...]"
+  const actionTitle = query.match(
+    /(?:schedule|create|add|set\s+up|book|make)\s+(?:a|an|the)?\s*(meeting|appointment|call|event|session|standup|sync|review|lunch|dinner|breakfast|interview|demo|presentation|check-?in|catch-?up|workshop|training|class|lesson|reminder|block)(?:\s+(?:with|for|about|regarding)\s+([^,\n]+?))?(?:\s+(?:at|on|from|tomorrow|today|next|for\s+\d)|$)/i
+  );
+  if (actionTitle) {
+    let title = actionTitle[1];
+    if (actionTitle[2]) title += ` with ${actionTitle[2].trim()}`;
+    hints.title = title.charAt(0).toUpperCase() + title.slice(1);
+    return hints;
+  }
+
+  // 4. "about/regarding TOPIC" patterns
+  const aboutTitle = query.match(/(?:about|regarding|re:)\s+["']?([^"'\n,]+?)["']?(?:\s+(?:at|on|from|tomorrow|today|next)|$)/i);
+  if (aboutTitle) {
+    hints.title = aboutTitle[1].trim();
+    return hints;
+  }
+
+  // 5. Extract noun phrase after create/schedule verbs as last resort
+  const verbTitle = query.match(
+    /(?:schedule|create|add|set\s+up|book)\s+(?:a|an)?\s*([a-zA-Z][a-zA-Z\s]{2,30}?)(?:\s+(?:at|on|from|for|tomorrow|today|next\s|in\s)|$)/i
+  );
+  if (verbTitle) {
+    const candidate = verbTitle[1].trim();
+    // Avoid extracting noise words
+    const skipWords = new Set(["event", "new event", "something", "it", "one", "this"]);
+    if (!skipWords.has(candidate.toLowerCase()) && candidate.length > 2) {
+      hints.title = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+    }
   }
 
   return hints;

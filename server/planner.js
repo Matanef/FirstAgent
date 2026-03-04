@@ -614,9 +614,15 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // URL detection → webDownload (fetch and read/follow)
+  // Guard: if query also has conversational context ("and then", "after that"), preserve URL but don't lose intent
   if (/https?:\/\/\S+/i.test(trimmed)) {
     console.log("[planner] certainty branch: url_detected");
-    return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
+    const context = {};
+    // If the user says "read/follow/summarize URL", mark for content extraction
+    if (/\b(read|follow|summarize|extract|get|fetch|download)\b/i.test(lower)) {
+      context.action = "fetch_and_read";
+    }
+    return [{ tool: "webDownload", input: trimmed, context, reasoning: "certainty_url" }];
   }
 
   // File write/create — must come BEFORE explicit file path (which routes to read-only file tool)
