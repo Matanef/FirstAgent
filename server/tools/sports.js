@@ -107,7 +107,7 @@ function detectTeam(text) {
 function detectIntent(text) {
   const lower = text.toLowerCase();
 
-  if (/\b(standing|table|rank|position|league\s+table)\b/.test(lower)) return "standings";
+  if (/\b(standings?|table|rank|position|league\s+table)\b/.test(lower)) return "standings";
   if (/\b(live|ongoing|current|happening\s+now|in\s+progress)\b/.test(lower)) return "live";
   if (/\b(today|tonight|match\s+today|game\s+today|playing\s+today)\b/.test(lower)) return "today";
   if (/\b(tomorrow|upcoming|next\s+match|next\s+game|fixtures?|schedule)\b/.test(lower)) return "fixtures";

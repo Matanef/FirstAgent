@@ -46,39 +46,33 @@ export async function githubTrending(request) {
             }
         }
 
-        console.log("🌏 Fetching GitHub Trending...");
-        const response = await fetch("https://github.com/trending");
+        // Use GitHub Search API instead of broken HTML scraping
+        console.log("🌏 Fetching GitHub Trending via Search API...");
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+        const searchUrl = `https://api.github.com/search/repositories?q=stars:>500+pushed:>${oneWeekAgo}&sort=stars&order=desc&per_page=15`;
+
+        const response = await fetch(searchUrl, {
+            headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
 
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            throw new Error(`GitHub API error: HTTP ${response.status}`);
         }
 
-        const html = await response.text();
-
-        // Extract repo names (e.g., "user/repo")
-        // The structure is typically: <h2 class="h3 lh-condensed"> ... <a href="/user/repo">
-        const regex = /<h2 class="h3 lh-condensed">[\s\S]*?<a href="\/([a-zA-Z0-9-._]+\/[a-zA-Z0-9-._]+)"/g;
-        const repos = [];
-        let match;
-        const seen = new Set();
-
-        while ((match = regex.exec(html)) !== null && repos.length < 15) {
-            const repoPath = match[1];
-            // Filter out common non-repo paths if any (usually not an issue with this regex)
-            if (!seen.has(repoPath)) {
-                repos.push({
-                    name: repoPath,
-                    url: `https://github.com/${repoPath}`
-                });
-                seen.add(repoPath);
-            }
-        }
+        const data = await response.json();
+        const repos = (data.items || []).slice(0, 15).map(repo => ({
+            name: repo.full_name,
+            url: repo.html_url,
+            description: repo.description,
+            stars: repo.stargazers_count,
+            language: repo.language
+        }));
 
         if (repos.length === 0) {
             return {
                 tool: "githubTrending",
                 success: false,
-                error: "Failed to parse trending repositories from GitHub."
+                error: "No trending repositories found."
             };
         }
 
@@ -89,7 +83,10 @@ export async function githubTrending(request) {
             data: {
                 count: repos.length,
                 repositories: repos,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                preformatted: true,
+                text: `**Trending GitHub Repositories (past week)**\n\n` +
+                    repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}${r.language ? ` (${r.language})` : ''}\n   ${r.description || 'No description'}`).join('\n\n')
             },
             reasoning: `Found ${repos.length} trending repositories on GitHub.`
         };

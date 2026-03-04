@@ -105,8 +105,14 @@ function looksLikeNaturalLanguage(input) {
   const lower = input.toLowerCase().trim();
   // If it contains an explicit drive path, it's not NL
   if (/^[a-z]:[\\/]/i.test(lower)) return false;
+  // If it contains a drive path anywhere, it's a file request
+  if (/[a-z]:[\\/]/i.test(lower)) return false;
   // If it looks like a relative path with slashes, it's probably a path
   if (/^[a-z0-9._\-]+[\\/]/i.test(lower)) return false;
+  // Whitelist: explicit file operation keywords bypass the NL guard
+  if (/\b(read|show|open|display|cat|list|get)\s+(the\s+)?(file|content|code|folder|directory)\b/i.test(lower)) return false;
+  if (/\b(what('?s| is) in)\b/i.test(lower)) return false;
+  if (/\b(files?\s+(in|at|from|of))\b/i.test(lower)) return false;
   // Count question-like or conversational words
   const nlSignals = /\b(what|how|why|when|who|where|can|could|would|should|tell|help|explain|please|about|the weather|my email|trending|improve|review and)\b/gi;
   const matches = lower.match(nlSignals) || [];
