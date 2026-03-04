@@ -1,6 +1,8 @@
 # Agent Tool Guide — Complete Reference
 
-> 29 tools across 9 categories. Each section explains what the tool does, how it's triggered, and provides 6–9 example prompts to maximize the agent's functionality.
+> **40 registered tools** across 10 categories. Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
+>
+> _Last updated: March 2026 — Sprint 5 (remaining fixes + Moltbook improvements)_
 
 ---
 
@@ -11,10 +13,11 @@
 3. [Productivity & Communication](#3-productivity--communication)
 4. [File & Code Operations](#4-file--code-operations)
 5. [Developer Tools](#5-developer-tools)
-6. [Finance & Shopping](#6-finance--shopping)
-7. [Media & Entertainment](#7-media--entertainment)
-8. [Web Interaction & Automation](#8-web-interaction--automation)
-9. [Advanced Intelligence](#9-advanced-intelligence)
+6. [Code Guru Tools](#6-code-guru-tools)
+7. [Finance & Shopping](#7-finance--shopping)
+8. [Media & Entertainment](#8-media--entertainment)
+9. [Web Interaction & Automation](#9-web-interaction--automation)
+10. [Advanced Intelligence](#10-advanced-intelligence)
 
 ---
 
@@ -58,6 +61,21 @@ Stores and retrieves persistent user information: name, email, location, timezon
 
 ---
 
+### `contacts` — Contact Book Management
+
+Manages your contact list with name, email, phone, and notes. Supports add, update, search, and list operations. Handles both structured and natural language input with smart type coercion.
+
+**Triggered by:** Part of email/calendar flows when looking up contacts, or via the "contacts" keyword.
+
+**Example prompts:**
+1. `"Add contact: John Smith, john@example.com, 555-1234"` — Add new contact
+2. `"Find John's email"` — Search contacts
+3. `"List all my contacts"` — Show contact book
+4. `"Update Sarah's phone to 555-5678"` — Update contact field
+5. `"Email John about the meeting"` — Auto-resolves contact in email flow
+
+---
+
 ### `nlp_tool` — Text Analysis & Sentiment
 
 Performs NLP analysis: sentiment detection, entity extraction, text classification. Only activates for explicit analysis requests.
@@ -66,11 +84,9 @@ Performs NLP analysis: sentiment detection, entity extraction, text classificati
 
 **Example prompts:**
 1. `"Analyze the sentiment of: I love this product, it changed my life!"` — Positive sentiment
-2. `"What's the sentiment of this review: The service was terrible and the food was cold"` — Negative sentiment
-3. `"Extract entities from: Apple CEO Tim Cook announced new products in Cupertino"` — Named entity recognition
-4. `"Analyze the text: The quarterly results exceeded expectations by 20%"` — Business text analysis
-5. `"Classify the tone of this message: We need to talk about your performance"` — Tone classification
-6. `"Sentiment analysis on: meh, it was okay I guess"` — Neutral/mixed sentiment
+2. `"What's the sentiment of this review: The service was terrible"` — Negative sentiment
+3. `"Extract entities from: Apple CEO Tim Cook announced new products"` — Named entity recognition
+4. `"Classify the tone of this message: We need to talk about your performance"` — Tone classification
 
 ---
 
@@ -92,53 +108,55 @@ Checks the agent's routing accuracy, detects misrouting patterns, generates perf
 
 ## 2. Information & Search
 
-### `search` — Web Search (Multi-Source + LLM Synthesis)
+### `search` — Web Search (6-Source + LLM Synthesis)
 
-Searches Wikipedia, DuckDuckGo, Google (via SerpAPI), and Yandex in parallel. Results are deduplicated, scored by relevance, and cached for 1 hour. **Now synthesizes a coherent LLM-powered summary** from the combined search results, providing a unified answer rather than just raw links.
+Searches **6 sources in parallel**: Wikipedia, Google (SerpAPI), Yandex, DuckDuckGo (SerpAPI), Bing (SerpAPI), and Yahoo (SerpAPI). Results are deduplicated, scored by relevance, and cached for 1 hour. Synthesizes a coherent LLM-powered summary from the combined search results.
 
-**Triggered by:** "search", "look up", "find information", "who is/was", "tell me about", "history of"
+**Requires:** `SERPAPI_KEY` in `.env` (recommended for full 6-source coverage)
+
+**Triggered by:** "search", "look up", "find information", "who is/was", "tell me about", "history of", general knowledge questions ("what is X", "how does X work")
 
 **Example prompts:**
 1. `"Search for the latest developments in quantum computing"` — Current tech research
-2. `"Who was Napoleon Bonaparte?"` — Historical figure lookup
+2. `"Who was Napoleon Bonaparte?"` — Historical figure lookup (auto-routed via general knowledge guard)
 3. `"What is the population of Japan?"` — Factual query
 4. `"Search for best practices in Node.js error handling"` — Technical research
 5. `"Look up the history of the Eiffel Tower"` — Historical research (synthesized answer)
 6. `"Tell me about quantum computing"` — Knowledge query (LLM synthesis)
-7. `"Find information about climate change"` — Topic research
+7. `"How does photosynthesis work?"` — General knowledge (auto-routed, not sent to calculator)
 8. `"What are the system requirements for Windows 11?"` — Product info
 
 ---
 
 ### `news` — Multi-Source News with LLM Summaries & Category Feeds
 
-Fetches from 9+ RSS feeds (Ynet, Kan, N12, JPost, Times of Israel, BBC, CNN, Reuters, Al Jazeera). Supports **category-specific feeds** (technology, science, business, sports, health, entertainment) that are auto-detected from the query. Feeds are fetched in **parallel with timeouts** for fast responses. Articles are scraped and summarized by the LLM, with fallback to RSS descriptions when scraping fails.
+Fetches from **19+ general RSS feeds** (Ynet, Kan, N12, JPost, Times of Israel, Haaretz, i24NEWS, BBC, CNN, Reuters, Al Jazeera, AP News, The Guardian, NPR, ABC News, NBC News, Sky News, DW, France24) plus **7 category-specific feed groups** (technology, science, business, sports, health, entertainment, world) with ~30 active category feeds. Feeds are fetched in parallel with timeouts. Articles are scraped (up to 8) and summarized by the LLM, with headlines table showing up to 30 results. Smart topic extraction rejects noise words like "any", "some", "all".
 
-**Triggered by:** "news", "headlines", "articles", "latest news", "breaking"
+**Triggered by:** "news", "headlines", "articles", "latest news", "breaking", "what's happening"
 
 **Example prompts:**
 1. `"What's the latest news?"` — All sources, top headlines
-2. `"Latest news about technology"` — Topic-filtered news
+2. `"Latest news about technology"` — Auto-detects tech category feeds
 3. `"Breaking news from BBC"` — Source-specific (if matched in text)
 4. `"Any news about climate change?"` — Topic: environment
-5. `"Today's headlines about the economy"` — Topic: economy
+5. `"Today's headlines about the economy"` — Topic: economy/business
 6. `"Recent news from Israel"` — Regional news (Israeli sources prioritized)
-7. `"What's happening in the world of sports?"` — Topic: sports (via news, not sports tool)
+7. `"What's happening in the world of sports?"` — Sports news via RSS (not sports tool)
 8. `"Give me a news summary for today"` — General daily briefing
 
 ---
 
 ### `weather` — Forecast & Current Conditions
 
-Uses OpenWeather API. Supports city names, "here" (geolocation), and remembers your saved location from memory.
-
-**Triggered by:** "weather", "forecast", "temperature", "rain", "snow", "humidity", "wind", "sunny", "cloudy"
+Uses OpenWeather API. Supports city names, "here" (geolocation fallback from saved memory), and remembers your saved location from memory. If no city is specified, automatically uses your saved profile location.
 
 **Requires:** `OPENWEATHER_KEY` in `.env`
 
+**Triggered by:** "weather", "forecast", "temperature", "rain", "snow", "humidity", "wind", "sunny", "cloudy"
+
 **Example prompts:**
 1. `"What's the weather in London?"` — City-specific forecast
-2. `"Weather here"` — Uses geolocation
+2. `"Weather here"` — Uses saved location from memory profile
 3. `"Is it going to rain in New York tomorrow?"` — Rain forecast
 4. `"Temperature in Tokyo"` — Temperature query
 5. `"What's the forecast for this week in Tel Aviv?"` — Extended forecast
@@ -152,34 +170,36 @@ Uses OpenWeather API. Supports city names, "here" (geolocation), and remembers y
 
 ### `email` — Draft, Send & Browse Emails (Gmail OAuth)
 
-Full email tool: draft & send emails (two-stage confirmation), browse inbox, read emails, and download attachments. Uses Gmail OAuth with send + readonly scopes.
+Full email tool: draft & send emails (two-stage confirmation), browse inbox, read emails, search, and download attachments. Uses Gmail OAuth with send + readonly scopes. Email subjects are now intelligently extracted from the message body ("about X", "regarding Y") instead of defaulting to a generic subject.
 
 **Requires:** Gmail OAuth configured (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
 
 **Triggered by:** "email", "mail", "send to", "draft email", "check my emails", "inbox", "read my emails"
 
+**Confirmation flow:** Emails are always drafted first. Say `"send it"` to confirm or `"cancel"` to discard.
+
 **Example prompts:**
 1. `"Email john@example.com saying the meeting is at 3pm"` — Direct email with body
-2. `"Draft an email to Sarah about the project deadline"` — Uses contacts from memory
+2. `"Draft an email to Sarah about the project deadline"` — Uses contacts, smart subject extraction
 3. `"Send an email to my boss about taking Friday off"` — Natural language
 4. `"Email the team about the new release, attach the changelog"` — With attachment
 5. `"Send it"` — Confirm and send the last drafted email
-6. `"Cancel"` — Discard the draft
-7. `"Check my recent emails"` — Browse inbox (NEW)
-8. `"Show my unread emails from last week"` — Search emails by date/status (NEW)
-9. `"Read email #3"` — View full email content (NEW)
-10. `"Go over my emails and find attachments named 'bills'"` — Search with attachment filter (NEW)
+6. `"Cancel"` — Discard the draft (no longer accidentally sends!)
+7. `"Check my recent emails"` — Browse inbox
+8. `"Show my unread emails from last week"` — Search emails by date/status
+9. `"Read email #3"` — View full email content
+10. `"Go over my emails and find attachments named 'bills'"` — Search with attachment filter
 
 ---
 
 ### `tasks` — Task & Todo Management
 
-Manages task lists with priorities, due dates, and status tracking. **Note:** Task keywords (e.g., "todo", "task", "add task") take priority over github keywords during routing, so messages like "Add task: review pull request" correctly route to the tasks tool, not GitHub.
+Manages task lists with priorities, due dates, and status tracking. Task keywords take priority over GitHub keywords during routing.
 
 **Triggered by:** "todo", "task", "reminder", "add task", "my tasks", "checklist"
 
 **Example prompts:**
-1. `"Add task: review pull request by Friday"` — Create task with deadline (routes here, NOT github)
+1. `"Add task: review pull request by Friday"` — Create task with deadline (routes here, NOT GitHub)
 2. `"What are my current tasks?"` — List all tasks
 3. `"Mark the review task as done"` — Update status
 4. `"Add a high priority task to fix the login bug"` — Priority task
@@ -190,20 +210,21 @@ Manages task lists with priorities, due dates, and status tracking. **Note:** Ta
 
 ### `calendar` — Google Calendar Integration
 
-Manage your Google Calendar: list upcoming events, create events with natural language, check availability/free time. Uses existing Google OAuth with calendar scopes added.
+Manage your Google Calendar: list upcoming events, create events with natural language, check availability/free time. **Smart event naming** — extracts event titles from natural language (e.g., "schedule a dentist appointment tomorrow at 3pm" creates event named "Dentist appointment", not "New Event"). Supports patterns like "meeting with John", "call about project", and quoted titles.
 
-**Requires:** Gmail OAuth configured + Calendar scopes (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
+**Requires:** Gmail OAuth configured + Calendar scopes
 
-**Triggered by:** "calendar", "events", "schedule", "meeting", "appointment", "free time", "availability"
+**Triggered by:** "calendar", "events", "schedule", "meeting", "appointment", "free time", "availability", "book"
 
 **Example prompts:**
-1. `"What events do I have today?"` -- List today's events
-2. `"Show my calendar for next week"` -- Weekly view
-3. `"Schedule a meeting tomorrow at 3pm called Team Standup"` -- Create event with title and time
-4. `"Am I free tomorrow afternoon?"` -- Check availability
-5. `"Create an event on Monday at 10am for 30 minutes called Code Review"` -- Specific event creation
-6. `"What's on my calendar this week?"` -- Weekly overview
-7. `"Book a meeting next Friday at 2pm at the office"` -- Create with location
+1. `"What events do I have today?"` — List today's events
+2. `"Show my calendar for next week"` — Weekly view
+3. `"Schedule a meeting tomorrow at 3pm called Team Standup"` — Create event with explicit title
+4. `"Am I free tomorrow afternoon?"` — Check availability
+5. `"Create a dentist appointment on Monday at 10am for 30 minutes"` — Smart title: "Dentist appointment"
+6. `"Book a call with Sarah at 2pm"` — Smart title: "Call with Sarah"
+7. `"Set up a code review meeting about the API changes"` — Smart title: "Code review meeting about the API changes"
+8. `"Schedule lunch with the team tomorrow"` — Smart title: "Lunch with the team"
 
 ---
 
@@ -211,13 +232,13 @@ Manage your Google Calendar: list upcoming events, create events with natural la
 
 ### `file` — File System Browser & Reader
 
-Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder. **Smart path extraction** correctly handles absolute paths embedded in natural language (e.g., "List files in D:/local-llm-ui/server/tools" → extracts `D:/local-llm-ui/server/tools`). File path checks take priority over all other routing, so paths containing words like "planner" won't misroute.
+Reads, lists, and navigates files and directories. Sandboxed to the project root and E:/testFolder. Smart path extraction correctly handles absolute paths in natural language. File path checks take priority over all other routing. NL guard correctly recognizes "read the file", "what's in the directory", and "files in folder" as file operations.
 
-**Triggered by:** Explicit file paths (e.g., `D:/...`), "list files", "read file", "show me"
+**Triggered by:** Explicit file paths (e.g., `D:/...`), "list files", "read file", "show me", "what's in"
 
 **Example prompts:**
-1. `"List files in D:/local-llm-ui/server/tools"` — Absolute path extracted from natural language
-2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents (path priority over diagnostic)
+1. `"List files in D:/local-llm-ui/server/tools"` — Absolute path extracted from NL
+2. `"Read D:/local-llm-ui/server/planner.js"` — Read file contents
 3. `"Show me the contents of E:/testFolder/config.json"` — Read external file
 4. `"What files are in the server directory?"` — Natural language listing
 5. `"List all JavaScript files in the tools folder"` — Filtered listing
@@ -228,17 +249,16 @@ Reads, lists, and navigates files and directories. Sandboxed to the project root
 
 ### `fileWrite` — Write Files to Disk (Natural Language Support)
 
-Creates or overwrites files on disk. **Now supports natural language input** — just describe what you want and specify the path. The LLM generates the file content automatically based on your request and the file extension. Also accepts structured input `{ path, content }` for programmatic use.
+Creates or overwrites files on disk. Supports natural language input — just describe what you want and specify the path. The LLM generates content automatically based on your request and the file extension.
 
-**Triggered by:** "write/create/generate/save/make" + file path (e.g., `D:/...`), or as part of multi-step flows
+**Triggered by:** "write/create/generate/save/make" + file path
 
 **Example prompts:**
-1. `"Write a hello world script to D:/local-llm-ui/test.js"` — NL: generates JS content
-2. `"Create a config file at D:/local-llm-ui/config.json"` — NL: generates JSON config
-3. `"Generate a Python script at E:/testFolder/main.py"` — NL: generates Python code
+1. `"Write a hello world script to D:/local-llm-ui/test.js"` — NL: generates JS
+2. `"Create a config file at D:/local-llm-ui/config.json"` — NL: generates JSON
+3. `"Generate a Python script at E:/testFolder/main.py"` — NL: generates Python
 4. `"Save a basic HTML page to D:/local-llm-ui/index.html"` — NL: generates HTML
 5. `"Create a README at D:/local-llm-ui/README.md"` — NL: generates Markdown
-6. `"Write a bash script to E:/testFolder/setup.sh"` — NL: generates shell script
 
 ---
 
@@ -254,13 +274,27 @@ When you attach files via drag-and-drop or the attachment bar, this tool summari
 3. *Attach multiple files* + `"Compare these files"` — Multi-file analysis
 4. *Attach a `.csv` file* + `"Summarize this data"` — Data summary
 5. *Attach a log file* + `"Find errors in this log"` — Log analysis
-6. *Attach a `.md` file* + `"What are the key points?"` — Document summary
+
+---
+
+### `review` — Code Review & Analysis
+
+Reviews code files and generates detailed analysis: issues, suggestions, best practices, security concerns. Uses 4-pattern filename extraction with comprehensive fallback paths.
+
+**Triggered by:** "review code", "inspect code", "examine file", "audit code", "review tool"
+
+**Example prompts:**
+1. `"Review server/planner.js"` — Full file review
+2. `"Review the executor code and suggest improvements"` — Review with suggestions
+3. `"Inspect server/tools/email.js for security issues"` — Security audit
+4. `"Examine the search tool implementation"` — Tool analysis
+5. `"Review my code for performance issues"` — Performance review
 
 ---
 
 ### `duplicateScanner` — Find Duplicate Files
 
-Scans directories for duplicate files using SHA256 hashing (two-stage: chunk then full), metadata matching, and Levenshtein fuzzy name detection. Results appear in a scrollable panel.
+Scans directories for duplicate files using SHA256 hashing (two-stage: chunk then full), metadata matching, and Levenshtein fuzzy name detection.
 
 **Triggered by:** "duplicate", "find duplicate", "scan duplicate"
 
@@ -269,25 +303,6 @@ Scans directories for duplicate files using SHA256 hashing (two-stage: chunk the
 2. `"Scan for duplicates in E:/testFolder"` — External folder
 3. `"Find duplicate .js files in the server directory"` — Type-filtered
 4. `"Are there any duplicate files named config?"` — Name-filtered
-5. `"Find duplicate files in D:/local-llm-ui that are .json"` — Extension filter
-6. `"Scan for duplicate files"` — Default path scan
-
----
-
-### `review` — Code Review & Analysis
-
-Reviews code files and generates detailed analysis: issues, suggestions, best practices, security concerns.
-
-**Triggered by:** "review code", "inspect code", "examine file", "audit code"
-
-**Example prompts:**
-1. `"Review server/planner.js"` — Full file review
-2. `"Review the executor code and suggest improvements"` — Review with suggestions
-3. `"Inspect server/tools/email.js for security issues"` — Security audit
-4. `"Examine the search tool implementation"` — Tool analysis
-5. `"Review my code for performance issues"` — Performance review
-6. `"Audit the authentication flow in the OAuth module"` — Specific concern
-7. `"Review server/utils/httpClient.js and check error handling"` — Targeted review
 
 ---
 
@@ -295,12 +310,7 @@ Reviews code files and generates detailed analysis: issues, suggestions, best pr
 
 Applies code patches/diffs to files. Used in multi-step improvement flows after review.
 
-**Triggered by:** Part of improvement pipeline (review → applyPatch), or "apply patch", "patch file"
-
-**Example prompts:**
-1. `"Apply the suggested improvements to server/tools/email.js"` — Post-review patch
-2. `"Patch the search tool with the recommended changes"` — Apply recommendations
-3. *Typically used automatically in multi-step improvement flows*
+**Triggered by:** Part of improvement pipeline (review -> applyPatch), or "apply patch", "patch file"
 
 ---
 
@@ -308,26 +318,28 @@ Applies code patches/diffs to files. Used in multi-step improvement flows after 
 
 ### `github` — GitHub Repository Management
 
-Full GitHub API access via Octokit: list repos, search repos, manage issues, read file contents, view profile.
+Full GitHub API access via Octokit: list repos, search repos, manage issues, view commits, read file contents, and view profile. All output now uses **clickable markdown links** for repos, commits, and issues.
 
 **Requires:** `GITHUB_TOKEN` or `GITHUB_API_KEY` in `.env`
 
 **Triggered by:** "github", "repo", "repository", "pull request", "issue", "commit"
 
 **Example prompts:**
-1. `"List my GitHub repositories"` — Show all repos
-2. `"Search GitHub for React component libraries"` — Search repos
-3. `"Show my open GitHub issues"` — List issues
+1. `"List my GitHub repositories"` — Show all repos with clickable links
+2. `"Search GitHub for React component libraries"` — Search repos (with star counts)
+3. `"Show my open GitHub issues"` — List issues with clickable links
 4. `"Get the contents of README.md from my FirstAgent repo"` — Read repo file
 5. `"Show my GitHub profile"` — View profile info
-6. `"What are the most starred repos for 'machine learning'?"` — Search by stars
-7. `"List recent commits on my FirstAgent repository"` — Commit history
+6. `"List recent commits on my FirstAgent repository"` — Commit history with clickable SHA links
+7. `"Do you have GitHub access?"` — Test API connection
 
 ---
 
 ### `githubTrending` — Trending Repositories
 
-Fetches trending GitHub repositories by topic, language, or time period. Used in improvement flows to discover best practices.
+Fetches trending GitHub repositories using the GitHub Search API (repos with 500+ stars pushed in the last week, sorted by stars). Supports topic and language filtering.
+
+**Requires:** `GITHUB_TOKEN` for higher rate limits
 
 **Triggered by:** "trending", "popular repos", "top repositories"
 
@@ -337,8 +349,6 @@ Fetches trending GitHub repositories by topic, language, or time period. Used in
 3. `"Popular repos for machine learning"` — Topic search
 4. `"What's trending in TypeScript?"` — Language trends
 5. `"Show trending Node.js frameworks"` — Framework discovery
-6. `"Top repos for React best practices"` — Best practice research
-7. `"Trending repos for API design patterns"` — Architecture research
 
 ---
 
@@ -354,17 +364,15 @@ Executes Git commands on your local repository: status, log, diff, add, commit, 
 3. `"git diff"` — Show unstaged changes
 4. `"git add server/planner.js"` — Stage a file
 5. `"git branch"` — List branches
-6. `"git stash"` — Stash current changes
-7. `"Show me the git log for the last 10 commits"` — Detailed history
-8. `"What files have changed since last commit?"` — Quick diff check
+6. `"What files have changed since last commit?"` — Quick diff check
 
 ---
 
 ### `packageManager` — npm Package Management
 
-Install, update, and manage npm packages.
+Install, update, and manage npm packages. Receives full object input for proper context. Handles string fallback parsing for natural language input.
 
-**Triggered by:** "npm install", "install package", "add dependency"
+**Triggered by:** "npm install", "install package", "add dependency", "update packages"
 
 **Example prompts:**
 1. `"Install axios"` — Install a package
@@ -378,38 +386,137 @@ Install, update, and manage npm packages.
 
 ### `webDownload` — Download Files from URLs
 
-Downloads files from URLs (including GitHub raw URLs and npm package info). Returns content for text files.
+Downloads files from URLs (including GitHub raw URLs and npm package info). Returns content preview for text-based files. Now includes action context from the planner for read/follow operations.
 
 **Triggered by:** Any URL in the message (e.g., `https://...`)
 
 **Example prompts:**
 1. `"Download https://raw.githubusercontent.com/user/repo/main/README.md"` — GitHub raw file
 2. `"Fetch https://example.com/api/data.json"` — Download JSON
-3. `"Download the file at https://example.com/style.css"` — CSS download
+3. `"Read https://example.com/instructions.md and follow"` — Fetch + read content
 4. `"Get npm info for express"` — npm package lookup
-5. `"Download https://example.com/script.js and read it"` — Download + preview
-6. `"Fetch and summarize https://example.com/article.html"` — Download + LLM summary
 
 ---
 
-## 6. Finance & Shopping
+## 6. Code Guru Tools
+
+### `codeReview` — Deep Code Quality Analysis
+
+Comprehensive code review covering quality, security, performance, and architecture. More thorough than the basic `review` tool — supports different review types.
+
+**Triggered by:** "code review", "security review", "performance review", "code quality", "code smell", "security audit"
+
+**Example prompts:**
+1. `"Code review D:/project/server"` — Full review of a directory
+2. `"Security audit of my server code"` — Security-focused review
+3. `"Check for code smells in the tools folder"` — Quality review
+4. `"Architecture review of the planner"` — Architecture analysis
+
+---
+
+### `codeTransform` — Refactor, Optimize & Modernize Code
+
+Write operations that modify code files: refactoring, optimization, adding documentation, adding error handling, modernization.
+
+**Triggered by:** "refactor", "rewrite", "optimize code", "add error handling", "add jsdoc", "modernize", "simplify"
+
+**Example prompts:**
+1. `"Refactor D:/project/utils.js"` — Code refactoring
+2. `"Add error handling to server.js"` — Error handling
+3. `"Add JSDoc comments to the planner module"` — Documentation
+4. `"Optimize the search function for performance"` — Optimization
+5. `"Modernize the callback-based code to async/await"` — Migration
+
+---
+
+### `folderAccess` — Directory Browser & Tree View
+
+Browse any folder, view directory trees, scan folder structures, and get directory statistics.
+
+**Triggered by:** "folder structure", "directory tree", "project structure", "scan folder", "browse directory"
+
+**Example prompts:**
+1. `"Show the folder structure of D:/project"` — Tree view
+2. `"Browse the server directory"` — Directory listing
+3. `"Scan the tools folder for all files"` — Recursive scan
+4. `"Show me the project structure"` — Project overview
+
+---
+
+### `projectGraph` — Dependency Analysis & Dead Code Detection
+
+Analyzes module dependencies, finds circular imports, detects dead/unused code, and calculates coupling metrics.
+
+**Triggered by:** "dependency graph", "circular dependencies", "dead code", "unused files", "module graph"
+
+**Example prompts:**
+1. `"Show the dependency graph"` — Full module graph
+2. `"Find circular dependencies"` — Circular import detection
+3. `"Detect dead code in the project"` — Unused file detection
+4. `"Show coupling metrics"` — Module coupling analysis
+
+---
+
+### `projectIndex` — Semantic Code Search & Symbol Lookup
+
+Indexes the project for fast semantic code search, function/class lookup, and symbol discovery.
+
+**Triggered by:** "index project", "search function", "find class", "symbol search"
+
+**Example prompts:**
+1. `"Index the project"` — Build search index
+2. `"Find the handleRequest function"` — Function lookup
+3. `"Search for all classes in the project"` — Symbol search
+4. `"Show project overview"` — Summary statistics
+
+---
+
+### `githubScanner` — GitHub Intelligence & Tool Discovery
+
+Scans GitHub repositories for patterns, discovers new tools, and analyzes repo trends.
+
+**Triggered by:** "scan github", "discover tools", "github intelligence", "repo scan"
+
+**Example prompts:**
+1. `"Scan GitHub for AI agent tools"` — Tool discovery
+2. `"Analyze trending GitHub patterns"` — Pattern analysis
+3. `"Find new tools for web scraping"` — Discovery
+4. `"Scan repos for best practices"` — Pattern research
+
+---
+
+### `selfEvolve` — Autonomous Self-Improvement
+
+Active code modification engine: scans GitHub for patterns, reviews own code, generates and applies patches, stages changes via git. Supports dry-run mode for safe previewing.
+
+**Triggered by:** "evolve yourself", "improve your code", "scan github and improve", "upgrade yourself"
+
+**Example prompts:**
+1. `"Evolve yourself"` — Full evolution cycle
+2. `"Improve your own code"` — Self-improvement
+3. `"Scan github and upgrade your tools"` — Pattern-based improvement
+4. `"Dry run: evolve yourself"` — Preview changes without applying
+5. `"Show evolution history"` — View past improvements
+
+---
+
+## 7. Finance & Shopping
 
 ### `finance` — Stock Prices & Market Data
 
-Fetches real-time stock prices, market data, and company information from Alpha Vantage, Finnhub, and FMP.
+Fetches real-time stock prices from Alpha Vantage, Finnhub, and FMP. Includes a **company name to ticker resolver** (Tesla -> TSLA, Apple -> AAPL, etc.) with stopword filtering to prevent false matches.
 
 **Requires:** At least one of `ALPHA_VANTAGE_KEY`, `FINNHUB_KEY`, `FMP_API_KEY` in `.env`
 
-**Triggered by:** "stock", "share price", "ticker", "market", "portfolio", "invest", "S&P"
+**Triggered by:** "stock", "share price", "ticker", "market", "portfolio", company names + intent words ("how is Tesla doing")
 
 **Example prompts:**
-1. `"What's the stock price of Apple?"` — Current price
-2. `"How is Tesla doing today?"` — Stock status
+1. `"What's the stock price of Apple?"` — Current price (resolves to AAPL)
+2. `"How is Tesla doing today?"` — Stock status (resolves to TSLA)
 3. `"Show me the stock price for MSFT"` — By ticker symbol
 4. `"Compare Apple and Google stock prices"` — Multi-stock
 5. `"How did the S&P 500 perform today?"` — Market index
-6. `"What's the stock price of Amazon in the last week?"` — Historical
-7. `"Show me NVDA stock data"` — Nvidia by ticker
+6. `"Show me NVDA stock data"` — Nvidia by ticker
 
 ---
 
@@ -417,7 +524,7 @@ Fetches real-time stock prices, market data, and company information from Alpha 
 
 Deep financial analysis: P/E ratio, market cap, revenue, earnings, debt ratios.
 
-**Triggered by:** "fundamentals", "financials", "earnings", "revenue", "P/E ratio"
+**Triggered by:** "fundamentals", "financials", "earnings", "revenue", "P/E ratio", "balance sheet"
 
 **Example prompts:**
 1. `"Show me Apple's financial fundamentals"` — Full fundamental analysis
@@ -425,7 +532,6 @@ Deep financial analysis: P/E ratio, market cap, revenue, earnings, debt ratios.
 3. `"Revenue and earnings for Microsoft"` — Income data
 4. `"Compare fundamentals of Google and Amazon"` — Comparative analysis
 5. `"What's the market cap of NVIDIA?"` — Market cap
-6. `"Show me the debt-to-equity ratio for Meta"` — Balance sheet metric
 
 ---
 
@@ -440,12 +546,10 @@ Searches for products, prices, deals, and reviews.
 2. `"Compare prices for AirPods Pro"` — Price comparison
 3. `"Search for laptop deals under $1000"` — Budget shopping
 4. `"What are the best wireless headphones?"` — Product research
-5. `"Find deals on ergonomic office chairs"` — Deal hunting
-6. `"Shop for a 27 inch 4K monitor"` — Specific product search
 
 ---
 
-## 7. Media & Entertainment
+## 8. Media & Entertainment
 
 ### `youtube` — YouTube Video Search
 
@@ -460,30 +564,27 @@ Searches YouTube for videos, tutorials, and content.
 2. `"Find YouTube videos about machine learning"` — Topic search
 3. `"YouTube best cooking channels"` — Channel discovery
 4. `"Find videos about React hooks explained"` — Specific topic
-5. `"Search YouTube for live coding sessions"` — Content type
-6. `"YouTube tutorials about Docker for beginners"` — Skill level
-7. `"Find the latest tech review videos"` — Recent content
 
 ---
 
-### `sports` — Live Scores, Fixtures, Standings & Sports Data
+### `sports` — Live Scores, Fixtures, Standings & Team Data
 
-Full sports tool using API-Football v3. Supports: upcoming fixtures, past results, live scores, full league standings, and top scorers. Returns pre-formatted markdown tables showing ALL data (not truncated). Recognizes team names (Arsenal, Barcelona, Bayern, etc.) and league names (Premier League, La Liga, Serie A, etc.).
+Full sports tool using API-Football v3. Supports: upcoming fixtures, past results, live scores, full league standings, top scorers, and **team-specific filtering**. When you mention a team name (Arsenal, Barcelona, Bayern, etc.), results are filtered to show only that team's matches. Recognizes team aliases (Barca, Man Utd, PSG, etc.) and league names (Premier League, La Liga, Serie A, etc.).
 
 **Requires:** `SPORTS_API_KEY` in `.env` (API-Football key)
 
-**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "standings", "fixture", "Premier League", team names (Arsenal, Chelsea, etc.)
+**Triggered by:** "score", "match", "game", "league", "team", "player", "football", "standings", "fixture", team names
 
 **Example prompts:**
-1. `"When does Arsenal play next?"` — Upcoming fixtures for a team
+1. `"When does Arsenal play next?"` — Searches team + upcoming fixtures
 2. `"Premier League standings"` — Full 20-team league table
-3. `"What were Liverpool's last 5 results?"` — Recent match results
+3. `"What were yesterday's results for Barcelona?"` — Team-filtered results
 4. `"Live scores right now"` — Currently live matches
 5. `"La Liga top scorers"` — Top scorer leaderboard
 6. `"Champions League fixtures"` — Upcoming UCL matches
-7. `"Did Barcelona win their last game?"` — Recent result for team
+7. `"Today's Premier League matches for Liverpool"` — Team + league filtered
 8. `"Bundesliga table"` — Full standings for German league
-9. `"When does Man City play next in the Premier League?"` — Team + league specific
+9. `"Show me Man City's next games"` — Alias resolved to Manchester City
 
 ---
 
@@ -493,18 +594,13 @@ Fun tool that tells Lord of the Rings themed jokes.
 
 **Triggered by:** "LOTR joke", "Lord of the Rings joke", "hobbit joke"
 
-**Example prompts:**
-1. `"Tell me a Lord of the Rings joke"` — Random LOTR joke
-2. `"Give me a hobbit joke"` — Hobbit-themed
-3. `"LOTR humor please"` — Fun request
-
 ---
 
-## 8. Web Interaction & Automation
+## 9. Web Interaction & Automation
 
 ### `webBrowser` — General Web Browsing
 
-Browse any website with persistent session cookies, form submission, CSRF handling, and structured data extraction. Each domain gets its own persistent session.
+Browse any website with persistent session cookies, form submission, CSRF handling, and structured data extraction.
 
 **Triggered by:** "browse", "visit", "navigate", "go to" + a domain name
 
@@ -512,71 +608,82 @@ Browse any website with persistent session cookies, form submission, CSRF handli
 1. `"Browse example.com"` — Simple page fetch
 2. `"Visit reddit.com and show me the top links"` — Extract links
 3. `"Navigate to github.com/trending and extract the content"` — Scrape content
-4. `"Go to news.ycombinator.com and show me the headlines"` — Extract text
-5. `"Extract all forms from example.com/login"` — Form discovery
-6. `"Login to example.com with username: test password: test123"` — Login flow
-7. `"Store credentials for example.com username: myuser password: mypass"` — Encrypted credential storage
-8. `"Submit form at example.com/contact with name: Alex email: alex@test.com"` — Form submission
+4. `"Login to example.com with username: test password: test123"` — Login flow
+5. `"Store credentials for example.com username: myuser password: mypass"` — Encrypted credential storage
 
 ---
 
 ### `moltbook` — Moltbook.com Social Network (REST API)
 
-Full integration with Moltbook, the social network for AI agents. Uses the REST API documented in skill.md. Supports: registration, posting, commenting, voting, feeds, semantic search, following, submolt communities, and profile management. Authentication via API key (stored in encrypted credential store).
+Full integration with Moltbook, the social network for AI agents. Uses the REST API (`/api/v1/`). Supports: registration, posting, commenting, voting, feeds, semantic search, following, submolt communities, heartbeat check-ins, and profile management.
+
+**Registration improvements:**
+- Correctly parses the nested API response (`agent.api_key`, `agent.claim_url`)
+- Handles **409 Conflict** gracefully — checks for existing local credentials and verifies them
+- Supports **custom agent names** — "register on moltbook as MyCustomName"
+- Automatically sets up **owner email** if your email is saved in memory
+- Provides clear recovery instructions when registration fails
 
 **Triggered by:** Any message containing "moltbook"
 
 **Example prompts:**
-1. `"Register on moltbook"` — Register via REST API, get API key + claim URL
-2. `"Post on moltbook title: Hello World content: My first post!"` — Create a post
-3. `"Check my moltbook feed"` — Browse personalized feed
-4. `"Search moltbook for AI memory techniques"` — Semantic search
-5. `"Upvote post abc123 on moltbook"` — Vote on a post
-6. `"Comment on moltbook post abc123 saying Great insight!"` — Add a comment
-7. `"Follow ClawdClawderberg on moltbook"` — Follow another agent
-8. `"View my moltbook profile"` — See your profile and stats
-9. `"List moltbook communities"` — Browse submolts
-10. `"Store moltbook api_key: moltbook_xxx"` — Save API key securely
+1. `"Read https://www.moltbook.com/skill.md and follow the instructions to join Moltbook"` — Full registration flow
+2. `"Register on moltbook"` — Register with default agent name
+3. `"Register on moltbook as SuperAgent42"` — Register with custom name
+4. `"Check moltbook status"` — Verify registration and API key
+5. `"Post on moltbook title: Hello World content: My first post!"` — Create a post
+6. `"Check my moltbook feed"` — Browse personalized feed
+7. `"Search moltbook for AI memory techniques"` — Semantic search
+8. `"Upvote post abc123 on moltbook"` — Vote on a post
+9. `"Follow ClawdClawderberg on moltbook"` — Follow another agent
+10. `"List moltbook communities"` — Browse submolts
 
 ---
 
-## 9. Advanced Intelligence
+## 10. Advanced Intelligence
 
-### `documentQA` -- Document Question Answering (RAG)
+### `documentQA` — Document Question Answering (RAG)
 
-Load documents into a vector knowledge base, then ask questions. Uses chunking + embedding (Ollama or TF-IDF fallback) + retrieval-augmented generation. Supports .txt, .md, .json, .js, .py, .ts, .html, .csv, .log files.
+Load documents into a vector knowledge base, then ask questions. Uses chunking + embedding (Ollama or TF-IDF fallback) + retrieval-augmented generation.
 
 **Triggered by:** "document" + "load/ingest/ask/question", "knowledge base", "index file"
 
 **Example prompts:**
-1. `"Load document D:/docs/project-spec.md"` -- Ingest a document into the knowledge base
-2. `"Ask about the deployment process from the docs"` -- Question answering from indexed documents
-3. `"Index file D:/reports/analysis.txt"` -- Add a file to the vector store
-4. `"List my indexed documents"` -- Show all document collections
-5. `"What does the API specification say about authentication?"` -- Targeted Q&A
-6. `"Load document D:/code/README.md into the project collection"` -- Ingest to specific collection
+1. `"Load document D:/docs/project-spec.md"` — Ingest into knowledge base
+2. `"Ask about the deployment process from the docs"` — Question answering
+3. `"Index file D:/reports/analysis.txt"` — Add to vector store
+4. `"List my indexed documents"` — Show all collections
 
-### Workflow Engine
+---
+
+### `workflow` — Workflow Engine (Reusable Multi-Step Sequences)
 
 Define and execute reusable multi-step tool sequences. Includes built-in workflows (Morning Briefing, Market Check, Code Review Cycle) and supports custom workflow creation.
 
 **Triggered by:** "workflow", "morning briefing", "daily routine", "run workflow"
 
 **Example prompts:**
-1. `"Run the morning briefing workflow"` -- Execute: weather + emails + news
-2. `"Run the market check"` -- Execute: finance overview + financial news
-3. `"Create a workflow: check weather, browse emails, news summary"` -- Custom workflow
+1. `"Run the morning briefing workflow"` — Execute: weather + emails + news
+2. `"Run the market check"` — Execute: finance overview + financial news
+3. `"Create a workflow: check weather, browse emails, news summary"` — Custom workflow
+4. `"List my workflows"` — Show available workflows
 
-### Scheduler
+---
+
+### `scheduler` — Recurring Task Automation
 
 Schedule recurring tasks with natural language timing. Supports intervals (every N minutes/hours), daily schedules, and weekly schedules.
 
-**Triggered by:** Programmatic API (used by workflows and other tools)
+**Triggered by:** "schedule", "every X minutes/hours", "daily at", "recurring", "automate"
 
-**Schedule patterns:**
-- `"every 30 minutes"` -- Interval-based
-- `"daily at 9am"` -- Daily schedule
-- `"every Monday at 9:00"` -- Weekly schedule
+**Example prompts:**
+1. `"Schedule weather check every 30 minutes"` — Interval-based
+2. `"Check emails daily at 9am"` — Daily schedule
+3. `"Every Monday at 9:00, run the morning briefing"` — Weekly schedule
+4. `"List my schedules"` — Show active schedules
+5. `"Cancel the weather schedule"` — Remove a schedule
+
+---
 
 ### Multi-Agent Collaboration
 
@@ -584,13 +691,36 @@ For complex queries spanning multiple domains, the agent can spawn parallel sub-
 
 **Triggered by:** Complex multi-domain queries that span research + analysis + communication
 
+---
+
 ### Emotional Intelligence Layer
 
 Enhanced emotional awareness beyond basic sentiment:
 - **Frustration detection:** Detects repeated queries, exasperation language, ALL CAPS, excessive punctuation
-- **Adaptive responses:** Adjusts tone when frustration is detected (more empathetic, direct, solution-focused)
+- **Adaptive responses:** Adjusts tone when frustration is detected
 - **Pattern recognition:** Tracks repeated clarifications and conversation flow changes
 - **Auto-adjustment:** Prepends empathetic acknowledgments when the user seems frustrated
+
+---
+
+## UI Features
+
+### Stop Button (Cancel Ongoing Requests)
+
+The send button transforms into a **red ■ stop button** while the agent is processing a request. Clicking it:
+- Aborts the SSE stream via AbortController
+- Marks the last message as "Cancelled by user"
+- Returns the UI to the input state immediately
+
+No more waiting for long-running queries to complete!
+
+### Pre-formatted Output Bypass
+
+Tools that return `preformatted: true` in their response data bypass LLM summarization entirely. This ensures that data-heavy outputs (standings tables, search results, commit lists) are displayed exactly as the tool formatted them, without the LLM hallucinating or truncating data.
+
+### Widget + Text Display
+
+Tools like weather, YouTube, and calculator show both their visual widget AND the LLM's text response below it, giving you both structured data and a natural language explanation.
 
 ---
 
@@ -601,21 +731,18 @@ Enhanced emotional awareness beyond basic sentiment:
 | Variable | Tool(s) | Required? |
 |----------|---------|-----------|
 | `LLM_MODEL` | All (defaults to `llama3.2`) | Optional |
-| `SERPAPI_KEY` | search | Recommended |
+| `SERPAPI_KEY` | search (Google, DuckDuckGo, Bing, Yahoo, Yandex) | Recommended |
 | `OPENWEATHER_KEY` | weather | For weather |
-| `ALPHA_VANTAGE_KEY` or `FINNHUB_KEY` | finance, financeFundamentals | For finance |
+| `ALPHA_VANTAGE_KEY` or `FINNHUB_KEY` or `FMP_API_KEY` | finance, financeFundamentals | For finance |
 | `SPORTS_API_KEY` | sports | For sports |
 | `YOUTUBE_API_KEY` | youtube | For YouTube |
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` | email, calendar | For email + calendar |
-| `EMBEDDING_MODEL` | documentQA, vectorStore (defaults to `nomic-embed-text`) | Optional |
-| `GITHUB_TOKEN` | github, githubTrending | For GitHub |
-| `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For credential encryption |
-| `MOLTBOOK_BASE_URL` | moltbook (defaults to `https://www.moltbook.com`) | Optional |
-| `MOLTBOOK_API_KEY` | moltbook (or use credential store) | For Moltbook API |
+| `EMBEDDING_MODEL` | documentQA (defaults to `nomic-embed-text`) | Optional |
+| `GITHUB_TOKEN` | github, githubTrending, githubScanner | For GitHub |
+| `CREDENTIAL_MASTER_KEY` | credentialStore (used by webBrowser, moltbook) | For encryption |
+| `MOLTBOOK_API_KEY` | moltbook (or register to get one) | For Moltbook |
 
 ### Generating a Credential Master Key
-
-The `CREDENTIAL_MASTER_KEY` is a random secret string you create yourself. Generate one with:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -630,70 +757,20 @@ CREDENTIAL_MASTER_KEY=<your-generated-key-here>
 
 ## How the Agent Routes Your Messages
 
-1. **Certainty Layer** (deterministic, instant) — Pattern matching for keywords, file paths, URLs, tool-specific phrases. ~90% of messages are caught here.
+1. **Certainty Layer** (deterministic, instant) — 45+ pattern-matching branches for keywords, file paths, URLs, tool-specific phrases. ~90% of messages are caught here. Includes guards to prevent common collisions:
+   - Calendar guard prevents "meeting with team" from routing to sports
+   - Tasks guard prevents task keywords from routing to GitHub
+   - General knowledge guard routes "what is X" to search instead of calculator
+   - File path priority ensures paths like `D:/...` always route to file tools
+   - Finance guard with company name -> ticker resolution
 
-2. **Tool-Specific Keyword Clusters** (deterministic) — Expanded pattern matching for email, finance, sports, YouTube, GitHub, git, code review, shopping, tasks, memory, NLP, selfImprovement.
+2. **Tool-Specific Keyword Clusters** (deterministic) — Expanded pattern matching for email, finance, sports, YouTube, GitHub, git, code review, shopping, tasks, memory, NLP, selfImprovement, Code Guru tools.
 
-3. **LLM Classifier** (AI-powered fallback) — For truly ambiguous queries, the LLM classifies intent using few-shot examples and negative examples.
+3. **LLM Classifier** (AI-powered fallback) — For truly ambiguous queries, the local LLM classifies intent using few-shot examples and negative examples with 25+ example mappings.
 
-4. **Case-Insensitive Resolution** — The LLM's output is matched case-insensitively against all available tools, with alias support and partial matching.
+4. **Case-Insensitive Resolution** — The LLM's output is matched case-insensitively against all 40 tools, with alias support and partial matching.
 
-5. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation) which can handle anything.
-
----
-
-## New Capabilities (Phase 4)
-
-### Persistent Conversation Memory
-The agent automatically summarizes long conversations and stores summaries for cross-session context. When relevant, past conversation summaries are retrieved to provide context-aware responses. Stored in `memory.meta.conversationSummaries`.
-
-### Conversational Style Engine
-The agent learns and adapts to your preferred communication style:
-- **Explicit style changes:** Say "be more formal" or "be brief" to change response style
-- **Implicit learning:** The engine detects satisfaction signals (re-asking = dissatisfied, "thanks" = satisfied) and auto-adjusts verbosity
-- **Style presets:** formal, casual, brief, detailed, technical, friendly
-- **Preferences stored in:** `memory.profile.preferences`
-
-### Self-Correction & Reflection
-After generating a response, the coordinator checks for hallucinated placeholders (like `[Date]`, `[Opponent]`, `[Location]`) and replaces them with "data not available" notices. This prevents the LLM from inventing data the tool didn't provide.
-
-### Proactive Suggestions
-After completing a task, the agent can suggest relevant follow-up actions:
-- Weather query: "Would you like the forecast for tomorrow?"
-- Email sent: "Want me to set a reminder to follow up?"
-- Sports fixtures: "Want to see the current standings?"
-- **Disabled by default.** Enable with: "remember my preference enableSuggestions is true"
-
-### Full Table Presentation
-Sports standings, news, and financial data now show ALL results in markdown tables (not just top 4). The sports tool returns pre-formatted tables that bypass LLM summarization for accuracy.
-
-### Natural Tool Chaining (NEW)
-The planner detects multi-intent queries and automatically chains tools:
-- `"Search for React best practices and email me the results"` -- search → email
-- `"Check the weather and also the news"` -- weather → news
-- `"Get Tesla stock price then check the latest Tesla news"` -- finance → news
-- Uses context piping so each step can access previous results
-
-### Long-Horizon Task Planning (NEW)
-For complex requests, the planner uses LLM decomposition to break them into 2-5 ordered steps with dependency tracking. Each step receives the output of steps it depends on.
-
-### Calendar Integration (NEW)
-Google Calendar support: list events, create events with natural language, check free/busy times. Uses existing OAuth infrastructure with added calendar scopes.
-
-### Document QA / Knowledge Base (NEW)
-RAG-powered document question answering. Load documents into a vector store (with Ollama embeddings or TF-IDF fallback), then ask questions. Supports .txt, .md, .json, .js, .py, .html, .csv, .log files.
-
-### Workflow Engine (NEW)
-Reusable multi-step tool sequences with built-in workflows (Morning Briefing, Market Check, Code Review Cycle). Create custom workflows with natural language.
-
-### Scheduler (NEW)
-Cron-like recurring task automation. Schedule tools to run at intervals, daily, or weekly.
-
-### Multi-Agent Collaboration (NEW)
-Parallel sub-agent execution for complex multi-domain queries. Agents (Researcher, Analyst, Communicator, Developer, Organizer) work concurrently with LLM-synthesized results.
-
-### Emotional Intelligence (NEW)
-Enhanced frustration detection (repeated queries, ALL CAPS, exasperation language, terse responses) with adaptive empathetic responses.
+5. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation).
 
 ---
 
@@ -701,11 +778,39 @@ Enhanced frustration detection (repeated queries, ALL CAPS, exasperation languag
 
 The agent can chain multiple tools for complex tasks:
 
-- **Natural chaining**: `"Search for X and email me the results"` → search → email (automatic)
-- **Register + Verify**: `"Register on moltbook and verify my email"` → moltbook(register) → moltbook(verify_email) → moltbook(status)
-- **Improve Code**: `"Improve the search tool based on trending patterns"` → githubTrending → review → applyPatch → gitLocal(status) → gitLocal(add)
-- **Morning Briefing**: `"Run morning briefing"` → weather → email(browse) → news
-- **Complex Planning**: Complex requests are auto-decomposed into multi-step plans with dependency tracking
+- **Natural chaining**: `"Search for X and email me the results"` -> search -> email (automatic)
+- **Register + Verify**: `"Register on moltbook"` -> moltbook(register) -> saves credentials + sets up email
+- **Improve Code**: `"Improve the search tool"` -> githubTrending -> review -> applyPatch -> gitLocal
+- **Morning Briefing**: `"Run morning briefing"` -> weather -> email(browse) -> news
+- **Complex Planning**: Multi-intent queries auto-decomposed into ordered steps with dependency tracking
+
+---
+
+## New Capabilities (Sprint 5)
+
+### 6-Source Web Search
+Search now queries 6 engines in parallel via SerpAPI: Google, DuckDuckGo, Bing, Yahoo, Yandex, and Wikipedia.
+
+### Expanded News (50+ RSS Feeds)
+News tool now includes 19 general feeds and 30+ category-specific feeds across 7 categories (tech, science, business, sports, health, entertainment, world). Up to 8 articles scraped and 30 headlines displayed.
+
+### Sports Team Filtering
+When you mention a team name in a sports query ("today's results for Barcelona"), the fixture results are filtered to show only that team's matches. Team aliases like Barca, Man Utd, PSG are resolved automatically.
+
+### Smart Calendar Event Names
+Calendar events now extract titles from natural language: "schedule a dentist appointment" creates an event titled "Dentist appointment" instead of "New Event". Supports "called/named/about" patterns, quoted text, and verb+noun extraction.
+
+### GitHub Clickable Links
+All GitHub tool outputs (repos, commits, issues, search results) now use clickable markdown links instead of plain text.
+
+### Moltbook Registration Recovery
+Handles 409 Conflict errors by checking local credentials, supports custom agent names, and automatically configures owner email during registration.
+
+### Stop Button
+Red stop button appears during processing. Click to cancel any ongoing request immediately via AbortController/SSE abort.
+
+### Weather Memory Fallback
+Weather tool falls back to your saved location from memory when no city is specified or when geolocation is unavailable.
 
 ---
 
@@ -714,6 +819,9 @@ The agent can chain multiple tools for complex tasks:
 1. **Be specific** — "Weather in Paris" is better than "what's it like outside"
 2. **Name the tool** — "Search for..." or "Email John..." helps routing
 3. **Use stored memory** — Set your location once with "remember my location is Tel Aviv" and just say "weather" next time
-4. **Chain with confirmation** — Email always drafts first. Say "send it" to confirm.
+4. **Chain with confirmation** — Email always drafts first. Say "send it" to confirm
 5. **Attach files** — Drag and drop files for automatic LLM analysis
-6. **Store credentials once** — "Store my moltbook credentials" encrypts them. Next time just say "login to moltbook"
+6. **Use the stop button** — Click ■ to cancel any long-running request
+7. **Set your email** — "remember my email is you@example.com" enables owner email setup for Moltbook
+8. **Team filtering** — "Arsenal results yesterday" filters to Arsenal's matches only
+9. **Smart calendar** — Just describe your event naturally: "book a call with Sarah tomorrow at 2pm"

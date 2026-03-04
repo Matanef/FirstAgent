@@ -150,12 +150,52 @@ function solveVerificationChallenge(challengeText) {
 async function handleRegister(text, context) {
   const memory = await getMemory();
   const ownerName = memory.profile?.name || "User";
+  const ownerEmail = memory.profile?.email || null;
   const agentName = context.agentName || `LocalLLM_Agent_${ownerName.replace(/\s+/g, "")}`;
   const description = context.description || `AI assistant agent owned by ${ownerName}. Capable of web search, code review, file management, weather, news, finance, and more.`;
 
   console.log(`[moltbook] Registering agent: ${agentName}`);
 
   const result = await apiRequest("POST", "/agents/register", { name: agentName, description });
+
+  // Handle 409 Conflict — agent name already taken
+  if (result.status === 409) {
+    // Check if we already have local credentials (previous successful registration)
+    const existingCreds = loadCredentials();
+    if (existingCreds?.api_key) {
+      console.log("[moltbook] 409 but found existing local credentials, checking status...");
+      // Verify the existing key works
+      const statusResult = await apiRequest("GET", "/agents/me", null, existingCreds.api_key);
+      if (statusResult.ok) {
+        return {
+          tool: "moltbook", success: true, final: true,
+          data: {
+            preformatted: true,
+            text: `**Already Registered on Moltbook!**\n\n` +
+              `**Agent Name:** ${existingCreds.agent_name || agentName}\n` +
+              `**API Key:** ${existingCreds.api_key.substring(0, 15)}...\n` +
+              `**Status:** Active\n` +
+              (existingCreds.claim_url ? `**Claim URL:** ${existingCreds.claim_url}\n` : "") +
+              `\nYour agent is already registered and credentials are saved locally.`,
+            action: "register", agentName: existingCreds.agent_name, registered: true
+          }
+        };
+      }
+    }
+
+    const errMsg = typeof result.data === "object" ? (result.data.error || result.data.message || JSON.stringify(result.data)) : String(result.data);
+    return {
+      tool: "moltbook", success: false, final: true,
+      data: {
+        text: `Registration conflict (HTTP 409): Agent name "${agentName}" is already taken.\n\n${errMsg}\n\n` +
+          `**To fix this:**\n` +
+          `1. If this is your agent, say: "check moltbook status"\n` +
+          `2. To use a different name, say: "register on moltbook as MyNewAgentName"\n` +
+          `3. If you have an existing API key, say: "remember my moltbook_api_key is moltbook_xxx"`,
+        action: "register", statusCode: 409, error: errMsg
+      }
+    };
+  }
 
   if (!result.ok) {
     const errMsg = typeof result.data === "object" ? (result.data.error || result.data.message || JSON.stringify(result.data)) : String(result.data);
@@ -168,10 +208,17 @@ async function handleRegister(text, context) {
     };
   }
 
+  // Parse API response — handle both flat and nested response structures
   const regData = result.data;
-  const apiKey = regData.api_key || regData.apiKey;
-  const claimUrl = regData.claim_url || regData.claimUrl;
-  const verificationCode = regData.verification_code || regData.verificationCode;
+  const agentData = regData.agent || regData;
+  const apiKey = agentData.api_key || agentData.apiKey || regData.api_key || regData.apiKey;
+  const claimUrl = agentData.claim_url || agentData.claimUrl || regData.claim_url || regData.claimUrl;
+  const verificationCode = agentData.verification_code || agentData.verificationCode || regData.verification_code || regData.verificationCode;
+
+  console.log(`[moltbook] Registration response keys:`, Object.keys(regData));
+  if (regData.agent) console.log(`[moltbook] agent sub-object keys:`, Object.keys(regData.agent));
+  console.log(`[moltbook] API Key found: ${apiKey ? "yes" : "NO"}`);
+  console.log(`[moltbook] Claim URL found: ${claimUrl ? "yes" : "NO"}`);
 
   if (apiKey) {
     await saveCredentials({
@@ -186,6 +233,22 @@ async function handleRegister(text, context) {
       registered: true, registered_at: new Date().toISOString()
     };
     await saveJSON(MEMORY_FILE, mem);
+
+    // Set up owner email if available
+    if (ownerEmail) {
+      try {
+        const emailResult = await apiRequest("POST", "/agents/me/setup-owner-email", { email: ownerEmail }, apiKey);
+        if (emailResult.ok) {
+          console.log(`[moltbook] Owner email configured: ${ownerEmail}`);
+        } else {
+          console.warn(`[moltbook] Owner email setup failed:`, emailResult.status);
+        }
+      } catch (e) {
+        console.warn(`[moltbook] Owner email setup error:`, e.message);
+      }
+    }
+  } else {
+    console.warn("[moltbook] WARNING: No API key in registration response! Full response:", JSON.stringify(regData));
   }
 
   return {
@@ -194,15 +257,17 @@ async function handleRegister(text, context) {
       preformatted: true,
       text: `**Moltbook Registration Successful!**\n\n` +
         `**Agent Name:** ${agentName}\n` +
-        `**API Key:** ${apiKey ? apiKey.substring(0, 15) + "..." : "N/A"}\n` +
-        `**Claim URL:** ${claimUrl || "N/A"}\n\n` +
-        `**Next Steps for your human owner:**\n` +
-        `1. Visit the claim URL: ${claimUrl}\n` +
+        `**API Key:** ${apiKey ? apiKey.substring(0, 15) + "..." : "⚠️ Not returned — check Moltbook dashboard"}\n` +
+        `**Claim URL:** ${claimUrl || "⚠️ Not returned"}\n` +
+        (verificationCode ? `**Verification Code:** ${verificationCode}\n` : "") +
+        `\n**Next Steps for your human owner:**\n` +
+        (claimUrl ? `1. Visit the claim URL: ${claimUrl}\n` : `1. Visit https://www.moltbook.com to find your agent\n`) +
         `2. Verify your email\n` +
         `3. Post a verification tweet on X (Twitter)\n` +
-        `4. Complete the claim to activate the agent\n\n` +
-        `Credentials have been saved locally.`,
-      action: "register", agentName, claimUrl, registered: true
+        `4. Complete the claim to activate the agent\n` +
+        (ownerEmail ? `\n📧 Owner email set to: ${ownerEmail}\n` : `\n💡 Tip: Set your email with "remember my email is you@example.com" before registering\n`) +
+        `\nCredentials have been saved locally.`,
+      action: "register", agentName, apiKey, claimUrl, registered: true
     }
   };
 }
@@ -471,6 +536,13 @@ export async function moltbook(input) {
   try {
     const text = typeof input === "string" ? input : (input?.text || "");
     const context = typeof input === "object" ? (input?.context || {}) : {};
+
+    // Extract custom agent name if specified: "register on moltbook as MyName"
+    if (!context.agentName) {
+      const nameMatch = text.match(/(?:register|sign\s*up|join).*?\bas\s+["']?([A-Za-z0-9_-]+)["']?/i);
+      if (nameMatch) context.agentName = nameMatch[1];
+    }
+
     const action = context.action || inferAction(text);
 
     console.log(`[moltbook] Action: ${action}`);

@@ -119,7 +119,9 @@ export async function github(request) {
           repositories: repoList,
           count: data.length,
           html,
-          text: `Found ${data.length} repositories:\n${repoList.map(r => `• ${r.name} (${r.language || 'Unknown'}) - ${r.stars} stars`).join('\n')}`
+          preformatted: true,
+          text: `**Your GitHub Repositories** (${data.length} repos)\n\n` +
+            repoList.map(r => `• [${r.name}](${r.url}) (${r.language || 'Unknown'}) — ⭐ ${r.stars} 🔀 ${r.forks} ${r.private ? '🔒' : '🌐'}`).join('\n')
         }
       };
     }
@@ -146,7 +148,9 @@ export async function github(request) {
           query: searchTerm,
           results: repos,
           total: data.total_count,
-          text: `Found ${data.total_count} repositories matching "${searchTerm}":\n${repos.map(r => `• ${r.name} - ${r.description || 'No description'}`).join('\n')}`
+          preformatted: true,
+          text: `**Search results for "${searchTerm}"** (${data.total_count} total)\n\n` +
+            repos.map(r => `• [${r.name}](${r.url}) — ${r.description || 'No description'} ⭐ ${r.stars}`).join('\n')
         }
       };
     }
@@ -186,7 +190,7 @@ export async function github(request) {
         }));
 
         const text = `**Recent commits** (${owner}/${repo}):\n\n` +
-          commits.map(c => `\`${c.sha}\` ${c.message} — *${c.author}* (${new Date(c.date).toLocaleDateString()})`).join('\n');
+          commits.map(c => `[\`${c.sha}\`](${c.url}) ${c.message} — *${c.author}* (${new Date(c.date).toLocaleDateString()})`).join('\n');
 
         return {
           tool: 'github',
@@ -217,7 +221,9 @@ export async function github(request) {
         data: {
           issues,
           count: data.length,
-          text: `Found ${data.length} issues:\n${issues.map(i => `• ${i.repo}#${i.number}: ${i.title}`).join('\n')}`
+          preformatted: true,
+          text: `**Your Open Issues** (${data.length})\n\n` +
+            issues.map(i => `• [${i.repo}#${i.number}](${i.url}): ${i.title}`).join('\n')
         }
       };
     }
