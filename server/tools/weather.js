@@ -3,6 +3,7 @@
 
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
+import { getMemory } from "../memory.js";
 
 function wantsForecast(query) {
   const text = typeof query === "string" ? query : query?.text || "";
@@ -33,24 +34,27 @@ export async function weather(query) {
 
     console.log("🌤️ Weather tool received:", { city, context: query?.context });
 
-    // If __USE_GEOLOCATION__ marker, we need geolocation to be resolved
-    // by coordinator BEFORE this tool is called
-    if (city === "__USE_GEOLOCATION__") {
-      return {
-        tool: "weather",
-        success: false,
-        final: true,
-        error: "I couldn't determine your location automatically. Please specify a city (e.g., 'weather in Paris')."
-      };
+    // If __USE_GEOLOCATION__ marker or no city, fall back to saved location from memory
+    if (city === "__USE_GEOLOCATION__" || !city) {
+      try {
+        const memory = await getMemory();
+        const savedCity = memory.profile?.location || memory.profile?.city || null;
+        if (savedCity) {
+          city = savedCity;
+          console.log(`🌤️ Using saved location from memory: ${city}`);
+        }
+      } catch (e) {
+        console.warn("[weather] Could not read memory for location:", e.message);
+      }
     }
 
     // Final check: do we have a city?
-    if (!city) {
+    if (!city || city === "__USE_GEOLOCATION__") {
       return {
         tool: "weather",
         success: false,
         final: true,
-        error: "No city specified. Please provide a location (e.g., 'weather in London')."
+        error: "No location saved. Please specify a city (e.g., 'weather in London') or save your location with 'remember my location is [city]'."
       };
     }
 

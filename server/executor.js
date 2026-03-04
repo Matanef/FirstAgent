@@ -314,8 +314,22 @@ Generate the reformatted response:
 export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const queryText = typeof message === "string" ? message : message?.text || "";
 
-  // FIX: Handle "send it" for email confirmation with BACKWARD SEARCH
+  // FIX: Handle "send it" / "cancel" for email confirmation with BACKWARD SEARCH
   if (tool === "email_confirm") {
+    // FIX: Check if this is a CANCEL action BEFORE attempting to send
+    const emailContext = typeof message === "object" ? (message.context || {}) : {};
+    if (emailContext.action === "cancel") {
+      console.log("❌ Email cancelled by user.");
+      return {
+        tool: "email_confirm",
+        input: message,
+        output: { tool: "email", success: true, final: true, data: { message: "✅ Email draft discarded. No email was sent." } },
+        data: { message: "✅ Email draft discarded. No email was sent." },
+        success: true,
+        final: true
+      };
+    }
+
     console.log("📧 Processing email confirmation...");
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
@@ -412,7 +426,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // Tools that receive full object { text, context }
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager"].includes(tool)) {
     // For email, split: pass query text + context separately
     if (tool === "email" && typeof message === "object") {
       const queryText = message.text || message.input || "";

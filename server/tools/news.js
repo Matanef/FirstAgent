@@ -7,48 +7,75 @@ import { llm } from "./llm.js";
 
 const parser = new Parser();
 
-// ── GENERAL NEWS FEEDS ──
+// ── GENERAL NEWS FEEDS (40+) ──
 const FEEDS = {
+  // Israeli sources
   ynet: "https://www.ynet.co.il/Integration/StoryRss2.xml",
-  kan: "https://www.kan.org.il/Rss.aspx?pid=News",
   n12: "https://www.mako.co.il/rss/news-israel.xml",
   jpost: "https://www.jpost.com/Rss/RssFeedsHeadlines.aspx",
   toi: "https://www.timesofisrael.com/feed/",
+  walla: "https://rss.walla.co.il/feed/1",
+  // International sources
   bbc: "http://feeds.bbci.co.uk/news/rss.xml",
   cnn: "http://rss.cnn.com/rss/edition.rss",
-  reuters: "http://feeds.reuters.com/reuters/topNews",
-  aljazeera: "https://www.aljazeera.com/xml/rss/all.xml"
+  guardian: "https://www.theguardian.com/world/rss",
+  nyt: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+  wapo: "https://feeds.washingtonpost.com/rss/world",
+  npr: "https://feeds.npr.org/1001/rss.xml",
+  ap: "https://rsshub.app/apnews/topics/apf-topnews",
+  independent: "https://www.independent.co.uk/news/world/rss",
+  skynews: "https://feeds.skynews.com/feeds/rss/world.xml",
+  foxnews: "https://moxie.foxnews.com/google-publisher/latest.xml",
+  dw: "https://rss.dw.com/rdf/rss-en-all",
+  france24: "https://www.france24.com/en/rss",
+  abc: "https://abcnews.go.com/abcnews/topstories",
+  cbsnews: "https://www.cbsnews.com/latest/rss/main"
 };
 
 // ── CATEGORY-SPECIFIC FEEDS ──
 const CATEGORY_FEEDS = {
   technology: {
     bbc_tech: "http://feeds.bbci.co.uk/news/technology/rss.xml",
-    // verge: "https://www.theverge.com/rss/index.xml",          // stub
-    // arstechnica: "https://feeds.arstechnica.com/arstechnica",  // stub
-    // hackernews: "https://hnrss.org/frontpage",                 // stub
+    verge: "https://www.theverge.com/rss/index.xml",
+    arstechnica: "https://feeds.arstechnica.com/arstechnica/index",
+    hackernews: "https://hnrss.org/frontpage",
+    techcrunch: "https://techcrunch.com/feed/",
+    wired: "https://www.wired.com/feed/rss",
+    engadget: "https://www.engadget.com/rss.xml",
   },
   science: {
     bbc_science: "http://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    // nature: "https://www.nature.com/nature.rss",               // stub
-    // newscientist: "https://www.newscientist.com/feed/home",    // stub
+    livescience: "https://www.livescience.com/feeds/all",
+    sciencedaily: "https://www.sciencedaily.com/rss/all.xml",
+    newscientist: "https://www.newscientist.com/section/news/feed/",
   },
   business: {
     bbc_business: "http://feeds.bbci.co.uk/news/business/rss.xml",
-    // bloomberg: "https://feeds.bloomberg.com/markets/news.rss", // stub
-    // cnbc: "https://www.cnbc.com/id/100003114/device/rss/rss.html", // stub
+    cnbc: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
+    marketwatch: "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    ft: "https://www.ft.com/?format=rss",
+    wsj: "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
   },
   sports: {
     bbc_sport: "http://feeds.bbci.co.uk/sport/rss.xml",
-    // espn: "https://www.espn.com/espn/rss/news",               // stub
+    espn: "https://www.espn.com/espn/rss/news",
+    skysports: "https://www.skysports.com/rss/12040",
   },
   health: {
     bbc_health: "http://feeds.bbci.co.uk/news/health/rss.xml",
-    // who: "https://www.who.int/feeds/entity/mediacentre/news/en/rss.xml", // stub
+    medicalnewstoday: "https://www.medicalnewstoday.com/newsfeeds/rss",
+    webmd: "https://rssfeeds.webmd.com/rss/rss.aspx?RSSSource=RSS_PUBLIC",
   },
   entertainment: {
     bbc_entertainment: "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    // variety: "https://variety.com/feed/",                      // stub
+    variety: "https://variety.com/feed/",
+    hollywoodreporter: "https://www.hollywoodreporter.com/feed/",
+    rollingstone: "https://www.rollingstone.com/feed/",
+  },
+  politics: {
+    bbc_politics: "http://feeds.bbci.co.uk/news/politics/rss.xml",
+    politico: "https://rss.politico.com/politics-news.xml",
+    thehill: "https://thehill.com/feed/",
   }
 };
 
@@ -99,11 +126,12 @@ function extractTopic(query) {
     }
   }
   
-  // If we have a meaningful cleaned string
-  if (cleaned.length > 2 && cleaned.split(/\s+/).length <= 4) {
+  // If we have a meaningful cleaned string (reject useless words like "any", "some", "all")
+  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your"]);
+  if (cleaned.length > 2 && cleaned.split(/\s+/).length <= 4 && !rejectWords.has(cleaned)) {
     return cleaned;
   }
-  
+
   return null;
 }
 
@@ -223,7 +251,7 @@ export async function news(request) {
     // Scrape and summarize top 3 filtered articles
     // Falls back to RSS description if scraping fails
     const summaries = [];
-    const scrapePromises = filteredItems.slice(0, 3).map(async (article) => {
+    const scrapePromises = filteredItems.slice(0, 8).map(async (article) => {
       console.log(`  Scraping: ${article.title}`);
       const content = await scrapeArticle(article.link);
       // Use scraped content, or fall back to RSS description
@@ -271,7 +299,7 @@ export async function news(request) {
               <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
             </thead>
             <tbody>
-              ${filteredItems.slice(0, 20).map(i => `
+              ${filteredItems.slice(0, 30).map(i => `
                 <tr>
                   <td>${i.source}</td>
                   <td><a href="${i.link}" target="_blank">${i.title}</a></td>

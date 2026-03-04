@@ -49,6 +49,14 @@ async function parseEmailRequest(query) {
     subject = subjectMatch[1].trim();
   }
 
+  // If no explicit subject found, try common patterns
+  if (subject === "Message from AI Agent") {
+    const aboutMatch = cleanQuery.match(/(?:about|regarding|re:)\s+(.{5,60}?)(?:\s+saying|\s+with|\s+and\s|[.!?]|$)/i);
+    if (aboutMatch) {
+      subject = aboutMatch[1].trim();
+    }
+  }
+
   let bodyMatch = query.match(sayingRegex);
   if (bodyMatch) {
     body = bodyMatch[1].trim();

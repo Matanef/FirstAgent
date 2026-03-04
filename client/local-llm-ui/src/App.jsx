@@ -27,6 +27,7 @@ function App() {
   const [toneValue, setToneValue] = useState(1);
 
   const messagesEndRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -98,10 +99,14 @@ function App() {
       };
       if (fileIds.length > 0) payload.fileIds = fileIds;
 
+      // Create AbortController for cancel support
+      abortControllerRef.current = new AbortController();
+
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) {
@@ -166,21 +171,46 @@ function App() {
         }
       }
     } catch (err) {
-      console.error("Send error:", err);
-      setError(err.message);
+      // Don't show error for user-initiated abort
+      if (err.name === "AbortError") {
+        console.log("Request cancelled by user.");
+        // Update the last bot message to show it was cancelled
+        setConversations(c => {
+          const current = [...(c[activeId] || [])];
+          const lastIdx = current.length - 1;
+          if (lastIdx >= 0 && current[lastIdx].role === "assistant") {
+            current[lastIdx] = {
+              ...current[lastIdx],
+              content: current[lastIdx].content || "(Request cancelled)",
+              loading: false
+            };
+          }
+          return { ...c, [activeId]: current };
+        });
+      } else {
+        console.error("Send error:", err);
+        setError(err.message);
 
-      const errorMsg = {
-        role: "error",
-        content: `Error: ${err.message}`,
-        timestamp: new Date().toISOString()
-      };
+        const errorMsg = {
+          role: "error",
+          content: `Error: ${err.message}`,
+          timestamp: new Date().toISOString()
+        };
 
-      setConversations(c => ({
-        ...c,
-        [activeId]: [...c[activeId], errorMsg]
-      }));
+        setConversations(c => ({
+          ...c,
+          [activeId]: [...c[activeId], errorMsg]
+        }));
+      }
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
+    }
+  }
+
+  function cancelRequest() {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
   }
 
@@ -414,14 +444,24 @@ function App() {
                   rows={1}
                   className="message-input"
                 />
-                <button
-                  onClick={sendMessage}
-                  disabled={loading || !input.trim() || attachedFiles.some(f => f.status === "uploading")}
-                  className="send-btn"
-                  title="Send"
-                >
-                  {loading ? "⏳" : "➤"}
-                </button>
+                {loading ? (
+                  <button
+                    onClick={cancelRequest}
+                    className="send-btn stop-btn"
+                    title="Stop"
+                  >
+                    ■
+                  </button>
+                ) : (
+                  <button
+                    onClick={sendMessage}
+                    disabled={!input.trim() || attachedFiles.some(f => f.status === "uploading")}
+                    className="send-btn"
+                    title="Send"
+                  >
+                    ➤
+                  </button>
+                )}
               </div>
             </div>
           </>

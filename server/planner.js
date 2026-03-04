@@ -619,6 +619,13 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "webDownload", input: trimmed, context: {}, reasoning: "certainty_url" }];
   }
 
+  // File write/create — must come BEFORE explicit file path (which routes to read-only file tool)
+  if (/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document)\b/i.test(lower) ||
+      /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: fileWrite");
+    return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
+  }
+
   // Explicit file path
   if (hasExplicitFilePath(trimmed)) {
     console.log("[planner] certainty branch: file_path");
@@ -794,9 +801,17 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "financeFundamentals", input: trimmed, context: {}, reasoning: "certainty_fundamentals" }];
   }
 
-  // Sports keywords
+  // Calendar keywords — must come BEFORE sports to prevent "meeting with team" → sports
+  if (/\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call))\b/i.test(lower) &&
+      !/\b(score|match|game|league|football|soccer|basketball|nba|nfl)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: calendar");
+    return [{ tool: "calendar", input: trimmed, context: {}, reasoning: "certainty_calendar" }];
+  }
+
+  // Sports keywords — with calendar guard to prevent "meeting with the team" → sports
   if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
-      !hasExplicitFilePath(trimmed)) {
+      !hasExplicitFilePath(trimmed) &&
+      !/\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower)) {
     console.log("[planner] certainty branch: sports");
     return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
   }
@@ -869,8 +884,9 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "scheduler", input: trimmed, context: schedContext, reasoning: "certainty_scheduler" }];
   }
 
-  // Task management keywords
-  if (/\b(todo|task|reminder|add\s+task|my\s+tasks|to-do|checklist)\b/i.test(lower)) {
+  // Task management keywords — expanded with github guard
+  if (/\b(todo|task|reminder|add\s+task|my\s+tasks|to-do|checklist|pending\s+tasks|task\s+list|show\s+tasks)\b/i.test(lower) &&
+      !/\b(github|repo|commit|issue|pull\s+request)\b/i.test(lower)) {
     console.log("[planner] certainty branch: tasks");
     return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
   }
@@ -886,6 +902,17 @@ export async function plan({ message, chatContext = {} }) {
   if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting|what issues|performance report|diagnose|diagnostic report|how well are you doing)\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfImprovement");
     return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "certainty_self_improvement" }];
+  }
+
+  // General knowledge questions — route to search instead of unreliable LLM classifier
+  // Catches "what is X", "who is X", "how does X work", etc. that would otherwise
+  // fall to the LLM classifier which often misroutes to calculator
+  if (/\b(what is|who is|who was|when did|where is|how many|how does|why do|define|meaning of|history of)\b/i.test(lower) &&
+      !isMathExpression(trimmed) && !hasExplicitFilePath(trimmed) &&
+      !/\b(stock|weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install)\b/i.test(lower) &&
+      lower.length > 15) {
+    console.log("[planner] certainty branch: general_knowledge → search");
+    return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_general_knowledge" }];
   }
 
   // ──────────────────────────────────────────────────────────

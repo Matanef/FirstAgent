@@ -659,6 +659,7 @@ body {
   height: 220px;
   display: flex;
   flex-direction: column;
+  
 }
 
 .youtube-video-card:hover {
@@ -740,6 +741,7 @@ body {
 
 /* Weather Widget */
 .weather-widget {
+  width: 36%;
   margin: 0.75rem 0;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 12px;
@@ -888,6 +890,22 @@ body {
 .send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.send-btn.stop-btn {
+  background: var(--error);
+  font-size: 1.1rem;
+  animation: pulse-stop 1.5s ease-in-out infinite;
+}
+
+.send-btn.stop-btn:hover {
+  background: #d91a26;
+  transform: translateY(-1px);
+}
+
+@keyframes pulse-stop {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 /* Welcome Screen */
@@ -1819,162 +1837,4 @@ body {
   font-size: 0.85rem;
   color: #ffc83c;
   margin-bottom: 12px;
-}
-
-/* ===== FOLDER PICKER ===== */
-.folder-picker {
-  position: relative;
-  display: inline-flex;
-}
-
-.folder-picker-btn {
-  background: transparent;
-  border: none;
-  font-size: 1.2rem;
-  cursor: pointer;
-  padding: 6px 8px;
-  border-radius: 6px;
-  transition: background 0.2s;
-  opacity: 0.7;
-}
-
-.folder-picker-btn:hover {
-  background: var(--bg-hover);
-  opacity: 1;
-}
-
-.folder-picker-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.folder-picker-panel {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  width: 380px;
-  max-height: 400px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.4);
-  z-index: 100;
-  overflow: hidden;
-  margin-bottom: 8px;
-  display: flex;
-  flex-direction: column;
-}
-
-.folder-picker-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-}
-
-.folder-picker-back {
-  background: transparent;
-  border: none;
-  font-size: 1rem;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  color: var(--text-primary);
-}
-
-.folder-picker-back:hover {
-  background: var(--bg-hover);
-}
-
-.folder-picker-back:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.folder-picker-path {
-  flex: 1;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.folder-picker-select {
-  background: var(--accent);
-  border: none;
-  color: white;
-  padding: 4px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.folder-picker-select:hover {
-  background: var(--accent-hover);
-}
-
-.folder-picker-select:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.folder-picker-list {
-  overflow-y: auto;
-  max-height: 320px;
-  padding: 4px 0;
-}
-
-.folder-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-  transition: background 0.15s;
-  font-size: 0.85rem;
-  color: var(--text-primary);
-}
-
-.folder-picker-item:hover {
-  background: var(--bg-hover);
-}
-
-.folder-picker-item.file {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.folder-picker-icon {
-  font-size: 1rem;
-  flex-shrink: 0;
-}
-
-.folder-picker-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.folder-picker-size {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.folder-picker-loading,
-.folder-picker-error,
-.folder-picker-empty {
-  padding: 20px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.folder-picker-error {
-  color: var(--error);
 }

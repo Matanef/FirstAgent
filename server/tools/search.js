@@ -96,36 +96,80 @@ async function fetchWikipedia(query) {
   }
 }
 
-// DuckDuckGo Instant Answer API
+// DuckDuckGo via SerpAPI (replaces broken Instant Answer API)
 async function fetchDuckDuckGo(query) {
   try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.RelatedTopics) return [];
-
-    const results = data.RelatedTopics
-      .filter(r => r.Text && r.FirstURL)
-      .slice(0, 5)
-      .map(r => ({
-        title: r.Text.split(" - ")[0] || r.Text,
-        snippet: r.Text,
-        url: r.FirstURL,
-        source: "DuckDuckGo"
-      }));
-    
-    if (data.Abstract && data.AbstractURL) {
-      results.unshift({
-        title: data.Heading || query,
-        snippet: data.Abstract,
-        url: data.AbstractURL,
-        source: "DuckDuckGo"
-      });
+    const apiKey = CONFIG.SERPAPI_KEY;
+    if (!apiKey) {
+      console.warn("SerpAPI key not configured for DuckDuckGo");
+      return [];
     }
 
-    return results;
+    const url = `https://serpapi.com/search.json?engine=duckduckgo&q=${encodeURIComponent(query)}&api_key=${apiKey}`;
+    const data = await safeFetch(url);
+
+    if (!data || !data.organic_results) return [];
+
+    return data.organic_results.slice(0, 8).map(r => ({
+      title: r.title || query,
+      snippet: r.snippet || "",
+      url: r.link || "",
+      source: "DuckDuckGo"
+    }));
   } catch (err) {
-    console.warn("DuckDuckGo fetch failed:", err.message);
+    console.warn("DuckDuckGo/SerpAPI fetch failed:", err.message);
+    return [];
+  }
+}
+
+// Bing search via SerpAPI
+async function fetchBing(query) {
+  try {
+    const apiKey = CONFIG.SERPAPI_KEY;
+    if (!apiKey) {
+      console.warn("SerpAPI key not configured for Bing");
+      return [];
+    }
+
+    const url = `https://serpapi.com/search.json?engine=bing&q=${encodeURIComponent(query)}&api_key=${apiKey}`;
+    const data = await safeFetch(url);
+
+    if (!data || !data.organic_results) return [];
+
+    return data.organic_results.slice(0, 8).map(r => ({
+      title: r.title || query,
+      snippet: r.snippet || r.description || "",
+      url: r.link || "",
+      source: "Bing"
+    }));
+  } catch (err) {
+    console.warn("Bing/SerpAPI fetch failed:", err.message);
+    return [];
+  }
+}
+
+// Yahoo search via SerpAPI
+async function fetchYahoo(query) {
+  try {
+    const apiKey = CONFIG.SERPAPI_KEY;
+    if (!apiKey) {
+      console.warn("SerpAPI key not configured for Yahoo");
+      return [];
+    }
+
+    const url = `https://serpapi.com/search.json?engine=yahoo&p=${encodeURIComponent(query)}&api_key=${apiKey}`;
+    const data = await safeFetch(url);
+
+    if (!data || !data.organic_results) return [];
+
+    return data.organic_results.slice(0, 6).map(r => ({
+      title: r.title || query,
+      snippet: r.snippet || r.description || "",
+      url: r.link || "",
+      source: "Yahoo"
+    }));
+  } catch (err) {
+    console.warn("Yahoo/SerpAPI fetch failed:", err.message);
     return [];
   }
 }
@@ -236,19 +280,21 @@ export async function search(query) {
     };
   }
 
-  // Fetch from FOUR sources in parallel (Wikipedia, DuckDuckGo, Google, Yandex)
-  console.log("🌐 Fetching from 4 sources (Wikipedia, DuckDuckGo, Google, Yandex)...");
-  const [wiki, ddg, google, yandex] = await Promise.all([
+  // Fetch from SIX sources in parallel (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo)
+  console.log("🌐 Fetching from 6 sources (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo)...");
+  const [wiki, ddg, google, yandex, bing, yahoo] = await Promise.all([
     fetchWikipedia(query),
     fetchDuckDuckGo(query),
     fetchGoogle(query),
-    fetchYandex(query)
+    fetchYandex(query),
+    fetchBing(query),
+    fetchYahoo(query)
   ]);
 
-  console.log(`📊 Results: Wikipedia(${wiki.length}), DuckDuckGo(${ddg.length}), Google(${google.length}), Yandex(${yandex.length})`);
+  console.log(`📊 Results: Wikipedia(${wiki.length}), DDG(${ddg.length}), Google(${google.length}), Yandex(${yandex.length}), Bing(${bing.length}), Yahoo(${yahoo.length})`);
 
   // Combine and deduplicate
-  let allResults = [...wiki, ...ddg, ...google, ...yandex];
+  let allResults = [...wiki, ...ddg, ...google, ...yandex, ...bing, ...yahoo];
   allResults = deduplicateResults(allResults);
 
   // Score and sort by relevance
@@ -276,7 +322,7 @@ export async function search(query) {
     results: topResults,
     synthesis,  // LLM-generated coherent summary
     text: synthesis ? `${synthesis}\n\n---\n\n${summary}` : summary,
-    totalSources: [wiki, ddg, google, yandex].filter(arr => arr.length > 0).length,
+    totalSources: [wiki, ddg, google, yandex, bing, yahoo].filter(arr => arr.length > 0).length,
     query: query,
     normalizedQuery: normalizedQuery
   };
@@ -295,7 +341,7 @@ export async function search(query) {
     success: true,
     final: true,
     data,
-    reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex), found ${topResults.length} relevant results`
+    reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo), found ${topResults.length} relevant results`
   };
 }
 
