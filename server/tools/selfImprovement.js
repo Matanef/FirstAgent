@@ -3,6 +3,102 @@
 // server/tools/selfImprovement.js
 import { getRecentImprovements, generateSummaryReport } from "../telemetryAudit.js";
 import { getIntentAccuracyReport, detectMisroutingPatterns, getRoutingRecommendations } from "../intentDebugger.js";
+import { exec } from "child_process";
+import { promisify } from "util";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const EVOLUTION_LOG = path.resolve(__dirname, "..", "data", "evolution-log.json");
+
+/**
+ * Get recent changes from git log as improvement entries
+ */
+async function getGitImprovements(limit = 10) {
+  try {
+    const { stdout } = await execAsync(
+      `git log --oneline --no-merges -${limit} --format="%H|||%s|||%ai"`,
+      { cwd: PROJECT_ROOT }
+    );
+    if (!stdout.trim()) return [];
+
+    return stdout.trim().split("\n").map(line => {
+      const [hash, message, date] = line.split("|||");
+      return {
+        timestamp: new Date(date).toISOString(),
+        category: "code_commit",
+        action: message.trim(),
+        file: hash?.substring(0, 7),
+        reason: "Git commit",
+        source: "git"
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get improvements from selfEvolve's evolution-log.json
+ */
+async function getEvolutionLogImprovements(limit = 10) {
+  try {
+    const raw = await fs.readFile(EVOLUTION_LOG, "utf8");
+    const log = JSON.parse(raw);
+    if (!log.runs || log.runs.length === 0) return [];
+
+    const improvements = [];
+    for (const run of log.runs.slice(-limit).reverse()) {
+      for (const imp of (run.improvements || [])) {
+        if (imp.applied) {
+          improvements.push({
+            timestamp: run.timestamp,
+            category: imp.type || "self_evolution",
+            action: imp.description,
+            file: imp.file,
+            reason: "Self-evolution cycle",
+            source: "selfEvolve"
+          });
+        }
+      }
+    }
+    return improvements.slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merge and deduplicate improvements from all sources
+ */
+async function getAllImprovements(limit = 20) {
+  const [logged, gitChanges, evolveChanges] = await Promise.all([
+    getRecentImprovements(limit),
+    getGitImprovements(limit),
+    getEvolutionLogImprovements(limit)
+  ]);
+
+  // Merge all sources, deduplicate by action text
+  const seen = new Set();
+  const merged = [];
+
+  // Priority: logged improvements first, then evolution, then git
+  for (const imp of [...logged, ...evolveChanges, ...gitChanges]) {
+    const key = (imp.action || "").toLowerCase().substring(0, 60);
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(imp);
+    }
+  }
+
+  // Sort by timestamp descending (most recent first)
+  merged.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  return merged.slice(0, limit);
+}
 
 /**
  * Self-improvement tool
@@ -13,8 +109,8 @@ async function selfImprovement(query) {
 
   try {
     // Query: "what have you improved lately?"
-    if (lower.includes("what have you improved") || lower.includes("what improvements") || lower.includes("show improvements") || lower.includes("list improvements") || lower.includes("recent improvements")) {
-      const improvements = await getRecentImprovements(20);
+    if (lower.includes("what have you improved") || lower.includes("what improvements") || lower.includes("show improvements") || lower.includes("list improvements") || lower.includes("recent improvements") || lower.includes("what changed") || lower.includes("recent changes")) {
+      const improvements = await getAllImprovements(20);
 
       if (improvements.length === 0) {
         return {
@@ -22,7 +118,7 @@ async function selfImprovement(query) {
           success: true,
           final: true,
           data: {
-            text: "I haven't recorded any self-improvements yet. I log improvements when I:\n- Modify my own code\n- Install new packages\n- Download learning resources\n- Update configuration files",
+            text: "I haven't recorded any self-improvements yet. I log improvements when I:\n- Modify my own code\n- Install new packages\n- Download learning resources\n- Update configuration files\n- Run self-evolution cycles\n\nTip: Run 'self evolve' to start an improvement cycle, or check git log for code changes.",
             message: "I haven't recorded any self-improvements yet."
           }
         };
@@ -54,6 +150,7 @@ async function selfImprovement(query) {
                     <div class="improvement-action">${imp.action}</div>
                     ${imp.reason ? `<div class="improvement-reason">${imp.reason}</div>` : ''}
                     ${imp.file ? `<div class="improvement-file">📄 ${imp.file}</div>` : ''}
+                    ${imp.source ? `<div class="improvement-source">Source: ${imp.source}</div>` : ''}
                     <div class="improvement-timestamp">${new Date(imp.timestamp).toLocaleString()}</div>
                   </li>
                 `).join('')}

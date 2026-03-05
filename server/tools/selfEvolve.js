@@ -11,6 +11,7 @@ import { githubScanner } from "./githubScanner.js";
 import { codeReview } from "./codeReview.js";
 import { codeTransform } from "./codeTransform.js";
 import { projectGraph } from "./projectGraph.js";
+import { logImprovement } from "../telemetryAudit.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -173,6 +174,14 @@ Format as JSON array:
             description: improvement.description,
             applied: true,
             diff: transformResult.data?.diff
+          });
+          // Log to improvements.jsonl so selfImprovement tool can report it
+          await logImprovement({
+            category: improvement.type || "code_change",
+            action: improvement.description,
+            file: improvement.file,
+            reason: "Self-evolution cycle",
+            source: "selfEvolve"
           });
         } else {
           results.improvements.push({

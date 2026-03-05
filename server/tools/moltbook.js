@@ -53,13 +53,27 @@ async function apiRequest(method, endpoint, body, apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const options = { method, headers };
+  const options = { method, headers, timeout: 15000 };
   if (body && (method === "POST" || method === "PATCH" || method === "PUT")) {
     options.body = JSON.stringify(body);
   }
 
   console.log(`[moltbook] ${method} ${endpoint}`);
-  const res = await fetch(url, options);
+
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (err) {
+    console.error(`[moltbook] Request failed: ${method} ${endpoint} — ${err.message}`);
+    return { ok: false, status: 0, data: { error: `Network error: ${err.message}` }, headers: new Map() };
+  }
+
+  // Handle 429 Rate Limit — return immediately with clear error
+  if (res.status === 429) {
+    const retryAfter = res.headers.get("retry-after") || "unknown";
+    console.warn(`[moltbook] ⚠️ RATE LIMITED (429) on ${endpoint}. Retry after: ${retryAfter}s`);
+    return { ok: false, status: 429, data: { error: `Rate limited — try again in ${retryAfter} seconds` }, headers: res.headers };
+  }
 
   let data;
   const contentType = res.headers.get("content-type") || "";
@@ -93,7 +107,8 @@ function inferAction(text) {
   const lower = text.toLowerCase();
 
   // Registration
-  if (/\b(register|sign\s*up|create\s+account|join\s+moltbook|open.*account)\b/.test(lower)) return "register";
+  if (/\b(register|sign\s*up|create\s+account|open.*account)\b/.test(lower)) return "register";
+  if (/\bjoin\s+moltbook\b/.test(lower) && !/\b(community|submolt|group)\b/.test(lower)) return "register";
   if (/\bskill\.md\b/.test(lower) || /\bfollow.*instructions?\b/.test(lower)) return "register";
 
   // Auth
@@ -106,7 +121,7 @@ function inferAction(text) {
   if (/\b(dm\s+requests?|pending\s+requests?|approve\s+dm|reject\s+dm|accept\s+dm)\b/.test(lower)) return "dm_requests";
 
   // Profile
-  if (/\b(my\s+profile|who\s+am\s+i|my\s+account|check\s+me)\b/.test(lower)) return "profile";
+  if (/\b(my\s+(\w+\s+)?profile|who\s+am\s+i|my\s+account|check\s+me|show\s+profile)\b/.test(lower)) return "profile";
   if (/\b(update\s+(my\s+)?profile|change\s+(my\s+)?description|edit\s+profile)\b/.test(lower)) return "updateProfile";
   if (/\b(view\s+profile|profile\s+of|who\s+is|look\s+up\s+agent|agent\s+profile)\b/.test(lower)) return "viewProfile";
 
@@ -710,7 +725,12 @@ async function handleSearch(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("search");
 
-  const query = context.query || text.replace(/^.*?(search|find|look\s+for)\s*/i, "").replace(/\bon\s+moltbook\b/i, "").trim();
+  const query = context.query || text
+    .replace(/^.*?(search|find|look\s+for)\s*/i, "")
+    .replace(/\bon\s+moltbook\b/i, "")
+    .replace(/^moltbook\s+(?:for|about|of)\s+/i, "")
+    .replace(/\bmoltbook\b/i, "")
+    .trim();
   const type = context.type || "all";
   const result = await apiRequest("GET", `/search?q=${encodeURIComponent(query)}&type=${type}&limit=20`, null, apiKey);
   if (!result.ok) return apiError("search", result);
@@ -925,7 +945,9 @@ async function handleHeartbeat(text, context) {
       output += `- 📢 ${home.announcements.length} announcement(s)\n`;
     }
   } else {
-    output += `- Dashboard: failed to load (HTTP ${homeResult.status})\n`;
+    const errMsg = homeResult.status === 429 ? "⛔ RATE LIMITED — wait before retrying" : `failed (HTTP ${homeResult.status})`;
+    output += `- Dashboard: ${errMsg}\n`;
+    if (homeResult.status === 429) actions.push("Rate limited — slow down API calls");
   }
 
   // 1b. Check DMs
@@ -957,7 +979,8 @@ async function handleHeartbeat(text, context) {
       }
     }
   } else {
-    output += `- Feed: failed to load\n`;
+    const feedErr = feedResult.status === 429 ? "⛔ RATE LIMITED" : `failed (HTTP ${feedResult.status})`;
+    output += `- Feed: ${feedErr}\n`;
   }
 
   // ── TIER 3: Content Creation Status ──

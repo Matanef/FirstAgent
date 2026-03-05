@@ -284,9 +284,8 @@ function checkDiagnosticQuestion(message) {
   ];
 
   if (diagPatterns.some(rx => rx.test(lower))) {
-    // Prefer selfImprovement for explicit "improve" style questions,
-    // otherwise use llm for explanation/diagnostic.
-    if (/\b(improve|self[- ]?improve|suggest improvement|how can you improve)\b/.test(lower)) {
+    // Prefer selfImprovement for accuracy, improvement, or diagnostic questions.
+    if (/\b(improve|self[- ]?improve|suggest improvement|how can you improve|accura|reliab|how precise|routing accuracy|what have you|detected issues?|misrouting|weekly report)\b/.test(lower)) {
       return [{ tool: "selfImprovement", input: message, context: {}, reasoning: "certainty_diagnostic_self_improve" }];
     }
     return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
@@ -525,7 +524,9 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // Weather with city (or from memory)
-  if (containsKeyword(lower, WEATHER_KEYWORDS)) {
+  // Guard: skip if this is a scheduling/recurring request (scheduler should handle)
+  if (containsKeyword(lower, WEATHER_KEYWORDS) &&
+      !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|book\s+.+\s+every)\b/i.test(lower)) {
     let extracted = extractCity(trimmed);
     // If no city extracted, check memory for saved location
     if (!extracted) {
@@ -572,7 +573,7 @@ export async function plan({ message, chatContext = {} }) {
   // MOLTBOOK: skill.md / registration flow
   // "Read https://www.moltbook.com/skill.md and follow the instructions to join Moltbook"
   // ──────────────────────────────────────────────────────────
-  if (/moltbook\.com\/skill\.md/i.test(lower) || (/\bmoltbook\b/i.test(lower) && /\b(follow.*instructions?|join|register|sign\s*up|create\s+account|open.*account)\b/i.test(lower))) {
+  if (/moltbook\.com\/skill\.md/i.test(lower) || (/\bmoltbook\b/i.test(lower) && /\b(follow.*instructions?|register|sign\s*up|create\s+account|open.*account)\b/i.test(lower)) || (/\bjoin\s+moltbook\b/i.test(lower) && !/\b(community|submolt|group)\b/i.test(lower))) {
     console.log("[planner] certainty branch: moltbook register (skill.md flow)");
     return [{ tool: "moltbook", input: trimmed, context: { action: "register" }, reasoning: "certainty_moltbook_register" }];
   }
@@ -601,7 +602,7 @@ export async function plan({ message, chatContext = {} }) {
     // Profile
     else if (/\b(update\s+profile|change\s+description|edit\s+profile)\b/i.test(lower)) context.action = "updateProfile";
     else if (/\b(view\s+profile|profile\s+of|who\s+is|agent\s+profile)\b/i.test(lower)) context.action = "viewProfile";
-    else if (/\b(my\s+profile|my\s+account)\b/i.test(lower)) context.action = "profile";
+    else if (/\b(my\s+(\w+\s+)?profile|my\s+account|show\s+profile)\b/i.test(lower)) context.action = "profile";
     // Posts
     else if (/\b(delete\s+post|remove\s+post)\b/i.test(lower)) context.action = "deletePost";
     else if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/i.test(lower)) context.action = "getPost";
@@ -947,6 +948,28 @@ export async function plan({ message, chatContext = {} }) {
       lower.length > 15) {
     console.log("[planner] certainty branch: general_knowledge → search");
     return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_general_knowledge" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // MULTI-STEP: Compound query detection ("X and then Y", "X and email me the results")
+  // Decomposes compound intents into sequential tool steps
+  // ──────────────────────────────────────────────────────────
+  const compoundMatch = trimmed.match(/^(.+?)\s+(?:and\s+(?:then\s+)?)(email|send|mail)\s+(?:me\s+)?(?:the\s+)?(?:results?|summary|info|output|it)/i);
+  if (compoundMatch) {
+    const firstPart = compoundMatch[1].trim();
+    const emailAction = compoundMatch[2];
+    console.log(`[planner] Compound query detected: "${firstPart}" → email results`);
+    // Determine the tool for the first part
+    let firstTool = "search"; // default
+    if (/\b(news|headlines?|articles?)\b/i.test(firstPart)) firstTool = "news";
+    else if (/\b(weather|forecast|temperature)\b/i.test(firstPart)) firstTool = "weather";
+    else if (/\b(stock|finance|price)\b/i.test(firstPart)) firstTool = "finance";
+    else if (/\b(github|repo|trending)\b/i.test(firstPart)) firstTool = "github";
+    else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
+    return [
+      { tool: firstTool, input: firstPart, context: {}, reasoning: "compound_step1" },
+      { tool: "email", input: `Email me the results of: ${firstPart}`, context: { action: "draft", useLastResult: true }, reasoning: "compound_step2_email" }
+    ];
   }
 
   // ──────────────────────────────────────────────────────────

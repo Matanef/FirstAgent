@@ -131,16 +131,25 @@ function App() {
         [activeId]: [...c[activeId], botMsg]
       }));
 
+      let sseBuffer = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        // Keep the last partial line in the buffer (might be incomplete)
+        sseBuffer = lines.pop() || "";
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          const data = JSON.parse(line.slice(6));
+          let data;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch (parseErr) {
+            console.warn("SSE JSON parse error (skipping chunk):", parseErr.message);
+            continue;
+          }
 
           if (data.type === "chunk") {
             accumulatedText += data.chunk;
