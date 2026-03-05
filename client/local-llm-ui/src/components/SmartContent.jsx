@@ -50,7 +50,19 @@ export default function SmartContent({ message, conversationId }) {
         case "code":
             const codeMatch = (message.content || "").match(/```(\w+)?\n([\s\S]*?)```/);
             if (codeMatch) {
-                return <CodeBlock code={codeMatch[2]} language={codeMatch[1] || "text"} />;
+                // Extract text before and after the code block
+                const fullContent = message.content || "";
+                const codeBlockFull = codeMatch[0];
+                const idx = fullContent.indexOf(codeBlockFull);
+                const textBefore = fullContent.substring(0, idx).trim();
+                const textAfter = fullContent.substring(idx + codeBlockFull.length).trim();
+                return (
+                    <>
+                        {textBefore && <div className="message-text" style={{ marginBottom: "0.5rem" }}>{textBefore}</div>}
+                        <CodeBlock code={codeMatch[2]} language={codeMatch[1] || "text"} />
+                        {textAfter && <div className="message-text" style={{ marginTop: "0.5rem" }}>{textAfter}</div>}
+                    </>
+                );
             }
             if (message.tool === "calculator" && message.data?.expression) {
                 return (

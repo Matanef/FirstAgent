@@ -6,7 +6,8 @@ server/Claude
 server/Antigravity
 server/tokens/
 server/data/sessions/
-utils/
+local-llm-ui/utils/memory.json
+
 downloads/
 uploads/
 .claude/worktrees
