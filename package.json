@@ -5,5 +5,9 @@
   "workspaces": [
     "server",
     "client/local-llm-ui"
-  ]
+  ],
+  "dependencies": {
+    "axios": "^1.13.6",
+    "lodash": "^4.17.23"
+  }
 }
