@@ -544,11 +544,9 @@ export async function email(query) {
   console.log("📨 [email] ENTERED TOOL");
 
   try {
-    const queryText =
-      typeof query === "string" ? query : query?.text || query?.input || "";
-    const context =
-      typeof query === "object" ? query?.context || {} : {};
-
+    const queryText = typeof query === "string" ? query : query?.text || query?.input || "";
+    const context = typeof query === "object" ? query?.context || {} : {};
+    
     console.log("📨 [email] queryText:", queryText);
     console.log("📨 [email] context:", context);
 
@@ -559,7 +557,7 @@ export async function email(query) {
     console.log("📨 [email] action:", action);
 
     // DELETE emails
-    if (action === "delete" || /\b(delete|remove)\s+emails?\b/i.test(lower)) {
+    if (action === "delete" || lower.includes("delete") || lower.includes("remove") || lower.includes("trash")) {
       console.log("📨 [email] DELETE branch");
       return await deleteEmails(queryText, context);
     }
