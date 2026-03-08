@@ -65,7 +65,7 @@ function App() {
     }
   }
 
-async function sendMessage() {
+  async function sendMessage() {
     if (!input.trim() || !activeId || loading) return;
 
     // Block send if any file is still uploading
@@ -116,10 +116,9 @@ async function sendMessage() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let accumulatedText = "";
-      
-      // Removed the duplicate 'let buffer = "";' here since you use sseBuffer below
 
-      // Add placeholder bot message (for streamed content)
+      // Add placeholder bot message
+      const botMsgId = Date.now();
       const botMsg = {
         role: "assistant",
         content: "",
@@ -133,8 +132,6 @@ async function sendMessage() {
       }));
 
       let sseBuffer = "";
-      let streamFinished = false; // <-- ADDED: Flag to break the outer loop
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -146,7 +143,6 @@ async function sendMessage() {
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          console.log("RECEIVED FROM SERVER:", line);
           let data;
           try {
             data = JSON.parse(line.slice(6));
@@ -156,8 +152,7 @@ async function sendMessage() {
           }
 
           if (data.type === "chunk") {
-            // Note: I added a fallback to data.text just in case your backend uses that
-            accumulatedText += data.chunk || data.text || ""; 
+            accumulatedText += data.chunk;
             setConversations(c => {
               const current = [...c[activeId]];
               const last = { ...current[current.length - 1] };
@@ -169,33 +164,19 @@ async function sendMessage() {
             setConversations(c => {
               const current = [...c[activeId]];
               const last = { ...current[current.length - 1] };
-
-              // If nothing was streamed, fall back to the final reply
-              if (!accumulatedText && typeof data.reply === "string") {
-                last.content = data.reply;
-              }
-              
-              last.loading = false;
+              last.content = data.reply;
               last.confidence = data.confidence;
               last.stateGraph = data.stateGraph;
               last.tool = data.tool;
               last.data = data.data;
+              last.loading = false;
               current[current.length - 1] = last;
               return { ...c, [activeId]: current };
             });
-            
             setMetadata(data.metadata);
-            streamFinished = true; // <-- ADDED: Tell the while loop it's time to stop
-            break; // This only breaks the 'for' loop
-            
           } else if (data.type === "error") {
             throw new Error(data.error);
           }
-        }
-
-        // <-- ADDED: Safely break the while loop so the 3 dots disappear
-        if (streamFinished) {
-          break; 
         }
       }
     } catch (err) {
@@ -233,24 +214,6 @@ async function sendMessage() {
     } finally {
       abortControllerRef.current = null;
       setLoading(false);
-
-      // ADDED: Failsafe to ensure the dots disappear even if the server crashes
-      setConversations(c => {
-        const current = [...(c[activeId] || [])];
-        if (current.length > 0) {
-          const lastIdx = current.length - 1;
-          // If the message is STILL marked as loading after the stream closes, fix it!
-          if (current[lastIdx].loading) {
-            current[lastIdx] = {
-              ...current[lastIdx],
-              loading: false,
-              content: current[lastIdx].content || "⚠️ Connection to server lost before completion."
-            };
-            return { ...c, [activeId]: current };
-          }
-        }
-        return c;
-      });
     }
   }
 

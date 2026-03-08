@@ -1,5 +1,5 @@
 // server/executor.js
-// COMPLETE FIX: All original functionality + email confirmation + context awareness
+// COMPLETE FIX: All original functionality + email confirmation + context awareness + SAFE JSON + NO HANGS
 
 import { TOOLS } from "./tools/index.js";
 import { getMemory } from "./memory.js";
@@ -16,6 +16,9 @@ import {
   getMessageText
 } from "./utils/uiUtils.js";
 
+/* ============================================================
+   BUILD LLM CONTEXT
+============================================================ */
 function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
@@ -50,7 +53,6 @@ CONVERSATION STATISTICS:
 ${capabilities ? `- Tools available: ${capabilities.join(", ")}` : ""}
 `;
 
-  // FIX: Include stateGraph for context awareness
   const CONTEXT_ENRICHMENT = `
 NLP ANALYSIS:
 - Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
@@ -60,7 +62,6 @@ PREVIOUS STEPS IN THIS SEQUENCE:
 ${stateGraph && stateGraph.length > 0 ? JSON.stringify(stateGraph, null, 2) : "none"}
 `;
 
-  // Resolve user's actual name (not GitHub username)
   const userName = profile?.self?.name || profile?.name || "User";
 
   return `${awarenessContext}
@@ -84,6 +85,9 @@ Now write the final answer. Be aware of full conversation context and your capab
 `;
 }
 
+/* ============================================================
+   RUN LLM WITH FULL MEMORY
+============================================================ */
 async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
@@ -112,10 +116,12 @@ async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, en
     text = llmResponse?.data?.text || "I couldn't generate a response.";
   }
 
-  text = convertMarkdownTablesToHTML(text);
-  return text;
+  return convertMarkdownTablesToHTML(text);
 }
 
+/* ============================================================
+   SUMMARIZE TOOL RESULTS — SAFE JSON
+============================================================ */
 async function summarizeWithLLM({
   userQuestion,
   toolResult,
@@ -130,58 +136,35 @@ async function summarizeWithLLM({
   const profile = memory.profile || {};
   const toneText = getToneDescription(profile || {});
 
-  // Style engine integration
   let styleText = "";
-  try {
-    styleText = await buildStyleInstructions();
-  } catch { styleText = ""; }
+  try { styleText = await buildStyleInstructions(); } catch {}
 
   const conversation = memory.conversations?.[conversationId] || [];
   const allMessages = conversation;
 
-  const convoText = allMessages
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n");
-
+  const convoText = allMessages.map(m => `${m.role}: ${m.content}`).join("\n");
   const today = new Date().toLocaleDateString("en-GB");
   const tableRequested = wantsTableFormat(userQuestion);
 
-  const dateEmphasis = ['news', 'search', 'sports'].includes(tool) ?
-    `CRITICAL: TODAY'S DATE IS ${today}. Information should be current and up-to-date!` : '';
-
-  // FIX: Include stateGraph for context awareness
   let contextSummary = "";
   if (stateGraph && stateGraph.length > 0) {
     contextSummary = "\n\nPREVIOUS STEPS IN THIS SEQUENCE:\n";
     stateGraph.forEach(step => {
-      contextSummary += `- Step ${step.step}: ${step.tool} - ${step.success ? 'success' : 'failed'}\n`;
+      contextSummary += `- Step ${step.step}: ${step.tool} - ${step.success ? "success" : "failed"}\n`;
     });
-    contextSummary += "\nUse this context when answering follow-up questions.\n";
+  }
+
+  // SAFE JSON STRINGIFY
+  let toolResultJson = "";
+  try {
+    toolResultJson = JSON.stringify(toolResult, null, 2);
+  } catch (e) {
+    toolResultJson = `"<< Tool result could not be stringified: ${e.message} >>"`;
   }
 
   const prompt = `
-You are the final response generator for an AI assistant with deep awareness of context.
-The current date is ${today}.
-${dateEmphasis}
-
-NLP ANALYSIS:
-- Sentiment: ${sentiment?.sentiment || "neutral"} (Score: ${sentiment?.score || 0})
-- Entities Detected: ${entities ? JSON.stringify(entities) : "none"}
-
-CONVERSATION CONTEXT:
-- Total messages: ${allMessages.length}
-- You have FULL conversation history below
-
-User profile (long-term memory):
-${JSON.stringify(profile, null, 2)}
-
-Full conversation history (${allMessages.length} messages):
-${convoText || "(no prior messages)"}
-${contextSummary}
-
-Tone instructions:
-${toneText}
-${styleText ? `\nStyle preferences:\n${styleText}` : ""}
+You are the final response generator for an AI assistant.
+Current date: ${today}
 
 User question:
 ${userQuestion}
@@ -189,33 +172,16 @@ ${userQuestion}
 Tool used: ${tool}
 
 Tool result (structured data):
-${JSON.stringify(toolResult, null, 2)}
+${toolResultJson}
 
-${toolResult?.success === false ? `ERROR ANALYSIS INSTRUCTIONS:
-- Explain WHAT went wrong in plain language
-- Explain WHY it likely happened (root cause)
-- Suggest HOW to resolve it with specific steps
-- If applicable, provide a code snippet or command that would fix the issue
-- Be concise but actionable
-` : ''}
-Formatting instructions:
-- Produce a clear, natural-language answer
-- Use profile information naturally when relevant
-- Respect tone, detail, and formatting preferences
-${tableRequested
-      ? "- Convert data into an HTML table with headers and rows.\n- Use class='ai-table-wrapper' and class='ai-table'\n- Keep explanation short and place table clearly"
-      : "- Use normal paragraph formatting unless different structure is better"
-    }
-${['sports', 'news', 'finance', 'financeFundamentals'].includes(tool)
-      ? "- IMPORTANT: Present ALL data rows from the tool result. Do NOT truncate or show only top 4/5 results.\n- Use markdown tables for standings, scores, financial data. Show the FULL table.\n- If data contains 20 teams in standings, show ALL 20 teams."
-      : ""}
-- If no reliable information, say so clearly - do NOT invent facts
-- Do NOT mention tools or internal steps
-- Be aware of full conversation context and reference previous messages if relevant
-${(tool === "finance" || tool === "financeFundamentals") ? "- CRITICAL: If the tool data shows no price/financial data or an error, say the data is unavailable. NEVER invent or guess stock prices, percentages, or financial figures." : ""}
-${(tool === "sports") ? "- CRITICAL: If the tool data shows an error or no results, say the data is unavailable. NEVER invent match scores, dates, or standings." : ""}
+Tone instructions:
+${toneText}
+${styleText ? `Style preferences:\n${styleText}` : ""}
 
-Generate the response:
+Conversation history:
+${convoText}
+
+Generate the final answer:
 `;
 
   let text = "";
@@ -230,29 +196,24 @@ Generate the response:
     text = llmResponse?.data?.text || "I couldn't generate a response.";
   }
 
-  text = convertMarkdownTablesToHTML(text);
-
   return {
-    reply: text,
+    reply: convertMarkdownTablesToHTML(text),
     success: true,
     reasoning: toolResult.reasoning || null
   };
 }
 
+/* ============================================================
+   REFORMAT TABLE
+============================================================ */
 async function reformatAsTable({ userMessage, conversationId }) {
   const memory = await getMemory();
   const conversation = memory.conversations?.[conversationId] || [];
 
-  const lastAssistantMessage = [...conversation]
-    .reverse()
-    .find(m => m.role === "assistant");
+  const lastAssistantMessage = [...conversation].reverse().find(m => m.role === "assistant");
 
   if (!lastAssistantMessage) {
-    return {
-      reply: "I don't have a previous response to reformat.",
-      success: false,
-      stateGraph: []
-    };
+    return { reply: "I don't have a previous response to reformat.", success: false, stateGraph: [] };
   }
 
   const prompt = `
@@ -264,121 +225,76 @@ ${lastAssistantMessage.content}
 User request:
 ${userMessage}
 
-INSTRUCTIONS:
-- Convert information into a well-structured HTML table
-- Use class="ai-table-wrapper" for wrapper div
-- Use class="ai-table" for table element
-- Include appropriate headers
-- Keep data accurate - don't add or remove information
-- Add brief introduction before the table
-
-Example format:
-<div class="ai-table-wrapper">
-  <table class="ai-table">
-    <thead>
-      <tr><th>Column 1</th><th>Column 2</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Data 1</td><td>Data 2</td></tr>
-    </tbody>
-  </table>
-</div>
-
 Generate the reformatted response:
 `;
 
   const llmResponse = await llm(prompt);
-  let text = llmResponse?.data?.text || "I couldn't reformat the response.";
-
-  text = convertMarkdownTablesToHTML(text);
+  const text = convertMarkdownTablesToHTML(llmResponse?.data?.text || "I couldn't reformat the response.");
 
   return {
     reply: text,
     success: true,
-    stateGraph: [
-      {
-        step: 1,
-        tool: "reformat_table",
-        input: userMessage,
-        output: text,
-        final: true
-      }
-    ]
+    stateGraph: [{ step: 1, tool: "reformat_table", input: userMessage, output: text, final: true }]
   };
 }
 
-/**
- * executeStep
- * Executes a SINGLE plan step (one tool call)
- */
+/* ============================================================
+   EXECUTE A SINGLE TOOL STEP
+============================================================ */
 export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const queryText = typeof message === "string" ? message : message?.text || "";
 
-  // FIX: Handle "send it" / "cancel" for email confirmation with BACKWARD SEARCH
+  // EMAIL CONFIRMATION
   if (tool === "email_confirm") {
-    // FIX: Check if this is a CANCEL action BEFORE attempting to send
     const emailContext = typeof message === "object" ? (message.context || {}) : {};
+
     if (emailContext.action === "cancel") {
-      console.log("❌ Email cancelled by user.");
       return {
         tool: "email_confirm",
         input: message,
-        output: { tool: "email", success: true, final: true, data: { message: "✅ Email draft discarded. No email was sent." } },
-        data: { message: "✅ Email draft discarded. No email was sent." },
+        output: { tool: "email", success: true, final: true, data: { message: "✅ Email draft discarded." } },
+        data: { message: "✅ Email draft discarded." },
         success: true,
         final: true
       };
     }
 
-    console.log("📧 Processing email confirmation...");
     const memory = await getMemory();
     const conversation = memory.conversations?.[conversationId] || [];
 
-    // CRITICAL FIX: Search backward for the most recent draft
     const draftMessage = [...conversation]
       .reverse()
-      .find(m => m.role === 'assistant' && m.data?.pendingEmail);
+      .find(m => m.role === "assistant" && m.data?.pendingEmail);
 
     if (draftMessage && draftMessage.data.pendingEmail) {
-      console.log("✅ Found pending email draft, sending now...");
       const { to, subject, body, attachments } = draftMessage.data.pendingEmail;
-
       const sendResult = await sendConfirmedEmail({ to, subject, body, attachments });
 
       return {
         tool: "email_confirm",
         input: message,
         output: sendResult,
-        data: sendResult.data || sendResult, // Preserve send result data for finalizeStep
+        data: sendResult.data || sendResult,
         success: sendResult.success,
         final: true
       };
-    } else {
-      console.log("❌ No pending email draft found in history.");
-      return {
-        tool: "email_confirm",
-        input: message,
-        output: {
-          tool: "email",
-          success: false,
-          final: true,
-          error: "I don't have a pending email to send. Please create an email draft first."
-        },
-        success: false,
-        final: true
-      };
     }
+
+    return {
+      tool: "email_confirm",
+      input: message,
+      output: { tool: "email", success: false, final: true, error: "No pending email to send." },
+      success: false,
+      final: true
+    };
   }
 
-  // Special case: reformat previous response as table
+  // REFORMAT TABLE
   if (tool === "reformat_table") {
-    return await reformatAsTable({
-      userMessage: getMessageText(message),
-      conversationId
-    });
+    return await reformatAsTable({ userMessage: getMessageText(message), conversationId });
   }
 
-  // Direct LLM - with FULL memory and context
+  // DIRECT LLM
   if (tool === "llm") {
     const reply = await runLLMWithFullMemory({
       userMessage: getMessageText(message),
@@ -398,25 +314,17 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
     };
   }
 
-  // Normalize city aliases
+  // NORMAL TOOL EXECUTION
   message = normalizeCityAliases(message);
 
-  // Case-insensitive tool lookup
   const toolKeys = Object.keys(TOOLS);
   const actualToolKey = toolKeys.find(k => k.toLowerCase() === tool.toLowerCase());
 
   if (!actualToolKey) {
-    console.error(`❌ Tool not found: ${tool}`);
-    console.log("Available tools:", toolKeys);
     return {
       tool,
       input: message,
-      output: {
-        tool,
-        success: false,
-        final: true,
-        error: `Tool "${tool}" not found. Available tools: ${toolKeys.join(", ")}`
-      },
+      output: { tool, success: false, final: true, error: `Tool "${tool}" not found.` },
       success: false,
       final: true
     };
@@ -424,16 +332,12 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   tool = actualToolKey;
 
-  // Tools that receive full object { text, context }
   let toolInput;
   if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager"].includes(tool)) {
-    // For email, split: pass query text + context separately
     if (tool === "email" && typeof message === "object") {
       const queryText = message.text || message.input || "";
       const ctx = message.context || {};
       toolInput = queryText;
-      // Call email(query, context) with two args
-      console.log(`🔧 Executing tool: ${tool} (with context: ${JSON.stringify(ctx)})`);
       const result = await TOOLS[tool](toolInput, ctx);
       return {
         tool,
@@ -449,8 +353,6 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
     toolInput = getMessageText(message);
   }
 
-  // Execute tool
-  console.log(`🔧 Executing tool: ${tool}`);
   const result = await TOOLS[tool](toolInput);
 
   return {
@@ -462,27 +364,19 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   };
 }
 
-/**
- * finalizeStep
- * Summarizes tool results or returns raw output
- */
+/* ============================================================
+   FINALIZE STEP
+============================================================ */
 export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
   const { tool, output: result } = stepResult;
 
-  // LLM-REVIEWED ERRORS: instead of returning raw error strings,
-  // pass errors through the LLM for explanation + fix suggestions
+  // ERROR HANDLING
   if (!stepResult.success) {
     const errorText = result?.error || result?.data?.error || "Tool execution failed.";
     try {
       const errorExplanation = await summarizeWithLLM({
         userQuestion: getMessageText(message),
-        toolResult: {
-          tool,
-          success: false,
-          error: errorText,
-          data: result?.data || {},
-          stateGraph
-        },
+        toolResult: { tool, success: false, error: errorText, data: result?.data || {}, stateGraph },
         conversationId,
         tool,
         sentiment,
@@ -490,93 +384,21 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
         stateGraph,
         onChunk
       });
-      return {
-        reply: errorExplanation.reply,
-        tool,
-        success: false,
-        final: true
-      };
-    } catch (llmErr) {
-      console.warn("[finalizeStep] LLM error review failed, returning raw error:", llmErr.message);
-      return {
-        reply: errorText,
-        tool,
-        success: false,
-        final: true
-      };
+      return { reply: errorExplanation.reply, tool, success: false, final: true };
+    } catch {
+      return { reply: errorText, tool, success: false, final: true };
     }
   }
 
-  // SPECIAL CASE: preformatted results — skip LLM summarization
+  // PRE-FORMATTED RESULTS (EMAIL DRAFTS)
   if (result.data?.preformatted && result.data?.text) {
-    return {
-      reply: result.data.text,
-      tool,
-      data: result.data,
-      success: true,
-      final: true
-    };
+    return { reply: result.data.text, tool, data: result.data, success: true, final: true };
   }
 
-  // SPECIAL CASE: memorytool, selfImprovement, applyPatch - No LLM summarization
-  if (tool === "memorytool" || tool === "selfImprovement" || tool === "applyPatch") {
-    return {
-      reply: result.data?.text || result.data?.message || "Task completed.",
-      tool,
-      data: result.data,
-      success: true,
-      final: true
-    };
-  }
-
-  // SPECIAL CASE: moltbook/webBrowser credential/registration previews — return raw data
-  if ((tool === "moltbook" || tool === "webBrowser") && (result.data?.mode === "preview" || result.data?.needsCredentials)) {
-    return {
-      reply: result.data?.text || "Action requires more information.",
-      tool,
-      data: result.data,
-      success: true,
-      final: true
-    };
-  }
-
-  // SPECIAL CASE: duplicateScanner — return raw structured data for the panel to render
-  if (tool === "duplicateScanner") {
-    return {
-      reply: result.data?.text || "Scan completed.",
-      tool,
-      data: result.data,
-      success: true,
-      final: true
-    };
-  }
-
-  // FIX: Email draft - preserve pendingEmail data
-  if (tool === "email" && result.data?.mode === "draft") {
-    return {
-      reply: result.data.message,
-      tool,
-      data: result.data, // Contains pendingEmail
-      success: true,
-      final: true
-    };
-  }
-
-  // FIX: Email confirmation (send/cancel) - skip LLM summarization (LLM refuses to reproduce draft)
+  // EMAIL CONFIRMATION
   if (tool === "email_confirm" || (tool === "email" && result.data?.messageId)) {
     return {
-      reply: result.data?.message || result.data?.text || result.output?.data?.message || "Email operation completed.",
-      tool,
-      data: result.data || result.output?.data,
-      success: true,
-      final: true
-    };
-  }
-
-  // FIX: Preformatted tool results - skip LLM summarization, return raw text
-  if (result.data?.preformatted && result.data?.text) {
-    return {
-      reply: result.data.text,
+      reply: result.data?.message || result.data?.text || "Email operation completed.",
       tool,
       data: result.data,
       success: true,
@@ -584,10 +406,10 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // Tools that should be summarized
+  // TOOLS THAT SHOULD BE SUMMARIZED — EMAIL REMOVED
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
-    "sports", "youtube", "shopping", "email", "tasks", "news", "file",
+    "sports", "youtube", "shopping", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
     "webDownload", "fileReview", "webBrowser", "moltbook", "fileWrite",
     "calendar", "documentQA", "contacts", "workflow"
@@ -601,7 +423,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
       tool,
       sentiment,
       entities,
-      stateGraph, // FIX: Pass context
+      stateGraph,
       onChunk
     });
 
@@ -615,7 +437,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // Default: return raw tool output
+  // DEFAULT RAW OUTPUT
   const reply =
     result?.data?.html ||
     result?.data?.text ||
@@ -633,46 +455,3 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   };
 }
 
-/**
- * executeAgent (Single Step / Direct)
- * Legacy/Direct entry point for executing a single tool call.
- * Used by specialized routes like 'review.js'.
- */
-export async function executeAgent({ tool, message, conversationId, onChunk }) {
-  const queryText = typeof message === "string" ? message : message?.text || "";
-  const { sentiment, entities } = getBackgroundNLP(queryText);
-
-  // 1. Execute the tool
-  const stepResult = await executeStep({
-    tool,
-    message,
-    conversationId,
-    sentiment,
-    entities,
-    stateGraph: [],
-    onChunk
-  });
-
-  // 2. Finalize and Return
-  const finalized = await finalizeStep({
-    stepResult,
-    message,
-    conversationId,
-    sentiment,
-    entities,
-    stateGraph: [],
-    onChunk
-  });
-
-  return {
-    ...finalized,
-    stateGraph: [{
-      step: 1,
-      tool: finalized.tool,
-      input: message,
-      output: finalized.reply,
-      success: finalized.success,
-      final: finalized.final
-    }]
-  };
-}

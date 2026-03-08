@@ -1,26 +1,64 @@
-import { safeFetch } from "../utils/fetch.js";
-import { CONFIG } from "../utils/config.js";
+// server/tools/llm.js
+// Safe, timeout-protected LLM wrapper for Ollama
+
 import fetch from "node-fetch";
+import { CONFIG } from "../utils/config.js";
 
-export async function llm(prompt) {
+/**
+ * Internal helper: perform a POST to Ollama with timeout + abort
+ */
+async function fetchWithTimeout(url, body, timeoutMs = 120_000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const body = {
-      model: CONFIG.LLM_MODEL,
-      prompt,
-      stream: false
-    };
-
-    const url = CONFIG.LLM_API_URL + "api/generate";
-
-    const response = await safeFetch(url, {
+    const res = await fetch(url, {
       method: "POST",
+      signal: controller.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
 
+    if (!res.ok) {
+      throw new Error(`LLM HTTP ${res.status}`);
+    }
+
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(`LLM request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Non-streaming LLM call
+ */
+export async function llm(prompt, options = {}) {
+  const {
+    timeoutMs = 120_000,
+    model = CONFIG.LLM_MODEL
+  } = options;
+
+  const url = CONFIG.LLM_API_URL + "api/generate";
+
+  try {
+    const body = {
+      model,
+      prompt,
+      stream: false
+    };
+
+    const response = await fetchWithTimeout(url, body, timeoutMs);
+
     const text =
       response?.response ||
-      response?.message ||
+      response?.content ||
+      response?.message?.content ||
       response?.text ||
       null;
 
@@ -51,21 +89,31 @@ export async function llm(prompt) {
 }
 
 /**
- * llmStream
- * Real-time streaming for Ollama/LLM generate API
+ * Streaming LLM call with chunk guard + timeout
+ * Robust against multiple JSON objects per chunk and partial lines.
  */
-export async function llmStream(prompt, onChunk) {
+export async function llmStream(prompt, onChunk, options = {}) {
+  const {
+    timeoutMs = 120_000,
+    maxChunks = 200,
+    model = CONFIG.LLM_MODEL
+  } = options;
+
+  const url = CONFIG.LLM_API_URL + "api/generate";
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const body = {
-      model: CONFIG.LLM_MODEL,
+      model,
       prompt,
       stream: true
     };
 
-    const url = CONFIG.LLM_API_URL + "api/generate";
-
     const response = await fetch(url, {
       method: "POST",
+      signal: controller.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
@@ -74,31 +122,56 @@ export async function llmStream(prompt, onChunk) {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    // Node-fetch 3.x response.body is a Node.js Readable stream
+    let chunks = 0;
+    let buffer = "";
+    let doneFlag = false;
+
     for await (const chunk of response.body) {
-      const line = chunk.toString();
-      try {
-        const json = JSON.parse(line);
-        const text = json.response || json.message?.content || "";
-        if (text) onChunk(text);
-        if (json.done) break;
-      } catch (e) {
-        // Handle potential partial JSON in chunks
-        const lines = line.split('\n').filter(Boolean);
-        for (const l of lines) {
-          try {
-            const j = JSON.parse(l);
-            const t = j.response || j.message?.content || "";
-            if (t) onChunk(t);
-            if (j.done) break;
-          } catch (inner) { }
+      chunks += 1;
+      if (chunks > maxChunks) {
+        throw new Error(`LLM exceeded maxChunks=${maxChunks}`);
+      }
+
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const lineRaw of lines) {
+        const line = lineRaw.trim();
+        if (!line) continue;
+
+        try {
+          const json = JSON.parse(line);
+          const text =
+            json.response ||
+            json.content ||
+            json.message?.content ||
+            "";
+
+          if (text) {
+            onChunk(text);
+          }
+
+          if (json.done) {
+            doneFlag = true;
+            break;
+          }
+        } catch {
+          // Ignore malformed lines; next chunks may complete them
         }
       }
+
+      if (doneFlag) break;
     }
 
     return { success: true };
+
   } catch (err) {
-    console.error("LLM Stream error:", err);
+    if (err.name === "AbortError") {
+      return { success: false, error: `LLM stream timed out after ${timeoutMs}ms` };
+    }
     return { success: false, error: err.message };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

@@ -25,6 +25,7 @@ export function detectContradictions(stateGraph, newOutput) {
 }
 
 export function calculateConfidence(stateGraph) {
+  if (!stateGraph || !Array.isArray(stateGraph)) return 0.5;
   let score = 0.5;
 
   const usedFinance = stateGraph.some(s => s.tool === "finance");

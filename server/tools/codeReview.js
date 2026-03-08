@@ -5,6 +5,11 @@
 import fs from "fs/promises";
 import path from "path";
 import { llm } from "./llm.js";
+import { loadReviewCache, saveReviewCache } from "../utils/cacheReview.js"
+
+const FAST_REVIEW_MODEL = "gemma3:4b";   // <— FAST MODEL FOR ALL CODE REVIEWS
+const FILE_TIMEOUT = 60_000;            // 60s per file
+const ARCH_TIMEOUT = 90_000;            // 90s for architecture review
 
 const MAX_FILE_SIZE = 256 * 1024; // 256 KB
 const MAX_FILES_PER_REVIEW = 20;
@@ -29,7 +34,9 @@ async function collectCodeFiles(dirPath, depth = 0, maxDepth = 5) {
   let items;
   try {
     items = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch { return files; }
+  } catch {
+    return files;
+  }
 
   for (const item of items) {
     if (SKIP_DIRS.has(item.name)) continue;
@@ -64,17 +71,19 @@ async function collectCodeFiles(dirPath, depth = 0, maxDepth = 5) {
 async function readFileSafe(filePath) {
   try {
     return await fs.readFile(filePath, "utf8");
-  } catch (err) {
+  } catch {
     return null;
   }
 }
 
 /**
- * Analyze a single file with LLM
+ * Analyze a single file with LLM (FAST MODEL)
  */
 async function analyzeFile(filePath, content, reviewType) {
   const filename = path.basename(filePath);
   const ext = path.extname(filename).slice(1);
+
+  console.log(`[codeReview] Analyzing file with ${FAST_REVIEW_MODEL}: ${filename}`);
 
   const prompts = {
     quality: `Analyze this ${ext} file for code quality. Be concise and actionable.
@@ -133,12 +142,12 @@ ${content.slice(0, 8000)}
 \`\`\`
 
 Evaluate:
-1. Single Responsibility: Does each function/class do one thing well?
-2. Dependencies: Are imports well-organized? Any circular risks?
-3. Error Handling: Is it comprehensive and consistent?
-4. Naming: Are variables, functions, and modules named clearly?
-5. Modularity: Could parts be extracted into separate modules?
-6. Testability: Is the code easy to unit test?
+1. Single Responsibility
+2. Dependencies
+3. Error Handling
+4. Naming
+5. Modularity
+6. Testability
 
 Provide specific refactoring suggestions with brief code examples.`,
 
@@ -149,20 +158,24 @@ File: ${filename}
 ${content.slice(0, 8000)}
 \`\`\`
 
-Cover ALL of the following:
-1. CODE QUALITY (score 1-10, issues, good practices)
-2. SECURITY (vulnerabilities, hardcoded secrets)
-3. PERFORMANCE (bottlenecks, optimization opportunities)
-4. ARCHITECTURE (design patterns, modularity, naming)
-5. SUGGESTIONS (top 3 most impactful improvements)
+Cover:
+1. CODE QUALITY
+2. SECURITY
+3. PERFORMANCE
+4. ARCHITECTURE
+5. TOP 3 IMPROVEMENTS
 
-Be concise but thorough. Reference specific functions or line ranges.`
+Be concise but thorough.`
   };
 
   const prompt = prompts[reviewType] || prompts.full;
 
   try {
-    const response = await llm(prompt);
+    const response = await llm(prompt, {
+      model: FAST_REVIEW_MODEL,
+      timeoutMs: FILE_TIMEOUT
+    });
+
     return {
       file: filePath,
       filename,
@@ -170,6 +183,7 @@ Be concise but thorough. Reference specific functions or line ranges.`
       success: true
     };
   } catch (err) {
+    console.error(`[codeReview] Error analyzing ${filename}:`, err.message);
     return {
       file: filePath,
       filename,
@@ -180,10 +194,11 @@ Be concise but thorough. Reference specific functions or line ranges.`
 }
 
 /**
- * Analyze project-level architecture
+ * Analyze project-level architecture (FAST MODEL)
  */
 async function analyzeProjectArchitecture(dirPath, files) {
-  // Build a dependency map by scanning imports
+  console.log(`[codeReview] Running architecture review with ${FAST_REVIEW_MODEL}`);
+
   const depMap = {};
   for (const f of files.slice(0, 30)) {
     const content = await readFileSafe(f.path);
@@ -200,30 +215,33 @@ async function analyzeProjectArchitecture(dirPath, files) {
     depMap[relativePath] = imports;
   }
 
-  // Detect patterns
-  const fileList = files.map(f => path.relative(dirPath, f.path).replace(/\\/g, "/")).join("\n");
+  const fileList = files
+    .map(f => path.relative(dirPath, f.path).replace(/\\/g, "/"))
+    .join("\n");
 
-  const prompt = `Analyze this project's architecture based on its file structure and dependency map.
+  const prompt = `Analyze this project's architecture.
 
 Project root: ${dirPath}
 
 File list:
 ${fileList}
 
-Import/dependency map:
+Dependency map:
 ${JSON.stringify(depMap, null, 2)}
 
 Provide:
-1. ARCHITECTURE TYPE (monolith, microservices, modular, MVC, etc.)
-2. DEPENDENCY ANALYSIS (any circular dependencies? tightly coupled modules?)
-3. PROJECT HEALTH (well-organized? missing patterns?)
-4. RECOMMENDATIONS (top 5 architectural improvements)
-5. DEAD CODE RISK (files that appear unused or orphaned)
-
-Be specific and reference actual file paths.`;
+1. ARCHITECTURE TYPE
+2. DEPENDENCY ANALYSIS
+3. PROJECT HEALTH
+4. TOP 5 IMPROVEMENTS
+5. DEAD CODE RISK`;
 
   try {
-    const response = await llm(prompt);
+    const response = await llm(prompt, {
+      model: FAST_REVIEW_MODEL,
+      timeoutMs: ARCH_TIMEOUT
+    });
+
     return response?.data?.text || "Architecture analysis failed.";
   } catch (err) {
     return `Architecture analysis error: ${err.message}`;
@@ -231,7 +249,7 @@ Be specific and reference actual file paths.`;
 }
 
 /**
- * Detect review intent from text
+ * Detect review intent
  */
 function detectReviewType(text) {
   const lower = text.toLowerCase();
@@ -246,11 +264,9 @@ function detectReviewType(text) {
  * Extract file or folder path from request
  */
 function extractTarget(text) {
-  // Explicit path
   const pathMatch = text.match(/([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/);
   if (pathMatch) return pathMatch[1].replace(/\\/g, "/");
 
-  // Quoted
   const quoted = text.match(/["']([^"']+)["']/);
   if (quoted) return quoted[1];
 
@@ -261,15 +277,27 @@ function extractTarget(text) {
  * Main entry point
  */
 export async function codeReview(request) {
-  const text = typeof request === "string" ? request : (request?.text || request?.input || "");
-  const context = typeof request === "object" ? (request?.context || {}) : {};
+  const text =
+    typeof request === "string"
+      ? request
+      : request?.text || request?.input || "";
 
-  if (!text.trim()) {
+  const context =
+    typeof request === "object" ? request?.context || {} : {};
+
+  const signal = context.signal || null;
+  const budgetMs = context.budgetMs || null;
+  const isSelfEvolve = context.source === "selfEvolve";
+
+  if (!text.trim() && !context.path) {
     return {
       tool: "codeReview",
       success: false,
       final: true,
-      data: { message: "Please specify what to review. Example: 'review D:/my-project' or 'security review server/tools/email.js'" }
+      data: {
+        message:
+          "Please specify what to review. Example: 'review D:/my-project' or 'security review server/tools/email.js'"
+      }
     };
   }
 
@@ -281,23 +309,42 @@ export async function codeReview(request) {
       tool: "codeReview",
       success: false,
       final: true,
-      data: { message: "Please provide a file or folder path to review. Example: 'review D:/local-llm-ui/server'" }
+      data: {
+        message:
+          "Please provide a file or folder path to review. Example: 'review D:/local-llm-ui/server'"
+      }
     };
   }
 
   const normalizedPath = path.resolve(targetPath);
+  const startTime = Date.now();
 
   try {
     const stat = await fs.stat(normalizedPath);
 
+    // Single file review
     if (stat.isFile()) {
-      // Single file review
       const content = await readFileSafe(normalizedPath);
       if (!content) {
-        return { tool: "codeReview", success: false, final: true, data: { message: `Could not read file: ${normalizedPath}` } };
+        return {
+          tool: "codeReview",
+          success: false,
+          final: true,
+          data: { message: `Could not read file: ${normalizedPath}` }
+        };
       }
 
       const result = await analyzeFile(normalizedPath, content, reviewType);
+
+      // For selfEvolve, we can still cache this single file under its folder
+      if (isSelfEvolve) {
+        const folderPath = path.dirname(normalizedPath);
+        const cache = await loadReviewCache(folderPath);
+        const reviewedFilesSet = new Set(cache.reviewedFiles);
+        const relativeName = path.basename(normalizedPath);
+        reviewedFilesSet.add(relativeName);
+        await saveReviewCache(cache.cacheFile, Array.from(reviewedFilesSet));
+      }
 
       return {
         tool: "codeReview",
@@ -312,17 +359,26 @@ export async function codeReview(request) {
       };
     }
 
+    // Directory review
     if (stat.isDirectory()) {
-      // Project/folder review
       const codeFiles = await collectCodeFiles(normalizedPath);
 
       if (codeFiles.length === 0) {
-        return { tool: "codeReview", success: false, final: true, data: { message: `No code files found in ${normalizedPath}` } };
+        return {
+          tool: "codeReview",
+          success: false,
+          final: true,
+          data: { message: `No code files found in ${normalizedPath}` }
+        };
       }
 
-      // For architecture review, analyze the full project
-      if (reviewType === "architecture") {
-        const archReview = await analyzeProjectArchitecture(normalizedPath, codeFiles);
+      // Architecture-only review (unchanged)
+      if (reviewType === "architecture" && !isSelfEvolve) {
+        const archReview = await analyzeProjectArchitecture(
+          normalizedPath,
+          codeFiles
+        );
+
         return {
           tool: "codeReview",
           success: true,
@@ -336,13 +392,73 @@ export async function codeReview(request) {
         };
       }
 
-      // For other reviews, analyze top files
+      // === NEW BEHAVIOR FOR selfEvolve: full-folder review with cache + budget ===
+      if (isSelfEvolve) {
+        const cache = await loadReviewCache(normalizedPath);
+        const reviewedFilesSet = new Set(cache.reviewedFiles);
+        const reviews = [];
+        let newlyReviewedCount = 0;
+
+        for (const f of codeFiles) {
+          if (signal?.aborted) {
+            console.log("[codeReview] Aborted by signal during selfEvolve review.");
+            break;
+          }
+          if (budgetMs && Date.now() - startTime > budgetMs) {
+            console.log("[codeReview] Budget exceeded during selfEvolve review.");
+            break;
+          }
+
+          const relativeName = path.relative(normalizedPath, f.path).replace(/\\/g, "/");
+
+          // Skip already-reviewed files
+          if (reviewedFilesSet.has(relativeName)) continue;
+
+          const content = await readFileSafe(f.path);
+          if (!content) continue;
+
+          const result = await analyzeFile(f.path, content, reviewType);
+          reviews.push(result);
+
+          reviewedFilesSet.add(relativeName);
+          newlyReviewedCount++;
+
+          // Save cache incrementally
+          await saveReviewCache(cache.cacheFile, Array.from(reviewedFilesSet));
+        }
+
+        let summary = `🔍 **Self-Evolve ${reviewType.charAt(0).toUpperCase() + reviewType.slice(1)} Review: ${normalizedPath}**\n`;
+        summary += `New files reviewed this run: ${newlyReviewedCount}\n`;
+        summary += `Total cached reviewed files: ${reviewedFilesSet.size} of ${codeFiles.length}\n\n`;
+
+        for (const r of reviews) {
+          summary += `---\n### 📄 ${r.filename}\n${r.review}\n\n`;
+        }
+
+        return {
+          tool: "codeReview",
+          success: true,
+          final: true,
+          data: {
+            preformatted: true,
+            text: summary,
+            reviewType,
+            files: reviews,
+            totalFiles: codeFiles.length,
+            reviewedFiles: reviewedFilesSet.size,
+            newlyReviewed: newlyReviewedCount
+          }
+        };
+      }
+
+      // === ORIGINAL BEHAVIOR for normal/manual usage ===
       const filesToReview = codeFiles.slice(0, MAX_FILES_PER_REVIEW);
       const reviews = [];
 
       for (const f of filesToReview) {
         const content = await readFileSafe(f.path);
         if (!content) continue;
+
         const result = await analyzeFile(f.path, content, reviewType);
         reviews.push(result);
       }
@@ -369,13 +485,20 @@ export async function codeReview(request) {
       };
     }
 
-    return { tool: "codeReview", success: false, final: true, data: { message: `${normalizedPath} is neither a file nor a directory.` } };
+    return {
+      tool: "codeReview",
+      success: false,
+      final: true,
+      data: { message: `${normalizedPath} is neither a file nor a directory.` }
+    };
   } catch (err) {
     return {
       tool: "codeReview",
       success: false,
       final: true,
-      data: { message: `Error accessing "${normalizedPath}": ${err.message}` }
+      data: {
+        message: `Error accessing "${normalizedPath}": ${err.message}`
+      }
     };
   }
 }

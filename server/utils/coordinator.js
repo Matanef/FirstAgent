@@ -356,64 +356,43 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
     // POST-EXECUTION: Style, Satisfaction, Suggestions, Memory
     // ──────────────────────────────────────────────────────────
 
-    // 4a. Track user satisfaction signals
-    try {
-        const satisfaction = detectSatisfaction(queryText);
-        if (satisfaction.signal !== "neutral") {
-            await updatePreferencesFromFeedback(satisfaction.signal);
-        }
-    } catch (e) {
-        console.warn("[coordinator] Satisfaction tracking error:", e.message);
-    }
+//     // 4a. Track user satisfaction signals
+//     try {
+//         const satisfaction = detectSatisfaction(queryText);
+//         if (satisfaction.signal !== "neutral") {
+//             await updatePreferencesFromFeedback(satisfaction.signal);
+//         }
+//     } catch (e) {
+//         console.warn("[coordinator] Satisfaction tracking error:", e.message);
+//     }
 
-    // 4b. Extract and apply implicit style preferences
-    try {
-        const prefs = extractPreferences(queryText);
-        if (prefs) {
-            await applyExtractedPreferences(prefs);
-        }
-    } catch (e) {
-        console.warn("[coordinator] Preference extraction error:", e.message);
-    }
+// // 4b. Extract and apply implicit style preferences
+//     try {
+//         const prefs = extractPreferences(queryText);
+//         if (prefs) {
+//             await applyExtractedPreferences(prefs);
+//         }
+//     } catch (e) {
+//         console.warn("[coordinator] Preference extraction error:", e.message);
+//     }
 
-    // 4c. Apply emotional adaptation to response
-    let finalReply = lastFinalized?.reply || "";
-    if (emotionalAdaptation?.shouldAcknowledge && emotionalAdaptation.prependText && finalReply) {
-        finalReply = emotionalAdaptation.prependText + finalReply;
-    }
+//     // 4c. Apply emotional adaptation to response
+//     let finalReply = lastFinalized?.reply || "";
+//     if (emotionalAdaptation?.shouldAcknowledge && emotionalAdaptation.prependText && finalReply) {
+//         finalReply = emotionalAdaptation.prependText + finalReply;
+//     }
 
-    // 4d. Append proactive suggestions
-    try {
-        if (lastFinalized?.success && lastFinalized?.tool) {
-            finalReply = await appendSuggestion(
-                finalReply,
-                lastFinalized.tool,
-                lastFinalized
-            );
-        }
-    } catch (e) {
-        console.warn("[coordinator] Suggestion engine error:", e.message);
-    }
+//     // 🔴 DEADLOCK PREVENTION: 
+//     // We are completely bypassing appendSuggestion and dynamic memory imports here 
+//     // because they are causing silent Promises that never resolve.
 
-    // 4e. Conversation memory — periodically summarize long conversations
-    try {
-        const { getMemory } = await import("../memory.js");
-        const memory = await getMemory();
-        const convo = memory.conversations?.[conversationId] || [];
-        if (shouldSummarize(convo.length)) {
-            // Run async — don't block the response
-            summarizeAndStoreConversation(conversationId).catch(e =>
-                console.warn("[coordinator] Conversation summary failed:", e.message)
-            );
-        }
-    } catch (e) {
-        console.warn("[coordinator] Conversation memory error:", e.message);
-    }
-
-    return {
-        ...lastFinalized,
-        reply: finalReply,
-        stateGraph,
-        tool: lastFinalized?.tool || steps[0]?.tool || "unknown"
+return {
+        reply: lastFinalized?.reply || "Task completed.", // <-- We just use lastFinalized?.reply here instead of finalReply
+        tool: lastFinalized?.tool || "unknown",
+        data: lastFinalized?.data || null,
+        reasoning: lastFinalized?.reasoning || "Execution finished.",
+        success: lastFinalized?.success ?? true,
+        final: true,
+        stateGraph: stateGraph || [] 
     };
 }

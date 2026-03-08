@@ -4,9 +4,15 @@
 
 import fs from "fs/promises";
 import path from "path";
+import { fileURLToPath } from "url";
 import { llm } from "./llm.js";
 
 const MAX_FILE_SIZE = 256 * 1024;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SERVER_ROOT = path.resolve(__dirname, "..");
+const PROJECT_ROOT = path.resolve(SERVER_ROOT, "..");
 
 /**
  * Read file safely
@@ -16,7 +22,9 @@ async function readFileSafe(filePath) {
     const stat = await fs.stat(filePath);
     if (stat.size > MAX_FILE_SIZE) return null;
     return await fs.readFile(filePath, "utf8");
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -28,7 +36,9 @@ async function createBackup(filePath) {
     const backupPath = `${filePath}.backup-${Date.now()}`;
     await fs.writeFile(backupPath, content, "utf8");
     return backupPath;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -57,6 +67,196 @@ function extractPath(text) {
   const quoted = text.match(/["']([^"']+)["']/);
   if (quoted) return quoted[1];
   return null;
+}
+
+/**
+ * Convert filename to JS identifier (tool name)
+ */
+function filenameToIdentifier(filename) {
+  const base = filename.replace(/\.[^.]+$/, "");
+  const parts = base.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return "tool";
+  const [first, ...rest] = parts;
+  return (
+    first.charAt(0).toLowerCase() +
+    first.slice(1) +
+    rest.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join("")
+  );
+}
+
+/**
+ * Check if a path is inside server/tools
+ */
+function isToolFilePath(p) {
+  const norm = p.replace(/\\/g, "/");
+  return norm.includes("/server/tools/");
+}
+
+/**
+ * Safe file update helper
+ */
+async function safeUpdateFile(filePath, updater) {
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    const updated = await updater(content);
+    if (updated && updated !== content) {
+      await fs.writeFile(filePath, updated, "utf8");
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Update server/tools/index.js to export the new tool
+ */
+async function registerInToolsIndex(toolFilePath) {
+  const indexPath = path.join(__dirname, "index.js");
+  const filename = path.basename(toolFilePath);
+  const toolName = filenameToIdentifier(filename);
+  const exportLine = `export { ${toolName} } from "./${filename}";`;
+
+  await safeUpdateFile(indexPath, content => {
+    if (content.includes(exportLine) || content.includes(`"./${filename}"`)) {
+      return content;
+    }
+    const lines = content.split("\n");
+    // Try to keep alphabetical-ish: append at end of exports
+    lines.push(exportLine);
+    return lines.join("\n");
+  });
+}
+
+/**
+ * Best-effort registration in planner.js
+ * Adds tool name to available tools list if such a list exists.
+ */
+async function registerInPlanner(toolFilePath) {
+  const plannerPath = path.join(SERVER_ROOT, "planner.js");
+  const filename = path.basename(toolFilePath);
+  const toolName = filenameToIdentifier(filename);
+
+  await safeUpdateFile(plannerPath, content => {
+    if (content.includes(toolName)) return content;
+
+    // Try to find availableTools array
+    const regex = /(availableTools\s*=\s*\[)([\s\S]*?)(\])/m;
+    const match = content.match(regex);
+    if (match) {
+      const before = match[1];
+      const body = match[2];
+      const after = match[3];
+      if (body.includes(`"${toolName}"`) || body.includes(`'${toolName}'`)) {
+        return content;
+      }
+      const trimmedBody = body.trim();
+      const insert =
+        trimmedBody.length === 0
+          ? `  "${toolName}"`
+          : `${trimmedBody.replace(/\]\s*$/, "")},\n  "${toolName}"`;
+      const replacement = before + insert + "\n" + after;
+      return content.replace(regex, replacement);
+    }
+
+    // Fallback: append a comment hint
+    return (
+      content +
+      `\n\n// TODO: planner: consider adding "${toolName}" to available tools (file: ./tools/${filename})`
+    );
+  });
+}
+
+/**
+ * Best-effort registration in executor.js
+ * Tries to add a case or handler mapping; otherwise appends a TODO comment.
+ */
+async function registerInExecutor(toolFilePath) {
+  const executorPath = path.join(SERVER_ROOT, "executor.js");
+  const filename = path.basename(toolFilePath);
+  const toolName = filenameToIdentifier(filename);
+
+  await safeUpdateFile(executorPath, content => {
+    if (content.includes(toolName)) return content;
+
+    // Try to find a switch on tool name
+    const switchRegex = /(switch\s*\(\s*toolName\s*\)\s*\{)([\s\S]*?)(\})/m;
+    const match = content.match(switchRegex);
+    if (match) {
+      const before = match[1];
+      const body = match[2];
+      const after = match[3];
+      if (body.includes(`case "${toolName}"`) || body.includes(`case '${toolName}'`)) {
+        return content;
+      }
+      const insertion = `\n    case "${toolName}":\n      return await tools.${toolName}(request);`;
+      const replacement = before + body + insertion + "\n" + after;
+      return content.replace(switchRegex, replacement);
+    }
+
+    // Try to find a tool map object
+    const mapRegex = /(const\s+toolMap\s*=\s*\{)([\s\S]*?)(\};)/m;
+    const mapMatch = content.match(mapRegex);
+    if (mapMatch) {
+      const before = mapMatch[1];
+      const body = mapMatch[2];
+      const after = mapMatch[3];
+      if (body.includes(`${toolName}:`)) return content;
+      const trimmedBody = body.trim();
+      const insert =
+        trimmedBody.length === 0
+          ? `  ${toolName}: tools.${toolName}`
+          : `${trimmedBody.replace(/,\s*$/, "")},\n  ${toolName}: tools.${toolName}`;
+      const replacement = before + "\n" + insert + "\n" + after;
+      return content.replace(mapRegex, replacement);
+    }
+
+    // Fallback: append a comment hint
+    return (
+      content +
+      `\n\n// TODO: executor: wire "${toolName}" (./tools/${filename}) into the execution pipeline`
+    );
+  });
+}
+
+/**
+ * Best-effort documentation update in root README.md
+ */
+async function registerInReadme(toolFilePath, descriptionText) {
+  const readmePath = path.join(PROJECT_ROOT, "README.md");
+  const filename = path.basename(toolFilePath);
+  const toolName = filenameToIdentifier(filename);
+
+  await safeUpdateFile(readmePath, content => {
+    if (content.includes(toolName) && content.includes(filename)) return content;
+
+    const sectionHeader = "## Tools";
+    const entry = `- **${toolName}** (\`server/tools/${filename}\`): ${descriptionText || "Auto-generated tool by selfEvolve."}`;
+
+    if (content.includes(sectionHeader)) {
+      return content.replace(
+        sectionHeader,
+        `${sectionHeader}\n\n${entry}`
+      );
+    }
+
+    return content + `\n\n${sectionHeader}\n\n${entry}\n`;
+  });
+}
+
+/**
+ * Register a newly created tool across index, planner, executor, README
+ */
+async function registerNewTool(toolFilePath, descriptionText) {
+  if (!isToolFilePath(toolFilePath)) {
+    return;
+  }
+
+  await registerInToolsIndex(toolFilePath);
+  await registerInPlanner(toolFilePath);
+  await registerInExecutor(toolFilePath);
+  await registerInReadme(toolFilePath, descriptionText);
 }
 
 /**
@@ -128,11 +328,24 @@ function generateDiffSummary(oldContent, newContent) {
       changedCount++;
       if (changes.length < 10) {
         if (i < oldLines.length && i < newLines.length) {
-          changes.push({ line: i + 1, type: "modified", old: oldLines[i]?.trim().slice(0, 80), new: newLines[i]?.trim().slice(0, 80) });
+          changes.push({
+            line: i + 1,
+            type: "modified",
+            old: oldLines[i]?.trim().slice(0, 80),
+            new: newLines[i]?.trim().slice(0, 80)
+          });
         } else if (i >= oldLines.length) {
-          changes.push({ line: i + 1, type: "added", content: newLines[i]?.trim().slice(0, 80) });
+          changes.push({
+            line: i + 1,
+            type: "added",
+            content: newLines[i]?.trim().slice(0, 80)
+          });
         } else {
-          changes.push({ line: i + 1, type: "removed", content: oldLines[i]?.trim().slice(0, 80) });
+          changes.push({
+            line: i + 1,
+            type: "removed",
+            content: oldLines[i]?.trim().slice(0, 80)
+          });
         }
       }
     }
@@ -195,9 +408,21 @@ async function transformMultipleFiles(files, intent, instructions) {
 
 /**
  * Generate code from description (for new files)
+ * Option C: tool boilerplate with run(input, context) for tools.
  */
 async function generateNewCode(description, targetPath, language) {
   const ext = language || path.extname(targetPath).slice(1) || "js";
+  const isTool = isToolFilePath(targetPath);
+
+  const boilerplateHint = isTool
+    ? `The file is a tool module. It MUST export:
+
+export async function run(input, context) {
+  // main tool logic
+}
+
+Use this as the main entry point.`
+    : `Export appropriate functions or classes as needed.`;
 
   const prompt = `Generate a complete, production-ready ${ext} file based on this description:
 
@@ -209,7 +434,7 @@ Requirements:
 1. Follow best practices for ${ext}
 2. Include proper error handling
 3. Add JSDoc/docstring comments
-4. Export functions/classes appropriately
+4. ${boilerplateHint}
 5. Include any necessary imports
 
 Output ONLY the complete file contents wrapped in \`\`\`${ext} ... \`\`\` code fences.`;
@@ -232,7 +457,8 @@ Output ONLY the complete file contents wrapped in \`\`\`${ext} ... \`\`\` code f
  * Main entry point
  */
 export async function codeTransform(request) {
-  const text = typeof request === "string" ? request : (request?.text || request?.input || "");
+  const text =
+    typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
 
   if (!text.trim()) {
@@ -240,30 +466,49 @@ export async function codeTransform(request) {
       tool: "codeTransform",
       success: false,
       final: true,
-      data: { message: "Please describe the transformation. Example: 'refactor D:/project/server.js to use async/await' or 'add error handling to D:/project/api.js'" }
+      data: {
+        message:
+          "Please describe the transformation. Example: 'refactor D:/project/server.js to use async/await' or 'add error handling to D:/project/api.js'"
+      }
     };
   }
 
   const intent = context.action || detectIntent(text);
-  const targetPath = context.path || extractPath(text);
+  const targetPathRaw = context.path || extractPath(text);
 
-  // Generate new file
-  if (intent === "add" && !targetPath) {
+  // Generate new file requires a target path
+  if (intent === "add" && !targetPathRaw) {
     return {
       tool: "codeTransform",
       success: false,
       final: true,
-      data: { message: "Please provide a target file path. Example: 'create D:/project/newModule.js that handles authentication'" }
+      data: {
+        message:
+          "Please provide a target file path. Example: 'create D:/project/newModule.js that handles authentication'"
+      }
     };
   }
 
-  if (!targetPath) {
+  if (!targetPathRaw) {
     return {
       tool: "codeTransform",
       success: false,
       final: true,
-      data: { message: "Please provide a file or folder path. Example: 'refactor D:/project/utils.js'" }
+      data: {
+        message: "Please provide a file or folder path. Example: 'refactor D:/project/utils.js'"
+      }
     };
+  }
+
+  // Option B: if this looks like a bare filename for a tool, default to server/tools
+  let targetPath = targetPathRaw;
+  if (
+    !path.isAbsolute(targetPathRaw) &&
+    !targetPathRaw.includes("/") &&
+    !targetPathRaw.includes("\\") &&
+    targetPathRaw.endsWith(".js")
+  ) {
+    targetPath = path.join(SERVER_ROOT, "tools", targetPathRaw);
   }
 
   const normalizedPath = path.resolve(targetPath);
@@ -281,33 +526,63 @@ export async function codeTransform(request) {
           await fs.mkdir(path.dirname(normalizedPath), { recursive: true });
           await fs.writeFile(normalizedPath, generated.content, "utf8");
 
+          // Auto-register new tool if it's under server/tools
+          await registerNewTool(normalizedPath, text);
+
           return {
             tool: "codeTransform",
             success: true,
             final: true,
             data: {
               preformatted: true,
-              text: `✅ **Created new file: ${path.basename(normalizedPath)}**\n\n${generated.content.split("\n").length} lines generated at:\n${normalizedPath}`,
+              text: `✅ **Created new file: ${path.basename(
+                normalizedPath
+              )}**\n\n${generated.content.split("\n").length} lines generated at:\n${normalizedPath}`,
               path: normalizedPath,
               action: "created"
             }
           };
         }
-        return { tool: "codeTransform", success: false, final: true, data: { message: "Failed to generate code: " + (generated.error || "unknown error") } };
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: {
+            message: "Failed to generate code: " + (generated.error || "unknown error")
+          }
+        };
       }
-      return { tool: "codeTransform", success: false, final: true, data: { message: `File not found: ${normalizedPath}` } };
+      return {
+        tool: "codeTransform",
+        success: false,
+        final: true,
+        data: { message: `File not found: ${normalizedPath}` }
+      };
     }
 
     if (stat.isFile()) {
       // Single file transformation
       const content = await readFileSafe(normalizedPath);
       if (!content) {
-        return { tool: "codeTransform", success: false, final: true, data: { message: `Could not read: ${normalizedPath}` } };
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: { message: `Could not read: ${normalizedPath}` }
+        };
       }
 
       // Preview mode: show what would change without applying
-      if (context.preview || /\b(preview|dry.?run|what\s+would|show\s+changes)\b/i.test(text)) {
-        const transformation = await generateTransformation(normalizedPath, content, intent, text);
+      if (
+        context.preview ||
+        /\b(preview|dry.?run|what\s+would|show\s+changes)\b/i.test(text)
+      ) {
+        const transformation = await generateTransformation(
+          normalizedPath,
+          content,
+          intent,
+          text
+        );
         if (transformation.success) {
           const diff = generateDiffSummary(content, transformation.newContent);
           return {
@@ -316,19 +591,48 @@ export async function codeTransform(request) {
             final: true,
             data: {
               preformatted: true,
-              text: `🔍 **Preview: ${intent} ${path.basename(normalizedPath)}**\n\n${transformation.summary}\n\n📊 Changes: +${diff.linesAdded} -${diff.linesRemoved} (~${diff.linesChanged} lines affected)\n\nSample changes:\n${diff.sampleChanges.map(c => c.type === "modified" ? `  Line ${c.line}: "${c.old}" → "${c.new}"` : `  Line ${c.line}: [${c.type}] ${c.content}`).join("\n")}\n\nTo apply these changes, say "apply" or "do it".`,
+              text: `🔍 **Preview: ${intent} ${path.basename(
+                normalizedPath
+              )}**\n\n${transformation.summary}\n\n📊 Changes: +${
+                diff.linesAdded
+              } -${diff.linesRemoved} (~${
+                diff.linesChanged
+              } lines affected)\n\nSample changes:\n${diff.sampleChanges
+                .map(c =>
+                  c.type === "modified"
+                    ? `  Line ${c.line}: "${c.old}" → "${c.new}"`
+                    : `  Line ${c.line}: [${c.type}] ${c.content}`
+                )
+                .join(
+                  "\n"
+                )}\n\nTo apply these changes, say "apply" or "do it".`,
               preview: true,
               pendingTransform: { path: normalizedPath, newContent: transformation.newContent }
             }
           };
         }
-        return { tool: "codeTransform", success: false, final: true, data: { message: "Could not generate transformation preview." } };
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: { message: "Could not generate transformation preview." }
+        };
       }
 
       // Apply transformation
-      const transformation = await generateTransformation(normalizedPath, content, intent, text);
+      const transformation = await generateTransformation(
+        normalizedPath,
+        content,
+        intent,
+        text
+      );
       if (!transformation.success || !transformation.newContent) {
-        return { tool: "codeTransform", success: false, final: true, data: { message: transformation.error || "LLM could not generate transformation." } };
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: { message: transformation.error || "LLM could not generate transformation." }
+        };
       }
 
       const backupPath = await createBackup(normalizedPath);
@@ -341,7 +645,13 @@ export async function codeTransform(request) {
         final: true,
         data: {
           preformatted: true,
-          text: `✅ **${intent.charAt(0).toUpperCase() + intent.slice(1)}: ${path.basename(normalizedPath)}**\n\n${transformation.summary}\n\n📊 Changes: +${diff.linesAdded} -${diff.linesRemoved} (~${diff.linesChanged} lines affected)\n💾 Backup: ${backupPath || "none"}`,
+          text: `✅ **${intent.charAt(0).toUpperCase() + intent.slice(1)}: ${path.basename(
+            normalizedPath
+          )}**\n\n${transformation.summary}\n\n📊 Changes: +${
+            diff.linesAdded
+          } -${diff.linesRemoved} (~${diff.linesChanged} lines affected)\n💾 Backup: ${
+            backupPath || "none"
+          }`,
           path: normalizedPath,
           backupPath,
           diff,
@@ -352,7 +662,16 @@ export async function codeTransform(request) {
 
     if (stat.isDirectory()) {
       // Multi-file transformation
-      const SKIP_DIRS_LOCAL = new Set(["node_modules", ".git", "dist", "build", "out", "__pycache__", ".cache", "coverage"]);
+      const SKIP_DIRS_LOCAL = new Set([
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        "out",
+        "__pycache__",
+        ".cache",
+        "coverage"
+      ]);
       const codeExts = new Set(["js", "jsx", "ts", "tsx", "py", "java", "go", "rs", "rb", "php"]);
 
       async function findCodeFiles(dir, d = 0) {
@@ -363,7 +682,7 @@ export async function codeTransform(request) {
           if (SKIP_DIRS_LOCAL.has(item.name)) continue;
           const fp = path.join(dir, item.name);
           if (item.isDirectory()) {
-            results.push(...await findCodeFiles(fp, d + 1));
+            results.push(...(await findCodeFiles(fp, d + 1)));
           } else if (codeExts.has(path.extname(item.name).slice(1).toLowerCase())) {
             results.push(fp);
           }
@@ -374,7 +693,12 @@ export async function codeTransform(request) {
 
       const files = await findCodeFiles(normalizedPath);
       if (files.length === 0) {
-        return { tool: "codeTransform", success: false, final: true, data: { message: `No code files found in ${normalizedPath}` } };
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: { message: `No code files found in ${normalizedPath}` }
+        };
       }
 
       // Limit to reasonable number
@@ -384,7 +708,9 @@ export async function codeTransform(request) {
       const successful = results.filter(r => r.success);
       const failed = results.filter(r => !r.success);
 
-      let summary = `🔄 **${intent.charAt(0).toUpperCase() + intent.slice(1)} Results: ${normalizedPath}**\n\n`;
+      let summary = `🔄 **${
+        intent.charAt(0).toUpperCase() + intent.slice(1)
+      } Results: ${normalizedPath}**\n\n`;
       summary += `✅ ${successful.length} files transformed, ❌ ${failed.length} failed\n\n`;
 
       for (const r of successful) {
@@ -407,7 +733,12 @@ export async function codeTransform(request) {
       };
     }
 
-    return { tool: "codeTransform", success: false, final: true, data: { message: "Target is neither a file nor a directory." } };
+    return {
+      tool: "codeTransform",
+      success: false,
+      final: true,
+      data: { message: "Target is neither a file nor a directory." }
+    };
   } catch (err) {
     return {
       tool: "codeTransform",

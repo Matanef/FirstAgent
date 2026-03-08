@@ -72,7 +72,7 @@ function extractImprovementTarget(message) {
     }
   }
 
-  return 'email.js'; // Default fallback
+  return null; // Default fallback
 }
 
 /**
@@ -82,6 +82,10 @@ function extractImprovementTarget(message) {
 function generateImprovementSteps(message, availableTools = []) {
   const target = extractImprovementTarget(message);
   const baseName = target.replace('.js', '');
+  if (!target) {
+    return [{ tool: "llm", input: "User requested improvements but no tool or file was identified.", reasoning: "no_target" }];
+}
+
 
   // Extract search query for githubTrending
   let searchQuery = `${baseName} patterns best practices`;
@@ -273,23 +277,26 @@ function checkDiagnosticQuestion(message) {
   const lower = message.toLowerCase().trim();
 
   // common diagnostic patterns
-  const diagPatterns = [
-    /\bhow (accurate|reliable|precise)\b/,
-    /\b(routing|route|router|planner|classifier|intent|intentions|tool selection)\b/,
-    /\b(routing accuracy|accuracy of the routing|how accurate is your routing|how accurate is your planner)\b/,
-    /\bwhy did you choose\b/,
-    /\bexplain (your|the) (routing|planner|decision|choice)\b/,
-    /\bcan you check your routing\b/,
-    /\bdebug (the )?(planner|routing)\b/
-  ];
+const diagPatterns = [
+  /\bhow (accurate|reliable|precise)\b/,
+  /\b(routing accuracy|accuracy of the routing|how accurate is your routing|how accurate is your planner)\b/,
+  /\bwhy did you choose\b/,
+  /\bexplain (your|the) (routing|planner|decision|choice)\b/,
+  /\bcan you check your routing\b/,
+  /\bdebug (the )?(planner|routing)\b/
+];
 
-  if (diagPatterns.some(rx => rx.test(lower))) {
-    // Prefer selfImprovement for accuracy, improvement, or diagnostic questions.
-    if (/\b(improve|self[- ]?improve|suggest improvement|how can you improve|accura|reliab|how precise|routing accuracy|what have you|detected issues?|misrouting|weekly report)\b/.test(lower)) {
-      return [{ tool: "selfImprovement", input: message, context: {}, reasoning: "certainty_diagnostic_self_improve" }];
-    }
-    return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
-  }
+// NEW: Only treat "planner" as diagnostic if preceded by "your" or "the"
+const isDiagnosticPlannerWord =
+  /\b(your|the)\s+planner\b/i.test(message);
+
+if (
+  diagPatterns.some(rx => rx.test(lower)) ||
+  isDiagnosticPlannerWord
+) {
+  console.log("[planner] certainty branch: diagnostic");
+  return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
+}
 
   return null;
 }
@@ -426,6 +433,21 @@ export async function plan({ message, chatContext = {} }) {
   const lower = trimmed.toLowerCase();
 
   console.log("🧠 Planning steps for:", trimmed);
+
+    // ──────────────────────────────────────────────────────────
+  // EMAIL OVERRIDE: If the user is composing an email, ignore file paths
+  // ──────────────────────────────────────────────────────────
+  if (/^\s*(email|send email|compose email|mail)\b/i.test(trimmed)) {
+    console.log("[planner] email override: forcing email tool");
+    return [
+      {
+        tool: "email",
+        input: trimmed,
+        context: chatContext || {},
+        reasoning: "email_with_attachments_override"
+      }
+    ];
+  }
 
   // Compute available tools once per plan
   const availableTools = listAvailableTools();
@@ -660,6 +682,7 @@ export async function plan({ message, chatContext = {} }) {
     console.log("[planner] certainty branch: fileWrite");
     return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
   }
+
 
   // Explicit file path
   if (hasExplicitFilePath(trimmed)) {
