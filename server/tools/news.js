@@ -372,13 +372,15 @@ export async function news(request) {
       tool: "news",
       success: true,
       final: true,
-      data: { 
-        results, 
+      data: {
+        results,
         summaries,
         topic,
         totalItems: allItems.length,
         filteredItems: filteredItems.length,
-        html
+        html,
+        preformatted: true,
+        text: html
       },
       reasoning: `Fetched ${allItems.length} headlines, ${topic ? `filtered to ${filteredItems.length} about "${topic}"` : 'showing all'}, summarized top ${summaries.length} articles`
     };

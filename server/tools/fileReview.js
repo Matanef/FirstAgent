@@ -68,6 +68,16 @@ export async function fileReview(input) {
         combinedPreview += "\n";
     }
 
+    // Build explicit per-file LLM prompt to ensure ALL files are analyzed
+    const llmPrompt = files.length > 1
+        ? `Analyze EACH of the following ${files.length} files separately. For each file, provide:\n` +
+          `1. Brief explanation of what the file does\n` +
+          `2. 2-3 specific improvement suggestions\n` +
+          `3. If it's a text file, explain the main subject\n\n` +
+          `Do NOT skip any files. Analyze ALL ${files.length} files listed below.\n\n` +
+          `FILES:\n${combinedPreview}`
+        : combinedPreview;
+
     return {
         tool: "fileReview",
         success: true,
@@ -77,7 +87,7 @@ export async function fileReview(input) {
             errors: errors.length > 0 ? errors : undefined,
             userMessage: text,
             combinedPreview,
-            text: combinedPreview // used by summarizeWithLLM as tool result text
+            text: llmPrompt // used by summarizeWithLLM as tool result text
         }
     };
 }

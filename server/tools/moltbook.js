@@ -965,17 +965,60 @@ async function handleHeartbeat(text, context) {
 
   // 2a. Browse feed
   const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=10", null, apiKey);
+  let feedPosts = [];
   if (feedResult.ok) {
-    const posts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
-    output += `- Feed: ${posts.length} posts loaded\n`;
+    feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+    output += `- Feed: ${feedPosts.length} posts loaded\n`;
 
     // Show top posts
-    if (posts.length > 0) {
+    if (feedPosts.length > 0) {
       output += `\n**Hot Posts:**\n`;
-      for (const p of posts.slice(0, 5)) {
+      for (const p of feedPosts.slice(0, 5)) {
         const score = p.score != null ? `[${p.score}]` : "";
         const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
         output += `  ${score} **${p.title || "Untitled"}** by ${p.author || "unknown"} ${comments}\n`;
+      }
+    }
+
+    // 2b. Interact with feed — upvote 1-2 interesting posts
+    const postsToUpvote = feedPosts
+      .filter(p => p.id && p.score != null)
+      .slice(0, 2);
+
+    if (postsToUpvote.length > 0) {
+      output += `\n**Interactions:**\n`;
+      for (const p of postsToUpvote) {
+        try {
+          const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
+          if (voteResult.ok) {
+            output += `  ⬆️ Upvoted: "${(p.title || "Untitled").substring(0, 50)}"\n`;
+            actions.push(`Upvoted post by ${p.author || "unknown"}`);
+          } else if (voteResult.status === 429) {
+            output += `  ⛔ Rate limited — skipping further interactions\n`;
+            break;
+          } else {
+            output += `  ⚠️ Could not upvote: ${voteResult.status}\n`;
+          }
+        } catch (e) {
+          output += `  ⚠️ Upvote failed: ${e.message}\n`;
+        }
+      }
+
+      // 2c. Comment on 1 post (the most popular one) with a contextual remark
+      const topPost = feedPosts.find(p => p.id && p.title);
+      if (topPost) {
+        try {
+          const commentBody = `Great post about "${(topPost.title || "").substring(0, 30)}"! Interesting perspective. 🤖`;
+          const commentResult = await apiRequest("POST", `/posts/${topPost.id}/comments`, { content: commentBody }, apiKey);
+          if (commentResult.ok) {
+            output += `  💬 Commented on: "${(topPost.title || "Untitled").substring(0, 50)}"\n`;
+            actions.push(`Commented on post by ${topPost.author || "unknown"}`);
+          } else if (commentResult.status !== 429) {
+            output += `  ⚠️ Comment failed: ${commentResult.status}\n`;
+          }
+        } catch (e) {
+          output += `  ⚠️ Comment failed: ${e.message}\n`;
+        }
       }
     }
   } else {

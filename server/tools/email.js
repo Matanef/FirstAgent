@@ -297,6 +297,19 @@ export async function browseEmails(queryText, context = {}) {
       q += ` from:${fromMatch[1]}`;
     }
 
+    // Attachment search: "find attachments named bills", "emails with attachment invoice"
+    const attachSearch = lower.match(/attachments?\s+(?:named?\s+|called\s+|like\s+)?["']?(\w+)["']?/i);
+    if (attachSearch) {
+      q += ` has:attachment filename:${attachSearch[1]}`;
+    } else if (/\bwith\s+attachment\b/i.test(lower) || /\bhas\s+attachment\b/i.test(lower)) {
+      q += " has:attachment";
+      // Try to extract the attachment topic
+      const attachTopicMatch = lower.match(/attachment\s+(?:about\s+|named?\s+|called\s+)?["']?(\w+)["']?/i);
+      if (attachTopicMatch && !["the", "a", "an", "my"].includes(attachTopicMatch[1])) {
+        q += ` filename:${attachTopicMatch[1]}`;
+      }
+    }
+
     // Subject/keyword filter
     const aboutMatch = lower.match(
       /(?:about|regarding|subject)\s+(.+?)(?:\s+in\s+|\s+from\s+|$)/i

@@ -28,11 +28,13 @@ async function getGitImprovements(limit = 10) {
 
     return stdout.trim().split("\n").map(line => {
       const [hash, message, date] = line.split("|||");
+      const commitId = hash?.substring(0, 7);
       return {
         timestamp: new Date(date).toISOString(),
         category: "code_commit",
-        action: message.trim(),
-        file: hash?.substring(0, 7),
+        action: `[${commitId}] ${message.trim()}`,
+        file: null,
+        commitId,
         reason: "Git commit",
         source: "git"
       };

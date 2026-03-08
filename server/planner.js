@@ -37,6 +37,9 @@ function listAvailableTools(toolsDir = path.resolve(__dirname, "tools")) {
 function isImprovementRequest(message) {
   const lower = (message || "").toLowerCase();
 
+  // Guard: skip if this is clearly a calendar/meeting request
+  if (/\b(meeting|appointment|calendar|book\s+a|schedule\s+a|set\s+a\s+meeting)\b/i.test(lower)) return false;
+
   const patterns = [
     /improve.*(?:tool|code|file)/i,
     /suggest.*improvement/i,
@@ -171,6 +174,27 @@ function isMathExpression(msg) {
   return /^\s*[\d\.\,\s()+\-*/^=%]+$/.test(trimmed);
 }
 
+/**
+ * Infer which tool to use from a step description (for compound query decomposition)
+ */
+function inferToolFromText(text) {
+  const lower = (text || "").toLowerCase();
+  if (/\b(weather|forecast|temperature)\b/.test(lower)) return "weather";
+  if (/\b(email|inbox|mail|send\s+an?\s+email)\b/.test(lower)) return "email";
+  if (/\b(news|headline|article)\b/.test(lower)) return "news";
+  if (/\b(stock|finance|market|portfolio|price\s+of)\b/.test(lower)) return "finance";
+  if (/\b(sport|score|match|fixture|nba|nfl)\b/.test(lower)) return "sports";
+  if (/\b(calendar|event|meeting|schedule|appointment)\b/.test(lower)) return "calendar";
+  if (/\b(search|look\s+up|find|google)\b/.test(lower)) return "search";
+  if (/\b(git|commit|branch|github)\b/.test(lower)) return "gitLocal";
+  if (/\b(review|inspect|audit)\b/.test(lower)) return "review";
+  if (/\b(task|todo|reminder)\b/.test(lower)) return "tasks";
+  if (/\b(write|create|generate)\s+(a\s+)?(file|code|script)\b/.test(lower)) return "fileWrite";
+  if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
+  if (/\b(youtube|video)\b/.test(lower)) return "youtube";
+  return "llm"; // fallback
+}
+
 function isSimpleDateTime(msg) {
   const lower = (msg || "").toLowerCase().trim();
   return (
@@ -184,7 +208,8 @@ function hasExplicitFilePath(text) {
   // Absolute paths: D:/..., C:\...
   if (/[a-z]:[\\/]/i.test(text)) return true;
   // Relative paths with directory separator + extension: server/planner.js, ./utils/config.js
-  if (/(?:^|\s)\.{0,2}\/?\w[\w.-]*\/[\w.-]+\.\w{1,5}\b/.test(text)) return true;
+  // Must contain an actual path separator to avoid matching "Node.js", "Vue.js" etc.
+  if (/[/\\]/.test(text) && /(?:^|\s)\.{0,2}\/?[\w.-]+\/[\w.-]+\.\w{1,5}\b/.test(text)) return true;
   return false;
 }
 
@@ -276,27 +301,34 @@ function checkDiagnosticQuestion(message) {
   if (!message) return null;
   const lower = message.toLowerCase().trim();
 
-  // common diagnostic patterns
-const diagPatterns = [
-  /\bhow (accurate|reliable|precise)\b/,
-  /\b(routing accuracy|accuracy of the routing|how accurate is your routing|how accurate is your planner)\b/,
-  /\bwhy did you choose\b/,
-  /\bexplain (your|the) (routing|planner|decision|choice)\b/,
-  /\bcan you check your routing\b/,
-  /\bdebug (the )?(planner|routing)\b/
-];
+  // Guard: "review/inspect/examine/audit your planner" is a code review, not a diagnostic question
+  if (/\b(review|inspect|examine|audit|analyze)\s+(your|the|my)\b/i.test(lower)) return null;
 
-// NEW: Only treat "planner" as diagnostic if preceded by "your" or "the"
-const isDiagnosticPlannerWord =
-  /\b(your|the)\s+planner\b/i.test(message);
+  // Accuracy/reliability questions → route to selfImprovement for actionable diagnostics
+  if (/\b(how\s+(accurate|reliable|precise)|routing\s+accuracy|accuracy\s+of|how\s+accurate\s+is\s+your)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: diagnostic → selfImprovement");
+    return [{ tool: "selfImprovement", input: message, context: {}, reasoning: "certainty_diagnostic_self_improve" }];
+  }
 
-if (
-  diagPatterns.some(rx => rx.test(lower)) ||
-  isDiagnosticPlannerWord
-) {
-  console.log("[planner] certainty branch: diagnostic");
-  return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
-}
+  // Explanatory diagnostic patterns → LLM
+  const diagPatterns = [
+    /\bwhy did you choose\b/,
+    /\bexplain (your|the) (routing|planner|decision|choice)\b/,
+    /\bcan you check your routing\b/,
+    /\bdebug (the )?(planner|routing)\b/
+  ];
+
+  // Only treat "planner" as diagnostic if preceded by "your" or "the"
+  const isDiagnosticPlannerWord =
+    /\b(your|the)\s+planner\b/i.test(message);
+
+  if (
+    diagPatterns.some(rx => rx.test(lower)) ||
+    isDiagnosticPlannerWord
+  ) {
+    console.log("[planner] certainty branch: diagnostic");
+    return [{ tool: "llm", input: `Explain planner routing and accuracy for: ${message}`, context: {}, reasoning: "certainty_diagnostic_explain" }];
+  }
 
   return null;
 }
@@ -570,9 +602,11 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // News keywords (before file path and sports to avoid misroute)
+  // Guard: skip if this is a moltbook notification (e.g. "Great news! You've been verified on Moltbook")
   if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
        /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
-      !hasExplicitFilePath(trimmed)) {
+      !hasExplicitFilePath(trimmed) &&
+      !/\bmoltbook\b/i.test(lower)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
   }
@@ -677,8 +711,9 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // File write/create — must come BEFORE explicit file path (which routes to read-only file tool)
-  if (/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document)\b/i.test(lower) ||
-      /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower)) {
+  if (/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
+      /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
+      (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) {
     console.log("[planner] certainty branch: fileWrite");
     return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
   }
@@ -931,8 +966,10 @@ export async function plan({ message, chatContext = {} }) {
   // Scheduler / recurring tasks
   // Must come BEFORE task management to prevent "schedule X every Y" → tasks
   // Removed "workflow" keyword — that now routes to the workflow tool above
+  // Guard: "weekly report" / "generate a weekly performance report" → selfImprovement, not scheduler
   if (/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
-      !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower)) {
+      !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower) &&
+      !/\b(performance\s+report|weekly\s+report|generate\s+.*report|summary\s+report|diagnostic\s+report)\b/i.test(lower)) {
     console.log("[planner] certainty branch: scheduler");
     const schedContext = {};
     if (/\b(list|show|view|my)\s*(schedule|recurring)/i.test(lower)) schedContext.action = "list";
@@ -974,9 +1011,36 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // MULTI-STEP: Compound query detection ("X and then Y", "X and email me the results")
+  // MULTI-STEP: Compound query detection
   // Decomposes compound intents into sequential tool steps
   // ──────────────────────────────────────────────────────────
+
+  // Pattern: "review X and create/generate a new version" → review + fileWrite
+  if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(new\s+)?(version|copy|file|improved)\b/i.test(lower)) {
+    // Extract source file
+    const fileMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i);
+    const sourceFile = fileMatch ? fileMatch[1] : "the code";
+    console.log(`[planner] Compound: review "${sourceFile}" → generate new version`);
+    return [
+      { tool: "review", input: sourceFile, context: {}, reasoning: "compound_review_source" },
+      { tool: "fileWrite", input: `Create improved version of ${sourceFile}`, context: { useChainContext: true, outputDir: "E:/testFolder/Agent_files" }, reasoning: "compound_generate_improved" }
+    ];
+  }
+
+  // Pattern: "X and then Y and then Z" — generic multi-step decomposition
+  const chainPattern = trimmed.match(/^(.+?)\s*(?:,\s*(?:and\s+)?then\s+|;\s*then\s+)(.+?)(?:\s*(?:,\s*(?:and\s+)?then\s+|;\s*then\s+)(.+))?$/i);
+  if (chainPattern) {
+    const steps = [chainPattern[1], chainPattern[2], chainPattern[3]].filter(Boolean).map(s => s.trim());
+    if (steps.length >= 2) {
+      console.log(`[planner] Chain-of-thought detected: ${steps.length} steps`);
+      return steps.map((stepText, i) => {
+        const tool = inferToolFromText(stepText);
+        return { tool, input: stepText, context: i > 0 ? { useChainContext: true } : {}, reasoning: `chain_step_${i + 1}` };
+      });
+    }
+  }
+
+  // Pattern: "X and email/send me the results"
   const compoundMatch = trimmed.match(/^(.+?)\s+(?:and\s+(?:then\s+)?)(email|send|mail)\s+(?:me\s+)?(?:the\s+)?(?:results?|summary|info|output|it)/i);
   if (compoundMatch) {
     const firstPart = compoundMatch[1].trim();

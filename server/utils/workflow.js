@@ -59,11 +59,12 @@ const BUILT_IN_WORKFLOWS = [
   {
     id: "market_check",
     name: "Market Check",
-    description: "Get stock market overview and top movers",
+    description: "Comprehensive market overview with indices, sectors, and analysis",
     builtIn: true,
     steps: [
-      { tool: "finance", input: "S&P 500 market overview", label: "Market Overview" },
-      { tool: "news", input: "latest financial news", label: "Financial News" },
+      { tool: "financeFundamentals", input: "Market overview: SPY QQQ DIA IWM", label: "Market Indices" },
+      { tool: "finance", input: "Top sectors: XLK XLE XLF XLV XLI XLY XLP XLU", label: "Sector Performance" },
+      { tool: "news", input: "Latest financial market news S&P 500 NASDAQ", label: "Market News" },
     ],
   },
   {
@@ -185,6 +186,8 @@ export async function executeWorkflow(idOrName, toolExecutor, onStep) {
         tool: step.tool,
         success: result?.success ?? true,
         output: result?.data?.text || result?.output || JSON.stringify(result?.data || {}).slice(0, 500),
+        html: result?.data?.html || null,
+        preformatted: result?.data?.preformatted || false,
       };
 
       results.push(stepResult);
@@ -227,14 +230,22 @@ export async function executeWorkflow(idOrName, toolExecutor, onStep) {
     }
   }
 
-  // Build summary text
+  // Build summary text and combined HTML
   const summary = buildWorkflowSummary(workflow, results);
+  const htmlParts = results.filter(r => r.html).map(r =>
+    `<div class="workflow-step"><h3>${r.label}</h3>${r.html}</div>`
+  );
+  const combinedHtml = htmlParts.length > 0
+    ? `<div class="workflow-results">${htmlParts.join("\n")}</div>`
+    : null;
 
   return {
     success: results.every(r => r.success),
     workflow: workflow.name,
     results,
     summary,
+    html: combinedHtml,
+    preformatted: !!combinedHtml,
   };
 }
 

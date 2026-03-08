@@ -51,8 +51,33 @@ function parseDateTimeHints(query) {
   } else if (/\btoday\b/.test(lower)) {
     hints.date = now.toISOString().split("T")[0];
   } else if (/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower)) {
+    // "next [day]" should ALWAYS be 7+ days away (next week's occurrence)
     const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
     const match = lower.match(/next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+    if (match) {
+      const targetDay = dayNames.indexOf(match[1].toLowerCase());
+      const d = new Date(now);
+      const daysUntil = ((targetDay - d.getDay()) + 7) % 7;
+      // Always add 7 so "next Friday" on Wednesday = 9 days, not 2
+      d.setDate(d.getDate() + daysUntil + 7);
+      hints.date = d.toISOString().split("T")[0];
+    }
+  } else if (/\bthis\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower)) {
+    // "this [day]" = nearest future occurrence of that day (0-6 days)
+    const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const match = lower.match(/this\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+    if (match) {
+      const targetDay = dayNames.indexOf(match[1].toLowerCase());
+      const d = new Date(now);
+      const daysUntil = ((targetDay - d.getDay()) + 7) % 7 || 7;
+      d.setDate(d.getDate() + daysUntil);
+      hints.date = d.toISOString().split("T")[0];
+    }
+  } else if (/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower) &&
+             !/\b(next|this|last|every)\b/i.test(lower)) {
+    // Bare day name (no "next"/"this"/"last" prefix) = nearest future occurrence
+    const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const match = lower.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
     if (match) {
       const targetDay = dayNames.indexOf(match[1].toLowerCase());
       const d = new Date(now);

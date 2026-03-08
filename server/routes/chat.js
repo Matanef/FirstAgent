@@ -12,6 +12,7 @@ import {
   DEFAULT_MEMORY
 } from "../memory.js";
 import { executeAgent } from "../utils/coordinator.js";
+import { handleMessage as orchestratorHandle } from "../agents/orchestrator.js";
 import { calculateConfidence } from "../audit.js";
 import { resolveCityFromIp } from "../utils/geo.js";
 import { logTelemetry } from "../telemetryAudit.js";
@@ -73,8 +74,8 @@ router.post("/chat", async (req, res) => {
       `data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`
     );
 
-    // EXECUTE via Coordinator (Handles planning and multi-step loop)
-    const result = await executeAgent({
+    // EXECUTE via Orchestrator (routes to chatAgent or taskAgent based on intent)
+    const result = await orchestratorHandle({
       message,
       conversationId: id,
       clientIp: req.clientIp,

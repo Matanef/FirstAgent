@@ -9,6 +9,85 @@ import { llm } from "../tools/llm.js";
 const MAX_CONVERSATION_SUMMARIES = 50;
 const MAX_MESSAGES_BEFORE_SUMMARY = 20;
 const SUMMARY_MAX_TOKENS = 200;
+const ROLLING_WINDOW_SIZE = 5;
+
+// ============================================================
+// ROLLING WINDOW — Fast access to last N turns per conversation
+// In-memory cache for quick context access by orchestrator
+// ============================================================
+
+const _rollingWindows = new Map(); // conversationId → [{role, content, mode, timestamp}]
+
+/**
+ * Get the last N turns for a conversation (from rolling window cache)
+ * @param {string} conversationId
+ * @param {number} limit - How many turns to return (default 5)
+ * @returns {Array} Recent turns [{role, content, mode, timestamp}]
+ */
+export async function getRecentTurns(conversationId, limit = ROLLING_WINDOW_SIZE) {
+  if (!conversationId) return [];
+
+  // Check in-memory cache first
+  if (_rollingWindows.has(conversationId)) {
+    return _rollingWindows.get(conversationId).slice(-limit);
+  }
+
+  // Fallback: load from persistent memory
+  try {
+    const memory = await getMemory();
+    const conversation = memory.conversations?.[conversationId] || [];
+    const turns = conversation.slice(-limit).map(m => ({
+      role: m.role,
+      content: (m.content || "").slice(0, 300),
+      mode: m.mode || "task", // default to task for old messages
+      timestamp: m.timestamp,
+    }));
+
+    _rollingWindows.set(conversationId, turns);
+    return turns;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Add a turn to the rolling window
+ * @param {string} conversationId
+ * @param {Object} turn - {role, content, mode, timestamp, tool?}
+ */
+export async function addTurn(conversationId, turn) {
+  if (!conversationId || !turn) return;
+
+  if (!_rollingWindows.has(conversationId)) {
+    _rollingWindows.set(conversationId, []);
+  }
+
+  const window = _rollingWindows.get(conversationId);
+  window.push({
+    role: turn.role,
+    content: (turn.content || "").slice(0, 300),
+    mode: turn.mode || "task",
+    tool: turn.tool || null,
+    timestamp: turn.timestamp || new Date().toISOString(),
+  });
+
+  // Keep only last N*2 turns (user + assistant pairs)
+  if (window.length > ROLLING_WINDOW_SIZE * 2) {
+    _rollingWindows.set(conversationId, window.slice(-ROLLING_WINDOW_SIZE * 2));
+  }
+}
+
+/**
+ * Get the current conversation mode (chat/task) based on recent history
+ * @param {string} conversationId
+ * @returns {string} "chat" or "task"
+ */
+export function getCurrentMode(conversationId) {
+  if (!conversationId || !_rollingWindows.has(conversationId)) return "task";
+  const window = _rollingWindows.get(conversationId);
+  if (window.length === 0) return "task";
+  return window[window.length - 1].mode || "task";
+}
 
 /**
  * Summarize a conversation and store it in persistent memory.

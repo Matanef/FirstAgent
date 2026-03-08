@@ -12,9 +12,17 @@ export async function githubTrending(request) {
             : (request?.text || request?.query);
 
         if (query && query.trim()) {
-            console.log(`🔍 Searching GitHub for trending topic: ${query}...`);
+            // Clean the query: strip common routing prefixes and noise words
+            let cleanQuery = query
+                .replace(/^.*?\b(show|list|find|get|search|display|fetch)\s+/i, "")
+                .replace(/\b(trending|on\s+github|github|repos?|repositories?|popular|top|open\s*source|frameworks?|libraries?|projects?)\b/gi, "")
+                .replace(/\s{2,}/g, " ")
+                .trim();
+            if (cleanQuery.length < 2) cleanQuery = query.trim(); // fallback to original if over-stripped
+
+            console.log(`🔍 Searching GitHub for trending topic: ${cleanQuery} (raw: ${query})...`);
             // Use GitHub Search API (publicly accessible for simple GET)
-            const searchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+stars:>100&sort=stars&order=desc`;
+            const searchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(cleanQuery)}+stars:>100&sort=stars&order=desc`;
             const response = await fetch(searchUrl, {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             });
@@ -38,10 +46,13 @@ export async function githubTrending(request) {
                     data: {
                         count: repos.length,
                         repositories: repos,
-                        topic: query,
-                        timestamp: new Date().toISOString()
+                        topic: cleanQuery,
+                        timestamp: new Date().toISOString(),
+                        preformatted: true,
+                        text: `**Trending GitHub Repositories: ${cleanQuery}**\n\n` +
+                            repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}\n   ${r.description || 'No description'}`).join('\n\n')
                     },
-                    reasoning: `Found ${repos.length} top repositories for topic "${query}".`
+                    reasoning: `Found ${repos.length} top repositories for topic "${cleanQuery}".`
                 };
             }
         }
