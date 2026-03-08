@@ -86,11 +86,22 @@ function detectSentiment(text) {
 /**
  * Generate an email body using the LLM, based on sentiment and context.
  */
-async function generateEmailBody({ sentiment, subject, recipient, purpose }) {
+/**
+ * Generate an email body using the LLM, based on sentiment, context, and word count.
+ */
+async function generateEmailBody({ sentiment, subject, recipient, purpose, senderName, wordCount }) {
   const safeSentiment = sentiment || "neutral";
   const safeSubject = subject || "Message";
   const safeRecipient = recipient || "the recipient";
   const safePurpose = purpose || subject || "the topic mentioned";
+
+  const lengthReq = wordCount 
+    ? `Strictly around ${wordCount} words in total.` 
+    : "medium (2–5 short paragraphs)";
+
+  const signatureReq = senderName
+    ? `Sign off the email naturally using the name: ${senderName}. Do NOT use placeholders like [Your Name].`
+    : `Do NOT include any placeholders like [NAME]; just write the email as if you know the recipient.`;
 
   const prompt = `
 You are writing an email.
@@ -103,12 +114,12 @@ Purpose / context: ${safePurpose}
 
 Requirements:
 - Tone: ${safeSentiment}
-- Length: medium (2–5 short paragraphs)
+- Length: ${lengthReq}
 - Style: natural, human, warm, and appropriate for the sentiment
-- Do NOT include any placeholders like [NAME]; just write the email as if you know the recipient.
+- ${signatureReq}
 `;
 
-  console.log("🧠 [email] Calling LLM for body generation with sentiment:", safeSentiment);
+  console.log("🧠 [email] Calling LLM for body generation. Words:", wordCount || "auto", "Sentiment:", safeSentiment);
 
   const result = await llm(prompt);
   const text =
@@ -673,23 +684,32 @@ export async function email(query) {
       };
     }
 
+    // NEW: Get user name from memory
+    const { getMemory } = await import("../memory.js");
+    const memory = await getMemory();
+    const senderName = memory.profile?.name || null;
+
+    // NEW: Detect word count requests (e.g., "100 words", "50 word")
+    const wordMatch = queryText.match(/\b(\d+)\s*[-]?\s*words?\b/i);
+    const wordCount = wordMatch ? wordMatch[1] : null;
     // Sentiment detection
     const sentiment = detectSentiment(queryText);
     console.log("🧠 [email] Detected sentiment:", sentiment);
 
-    // If sentiment is present, generate a new body with the LLM
-    if (sentiment) {
-      console.log("🧠 [email] Generating body via LLM for sentiment:", sentiment);
+// If sentiment OR word count is present, generate a new body with the LLM
+    if (sentiment || wordCount) {
+      console.log("🧠 [email] Generating body via LLM...");
       const purpose = subject || body || queryText;
       body = await generateEmailBody({
         sentiment,
         subject,
         recipient: to,
-        purpose
+        purpose,
+        senderName,
+        wordCount
       });
       console.log("🧠 [email] New body generated (length):", body.length);
     }
-
     console.log("📨 [email] Resolving attachments:", requestedAttachments);
 
     const attachments = [];
