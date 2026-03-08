@@ -27,6 +27,7 @@
     "nerdamer": "^1.1.13",
     "node-fetch": "^3.3.2",
     "rss-parser": "^3.13.0",
-    "tough-cookie": "^6.0.0"
+    "tough-cookie": "^6.0.0",
+    "xlsx": "^0.18.5"
   }
 }

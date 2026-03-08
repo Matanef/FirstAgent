@@ -894,6 +894,15 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "financeFundamentals", input: trimmed, context: {}, reasoning: "certainty_fundamentals" }];
   }
 
+  // Calendar extract/export — bilingual (English + Hebrew)
+  // Must come BEFORE general calendar branch
+  if ((/\b(extract|export|excel|xlsx|spreadsheet)\b/i.test(lower) ||
+       /(?:חלץ|ייצא|אקסל|סרוק|לאקסל|ייצוא)/u.test(trimmed)) &&
+      /\b(calendar|events?|לוח|אירוע|יומן)\b/iu.test(trimmed)) {
+    console.log("[planner] certainty branch: calendar extract");
+    return [{ tool: "calendar", input: trimmed, context: { action: "extract" }, reasoning: "certainty_calendar_extract" }];
+  }
+
   // Calendar keywords — must come BEFORE sports to prevent "meeting with team" → sports
   if (/\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call))\b/i.test(lower) &&
       !/\b(score|match|game|league|football|soccer|basketball|nba|nfl)\b/i.test(lower)) {

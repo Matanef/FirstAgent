@@ -1,9 +1,18 @@
 // server/tools/calendar.js
-// Google Calendar integration — list events, create events, check availability
+// Google Calendar integration — list events, create events, check availability,
+// and extract data to Excel (bilingual: English + Hebrew)
 // Uses existing Google OAuth infrastructure from googleOAuth.js
 
 import { google } from "googleapis";
 import { getAuthorizedClient } from "../utils/googleOAuth.js";
+import * as XLSX from "xlsx";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 /**
  * Get authorized Google Calendar service
@@ -19,6 +28,11 @@ async function getCalendarService() {
 function detectCalendarIntent(query) {
   const lower = (query || "").toLowerCase();
 
+  // Extract / Export to Excel — bilingual (English + Hebrew)
+  if (/\b(extract|scan|export|excel|spreadsheet|xlsx)\b/i.test(lower) ||
+      /(?:חלץ|ייצא|אקסל|סרוק|לאקסל|ייצוא)/u.test(query)) {
+    return "extract";
+  }
   if (/\b(create|add|schedule|set\s+up|book|make)\s+(an?\s+)?(event|meeting|appointment|reminder|block)\b/i.test(lower)) {
     return "create";
   }
@@ -376,6 +390,394 @@ async function checkAvailability(query) {
   }
 }
 
+// ============================================================
+// EXTRACT TO EXCEL — Bilingual (English + Hebrew)
+// ============================================================
+
+/**
+ * Parse extraction filters from user query (bilingual)
+ * Supports DD/MM/YYYY dates, city names, price filters
+ */
+function parseExtractFilters(query) {
+  const filters = {};
+
+  // Date range: DD/MM/YYYY to DD/MM/YYYY (Israeli/European format)
+  // Also supports: DD.MM.YYYY, DD-MM-YYYY
+  const dateRangeMatch = query.match(
+    /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\s*(?:to|until|till|עד|ל|–|-)\s*(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/
+  );
+  if (dateRangeMatch) {
+    const [, d1, m1, y1, d2, m2, y2] = dateRangeMatch;
+    filters.timeMin = new Date(parseInt(y1), parseInt(m1) - 1, parseInt(d1));
+    filters.timeMax = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2), 23, 59, 59);
+  } else {
+    // Single date: DD/MM/YYYY
+    const singleDate = query.match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/);
+    if (singleDate) {
+      const [, d, m, y] = singleDate;
+      filters.timeMin = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+      filters.timeMax = new Date(parseInt(y), parseInt(m) - 1, parseInt(d), 23, 59, 59);
+    } else {
+      // Year range: "from 2021 to 2026", "2021-2026", "משנת 2021 עד 2026"
+      const yearRange = query.match(/(?:from|since|משנת?|מ-?)\s*(\d{4})\s*(?:to|until|till|עד|ל|–|-)\s*(\d{4})/i);
+      if (yearRange) {
+        filters.timeMin = new Date(parseInt(yearRange[1]), 0, 1);
+        filters.timeMax = new Date(parseInt(yearRange[2]), 11, 31, 23, 59, 59);
+      } else {
+        // Default: last 1 year
+        filters.timeMax = new Date();
+        filters.timeMin = new Date();
+        filters.timeMin.setFullYear(filters.timeMin.getFullYear() - 1);
+      }
+    }
+  }
+
+  // City filter (English and Hebrew common city names)
+  const cityMatch = query.match(
+    /(?:in|from|city|עיר|ב-?|מ-?)\s*["']?([A-Za-z\u0590-\u05FF]{2,25})["']?/u
+  );
+  if (cityMatch) {
+    const candidate = cityMatch[1].trim();
+    // Exclude noise words
+    const noise = new Set(["calendar", "events", "excel", "the", "my", "all", "from", "to", "extract", "scan", "export", "אקסל", "ייצא", "חלץ", "סרוק"]);
+    if (!noise.has(candidate.toLowerCase())) {
+      filters.city = candidate;
+    }
+  }
+
+  // Price filter — bilingual
+  // English: "price above 300", "more than 300", ">300", "under 500"
+  // Hebrew: "מעל 300", "יותר מ-300", "מחיר מעל 300 שקל", "פחות מ-500"
+  const priceAbove = query.match(
+    /(?:price\s*(?:above|over|more\s*than|>=?|higher\s*than)|above|over|more\s*than|>\s*|מעל\s*|יותר\s*מ-?)\s*(\d+[\d,.]*)/iu
+  );
+  const priceBelow = query.match(
+    /(?:price\s*(?:below|under|less\s*than|<=?|lower\s*than)|below|under|less\s*than|<\s*|מתחת\s*ל?-?|פחות\s*מ-?)\s*(\d+[\d,.]*)/iu
+  );
+
+  if (priceAbove) {
+    filters.priceMin = parseFloat(priceAbove[1].replace(/,/g, ""));
+  }
+  if (priceBelow) {
+    filters.priceMax = parseFloat(priceBelow[1].replace(/,/g, ""));
+  }
+
+  return filters;
+}
+
+/**
+ * Fetch ALL events in a time range using pageToken pagination
+ */
+async function fetchAllEvents(calendar, timeMin, timeMax) {
+  const allEvents = [];
+  let pageToken = null;
+
+  do {
+    const params = {
+      calendarId: "primary",
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      maxResults: 250, // Max per page
+      singleEvents: true,
+      orderBy: "startTime",
+    };
+    if (pageToken) params.pageToken = pageToken;
+
+    const res = await calendar.events.list(params);
+    const items = res.data.items || [];
+    allEvents.push(...items);
+    pageToken = res.data.nextPageToken || null;
+
+    console.log(`[calendar extract] Fetched page: ${items.length} events (total: ${allEvents.length})`);
+  } while (pageToken);
+
+  return allEvents;
+}
+
+/**
+ * Extract structured data from a single calendar event using regex
+ * Returns null if no phone number found (MANDATORY requirement)
+ */
+function mineEventData(event) {
+  const summary = event.summary || "";
+  const description = event.description || "";
+  const location = event.location || "";
+  const combined = `${summary}\n${description}\n${location}`;
+
+  // ── PHONE NUMBER (MANDATORY — skip event if not found) ──
+  // Israeli: 05X-XXXXXXX, 05XXXXXXXX, 972-5X-XXXXXXX, +972...
+  // International: +XXX-XXX-XXXX, (XXX) XXX-XXXX
+  const phoneRx = /(?:\+?972[\s.-]?|0)(?:5[0-9])[\s.-]?\d{3}[\s.-]?\d{4}|(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}/g;
+  const phones = combined.match(phoneRx);
+  if (!phones || phones.length === 0) return null; // MANDATORY: skip if no phone
+
+  const phone = phones[0].trim();
+
+  // ── NAME ──
+  // Try to extract from summary (common pattern: "Meeting with John Smith")
+  let name = "";
+  const nameFromSummary = summary.match(
+    /(?:with|meeting|call|w\/|עם|פגישה\s+עם)\s+([A-Za-z\u0590-\u05FF][A-Za-z\u0590-\u05FF\s.''-]{1,40})/iu
+  );
+  if (nameFromSummary) {
+    name = nameFromSummary[1].trim();
+  } else {
+    // Fallback: use summary itself if it looks like a name (2-3 capitalized words)
+    const possibleName = summary.match(/^([A-Z\u0590-\u05FF][a-z\u0590-\u05FF]+(?:\s+[A-Z\u0590-\u05FF][a-z\u0590-\u05FF]+){0,2})\b/u);
+    if (possibleName) name = possibleName[1].trim();
+  }
+
+  // ── EMAIL ──
+  const emailRx = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  const emails = combined.match(emailRx);
+  const email = emails ? emails[0] : "";
+
+  // ── ADDRESS (from location field primarily) ──
+  let city = "";
+  let street = "";
+  if (location) {
+    // Try to split location into street + city
+    const parts = location.split(/,\s*/);
+    if (parts.length >= 2) {
+      street = parts[0].trim();
+      city = parts[parts.length > 2 ? parts.length - 2 : 1].trim();
+    } else {
+      city = location.trim();
+    }
+  }
+
+  // Also scan description for addresses
+  if (!city) {
+    const cityInDesc = combined.match(
+      /(?:city|עיר|location|מיקום|כתובת|address)[:\s]*["']?([A-Za-z\u0590-\u05FF][A-Za-z\u0590-\u05FF\s]{2,25})["']?/iu
+    );
+    if (cityInDesc) city = cityInDesc[1].trim();
+  }
+
+  // ── PRICE ──
+  // Currency symbols: $, €, £, ₪
+  // Hebrew keywords: שח, שקל, שקלים, מחיר, עלות
+  // English keywords: price, cost, total, fee, rate
+  let price = "";
+  const pricePatterns = [
+    // "$300", "€250", "£100", "₪500"
+    /[$€£₪]\s*(\d[\d,.]+)/,
+    // "300$", "250₪", "500 שח", "300 שקל", "300 שקלים", "300 ILS"
+    /(\d[\d,.]+)\s*[$€£₪]|(\d[\d,.]+)\s*(?:שח|שקל(?:ים)?|ש"ח|ILS|NIS)\b/u,
+    // "price: 300", "cost 500", "מחיר: 300", "עלות: 500", "fee: 200"
+    /(?:price|cost|total|fee|rate|מחיר|עלות|תשלום|סכום)[:\s]*(\d[\d,.]+)/iu,
+    // "300 dollars", "500 euros", "200 shekels"
+    /(\d[\d,.]+)\s*(?:dollars?|euros?|pounds?|shekels?)/i,
+  ];
+
+  for (const rx of pricePatterns) {
+    const m = combined.match(rx);
+    if (m) {
+      // Extract the first captured number
+      price = (m[1] || m[2] || "").replace(/,/g, "");
+      break;
+    }
+  }
+
+  // ── EVENT DATE ──
+  const startDt = event.start?.dateTime || event.start?.date || "";
+  const eventDate = startDt ? new Date(startDt).toLocaleDateString("en-GB") : "";
+
+  return { name, phone, email, city, street, price, eventDate, rawSummary: summary };
+}
+
+/**
+ * Apply user filters (city, price) to extracted data
+ */
+function applyFilters(records, filters) {
+  return records.filter(rec => {
+    // City filter
+    if (filters.city) {
+      const filterCity = filters.city.toLowerCase();
+      const recCity = (rec.city || "").toLowerCase();
+      const recStreet = (rec.street || "").toLowerCase();
+      if (!recCity.includes(filterCity) && !recStreet.includes(filterCity)) {
+        return false;
+      }
+    }
+    // Price filters
+    if (filters.priceMin != null || filters.priceMax != null) {
+      const p = parseFloat(rec.price);
+      if (isNaN(p)) return false; // No price → drop if price filter active
+      if (filters.priceMin != null && p < filters.priceMin) return false;
+      if (filters.priceMax != null && p > filters.priceMax) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Generate Excel file from extracted records
+ */
+function generateExcel(records) {
+  // Map to clean column headers
+  const rows = records.map(r => ({
+    "Name": r.name || "",
+    "Phone": r.phone || "",
+    "Email": r.email || "",
+    "City": r.city || "",
+    "Street": r.street || "",
+    "Price": r.price || "",
+    "Event Date": r.eventDate || "",
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+
+  // Auto-size columns
+  const colWidths = Object.keys(rows[0] || {}).map(key => ({
+    wch: Math.max(key.length, ...rows.map(r => String(r[key] || "").length)) + 2
+  }));
+  ws["!cols"] = colWidths;
+
+  XLSX.utils.book_append_sheet(wb, ws, "Calendar Extract");
+
+  // Save to downloads directory
+  const downloadsDir = path.resolve(PROJECT_ROOT, "downloads");
+  if (!fs.existsSync(downloadsDir)) {
+    fs.mkdirSync(downloadsDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const filename = `Calendar_Extract_${timestamp}.xlsx`;
+  const filePath = path.join(downloadsDir, filename);
+
+  XLSX.writeFile(wb, filePath);
+  console.log(`[calendar extract] Excel saved: ${filePath}`);
+
+  return { filePath, filename, rowCount: rows.length };
+}
+
+/**
+ * Main extraction pipeline
+ */
+async function extractCalendarData(query) {
+  try {
+    const calendarService = await getCalendarService();
+    const filters = parseExtractFilters(query);
+
+    console.log(`[calendar extract] Filters:`, JSON.stringify({
+      timeMin: filters.timeMin?.toISOString(),
+      timeMax: filters.timeMax?.toISOString(),
+      city: filters.city,
+      priceMin: filters.priceMin,
+      priceMax: filters.priceMax,
+    }));
+
+    // 1. Fetch ALL events with pagination
+    const allEvents = await fetchAllEvents(calendarService, filters.timeMin, filters.timeMax);
+    console.log(`[calendar extract] Total events fetched: ${allEvents.length}`);
+
+    if (allEvents.length === 0) {
+      return {
+        tool: "calendar",
+        success: true,
+        final: true,
+        data: {
+          preformatted: true,
+          text: `No events found between ${filters.timeMin.toLocaleDateString("en-GB")} and ${filters.timeMax.toLocaleDateString("en-GB")}.`,
+        },
+      };
+    }
+
+    // 2. Mine data from each event (skip events without phone numbers)
+    const extracted = [];
+    let skippedNoPhone = 0;
+    for (const ev of allEvents) {
+      const record = mineEventData(ev);
+      if (record) {
+        extracted.push(record);
+      } else {
+        skippedNoPhone++;
+      }
+    }
+
+    console.log(`[calendar extract] Extracted: ${extracted.length} records, skipped (no phone): ${skippedNoPhone}`);
+
+    // 3. Apply user filters (city, price)
+    const filtered = applyFilters(extracted, filters);
+    console.log(`[calendar extract] After filters: ${filtered.length} records`);
+
+    if (filtered.length === 0) {
+      const filterDesc = [];
+      if (filters.city) filterDesc.push(`city: "${filters.city}"`);
+      if (filters.priceMin != null) filterDesc.push(`price ≥ ${filters.priceMin}`);
+      if (filters.priceMax != null) filterDesc.push(`price ≤ ${filters.priceMax}`);
+
+      return {
+        tool: "calendar",
+        success: true,
+        final: true,
+        data: {
+          preformatted: true,
+          text: `📊 **Calendar Data Extraction Complete**\n\n` +
+            `- Events scanned: **${allEvents.length}**\n` +
+            `- Events with phone numbers: **${extracted.length}**\n` +
+            `- Matching filters${filterDesc.length ? ` (${filterDesc.join(", ")})` : ""}: **0**\n\n` +
+            `No matching records found. Try adjusting your filters.`,
+        },
+      };
+    }
+
+    // 4. Generate Excel file
+    const { filePath, filename, rowCount } = generateExcel(filtered);
+
+    // 5. Build response
+    const filterDesc = [];
+    if (filters.city) filterDesc.push(`City: "${filters.city}"`);
+    if (filters.priceMin != null) filterDesc.push(`Price ≥ ${filters.priceMin}`);
+    if (filters.priceMax != null) filterDesc.push(`Price ≤ ${filters.priceMax}`);
+
+    // Preview first 5 rows
+    const previewRows = filtered.slice(0, 5).map((r, i) =>
+      `| ${i + 1} | ${r.name || "-"} | ${r.phone} | ${r.city || "-"} | ${r.price || "-"} | ${r.eventDate} |`
+    );
+
+    const responseText =
+      `📊 **Calendar Data Extraction Complete**\n\n` +
+      `- Date range: **${filters.timeMin.toLocaleDateString("en-GB")}** to **${filters.timeMax.toLocaleDateString("en-GB")}**\n` +
+      `- Events scanned: **${allEvents.length}**\n` +
+      `- Events with phone numbers: **${extracted.length}**\n` +
+      `- Skipped (no phone): **${skippedNoPhone}**\n` +
+      (filterDesc.length ? `- Filters applied: ${filterDesc.join(", ")}\n` : "") +
+      `- **Records exported: ${rowCount}**\n\n` +
+      `| # | Name | Phone | City | Price | Date |\n` +
+      `|---|------|-------|------|-------|------|\n` +
+      previewRows.join("\n") +
+      (filtered.length > 5 ? `\n| ... | *${filtered.length - 5} more rows* | | | | |\n` : "\n") +
+      `\n📁 **File saved:** \`${filePath}\`\n` +
+      `📄 Filename: **${filename}**`;
+
+    return {
+      tool: "calendar",
+      success: true,
+      final: true,
+      data: {
+        preformatted: true,
+        text: responseText,
+        filePath,
+        filename,
+        totalEvents: allEvents.length,
+        extractedCount: extracted.length,
+        exportedCount: rowCount,
+        skippedNoPhone,
+      },
+    };
+  } catch (err) {
+    console.error("[calendar extract] Error:", err);
+    return {
+      tool: "calendar",
+      success: false,
+      error: `Calendar extraction failed: ${err.message}`,
+    };
+  }
+}
+
 /**
  * Main calendar tool entry point
  */
@@ -388,6 +790,8 @@ export async function calendar(query) {
   console.log(`[calendar] Intent: ${intent}, Query: "${input}"`);
 
   switch (intent) {
+    case "extract":
+      return await extractCalendarData(input);
     case "create":
       return await createEvent(input);
     case "freebusy":
