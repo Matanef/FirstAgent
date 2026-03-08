@@ -1,10 +1,18 @@
 // server/tools/fileReview.js
-// Tool: reads uploaded file previews and returns structured data for LLM summarization
+// Tool: reads uploaded file previews and runs a dedicated LLM analysis per file
 
 import { getFile } from "../utils/fileRegistry.js";
 import fs from "fs/promises";
+import { llm } from "./llm.js"; // <-- We now import the LLM directly
 
 const PREVIEW_SIZE = 4096; // 4KB preview per file
+
+// Quick helper to format file sizes
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
+}
 
 export async function fileReview(input) {
     const text = typeof input === "string" ? input : input?.text || "";
@@ -24,6 +32,7 @@ export async function fileReview(input) {
     const files = [];
     const errors = [];
 
+    // 1. Read the files from the system
     for (const id of fileIds) {
         const entry = await getFile(id);
         if (!entry) {
@@ -43,23 +52,26 @@ export async function fileReview(input) {
             } else {
                 preview = content;
             }
-        } catch (err) {
-            // Might be a binary file
-            preview = `[Binary file: ${entry.mimetype}, ${entry.size} bytes]`;
-            truncated = false;
+        } catch (e) {
+            errors.push({ id, error: `Failed to read file: ${e.message}` });
+            continue;
         }
+
+        // Safely grab the name no matter what format the registry uses
+        const safeName = entry.originalname || entry.filename || entry.fileName || entry.name || `file_${id}.txt`;
 
         files.push({
             id,
-            name: entry.originalName,
-            size: entry.size,
-            mimetype: entry.mimetype,
+            name: safeName,         // For components expecting 'name'
+            fileName: safeName,     // For components expecting 'fileName'
+            filename: safeName,     // For components expecting 'filename'
+            size: totalSize || entry.size || 0,
             preview,
             truncated
         });
     }
 
-    // Build a combined preview for the LLM summarization step
+    // 2. Build a combined preview of the code
     let combinedPreview = "";
     for (const f of files) {
         combinedPreview += `\n--- File: ${f.name} (${formatSize(f.size)}) ---\n`;
@@ -68,32 +80,52 @@ export async function fileReview(input) {
         combinedPreview += "\n";
     }
 
-    // Build explicit per-file LLM prompt to ensure ALL files are analyzed
-    const llmPrompt = files.length > 1
-        ? `Analyze EACH of the following ${files.length} files separately. For each file, provide:\n` +
-          `1. Brief explanation of what the file does\n` +
-          `2. 2-3 specific improvement suggestions\n` +
-          `3. If it's a text file, explain the main subject\n\n` +
-          `Do NOT skip any files. Analyze ALL ${files.length} files listed below.\n\n` +
-          `FILES:\n${combinedPreview}`
-        : combinedPreview;
+    console.log(`🧠 [fileReview] Calling LLM to analyze ${files.length} files...`);
 
-    return {
-        tool: "fileReview",
-        success: true,
-        final: true,
-        data: {
-            files,
-            errors: errors.length > 0 ? errors : undefined,
-            userMessage: text,
-            combinedPreview,
-            text: llmPrompt // used by summarizeWithLLM as tool result text
-        }
-    };
-}
+    // 3. The Dedicated LLM Prompt (Forces 2-3 suggestions per file)
+    const analysisPrompt = `
+You are an expert code reviewer. The user wants you to review the following files:
+User request: "${text}"
 
-function formatSize(bytes) {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+Analyze EACH of the following ${files.length} files separately. For EACH file, you must provide:
+1. A brief explanation of what the file does.
+2. 2-3 specific improvement suggestions (code quality, bugs, architecture, or formatting).
+3. If it is a regular text file instead of code, explain the main subject.
+
+Do NOT skip any files. Analyze ALL ${files.length} files listed below. Be thorough but concise. Do not cut off your response in the middle.
+
+FILES TO REVIEW:
+${combinedPreview}
+`;
+
+    // 4. Generate the review and return it immediately
+    try {
+        const result = await llm(analysisPrompt);
+        const reviewText = result?.data?.text || result?.output || "Review completed.";
+
+        console.log("🧠 [fileReview] LLM returned review length:", reviewText.length);
+
+        return {
+            tool: "fileReview",
+            success: true,
+            final: true,
+            data: {
+                files,
+                errors: errors.length > 0 ? errors : undefined,
+                userMessage: text,
+                text: reviewText, // The final finished text
+                message: reviewText,
+                preformatted: true // Tells the UI to keep the markdown styling
+            }
+        };
+    } catch (llmErr) {
+        console.error("❌ [fileReview] LLM Error:", llmErr);
+        return {
+            tool: "fileReview",
+            success: false,
+            final: true,
+            error: "LLM failed to analyze files: " + llmErr.message,
+            data: { files, errors }
+        };
+    }
 }

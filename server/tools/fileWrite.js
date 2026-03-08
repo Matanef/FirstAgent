@@ -1,5 +1,5 @@
 // server/tools/fileWrite.js
-// File writing capability — supports structured input { path, content } AND natural language
+// File writing capability — supports structured input and natural language parsing
 
 import fs from "fs/promises";
 import path from "path";
@@ -11,7 +11,7 @@ const WRITABLE_SANDBOXES = [
   path.resolve("E:/testFolder")
 ];
 
-// Critical files that should NEVER be overwritten without backup
+// Critical files that should NEVER be overwritten without a backup
 const PROTECTED_FILES = [
   "package.json",
   "package-lock.json",
@@ -20,169 +20,207 @@ const PROTECTED_FILES = [
 ];
 
 /**
- * Check if path is within writable sandboxes
+ * Validates if the path is within allowed directories.
  */
 function isPathWritable(resolvedPath) {
   return WRITABLE_SANDBOXES.some(root => resolvedPath.startsWith(root));
 }
 
 /**
- * Check if file is protected
+ * Checks if the file requires mandatory backups.
  */
 function isProtected(filename) {
   return PROTECTED_FILES.some(pf => filename.endsWith(pf));
 }
 
 /**
- * Create backup of file before modification
+ * Creates a backup of the file before modification.
+ * @throws {Error} if backup creation fails.
  */
 async function createBackup(filepath) {
+  try {
+    // Check if the file actually exists before backing it up
+    await fs.access(filepath);
+  } catch {
+    // File doesn't exist yet, no backup needed
+    return null; 
+  }
+
   try {
     const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '-');
     const backupPath = `${filepath}.backup-${timestamp}`;
     await fs.copyFile(filepath, backupPath);
     return backupPath;
   } catch (err) {
-    return null;
+    throw new Error(`Failed to create backup for ${filepath}: ${err.message}`);
   }
 }
 
 /**
- * Internal: perform the actual file write
+ * Internal: performs the actual file write with safety checks.
  */
 async function performWrite(requestedPath, content, mode = "write", backup = true) {
-  const resolved = path.resolve(requestedPath);
-
-  if (!isPathWritable(resolved)) {
-    return { tool: "fileWrite", success: false, final: true, error: "Writing outside allowed directories is not permitted" };
+  const resolvedPath = path.resolve(requestedPath);
+  
+  if (!isPathWritable(resolvedPath)) {
+    throw new Error(`Path is outside of allowed sandboxes: ${resolvedPath}`);
   }
 
-  const filename = path.basename(resolved);
-  if (filename.toLowerCase() === "memory.json") {
-    return { tool: "fileWrite", success: false, final: true, error: "Direct modification of memory.json via fileWrite is disabled for safety." };
+  const filename = path.basename(resolvedPath);
+  let backupPath = null;
+
+  if (backup || isProtected(filename)) {
+    backupPath = await createBackup(resolvedPath);
   }
 
-  if (isProtected(filename)) {
-    if (!backup) {
-      return { tool: "fileWrite", success: false, final: true, error: `${filename} is protected. Set backup=true to modify it.` };
+  try {
+    // Ensure the directory exists
+    await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+
+    if (mode === "append") {
+      await fs.appendFile(resolvedPath, content, "utf8");
+    } else {
+      await fs.writeFile(resolvedPath, content, "utf8");
     }
-    const backupPath = await createBackup(resolved);
-    if (!backupPath) {
-      return { tool: "fileWrite", success: false, final: true, error: `Failed to create backup of ${filename}` };
-    }
-    console.log(`📦 Created backup: ${backupPath}`);
+
+    return {
+      tool: "fileWrite",
+      success: true,
+      final: true,
+      data: {
+        file: filename,
+        path: resolvedPath,
+        backup: backupPath,
+        mode,
+        size: content.length,
+        message: `✅ Successfully ${mode === 'append' ? 'appended to' : 'wrote'} file: ${filename}`,
+        text: `Successfully ${mode === 'append' ? 'appended to' : 'wrote'} ${filename}.\nLocation: ${resolvedPath}${backupPath ? `\nBackup created at: ${backupPath}` : ''}`
+      }
+    };
+  } catch (err) {
+    throw new Error(`File system operation failed: ${err.message}`);
+  }
+}
+
+/**
+ * Parses natural language to extract file path, content, and write mode using XML tags.
+ */
+/**
+ * Parses natural language to extract file path, content, and write mode using custom boundaries.
+ */
+async function parseNaturalLanguageWrite(text) {
+  const prompt = `
+Extract the requested file path and content to write from the following user request.
+User Request: "${text}"
+
+You MUST respond exactly in this format using these exact boundaries. Do NOT use XML tags or JSON. Do NOT escape HTML characters.
+
+===PATH===
+The exact file path goes here
+===MODE===
+write
+===CONTENT===
+The exact raw code or text goes here
+===END===
+
+If the user wants to append, set mode to "append". Otherwise, set it to "write".
+`;
+
+  const result = await llm(prompt);
+  const llmOutput = result?.data?.text || result?.output || "";
+
+  // Extract data using custom boundaries (Immune to JSON and XML encoding rules!)
+  const pathMatch = llmOutput.match(/===PATH===([\s\S]*?)===MODE===/i);
+  const modeMatch = llmOutput.match(/===MODE===([\s\S]*?)===CONTENT===/i);
+  const contentMatch = llmOutput.match(/===CONTENT===([\s\S]*?)===END===/i);
+
+  if (!pathMatch || !contentMatch) {
+    console.error("❌ [fileWrite] Failed to parse boundaries from LLM output:\\n", llmOutput);
+    throw new Error("Could not extract path and content. The LLM formatting failed.");
   }
 
-  await fs.mkdir(path.dirname(resolved), { recursive: true });
-
-  if (mode === "append") {
-    await fs.appendFile(resolved, content, "utf8");
-  } else {
-    await fs.writeFile(resolved, content, "utf8");
-  }
+  // Grab the raw content and just strip off any markdown blocks if the LLM snuck them in
+  let cleanContent = contentMatch[1].trim();
+  cleanContent = cleanContent
+    .replace(/^```[a-z]*\n?/im, '') 
+    .replace(/\n?```$/im, '');
 
   return {
-    tool: "fileWrite",
-    success: true,
-    final: true,
-    data: {
-      path: resolved,
-      mode,
-      size: content.length,
-      message: `Successfully ${mode === "append" ? "appended to" : "wrote"} ${filename}`
-    },
-    reasoning: `Wrote ${content.length} bytes to ${filename}`
+    path: pathMatch[1].trim(),
+    mode: modeMatch ? modeMatch[1].trim().toLowerCase() : "write",
+    content: cleanContent
   };
 }
 
 /**
- * Handle natural language write requests (e.g., "Write a hello world script to D:/test.js")
- * Uses LLM to generate the file content, then writes it.
+ * Handles processing of natural language file write requests.
  */
 async function handleNaturalLanguageWrite(text, context = {}) {
-  // Extract file path from text or context
-  const pathMatch = text.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
-  const targetPath = context?.targetPath || (pathMatch ? pathMatch[1] : null);
+  try {
+    console.log("🧠 [fileWrite] Parsing natural language intent...");
+    
+    // First, try to use any context path provided by the Orchestrator/UI
+    const targetPath = context.targetPath || null;
+    
+    // Use our new extracted parsing function
+    const { path: extractedPath, content, mode } = await parseNaturalLanguageWrite(text);
+    
+    const finalPath = targetPath || extractedPath;
+    
+    if (!finalPath || !content) {
+      throw new Error("Path and content are required.");
+    }
 
-  if (!targetPath) {
+    console.log(`📝 [fileWrite] Writing to ${finalPath} via Natural Language`);
+    return await performWrite(finalPath, content, mode);
+
+  } catch (err) {
+    console.error("❌ [fileWrite] NL parse error:", err.message);
     return {
       tool: "fileWrite",
       success: false,
       final: true,
-      error: "No file path found. Please specify where to write, e.g., 'Write hello world to D:/test.js'"
+      error: `Natural language write failed: ${err.message}`
     };
-  }
-
-  // Determine language from file extension
-  const ext = path.extname(targetPath).toLowerCase();
-  const langMap = {
-    '.js': 'JavaScript', '.py': 'Python', '.html': 'HTML', '.css': 'CSS',
-    '.json': 'JSON', '.ts': 'TypeScript', '.jsx': 'React JSX', '.tsx': 'React TSX',
-    '.md': 'Markdown', '.txt': 'Plain text', '.sh': 'Bash', '.bat': 'Batch',
-    '.yaml': 'YAML', '.yml': 'YAML', '.xml': 'XML', '.sql': 'SQL'
-  };
-  const lang = langMap[ext] || ext.replace('.', '').toUpperCase() || 'text';
-
-  console.log(`📝 fileWrite NL: generating ${lang} content for ${targetPath}`);
-
-  const prompt = `Generate ONLY the raw file content for this request. No markdown code fences, no explanation, no preamble — JUST the file content that should be saved directly to disk.
-
-Request: "${text}"
-File: ${targetPath}
-Language: ${lang}
-
-File content:`;
-
-  try {
-    const result = await llm(prompt);
-    let generatedContent = result.data?.text || "";
-
-    if (!generatedContent.trim()) {
-      return { tool: "fileWrite", success: false, final: true, error: "Failed to generate file content from the request." };
-    }
-
-    // Clean up markdown fences if LLM added them despite instructions
-    let cleanContent = generatedContent.trim();
-    if (cleanContent.startsWith('```')) {
-      cleanContent = cleanContent.replace(/^```\w*\n?/, '').replace(/\n?```\s*$/, '');
-    }
-
-    // Write using the structured path
-    return await performWrite(targetPath, cleanContent);
-  } catch (err) {
-    return { tool: "fileWrite", success: false, final: true, error: `Content generation failed: ${err.message}` };
   }
 }
 
 /**
- * Write or modify a file
- * Supports:
- *   - Structured input: { path, content, mode, backup }
- *   - Natural language: string like "Write a hello world script to D:/test.js"
- *   - Message object: { text: "...", context: { targetPath: "..." } }
+ * Main Tool Export
  */
 export async function fileWrite(request) {
   try {
-    // Handle natural language string input
+    // 1. Natural Language Input (String)
     if (typeof request === "string") {
       return await handleNaturalLanguageWrite(request);
     }
 
-    // Handle message object from coordinator (text + context, no path/content)
+    // 2. Message Object (from coordinator) with text but no explicit path/content
     if (request && request.text && !request.path) {
       return await handleNaturalLanguageWrite(request.text, request.context);
     }
 
-    // Handle structured input { path, content, mode, backup }
+    // 3. Structured Input { path, content, mode, backup }
     const { path: requestedPath, content, mode = "write", backup = true } = request;
 
     if (!requestedPath || !content) {
-      return { tool: "fileWrite", success: false, final: true, error: "Path and content are required" };
+      return { 
+        tool: "fileWrite", 
+        success: false, 
+        final: true, 
+        error: "Path and content are required for structured writes." 
+      };
     }
 
     return await performWrite(requestedPath, content, mode, backup);
 
   } catch (err) {
-    return { tool: "fileWrite", success: false, final: true, error: `File write failed: ${err.message}` };
+    console.error("❌ [fileWrite] ERROR:", err);
+    return { 
+      tool: "fileWrite", 
+      success: false, 
+      final: true, 
+      error: `File operation failed: ${err.message}` 
+    };
   }
 }

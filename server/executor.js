@@ -411,7 +411,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
-    "webDownload", "fileReview", "webBrowser", "moltbook", "fileWrite",
+    "webDownload", "webBrowser", "moltbook",
     "calendar", "documentQA", "contacts", "workflow"
   ];
 
