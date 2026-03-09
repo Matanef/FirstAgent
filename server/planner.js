@@ -645,6 +645,13 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "email", input: trimmed, context: emailContext, reasoning: "certainty_email" }];
   }
 
+  // WhatsApp — send single or bulk messages
+  if (/\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
+      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: whatsapp");
+    return [{ tool: "whatsapp", input: trimmed, context: {}, reasoning: "certainty_whatsapp" }];
+  }
+
   // NLP / text analysis keywords
   if (/\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower)) {
     console.log("[planner] certainty branch: nlp_tool");

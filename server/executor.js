@@ -329,7 +329,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   tool = actualToolKey;
 
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
       const queryText = message.text || message.input || "";
       const ctx = message.context || {};
@@ -412,7 +412,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "calendar", "documentQA", "contacts", 
     "duplicateScanner", "folderAccess", "codeReview",
     "projectGraph", "projectIndex", "githubScanner", "scheduler",
-    "packageManager", "memorytool"
+    "packageManager", "memorytool", "whatsapp"
   ];
 
   if (summarizeTools.includes(tool)) {

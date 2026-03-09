@@ -41,6 +41,7 @@ import { projectGraph } from "./projectGraph.js";
 import { projectIndex } from "./projectIndex.js";
 import { githubScanner } from "./githubScanner.js";
 import { selfEvolve } from "./selfEvolve.js";
+import { whatsapp } from "./whatsapp.js";
 
 export const TOOLS = {
   calculator,
@@ -82,7 +83,8 @@ export const TOOLS = {
   projectGraph,
   projectIndex,
   githubScanner,
-  selfEvolve
+  selfEvolve,
+  whatsapp
 };
 
 // Validate all tools are functions at startup
