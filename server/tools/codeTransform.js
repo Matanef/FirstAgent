@@ -261,10 +261,25 @@ async function registerNewTool(toolFilePath, descriptionText) {
 
 /**
  * Generate transformation using LLM
+ * @param {object} options - Optional flags
+ * @param {boolean} options.fromSelfEvolve - If true, adds stricter architectural rules
+ * @param {string} options.existingContent - Pre-read snippet for additional context
  */
-async function generateTransformation(filePath, content, intent, instructions) {
+async function generateTransformation(filePath, content, intent, instructions, options = {}) {
   const filename = path.basename(filePath);
   const ext = path.extname(filename).slice(1);
+
+  // When called from selfEvolve, inject strict architectural rules
+  const architectureRules = options.fromSelfEvolve ? `
+
+ARCHITECTURE RULES (MANDATORY — violations will be rejected):
+- This project uses ES Modules ONLY (import/export). NEVER use require() or module.exports.
+- Do NOT import packages that are not installed. Only use: express, axios, cors, dotenv,
+  googleapis, cheerio, compromise, natural, xlsx, rss-parser, multer, file-type, nerdamer, expr-eval.
+- Do NOT rename or change the exported function signature.
+- Do NOT remove existing functionality unless the instruction explicitly says to.
+- Do NOT add CLI interfaces, EventEmitters, or generic boilerplate wrappers.
+- Keep changes MINIMAL and SURGICAL — only modify what the instruction asks for.` : "";
 
   const prompt = `You are an expert code transformer. Your task: ${intent} the following ${ext} file.
 
@@ -283,7 +298,7 @@ RULES:
 2. Preserve ALL existing functionality unless explicitly asked to remove it
 3. Maintain the same coding style and conventions
 4. Add comments explaining significant changes
-5. Do NOT add unnecessary dependencies
+5. Do NOT add unnecessary dependencies${architectureRules}
 
 Start your response with a brief summary of changes (2-3 lines), then output the complete transformed file wrapped in \`\`\`${ext} ... \`\`\` code fences.`;
 
@@ -475,6 +490,7 @@ export async function codeTransform(request) {
 
   const intent = context.action || detectIntent(text);
   const targetPathRaw = context.path || extractPath(text);
+  const isSelfEvolve = context.source === "selfEvolve";
 
   // Generate new file requires a target path
   if (intent === "add" && !targetPathRaw) {
@@ -518,7 +534,20 @@ export async function codeTransform(request) {
     try {
       stat = await fs.stat(normalizedPath);
     } catch {
-      // File doesn't exist — generate new
+      // ── GUARDRAIL: selfEvolve is NEVER allowed to create new files ──
+      if (isSelfEvolve) {
+        console.warn(`[codeTransform] BLOCKED: selfEvolve tried to create new file: ${normalizedPath}`);
+        return {
+          tool: "codeTransform",
+          success: false,
+          final: true,
+          data: {
+            message: `Blocked: selfEvolve cannot create new files. File not found: ${normalizedPath}`
+          }
+        };
+      }
+
+      // File doesn't exist — generate new (only for manual/user requests)
       if (intent === "add" || /\b(create|generate|write|new)\b/i.test(text)) {
         const generated = await generateNewCode(text, normalizedPath);
         if (generated.success && generated.content) {
@@ -572,6 +601,8 @@ export async function codeTransform(request) {
         };
       }
 
+      const transformOpts = { fromSelfEvolve: isSelfEvolve };
+
       // Preview mode: show what would change without applying
       if (
         context.preview ||
@@ -581,7 +612,8 @@ export async function codeTransform(request) {
           normalizedPath,
           content,
           intent,
-          text
+          text,
+          transformOpts
         );
         if (transformation.success) {
           const diff = generateDiffSummary(content, transformation.newContent);
@@ -624,7 +656,8 @@ export async function codeTransform(request) {
         normalizedPath,
         content,
         intent,
-        text
+        text,
+        transformOpts
       );
       if (!transformation.success || !transformation.newContent) {
         return {

@@ -7,11 +7,9 @@ import { llm, llmStream } from "./tools/llm.js";
 import { getToneDescription } from "../tone/toneGuide.js";
 import { sendConfirmedEmail } from "./tools/email.js";
 import { PROJECT_ROOT } from "./utils/config.js";
-import { getBackgroundNLP } from "./utils/nlpUtils.js";
 import { buildStyleInstructions } from "./utils/styleEngine.js";
 import {
   convertMarkdownTablesToHTML,
-  wantsTableFormat,
   normalizeCityAliases,
   getMessageText
 } from "./utils/uiUtils.js";
@@ -144,8 +142,8 @@ async function summarizeWithLLM({
 
   const convoText = allMessages.map(m => `${m.role}: ${m.content}`).join("\n");
   const today = new Date().toLocaleDateString("en-GB");
-  const tableRequested = wantsTableFormat(userQuestion);
 
+  // Build multi-step context if this is part of a chain
   let contextSummary = "";
   if (stateGraph && stateGraph.length > 0) {
     contextSummary = "\n\nPREVIOUS STEPS IN THIS SEQUENCE:\n";
@@ -180,7 +178,7 @@ ${styleText ? `Style preferences:\n${styleText}` : ""}
 
 Conversation history:
 ${convoText}
-
+${contextSummary}
 Generate the final answer:
 `;
 
@@ -242,8 +240,6 @@ Generate the reformatted response:
    EXECUTE A SINGLE TOOL STEP
 ============================================================ */
 export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
-  const queryText = typeof message === "string" ? message : message?.text || "";
-
   // EMAIL CONFIRMATION
   if (tool === "email_confirm") {
     const emailContext = typeof message === "object" ? (message.context || {}) : {};
@@ -406,13 +402,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     };
   }
 
-  // TOOLS THAT SHOULD BE SUMMARIZED — EMAIL REMOVED
+  // TOOLS THAT SHOULD BE SUMMARIZED BY LLM — EMAIL REMOVED
+  // Tools with preformatted:true skip this (handled above), so safe to include them
   const summarizeTools = [
     "search", "finance", "financeFundamentals", "calculator", "weather",
     "sports", "youtube", "shopping", "tasks", "news", "file",
     "github", "review", "githubTrending", "gitLocal", "nlp_tool", "lotrJokes",
     "webDownload", "webBrowser", "moltbook",
-    "calendar", "documentQA", "contacts", "workflow"
+    "calendar", "documentQA", "contacts", 
+    "duplicateScanner", "folderAccess", "codeReview",
+    "projectGraph", "projectIndex", "githubScanner", "scheduler",
+    "packageManager", "memorytool"
   ];
 
   if (summarizeTools.includes(tool)) {

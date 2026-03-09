@@ -5,9 +5,7 @@ import { plan } from "../planner.js";
 import { executeStep, finalizeStep } from "../executor.js";
 import { getBackgroundNLP } from "./nlpUtils.js";
 import { resolveCityFromIp } from "./geo.js";
-import { summarizeAndStoreConversation, shouldSummarize } from "./conversationMemory.js";
-import { detectSatisfaction, updatePreferencesFromFeedback, extractPreferences, applyExtractedPreferences } from "./styleEngine.js";
-import { appendSuggestion } from "./suggestions.js";
+import { getMemory } from "../memory.js";
 
 // ============================================================
 // EMOTIONAL INTELLIGENCE LAYER (D5)
@@ -168,7 +166,6 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
     // 2b. Emotional Intelligence — detect frustration from conversation patterns
     let emotionalAdaptation = null;
     try {
-        const { getMemory } = await import("../memory.js");
         const memory = await getMemory();
         const convoHistory = memory.conversations?.[conversationId] || [];
         const frustration = detectFrustrationPatterns(queryText, convoHistory);
@@ -203,7 +200,6 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             // Fallback for localhost: use saved location from memory
             if (!city && (clientIp === "127.0.0.1" || clientIp === "::1" || clientIp === "::ffff:127.0.0.1")) {
                 try {
-                    const { getMemory } = await import("../memory.js");
                     const memory = await getMemory();
                     city = memory.profile?.location || memory.profile?.city || null;
                     if (city) console.log(`📍 Localhost detected, using saved location: ${city}`);
@@ -352,41 +348,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     console.log(`📊 Execution complete: ${stateGraph.length} steps executed`);
 
-    // ──────────────────────────────────────────────────────────
-    // POST-EXECUTION: Style, Satisfaction, Suggestions, Memory
-    // ──────────────────────────────────────────────────────────
-
-//     // 4a. Track user satisfaction signals
-//     try {
-//         const satisfaction = detectSatisfaction(queryText);
-//         if (satisfaction.signal !== "neutral") {
-//             await updatePreferencesFromFeedback(satisfaction.signal);
-//         }
-//     } catch (e) {
-//         console.warn("[coordinator] Satisfaction tracking error:", e.message);
-//     }
-
-// // 4b. Extract and apply implicit style preferences
-//     try {
-//         const prefs = extractPreferences(queryText);
-//         if (prefs) {
-//             await applyExtractedPreferences(prefs);
-//         }
-//     } catch (e) {
-//         console.warn("[coordinator] Preference extraction error:", e.message);
-//     }
-
-//     // 4c. Apply emotional adaptation to response
-//     let finalReply = lastFinalized?.reply || "";
-//     if (emotionalAdaptation?.shouldAcknowledge && emotionalAdaptation.prependText && finalReply) {
-//         finalReply = emotionalAdaptation.prependText + finalReply;
-//     }
-
-//     // 🔴 DEADLOCK PREVENTION: 
-//     // We are completely bypassing appendSuggestion and dynamic memory imports here 
-//     // because they are causing silent Promises that never resolve.
-
-return {
+    return {
         reply: lastFinalized?.reply || "Task completed.", // <-- We just use lastFinalized?.reply here instead of finalReply
         tool: lastFinalized?.tool || "unknown",
         data: lastFinalized?.data || null,

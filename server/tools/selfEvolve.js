@@ -18,6 +18,76 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const EVOLUTION_LOG = path.resolve(__dirname, "..", "data", "evolution-log.json");
 
+// ── Guardrails: paths the agent is allowed to modify during self-evolution ──
+const ALLOWED_EVOLVE_DIRS = ["server/tools", "server/utils", "server"];
+const BLOCKED_EVOLVE_FILES = new Set([
+  "server/routes/chat.js",       // core SSE route — never auto-modify
+  "server/planner.js",           // complex routing — too risky for auto-edit
+  "server/executor.js",          // execution pipeline — too risky
+  "server/agents/orchestrator.js",
+  "package.json",
+  "package-lock.json",
+  ".env",
+]);
+const BLOCKED_EVOLVE_DIRS = new Set([
+  "client",       // never auto-modify React frontend
+  "agent",        // hallucinated directory — should not exist
+  "node_modules",
+]);
+
+/**
+ * Check if a file path is safe for selfEvolve to modify
+ */
+function isEvolvePathAllowed(filePath) {
+  const normalized = filePath.replace(/\\/g, "/");
+  // Block paths outside the project
+  const relative = path.relative(PROJECT_ROOT, path.resolve(PROJECT_ROOT, filePath)).replace(/\\/g, "/");
+  if (relative.startsWith("..")) return false;
+  // Block specific files
+  if (BLOCKED_EVOLVE_FILES.has(relative)) return false;
+  // Block entire directories
+  for (const dir of BLOCKED_EVOLVE_DIRS) {
+    if (relative.startsWith(dir + "/") || relative === dir) return false;
+  }
+  // Must be within an allowed directory
+  return ALLOWED_EVOLVE_DIRS.some(d => relative.startsWith(d + "/") || relative === d);
+}
+
+/**
+ * Read package.json dependencies to give the LLM context
+ */
+async function getInstalledDependencies() {
+  try {
+    const pkgPath = path.join(PROJECT_ROOT, "server", "package.json");
+    const raw = await fs.readFile(pkgPath, "utf8");
+    const pkg = JSON.parse(raw);
+    return Object.keys(pkg.dependencies || {});
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read a brief snippet of each target file so the LLM has real context
+ */
+async function readFileSnippets(filePaths) {
+  const snippets = [];
+  for (const fp of filePaths.slice(0, 5)) {
+    try {
+      const fullPath = fp.startsWith("/") || fp.includes(":") ? fp : path.join(PROJECT_ROOT, fp);
+      const content = await fs.readFile(fullPath, "utf8");
+      const lines = content.split("\n");
+      // First 40 lines (imports + main exports) + last 10 lines
+      const head = lines.slice(0, 40).join("\n");
+      const tail = lines.length > 50 ? "\n// ... (truncated) ...\n" + lines.slice(-10).join("\n") : "";
+      snippets.push(`--- ${fp} (${lines.length} lines) ---\n${head}${tail}`);
+    } catch {
+      // File might not exist — the LLM hallucinated the path
+    }
+  }
+  return snippets.join("\n\n");
+}
+
 // Normalize focus to avoid "yourself", "me", etc.
 function normalizeFocus(focus) {
   if (!focus) return "";
@@ -257,14 +327,39 @@ async function runImprovementCycle(options = {}) {
     console.error("[selfEvolve] dependency_check failed:", err.message);
   }
 
-  // Step 4: Generate improvement plan using LLM
+  // Step 4: Generate improvement plan using LLM (with architectural context)
   console.log("[selfEvolve] Step 4: improvement_plan starting.");
   results.steps.push({ step: "improvement_plan", status: "running" });
   let improvementPlan = [];
   try {
     ensureNotExpired("improvement_plan");
 
+    // ── Gather real project context so the LLM doesn't hallucinate ──
+    const installedDeps = await getInstalledDependencies();
+    const depsStr = installedDeps.length > 0
+      ? installedDeps.join(", ")
+      : "express, axios, cors, dotenv, googleapis";
+
     const prompt = `You are an AI agent's self-improvement engine. Based on the following analysis, generate a specific improvement plan.
+
+═══════════════════════════════════════════════════════════════
+PROJECT ARCHITECTURE RULES (MANDATORY — NEVER VIOLATE THESE):
+═══════════════════════════════════════════════════════════════
+1. MODULE SYSTEM: This project uses ES Modules EXCLUSIVELY (import/export).
+   NEVER use CommonJS (require/module.exports).
+2. FRONTEND: React 19 with functional components and hooks. The frontend
+   lives in client/src/. You are NOT allowed to modify frontend files.
+3. DEPENDENCIES: You may ONLY use packages currently installed:
+   [${depsStr}]
+   Do NOT invent, hallucinate, or import packages that are not in this list.
+4. BOUNDARIES: You may ONLY modify existing files in server/tools/ or
+   server/utils/. Do NOT create new files. Do NOT create new directories.
+   Do NOT touch client/, agent/, or root-level files.
+5. NO BOILERPLATE: Do NOT generate generic "API hubs", "event emitters",
+   "CLI interfaces", or architecture wrappers. Improve EXISTING tools only.
+6. PRESERVE EXPORTS: Every tool file exports a single async function.
+   Do NOT change the function signature or export name.
+═══════════════════════════════════════════════════════════════
 
 GITHUB INSIGHTS:
 ${(githubInsights || "No GitHub insights available").slice(0, 3000)}
@@ -276,30 +371,52 @@ DEPENDENCY ANALYSIS:
 ${(depAnalysis || "No dependency analysis available").slice(0, 2000)}
 
 Generate a prioritized list of 3-5 specific, actionable improvements. For each:
-1. WHAT to change (specific file and function)
+1. WHAT to change (specific EXISTING file and function — the file MUST already exist)
 2. WHY (based on findings above)
-3. HOW (specific code changes)
+3. HOW (specific code changes — use ES module syntax only)
 4. RISK level (low/medium/high)
 
 Focus on improvements that are:
 - Low risk (won't break existing functionality)
 - High impact (improve reliability, speed, or capabilities)
-- Specific (can be implemented in a single file change)
+- Modifying EXISTING files only (never creating new ones)
+- Using ONLY installed dependencies (never inventing packages)
 
 Format as JSON array:
 [
-  { "file": "path", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|add|refactor" },
+  { "file": "server/tools/example.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" },
   ...
-]`;
+]
+
+CRITICAL: The "file" field must be a relative path to an EXISTING file (e.g. "server/tools/email.js").
+Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
 
     console.log("[selfEvolve] Calling LLM for improvement_plan.");
     const response = await withTimeout(llm(prompt), 120_000, "llm(selfEvolve)");
     const responseText = response?.data?.text || "";
     improvementPlan = extractImprovementPlan(responseText);
 
+    // ── Post-filter: remove any suggestions targeting blocked paths ──
+    const originalCount = improvementPlan.length;
+    improvementPlan = improvementPlan.filter(imp => {
+      if (!imp.file || imp.file === "none") return true; // info-only items
+      if (imp.type === "add") {
+        console.warn(`[selfEvolve] BLOCKED "add" type suggestion: ${imp.file} — ${imp.description}`);
+        return false;
+      }
+      if (!isEvolvePathAllowed(imp.file)) {
+        console.warn(`[selfEvolve] BLOCKED path outside allowed dirs: ${imp.file}`);
+        return false;
+      }
+      return true;
+    });
+    if (improvementPlan.length < originalCount) {
+      console.log(`[selfEvolve] Filtered out ${originalCount - improvementPlan.length} unsafe suggestions.`);
+    }
+
     const step = results.steps[results.steps.length - 1];
     step.status = "done";
-    step.summary = `Generated ${improvementPlan.length} improvement suggestions`;
+    step.summary = `Generated ${improvementPlan.length} improvement suggestions (${originalCount - improvementPlan.length} blocked)`;
     console.log("[selfEvolve] improvement_plan done. Suggestions:", improvementPlan.length);
   } catch (err) {
     improvementPlan = [];
@@ -309,7 +426,7 @@ Format as JSON array:
     console.error("[selfEvolve] improvement_plan failed:", err.message);
   }
 
-  // Step 5: Apply improvements (destructive, Option B)
+  // Step 5: Apply improvements (with guardrails)
   console.log("[selfEvolve] Step 5: apply_improvements starting.");
   if (!dryRun && improvementPlan.length > 0) {
     results.steps.push({ step: "apply_improvements", status: "running" });
@@ -331,6 +448,38 @@ Format as JSON array:
             ? improvement.file
             : path.join(PROJECT_ROOT, improvement.file);
 
+        // ── GUARDRAIL 1: Path must be in allowed directories ──
+        if (!isEvolvePathAllowed(improvement.file)) {
+          console.warn(`[selfEvolve] BLOCKED: path not allowed: ${improvement.file}`);
+          results.improvements.push({
+            file: improvement.file,
+            description: improvement.description,
+            applied: false,
+            error: `Blocked: path "${improvement.file}" is outside allowed directories (${ALLOWED_EVOLVE_DIRS.join(", ")})`
+          });
+          continue;
+        }
+
+        // ── GUARDRAIL 2: File must already exist (no new file creation) ──
+        try {
+          await fs.access(filePath);
+        } catch {
+          console.warn(`[selfEvolve] BLOCKED: file does not exist: ${filePath}`);
+          results.improvements.push({
+            file: improvement.file,
+            description: improvement.description,
+            applied: false,
+            error: `Blocked: file "${improvement.file}" does not exist. Self-evolve cannot create new files.`
+          });
+          continue;
+        }
+
+        // ── GUARDRAIL 3: Pre-read the file so codeTransform has real context ──
+        let fileContent = "";
+        try {
+          fileContent = await fs.readFile(filePath, "utf8");
+        } catch { /* proceed anyway — codeTransform will read it too */ }
+
         console.log(
           "[selfEvolve] Applying improvement:",
           improvement.description,
@@ -341,7 +490,12 @@ Format as JSON array:
         const transformResult = await withTimeout(
           codeTransform({
             text: `${improvement.type} ${filePath}: ${improvement.description}`,
-            context: { path: filePath, action: improvement.type }
+            context: {
+              path: filePath,
+              action: improvement.type,
+              source: "selfEvolve",           // signals codeTransform to use guardrails
+              existingContent: fileContent.slice(0, 2000)  // first 2K chars for LLM context
+            }
           }),
           60_000,
           "codeTransform"

@@ -4,19 +4,14 @@
 import express from "express";
 import crypto from "crypto";
 import {
-  loadJSON,
   saveJSON,
   getMemory,
   reloadMemory,
-  MEMORY_FILE,
-  DEFAULT_MEMORY
+  MEMORY_FILE
 } from "../memory.js";
-import { executeAgent } from "../utils/coordinator.js";
 import { handleMessage as orchestratorHandle } from "../agents/orchestrator.js";
 import { calculateConfidence } from "../audit.js";
-import { resolveCityFromIp } from "../utils/geo.js";
 import { logTelemetry } from "../telemetryAudit.js";
-import { logIntentDecision } from "../intentDebugger.js";
 
 const router = express.Router();
 
@@ -95,19 +90,17 @@ router.post("/chat", async (req, res) => {
 console.log("🟢 [chat.js] Agent returned. Formatting response...");
 
     const elapsed = Date.now() - startTime;
-    const reply = result.reply;
+    const reply = result.reply || "Task completed.";
     const stateGraph = result.stateGraph;
-
     const confidence = calculateConfidence(stateGraph);
-    const finalReply = result.reply || "Task completed.";
 
     try {
       console.log("🟢 [chat.js] Stringifying JSON payload...");
       const payload = JSON.stringify({
         type: "done",
-        reply: finalReply,
+        reply,
         stateGraph: stateGraph || [],
-        tool: result.tool || "email",
+        tool: result.tool || "unknown",
         data: result.data || null,
         success: result.success ?? true,
         confidence: confidence || 0.8,
