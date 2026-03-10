@@ -48,18 +48,40 @@ export async function handleMessage({
 
   let result;
 
+  // Train of Thought helper for non-task paths
+  function emitThought(phase, content, data = {}) {
+    if (onStep) {
+      onStep({ type: "thought", phase, content, data, timestamp: new Date().toISOString() });
+    }
+  }
+
   // 3. Route to appropriate agent
   if (classification.mode === "chat") {
-    // Send a thinking step for UI feedback
-    if (onStep) {
-      onStep({ step: 1, total: 1, label: "Thinking...", status: "running", tool: "chatAgent" });
-    }
+    // Emit reasoning for chat path
+    emitThought("THOUGHT",
+      `Analyzing: "${message.length > 80 ? message.slice(0, 80) + "..." : message}". ` +
+      `Classified as conversational (${(classification.confidence * 100).toFixed(0)}% confidence). Reason: ${classification.reason}.`,
+      { mode: "chat", confidence: classification.confidence }
+    );
+    emitThought("PLAN", "Plan: 1 step — 1. chatAgent (conversational response)", { steps: [{ tool: "chatAgent", reasoning: classification.reason }], stepCount: 1 });
+    emitThought("EXECUTION", "Executing step 1/1: chatAgent — generating conversational response", { step: 1, total: 1, tool: "chatAgent" });
 
     result = await handleChat(message, recentTurns);
 
-    if (onStep) {
-      onStep({ step: 1, total: 1, label: "Thinking...", status: "completed", tool: "chatAgent" });
-    }
+    emitThought("OBSERVATION",
+      `chatAgent completed successfully. Preview: ${(result.reply || "").slice(0, 150)}${(result.reply || "").length > 150 ? "..." : ""}`,
+      { step: 1, tool: "chatAgent", success: true }
+    );
+    emitThought("ANSWER", "Delivering conversational response.", { tool: "chatAgent", stepsCompleted: 1 });
+
+    // Attach thoughtChain to result for chat path
+    result.thoughtChain = [
+      { phase: "THOUGHT", content: `Classified as conversational (${(classification.confidence * 100).toFixed(0)}% confidence). Reason: ${classification.reason}.`, data: { mode: "chat" }, timestamp: new Date().toISOString() },
+      { phase: "PLAN", content: "Plan: 1 step — chatAgent (conversational response)", data: { stepCount: 1 }, timestamp: new Date().toISOString() },
+      { phase: "EXECUTION", content: "Executing chatAgent", data: { tool: "chatAgent" }, timestamp: new Date().toISOString() },
+      { phase: "OBSERVATION", content: "chatAgent completed successfully.", data: { success: true }, timestamp: new Date().toISOString() },
+      { phase: "ANSWER", content: "Delivering conversational response.", data: {}, timestamp: new Date().toISOString() },
+    ];
 
     // Stream the chat response
     if (onChunk && result.reply) {

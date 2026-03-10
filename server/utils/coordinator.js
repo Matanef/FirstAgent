@@ -127,15 +127,36 @@ function getEmotionalAdaptation(frustration, sentiment) {
 export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep }) {
     const queryText = typeof message === "string" ? message : message?.text || "";
 
+    // ── Train of Thought: collect reasoning events ──
+    const thoughtChain = [];
+    function emitThought(phase, content, data = {}) {
+        const thought = { type: "thought", phase, content, data, timestamp: new Date().toISOString() };
+        thoughtChain.push(thought);
+        if (onStep) onStep(thought);
+    }
+
     // 1. Background NLP Analysis
     const { sentiment, entities } = getBackgroundNLP(queryText);
+
+    // ── THOUGHT: report NLP analysis ──
+    const entityParts = [];
+    if (entities?.people?.length) entityParts.push(`people=[${entities.people.join(", ")}]`);
+    if (entities?.places?.length) entityParts.push(`places=[${entities.places.join(", ")}]`);
+    if (entities?.organizations?.length) entityParts.push(`orgs=[${entities.organizations.join(", ")}]`);
+    if (entities?.dates?.length) entityParts.push(`dates=[${entities.dates.join(", ")}]`);
+    emitThought("THOUGHT",
+        `Analyzing: "${queryText.length > 80 ? queryText.slice(0, 80) + "..." : queryText}". ` +
+        `Sentiment: ${sentiment?.sentiment || "neutral"} (${sentiment?.score ?? 0}). ` +
+        `Entities: ${entityParts.length > 0 ? entityParts.join(", ") : "none detected"}.`,
+        { sentiment, entities }
+    );
 
     // 2. Multi-Step Planning
     console.log("🧠 Planning steps for:", queryText);
     const chatContext = { conversationId };
     if (fileIds.length > 0) chatContext.fileIds = fileIds;
     const planResult = await plan({ message: queryText, chatContext });
-    
+
     // CRITICAL: Validate and normalize plan result
     let steps;
     if (Array.isArray(planResult)) {
@@ -148,15 +169,25 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         console.error("❌ Invalid plan result:", planResult);
         steps = [];
     }
-    
+
     console.log(`🎯 Plan generated: ${steps.length} step${steps.length !== 1 ? 's' : ''}`);
-    
+
+    // ── PLAN: report routing decision ──
+    if (steps.length > 0) {
+        const planSummary = steps.map((s, i) => `${i + 1}. ${s.tool} (${s.reasoning || "auto"})`).join(", ");
+        emitThought("PLAN",
+            `Plan: ${steps.length} step${steps.length !== 1 ? "s" : ""} — ${planSummary}`,
+            { steps: steps.map(s => ({ tool: s.tool, reasoning: s.reasoning })), stepCount: steps.length }
+        );
+    }
+
     if (steps.length === 0) {
         return {
             reply: "I couldn't determine how to help with that request.",
             tool: "error",
             success: false,
-            stateGraph: []
+            stateGraph: [],
+            thoughtChain
         };
     }
 
@@ -184,6 +215,12 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         const stepNumber = i + 1;
 
         console.log(`⚙️ Step ${stepNumber}/${steps.length}: Executing ${step.tool}`);
+
+        // ── EXECUTION: announce tool call ──
+        emitThought("EXECUTION",
+            `Executing step ${stepNumber}/${steps.length}: ${step.tool} tool`,
+            { step: stepNumber, total: steps.length, tool: step.tool }
+        );
 
         if (onStep) {
             onStep({
@@ -318,6 +355,15 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             }
         }
 
+        // ── OBSERVATION: report tool result ──
+        const obsPreview = typeof finalized.reply === "string"
+            ? finalized.reply.slice(0, 150) + (finalized.reply.length > 150 ? "..." : "")
+            : "structured data returned";
+        emitThought("OBSERVATION",
+            `${step.tool} ${finalized.success ? "completed successfully" : "failed"}. Preview: ${obsPreview}`,
+            { step: stepNumber, tool: step.tool, success: finalized.success }
+        );
+
         // Add to state graph
         stateGraph.push({
             step: stepNumber,
@@ -348,13 +394,20 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     console.log(`📊 Execution complete: ${stateGraph.length} steps executed`);
 
+    // ── ANSWER: announce final synthesis ──
+    emitThought("ANSWER",
+        `Synthesizing final response from ${lastFinalized?.tool || "unknown"} results (${stateGraph.length} step${stateGraph.length !== 1 ? "s" : ""} completed).`,
+        { tool: lastFinalized?.tool, stepsCompleted: stateGraph.length }
+    );
+
     return {
-        reply: lastFinalized?.reply || "Task completed.", // <-- We just use lastFinalized?.reply here instead of finalReply
+        reply: lastFinalized?.reply || "Task completed.",
         tool: lastFinalized?.tool || "unknown",
         data: lastFinalized?.data || null,
         reasoning: lastFinalized?.reasoning || "Execution finished.",
         success: lastFinalized?.success ?? true,
         final: true,
-        stateGraph: stateGraph || [] 
+        stateGraph: stateGraph || [],
+        thoughtChain
     };
 }

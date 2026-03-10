@@ -81,9 +81,13 @@ router.post("/chat", async (req, res) => {
         );
       },
       onStep: (stepInfo) => {
-        res.write(
-          `data: ${JSON.stringify({ type: "step", ...stepInfo })}\n\n`
-        );
+        // Train of Thought events pass through as-is (type: "thought"),
+        // legacy step events get wrapped with type: "step"
+        if (stepInfo.type === "thought") {
+          res.write(`data: ${JSON.stringify(stepInfo)}\n\n`);
+        } else {
+          res.write(`data: ${JSON.stringify({ type: "step", ...stepInfo })}\n\n`);
+        }
       }
     });
 
@@ -100,6 +104,7 @@ console.log("🟢 [chat.js] Agent returned. Formatting response...");
         type: "done",
         reply,
         stateGraph: stateGraph || [],
+        thoughtChain: result.thoughtChain || [],
         tool: result.tool || "unknown",
         data: result.data || null,
         success: result.success ?? true,
@@ -108,7 +113,7 @@ console.log("🟢 [chat.js] Agent returned. Formatting response...");
           steps: stateGraph?.length || 1,
           executionTime: elapsed,
           reasoning: result.reasoning || "Complete.",
-          messageCount: 1 
+          messageCount: 1
         }
       });
 
@@ -139,7 +144,7 @@ console.log("🟢 [chat.js] Agent returned. Formatting response...");
         confidence,
         tool: result.tool,
         data: result.data,
-        metadata: { steps: stateGraph.length, reasoning: result.reasoning }
+        metadata: { steps: stateGraph.length, reasoning: result.reasoning, thoughtChain: result.thoughtChain || [] }
       });
 
       await saveJSON(MEMORY_FILE, memory);

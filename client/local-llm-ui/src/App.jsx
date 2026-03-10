@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 import DOMPurify from "dompurify";
 import SmartContent from "./components/SmartContent";
+import TrainOfThought from "./components/TrainOfThought";
 import FileAttachmentBar from "./components/FileAttachmentBar";
 import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
 import FolderPicker from "./components/FolderPicker";
@@ -134,6 +135,7 @@ async function sendMessage() {
 
       let sseBuffer = "";
       let streamFinished = false; // <-- ADDED: Flag to break the outer loop
+      let accumulatedThoughts = []; // Train of Thought reasoning chain
 
       while (true) {
         const { done, value } = await reader.read();
@@ -155,9 +157,24 @@ async function sendMessage() {
             continue;
           }
 
-          if (data.type === "chunk") {
+          if (data.type === "thought") {
+            // Train of Thought: accumulate reasoning events in real-time
+            accumulatedThoughts.push({
+              phase: data.phase,
+              content: data.content,
+              data: data.data,
+              timestamp: data.timestamp
+            });
+            setConversations(c => {
+              const current = [...c[activeId]];
+              const last = { ...current[current.length - 1] };
+              last.thoughts = [...accumulatedThoughts];
+              current[current.length - 1] = last;
+              return { ...c, [activeId]: current };
+            });
+          } else if (data.type === "chunk") {
             // Note: I added a fallback to data.text just in case your backend uses that
-            accumulatedText += data.chunk || data.text || ""; 
+            accumulatedText += data.chunk || data.text || "";
             setConversations(c => {
               const current = [...c[activeId]];
               const last = { ...current[current.length - 1] };
@@ -178,6 +195,7 @@ async function sendMessage() {
               last.loading = false;
               last.confidence = data.confidence;
               last.stateGraph = data.stateGraph;
+              last.thoughts = data.thoughtChain || accumulatedThoughts;
               last.tool = data.tool;
               last.data = data.data;
               current[current.length - 1] = last;
@@ -404,10 +422,16 @@ async function sendMessage() {
                         </span>
                       )}
                     </div>
+                    {m.role === "assistant" && m.thoughts && m.thoughts.length > 0 && (
+                      <TrainOfThought
+                        thoughts={m.thoughts}
+                        isStreaming={m.loading === true}
+                      />
+                    )}
                     <div className="message-body">
                       <SmartContent message={m} conversationId={activeId} />
                     </div>
-                    {m.stateGraph && m.stateGraph.length > 0 && (
+                    {m.stateGraph && m.stateGraph.length > 1 && (
                       <details className="message-trace">
                         <summary>🔍 Execution trace ({m.stateGraph.length} steps)</summary>
                         <pre>{JSON.stringify(m.stateGraph, null, 2)}</pre>
