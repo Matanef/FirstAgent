@@ -9,7 +9,8 @@ nlp.extend(nlpDates);
 
 class Analyzer {
   constructor() {
-    this.stemmer = new natural.PorterStemmer();
+    // PorterStemmer is a static object in natural v6+, not a constructor
+    this.stemmer = natural.PorterStemmer;
     this.analyzer = new natural.SentimentAnalyzer("English", this.stemmer, "afinn");
   }
 
