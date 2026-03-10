@@ -349,6 +349,196 @@ Respond with ONLY the tool name (one word, no explanation).`;
 }
 
 // ============================================================
+// MULTI-STEP INTENT DECOMPOSER (Sequential Logic Engine)
+// ============================================================
+
+/**
+ * Parse LLM output into a validated array of step objects.
+ * Handles code fences, single-object responses, and embedded JSON.
+ */
+function tryParseStepsJSON(text) {
+  if (!text) return null;
+
+  // Strip markdown code fences if present
+  let cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+
+  // Try to extract JSON array if surrounded by other text
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    cleaned = arrayMatch[0];
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned);
+
+    // Must be an array
+    if (!Array.isArray(parsed)) {
+      // If it's a single object with tool field, wrap it
+      if (parsed && typeof parsed === "object" && parsed.tool) {
+        return [parsed];
+      }
+      return null;
+    }
+
+    // Validate each step has required fields
+    const validSteps = parsed
+      .filter(step => step && typeof step === "object" && typeof step.tool === "string")
+      .map(step => ({
+        tool: step.tool.trim().toLowerCase(),
+        input: step.input || "",
+        reasoning: step.reasoning || "llm_decomposed"
+      }))
+      .slice(0, 5); // enforce max 5 steps
+
+    return validSteps.length > 0 ? validSteps : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Decompose a user message into one or more sequential tool steps.
+ * Uses the LLM as a "Sequential Logic Engine" — returns a JSON array of steps.
+ * Falls back to null on failure (caller should use single-tool classifier).
+ */
+async function decomposeIntentWithLLM(message, contextSignals, availableTools = []) {
+  const signalText = contextSignals.length > 0
+    ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
+    : "";
+
+  const toolsListText = availableTools.length > 0
+    ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}`
+    : "";
+
+  const prompt = `You are a Sequential Logic Engine. Your job is to decompose a user's message into one or more sequential tool steps.
+
+TASK: Analyze the user's message and return a JSON array of steps. Each step is an object with:
+- "tool": the tool name (must be from the AVAILABLE TOOLS list)
+- "input": what to pass to that tool (a natural language instruction)
+- "reasoning": a brief explanation of why this step is needed
+${toolsListText}
+${signalText}
+
+RULES:
+1. Return ONLY a valid JSON array. No markdown, no explanation, no code fences.
+2. If the message has a single intent, return a single-element array.
+3. If the message has multiple intents (e.g. "do X and then Y"), decompose into multiple steps in order.
+4. Steps execute sequentially — later steps can use output from earlier steps.
+5. Use "llm" as the tool for general conversation, opinions, greetings, creative writing, explanations, and summarization.
+6. "search" for web lookups, "news" for news headlines, "weather" for weather forecasts, "email" for sending/drafting email.
+7. "calculator" for math, "finance" for stocks/market data, "memorytool" for remembering things.
+8. "review" for code review, "codeReview" for security audits, "codeTransform" for refactoring code.
+9. "gitLocal" for git operations, "github" for GitHub API, "githubTrending" for trending repos.
+10. "scheduler" for recurring tasks, "calendar" for events/meetings, "tasks" for todo items.
+11. "fileWrite" for creating/writing files, "file" for reading/listing files.
+12. "whatsapp" for sending WhatsApp messages.
+13. Maximum 5 steps. Most queries need 1-2 steps.
+14. Do NOT invent tools. Only use tools from the AVAILABLE TOOLS list.
+
+EXAMPLES:
+
+Single intent:
+[{"tool":"weather","input":"weather in Paris","reasoning":"user wants weather forecast"}]
+
+Two intents:
+[{"tool":"news","input":"latest AI news","reasoning":"user wants AI news"},{"tool":"email","input":"email me the AI news results","reasoning":"user wants results emailed"}]
+
+Three intents:
+[{"tool":"search","input":"search for React best practices","reasoning":"user wants to research React"},{"tool":"fileWrite","input":"write a summary of React best practices to a file","reasoning":"user wants a written summary"},{"tool":"email","input":"email the summary","reasoning":"user wants it emailed"}]
+
+Conversation:
+[{"tool":"llm","input":"how are you doing today?","reasoning":"casual greeting, no tool needed"}]
+
+USER MESSAGE:
+"${message}"
+
+Return ONLY the JSON array:`;
+
+  try {
+    const response = await llm(prompt, { timeoutMs: 30000 });
+    if (!response.success || !response.data?.text) {
+      console.warn("[planner] decomposeIntentWithLLM: LLM returned no text, falling back");
+      return null;
+    }
+
+    const rawText = response.data.text.trim();
+    const parsed = tryParseStepsJSON(rawText);
+
+    if (parsed && parsed.length > 0) {
+      console.log(`[planner] LLM decomposed into ${parsed.length} step(s):`,
+        parsed.map(s => s.tool).join(" -> "));
+      return parsed;
+    }
+
+    // RETRY: If first parse failed, ask LLM to fix its output
+    console.warn("[planner] decomposeIntentWithLLM: first parse failed, retrying");
+    const retryPrompt = `Your previous response was not valid JSON. Return ONLY a JSON array of step objects.
+Each object must have "tool", "input", and "reasoning" keys.
+Previous response: ${rawText.slice(0, 500)}
+
+Return valid JSON array only:`;
+
+    const retryResponse = await llm(retryPrompt, { timeoutMs: 20000 });
+    if (retryResponse.success && retryResponse.data?.text) {
+      const retryParsed = tryParseStepsJSON(retryResponse.data.text.trim());
+      if (retryParsed && retryParsed.length > 0) {
+        console.log(`[planner] LLM retry decomposed into ${retryParsed.length} step(s)`);
+        return retryParsed;
+      }
+    }
+
+    console.warn("[planner] decomposeIntentWithLLM: retry also failed");
+    return null;
+  } catch (err) {
+    console.error("[planner] decomposeIntentWithLLM error:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Resolve a raw tool name (from LLM output) to a valid tool in the registry.
+ * Handles aliases, case-insensitive matching, and partial matches.
+ */
+function resolveToolName(rawIntent, availableTools) {
+  const aliasMap = {
+    'nlptool': 'nlp_tool',
+    'nlp': 'nlp_tool',
+    'memory': 'memorytool',
+    'memorytool': 'memorytool',
+    'lotr': 'lotrJokes',
+    'lotrjokes': 'lotrJokes',
+    'webbrowser': 'webBrowser',
+    'web_browser': 'webBrowser',
+    'web': 'webBrowser',
+    'summarize': 'llm',
+    'summarise': 'llm',
+    'summary': 'llm',
+    'chat': 'llm',
+    'conversation': 'llm',
+  };
+
+  let cleaned = (rawIntent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+  // Step 1: Check alias map
+  let tool = aliasMap[cleaned] || null;
+
+  // Step 2: Case-insensitive exact match
+  if (!tool) {
+    tool = availableTools.find(t => t.toLowerCase() === cleaned) || null;
+  }
+
+  // Step 3: Partial match (LLM sometimes truncates)
+  if (!tool) {
+    tool = availableTools.find(t => t.toLowerCase().startsWith(cleaned) && cleaned.length >= 4) || null;
+    if (tool) {
+      console.log(`[planner] resolveToolName: partial match "${cleaned}" -> "${tool}"`);
+    }
+  }
+
+  return tool;
+}
+
+// ============================================================
 // MAIN PLAN FUNCTION - Returns ARRAY of steps
 // ============================================================
 
@@ -957,70 +1147,67 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // ──────────────────────────────────────────────────────────
-  // SINGLE-STEP: LLM Classifier (fallback — only reached for truly ambiguous queries)
+  // MULTI-STEP: LLM Intent Decomposer (fallback — reached for ambiguous queries)
+  // Uses Sequential Logic Engine to decompose into 1+ tool steps
   // ──────────────────────────────────────────────────────────
 
   const contextSignals = extractContextSignals(trimmed);
-  console.log("🧠 Context signals:", contextSignals);
+  console.log("[planner] Context signals:", contextSignals);
 
-  const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
-  console.log("🎯 LLM classified:", detection.intent);
+  // Try multi-step decomposition first
+  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
 
-  // Normalize tool name: case-insensitive match against all available tools
-  // Also handle special aliases (nlp_tool, etc.)
-  const aliasMap = {
-    'nlptool': 'nlp_tool',
-    'nlp': 'nlp_tool',
-    'memory': 'memorytool',
-    'memorytool': 'memorytool',
-    'lotr': 'lotrJokes',
-    'lotrjokes': 'lotrJokes',
-    'webbrowser': 'webBrowser',
-    'web_browser': 'webBrowser',
-    'web': 'webBrowser',
-  };
+  if (decomposedSteps && decomposedSteps.length > 0) {
+    // Resolve and validate each step's tool name
+    const resolvedSteps = [];
+    for (const step of decomposedSteps) {
+      const resolvedTool = resolveToolName(step.tool, availableTools);
+      if (resolvedTool) {
+        resolvedSteps.push({
+          tool: resolvedTool,
+          input: step.input || trimmed,
+          context: resolvedSteps.length > 0 ? { useChainContext: true } : {},
+          reasoning: step.reasoning || "llm_decomposed"
+        });
+      } else {
+        console.warn(`[planner] Decomposed step tool "${step.tool}" unresolved, skipping`);
+        // If the unresolvable tool is the ONLY step, don't skip — use llm fallback
+        if (decomposedSteps.length === 1) {
+          resolvedSteps.push({
+            tool: "llm",
+            input: step.input || trimmed,
+            context: {},
+            reasoning: `fallback_unresolved_${step.tool}`
+          });
+        }
+      }
+    }
 
-  let rawIntent = (detection.intent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
-
-  // Step 1: Check alias map first
-  let tool = aliasMap[rawIntent] || null;
-
-  // Step 2: Case-insensitive match against available tools
-  if (!tool) {
-    tool = availableTools.find(t => t.toLowerCase() === rawIntent) || null;
-  }
-
-  // Step 3: Partial match — LLM sometimes truncates (e.g. "githubtrendin" for "githubTrending")
-  if (!tool) {
-    tool = availableTools.find(t => t.toLowerCase().startsWith(rawIntent) && rawIntent.length >= 4) || null;
-    if (tool) {
-      console.log(`[planner] Partial match: "${rawIntent}" → "${tool}"`);
+    if (resolvedSteps.length > 0) {
+      console.log(`[planner] Decomposed plan: ${resolvedSteps.map(s => s.tool).join(" -> ")}`);
+      return resolvedSteps;
     }
   }
 
-  // Step 4: Fallback to llm if no match found
-  if (!tool) {
-    console.warn(`[planner] LLM chose unrecognized tool "${rawIntent}". Substituting llm fallback.`);
+  // SAFETY NET: If decomposition failed entirely, fall back to single-tool classifier
+  console.warn("[planner] Decomposition failed, falling back to single-tool classifier");
+  const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
+  console.log("[planner] Single-tool fallback classified:", detection.intent);
+
+  const tool = resolveToolName(detection.intent, availableTools);
+
+  if (!tool || !availableTools.includes(tool)) {
+    const rawIntent = detection.intent || "unknown";
+    console.warn(`[planner] Fallback tool "${rawIntent}" not available. Using llm.`);
     return [{
       tool: "llm",
-      input: `Fallback: the requested tool "${rawIntent}" is not available. Please handle the user's request: ${trimmed}`,
+      input: trimmed,
       context: {},
       reasoning: `fallback_unavailable_${rawIntent}`
     }];
   }
 
-  // Step 5: Verify tool exists in registry
-  if (!availableTools.includes(tool)) {
-    console.warn(`[planner] Resolved tool "${tool}" not in available tools. Substituting llm fallback.`);
-    return [{
-      tool: "llm",
-      input: `Fallback: the resolved tool "${tool}" is not available. Please handle the user's request: ${trimmed}`,
-      context: {},
-      reasoning: `fallback_unavailable_${tool}`
-    }];
-  }
-
-  console.log(`[planner] Tool resolved: "${rawIntent}" → "${tool}"`);
+  console.log(`[planner] Tool resolved: "${detection.intent}" → "${tool}"`);
   return [{
     tool,
     input: trimmed,
