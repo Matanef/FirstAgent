@@ -66,7 +66,7 @@ function detectWhatsAppIntent(text) {
 
   // ── Single send: "send a whatsapp to 0541234567 saying hello" ──
   const singleMatch = text.match(
-    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\s+(?:message\s+)?(?:to\s+)([\d\s\-\+\(\)]{7,20})\s+(?:saying|with\s+message|הודעה|עם)\s+(.+)/iu
+    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\s+(?:message\s+)?(?:to\s+)([\d\s\-\+\(\)]{7,20})\s+(?:saying|with\s+message|הודעה|עם)?[:\s]+(.+)/iu
   );
   if (singleMatch) {
     return { intent: "single_send", to: singleMatch[1].trim(), message: singleMatch[2].trim(), filename: null };
@@ -78,6 +78,45 @@ function detectWhatsAppIntent(text) {
   );
   if (simpleMatch) {
     return { intent: "single_send", to: simpleMatch[1].trim(), message: simpleMatch[2].trim(), filename: null };
+  }
+
+  // ── "send a message to 0541234567 saying hello" ──
+  const sendMsgTo = text.match(
+    /(?:send|שלח)\s+(?:a\s+)?message\s+to\s+([\d\s\-\+\(\)]{7,20})\s+(?:saying\s+)?(.+)/iu
+  );
+  if (sendMsgTo) {
+    return { intent: "single_send", to: sendMsgTo[1].trim(), message: sendMsgTo[2].trim(), filename: null };
+  }
+
+  // ── Flexible: "send NUMBER a message saying MSG" ──
+  // Handles: "use whatsapp to send NUMBER a message saying MSG"
+  // Also:    "send NUMBER amessage saying MSG" (typo with no space)
+  const flexMatch = text.match(
+    /(?:send|שלח)\s+([\d\s\-\+\(\)]{7,20})\s+(?:a?\s*message\s+)?(?:saying|with|that\s+says?|:)\s*(.+)/iu
+  );
+  if (flexMatch) {
+    return { intent: "single_send", to: flexMatch[1].trim(), message: flexMatch[2].trim(), filename: null };
+  }
+
+  // ── Fallback: extract phone number + "saying ..." from the text ──
+  // Use word boundary (\b) to avoid matching "amessage" as "message"
+  const phoneMatch = text.match(/((?:\+?\d[\d\s\-\(\)]{6,18}\d))/);
+  const msgMatch = text.match(/\b(?:saying|that\s+says?)\s+(.+)/iu);
+  if (phoneMatch && msgMatch) {
+    return { intent: "single_send", to: phoneMatch[1].trim(), message: msgMatch[1].trim(), filename: null };
+  }
+
+  // ── Last resort: "send NUMBER <anything>" ──
+  // "send 0587426393 go to sleep" → to=0587426393, message="go to sleep"
+  const lastResort = text.match(
+    /(?:send|שלח)\s+([\d\+\-\(\)\s]{7,20})\s+(.{3,})/iu
+  );
+  if (lastResort) {
+    // Strip common noise words from the start of the message
+    let msg = lastResort[2].trim().replace(/^(?:a\s*message\s+)?/i, "").trim();
+    if (msg.length >= 2) {
+      return { intent: "single_send", to: lastResort[1].trim(), message: msg, filename: null };
+    }
   }
 
   return { intent: "unknown", to: null, message: null, filename: null };

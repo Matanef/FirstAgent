@@ -129,9 +129,11 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     // ── Train of Thought: collect reasoning events ──
     const thoughtChain = [];
+    const PHASE_ICONS = { THOUGHT: "🧠", PLAN: "📋", EXECUTION: "⚙️", OBSERVATION: "🔍", ANSWER: "✨" };
     function emitThought(phase, content, data = {}) {
         const thought = { type: "thought", phase, content, data, timestamp: new Date().toISOString() };
         thoughtChain.push(thought);
+        console.log(`${PHASE_ICONS[phase] || "💭"} [ToT] ${phase}: ${content.length > 120 ? content.slice(0, 120) + "..." : content}`);
         if (onStep) onStep(thought);
     }
 
