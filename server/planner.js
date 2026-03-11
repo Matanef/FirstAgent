@@ -134,13 +134,17 @@ function hasCompoundIntent(text) {
   // Pattern 6: "X and also Y"
   if (/\band\s+also\b/i.test(lower)) return true;
 
-  // Pattern 7: "send/compose email ... with ... news/weather/stocks/scores"
-  // Catches "send an email with the summary of the news" (no "and" conjunction)
-  if (/\b(?:send|compose|draft|forward|write|sned)\s+(?:an?\s+)?(?:email|e-mail|mail)\b/i.test(lower) &&
+  // Pattern 7: email verb + email keyword + content-tool keyword (any word order)
+  // Catches: "send an email with the summary of the news"
+  //          "send matan an email with the news"
+  //          "compose email with weather forecast"
+  //          "sned an email with the news"
+  if (/\b(?:send|compose|draft|forward|write|sned)\b/i.test(lower) &&
+      /\b(?:email|e-mail|mail)\b/i.test(lower) &&
       /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
 
   // Pattern 8: "email me the news/weather/stocks" (implicit compound)
-  if (/\b(?:email|mail)\s+(?:me|us)\s+(?:the|a|some)\b/i.test(lower) &&
+  if (/\b(?:email|mail)\s+(?:me|us|him|her|them)\b/i.test(lower) &&
       /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
 
   return false;
@@ -591,8 +595,10 @@ export async function plan({ message, chatContext = {} }) {
 
     // ──────────────────────────────────────────────────────────
   // EMAIL OVERRIDE: If the user is composing an email, ignore file paths
+  // Guard: skip if compound intent (e.g. "email me the news", "email with weather summary")
   // ──────────────────────────────────────────────────────────
-  if (/^\s*(email|send email|compose email|mail)\b/i.test(trimmed)) {
+  if (/^\s*(email|send email|compose email|mail)\b/i.test(trimmed) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] email override: forcing email tool");
     return [
       {
@@ -867,8 +873,10 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // Email keywords: compose, browse/read, or draft
+  // Guard: skip if compound intent (e.g. "send email with summary of the news")
   if (/\b(email|e-mail|mail|inbox|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
-      !isSendItCommand(lower)) {
+      !isSendItCommand(lower) &&
+      !hasCompoundIntent(lower)) {
     const emailContext = {};
     if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) {
       emailContext.action = "browse";
@@ -1216,8 +1224,9 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // Pattern: "send email to X with the summary of the news" — email-first compound (no "and")
-  // Also: "email me the news summary", "sned an email with the news"
-  if (/\b(?:send|compose|draft|forward|write|sned)\s+(?:an?\s+)?(?:email|e-mail|mail)\b/i.test(lower) &&
+  // Also: "email me the news summary", "sned an email with the news", "send matan an email with the news"
+  if (/\b(?:send|compose|draft|forward|write|sned)\b/i.test(lower) &&
+      /\b(?:email|e-mail|mail)\b/i.test(lower) &&
       /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
     // Detect which content tool is needed
     let contentTool = "news"; // default
@@ -1234,6 +1243,20 @@ export async function plan({ message, chatContext = {} }) {
     return [
       { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_first_step1" },
       { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: emailAddr || undefined }, reasoning: "compound_email_first_step2" }
+    ];
+  }
+
+  // Pattern: "email me the news/weather/scores" — starts with "email" (no send verb)
+  if (/\b(?:email|mail)\s+(?:me|us|him|her|them)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
+    let contentTool = "news";
+    if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
+    else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
+    else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
+    console.log(`[planner] Compound (email-me): ${contentTool} → email`);
+    return [
+      { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_me_step1" },
+      { tool: "email", input: "Email me the results", context: { action: "draft", useLastResult: true }, reasoning: "compound_email_me_step2" }
     ];
   }
 
