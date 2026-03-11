@@ -147,6 +147,16 @@ function hasCompoundIntent(text) {
   if (/\b(?:email|mail)\s+(?:me|us|him|her|them)\b/i.test(lower) &&
       /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
 
+  // Pattern 9: whatsapp + content-tool keyword (any word order)
+  // "send a whatsapp with the weather", "whatsapp the news to 0587426393"
+  if (/\b(?:whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
+
+  // Pattern 10: "X and send/whatsapp it to <phone number>"
+  // "check weather and send it a whatsapp to 0587426393"
+  if (/\band\s+(?:then\s+)?(?:send|whatsapp)\b/i.test(lower) &&
+      /(?:\+?\d[\d\s\-\(\)]{6,18}\d)/.test(lower)) return true;
+
   return false;
 }
 
@@ -891,7 +901,8 @@ export async function plan({ message, chatContext = {} }) {
 
   // WhatsApp — send single or bulk messages
   if (/\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
-      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower)) {
+      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: whatsapp");
     return [{ tool: "whatsapp", input: trimmed, context: {}, reasoning: "certainty_whatsapp" }];
   }
@@ -1257,6 +1268,45 @@ export async function plan({ message, chatContext = {} }) {
     return [
       { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_me_step1" },
       { tool: "email", input: "Email me the results", context: { action: "draft", useLastResult: true }, reasoning: "compound_email_me_step2" }
+    ];
+  }
+
+  // Pattern: "X and send/whatsapp it to <phone>" — content first, then whatsapp
+  // "check the weather and send it a whatsapp message to 0587426393"
+  // "get the news and whatsapp it to 0587426393"
+  {
+    const whatsappCompound = trimmed.match(/^(.+?)\s+(?:and\s+(?:then\s+)?)(send|whatsapp|message)\s+(?:it\s+)?(?:a\s+)?(?:whatsapp\s+)?(?:message\s+)?(?:to\s+)?([\+\d][\d\s\-\(\)]{6,18}\d)/i);
+    if (whatsappCompound) {
+      const firstPart = whatsappCompound[1].trim();
+      const phoneNum = whatsappCompound[3].replace(/[\s\-\(\)]/g, "");
+      let contentTool = "search";
+      if (/\b(news|headlines?|articles?)\b/i.test(firstPart)) contentTool = "news";
+      else if (/\b(weather|forecast|temperature)\b/i.test(firstPart)) contentTool = "weather";
+      else if (/\b(stock|finance|price)\b/i.test(firstPart)) contentTool = "finance";
+      else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) contentTool = "sports";
+      else if (/\b(youtube|video)\b/i.test(firstPart)) contentTool = "youtube";
+      console.log(`[planner] Compound (whatsapp): ${contentTool} → whatsapp to ${phoneNum}`);
+      return [
+        { tool: contentTool, input: firstPart, context: {}, reasoning: "compound_whatsapp_step1" },
+        { tool: "whatsapp", input: `Send results via WhatsApp to ${phoneNum}`, context: { useLastResult: true, recipient: phoneNum }, reasoning: "compound_whatsapp_step2" }
+      ];
+    }
+  }
+
+  // Pattern: "send/whatsapp the weather/news to <phone>" — whatsapp-first compound (no "and")
+  // "whatsapp the weather to 0587426393", "send the news via whatsapp to 0587426393"
+  if (/\b(?:whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
+    const phoneMatch = trimmed.match(/((?:\+?\d[\d\s\-\(\)]{6,18}\d))/);
+    const phoneNum = phoneMatch ? phoneMatch[1].replace(/[\s\-\(\)]/g, "") : "";
+    let contentTool = "news";
+    if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
+    else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
+    else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
+    console.log(`[planner] Compound (whatsapp-first): ${contentTool} → whatsapp${phoneNum ? ` to ${phoneNum}` : ""}`);
+    return [
+      { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_whatsapp_first_step1" },
+      { tool: "whatsapp", input: `Send results via WhatsApp${phoneNum ? ` to ${phoneNum}` : ""}`, context: { useLastResult: true, recipient: phoneNum || undefined }, reasoning: "compound_whatsapp_first_step2" }
     ];
   }
 

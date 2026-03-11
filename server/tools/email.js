@@ -704,27 +704,73 @@ export async function email(query) {
     // ── CHAIN CONTEXT: inject previous step output into email body ──
     if (context.useLastResult && context.chainContext?.previousOutput) {
       const prevTool = context.chainContext.previousTool || "previous step";
-      const prevOutput = context.chainContext.previousOutput;
-      console.log(`📨 [email] Injecting chain context from "${prevTool}" (${String(prevOutput).length} chars)`);
+      const prevOutput = String(context.chainContext.previousOutput);
+      console.log(`📨 [email] Injecting chain context from "${prevTool}" (${prevOutput.length} chars)`);
 
-      // Strip HTML tags for plain text email body, keeping text content
-      let plainContent = String(prevOutput)
-        .replace(/<style[\s\S]*?<\/style>/gi, "")    // remove style blocks
-        .replace(/<[^>]+>/g, " ")                     // strip HTML tags
-        .replace(/&nbsp;/g, " ")
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/\s{2,}/g, " ")                      // collapse whitespace
-        .trim();
+      let plainContent;
 
-      // Truncate if too long (email body limit ~10k chars)
+      // ── Smart formatting per tool type ──
+      if (prevTool === "news") {
+        // Extract structured headlines from news HTML
+        const headlines = [];
+        const cardRegex = /<span class="news-source">([^<]+)<\/span>[\s\S]*?<h3 class="news-summary-title">([^<]+)<\/h3>[\s\S]*?<p class="news-summary-text">([^<]*)<\/p>[\s\S]*?<a href="([^"]+)"[^>]*>Read full article/gi;
+        let match;
+        while ((match = cardRegex.exec(prevOutput)) !== null) {
+          headlines.push({
+            source: match[1].trim(),
+            title: match[2].trim(),
+            summary: match[3].trim(),
+            url: match[4].trim()
+          });
+        }
+        if (headlines.length > 0) {
+          plainContent = "📰 Latest News Summary\n" + "=".repeat(40) + "\n\n";
+          headlines.forEach((h, i) => {
+            plainContent += `${i + 1}. [${h.source}] ${h.title}\n`;
+            if (h.summary && h.summary !== h.title) {
+              plainContent += `   ${h.summary}\n`;
+            }
+            plainContent += `   ${h.url}\n\n`;
+          });
+        }
+      } else if (prevTool === "weather") {
+        // Extract weather data from HTML/text output
+        const tempMatch = prevOutput.match(/([\d.]+)°C/);
+        const feelsMatch = prevOutput.match(/[Ff]eels?\s*like[:\s]*([\d.]+)°C/);
+        const condMatch = prevOutput.match(/(?:condition|weather)[:\s]*([^\n<,]+)/i) ||
+                          prevOutput.match(/moderate\s+\w+|clear\s+sky|overcast|light\s+\w+|heavy\s+\w+|sunny|cloudy|rainy/i);
+        const windMatch = prevOutput.match(/[Ww]ind[:\s]*([\d.]+)\s*m\/s/);
+        const humidMatch = prevOutput.match(/[Hh]umidity[:\s]*([\d.]+)%/);
+        const cityMatch = prevOutput.match(/weather (?:in|for) ([^,\n<]+)/i);
+        plainContent = "🌤️ Weather Report\n" + "=".repeat(30) + "\n\n";
+        if (cityMatch) plainContent += `📍 Location: ${cityMatch[1].trim()}\n`;
+        if (tempMatch) plainContent += `🌡️ Temperature: ${tempMatch[1]}°C`;
+        if (feelsMatch) plainContent += ` (Feels like: ${feelsMatch[1]}°C)`;
+        plainContent += "\n";
+        if (condMatch) plainContent += `☁️ Condition: ${(condMatch[1] || condMatch[0]).trim()}\n`;
+        if (windMatch) plainContent += `💨 Wind: ${windMatch[1]} m/s\n`;
+        if (humidMatch) plainContent += `💧 Humidity: ${humidMatch[1]}%\n`;
+      }
+
+      // Fallback: generic HTML-to-text stripping
+      if (!plainContent) {
+        plainContent = prevOutput
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/\s{2,}/g, " ")
+          .trim();
+      }
+
+      // Truncate if too long
       if (plainContent.length > 10000) {
         plainContent = plainContent.slice(0, 10000) + "\n\n... (truncated)";
       }
 
-      // Use chain content as the email body
       body = plainContent;
 
       // Generate a smart subject based on the previous tool

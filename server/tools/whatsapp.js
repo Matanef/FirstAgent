@@ -274,6 +274,78 @@ export async function whatsapp(request) {
     };
   }
 
+  // ── CHAIN CONTEXT: use previous step output as message body ──
+  if (context.useLastResult && context.chainContext?.previousOutput) {
+    const prevTool = context.chainContext.previousTool || "previous step";
+    const prevOutput = String(context.chainContext.previousOutput);
+    const recipient = context.recipient || null;
+    console.log(`📱 [whatsapp] Chain context from "${prevTool}" (${prevOutput.length} chars), recipient: ${recipient}`);
+
+    if (!recipient) {
+      return { tool: "whatsapp", success: false, final: true, error: "Chain context: no recipient phone number provided." };
+    }
+
+    // Format content based on previous tool type
+    let messageBody;
+    if (prevTool === "news") {
+      const headlines = [];
+      const cardRegex = /<span class="news-source">([^<]+)<\/span>[\s\S]*?<h3 class="news-summary-title">([^<]+)<\/h3>/gi;
+      let m;
+      while ((m = cardRegex.exec(prevOutput)) !== null) {
+        headlines.push(`• [${m[1].trim()}] ${m[2].trim()}`);
+      }
+      messageBody = headlines.length > 0
+        ? `📰 *Latest News*\n\n${headlines.join("\n")}`
+        : null;
+    } else if (prevTool === "weather") {
+      const tempMatch = prevOutput.match(/([\d.]+)°C/);
+      const feelsMatch = prevOutput.match(/[Ff]eels?\s*like[:\s]*([\d.]+)°C/);
+      const condMatch = prevOutput.match(/moderate\s+\w+|clear\s+sky|overcast|light\s+\w+|heavy\s+\w+|sunny|cloudy|rainy/i);
+      const windMatch = prevOutput.match(/[Ww]ind[:\s]*([\d.]+)\s*m\/s/);
+      const humidMatch = prevOutput.match(/[Hh]umidity[:\s]*([\d.]+)%/);
+      const cityMatch = prevOutput.match(/weather (?:in|for) ([^,\n<]+)/i);
+      const parts = ["🌤️ *Weather Report*"];
+      if (cityMatch) parts.push(`📍 ${cityMatch[1].trim()}`);
+      if (tempMatch) parts.push(`🌡️ ${tempMatch[1]}°C${feelsMatch ? ` (feels like ${feelsMatch[1]}°C)` : ""}`);
+      if (condMatch) parts.push(`☁️ ${condMatch[0].trim()}`);
+      if (windMatch) parts.push(`💨 Wind: ${windMatch[1]} m/s`);
+      if (humidMatch) parts.push(`💧 Humidity: ${humidMatch[1]}%`);
+      messageBody = parts.length > 1 ? parts.join("\n") : null;
+    }
+
+    // Fallback: strip HTML to plain text
+    if (!messageBody) {
+      messageBody = prevOutput
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+        .replace(/\s{2,}/g, " ")
+        .trim();
+    }
+
+    // WhatsApp has a 4096 char limit
+    if (messageBody.length > 4000) {
+      messageBody = messageBody.slice(0, 4000) + "\n\n... (truncated)";
+    }
+
+    console.log(`📱 [whatsapp] Sending chain context message (${messageBody.length} chars) to ${recipient}`);
+    const result = await sendWhatsAppMessage(recipient, messageBody);
+    if (result.success) {
+      return {
+        tool: "whatsapp",
+        success: true,
+        final: true,
+        data: {
+          text: `✅ Sent ${prevTool} results via WhatsApp to ${result.to}`,
+          to: result.to,
+          messageId: result.messageId,
+          preformatted: true
+        }
+      };
+    }
+    return { tool: "whatsapp", success: false, final: true, error: `Failed to send WhatsApp to ${result.to}: ${result.error}` };
+  }
+
   if (!text.trim()) {
     return {
       tool: "whatsapp",
