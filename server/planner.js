@@ -105,6 +105,38 @@ function hasExplicitFilePath(text) {
   return false;
 }
 
+/**
+ * Detect if a message contains multiple distinct tool intents connected by conjunctions.
+ * Used as a guard on single-tool certainty branches so compound queries fall through
+ * to the compound detection patterns or LLM decomposer.
+ */
+function hasCompoundIntent(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+
+  // Pattern 1: "... and send/email/mail it/results/me/the ..."
+  if (/\band\s+(?:then\s+)?(?:send|email|mail|forward)\s+(?:it|the|me|this|them|results?|summary|that|a)\b/i.test(lower)) return true;
+
+  // Pattern 2: "... and send/email to <address>"
+  if (/\band\s+(?:then\s+)?(?:send|email|mail)\b.{0,30}@/i.test(lower)) return true;
+
+  // Pattern 3: review/analyze + and + create/write/generate (both intents present)
+  if (/\b(?:review|analyze|inspect|examine|audit)\b/.test(lower) &&
+      /\band\s+(?:then\s+)?(?:create|write|generate|make|produce|build)\b/i.test(lower)) return true;
+
+  // Pattern 4: create/write + and + review/send (reversed order)
+  if (/\b(?:create|write|generate)\b/.test(lower) &&
+      /\band\s+(?:then\s+)?(?:review|analyze|send|email|inspect)\b/i.test(lower)) return true;
+
+  // Pattern 5: explicit "then" chaining: "X, then Y" or "X; then Y"
+  if (/,\s*(?:and\s+)?then\s+/i.test(lower) || /;\s*then\s+/i.test(lower)) return true;
+
+  // Pattern 6: "X and also Y"
+  if (/\band\s+also\b/i.test(lower)) return true;
+
+  return false;
+}
+
 function isSendItCommand(text) {
   const trimmed = (text || "").trim().toLowerCase();
   return (
@@ -650,9 +682,10 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // Weather with city (or from memory)
-  // Guard: skip if this is a scheduling/recurring request (scheduler should handle)
+  // Guard: skip if this is a scheduling/recurring request or a compound query
   if (containsKeyword(lower, WEATHER_KEYWORDS) &&
-      !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|book\s+.+\s+every)\b/i.test(lower)) {
+      !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|book\s+.+\s+every)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     let extracted = extractCity(trimmed);
     // If no city extracted, check memory for saved location
     if (!extracted) {
@@ -674,11 +707,12 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // News keywords (before file path and sports to avoid misroute)
-  // Guard: skip if this is a moltbook notification (e.g. "Great news! You've been verified on Moltbook")
+  // Guard: skip if this is a moltbook notification or a compound query (e.g. "get news and email me")
   if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
        /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
       !hasExplicitFilePath(trimmed) &&
-      !/\bmoltbook\b/i.test(lower)) {
+      !/\bmoltbook\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
   }
@@ -783,16 +817,19 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // File write/create — must come BEFORE explicit file path (which routes to read-only file tool)
-  if (/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
+  // Guard: skip if compound intent detected (e.g. "review X and create a better version")
+  if ((/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
       /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
-      (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) {
+      (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: fileWrite");
     return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
   }
 
 
   // Explicit file path
-  if (hasExplicitFilePath(trimmed)) {
+  // Guard: skip if compound intent (e.g. "review file.js and create new version at path")
+  if (hasExplicitFilePath(trimmed) && !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: file_path");
     return [{ tool: "file", input: trimmed, context: {}, reasoning: "certainty_file_path" }];
   }
@@ -951,16 +988,20 @@ export async function plan({ message, chatContext = {} }) {
 
   // Code review keywords — expanded to catch "tool", "implementation", "flow", "logic"
   // Must come BEFORE finance/sports/github to prevent "examine the search tool" → search
-  if (/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script|tool|implementation|flow|logic)\b/i.test(lower) ||
-      (/\b(review|inspect|examine|audit|analyze)\b/i.test(lower) && hasExplicitFilePath(trimmed))) {
+  // Guard: skip if compound intent detected (e.g. "review X and create new version")
+  if ((/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script|tool|implementation|flow|logic)\b/i.test(lower) ||
+      (/\b(review|inspect|examine|audit|analyze)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: review");
     return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review" }];
   }
 
   // Finance keywords — with company name → ticker resolution
   // FINANCE_COMPANIES and FINANCE_INTENT are now module-level constants (top of file)
-  if (/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO)\b/i.test(lower) ||
-      (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) {
+  // Guard: skip if compound intent detected (e.g. "get stock prices and email me")
+  if ((/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO)\b/i.test(lower) ||
+      (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: finance");
     return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
   }
@@ -989,9 +1030,11 @@ export async function plan({ message, chatContext = {} }) {
   }
 
   // Sports keywords — with calendar guard to prevent "meeting with the team" → sports
+  // Guard: skip if compound intent detected (e.g. "get scores and email me")
   if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
       !hasExplicitFilePath(trimmed) &&
-      !/\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower)) {
+      !/\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: sports");
     return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
   }
@@ -1100,17 +1143,25 @@ export async function plan({ message, chatContext = {} }) {
   // ──────────────────────────────────────────────────────────
   // MULTI-STEP: Compound query detection
   // Decomposes compound intents into sequential tool steps
+  // (reached when hasCompoundIntent() guard skipped a certainty branch above)
   // ──────────────────────────────────────────────────────────
+  if (hasCompoundIntent(lower)) {
+    console.log("[planner] compound intent detected, checking compound patterns...");
+  }
 
-  // Pattern: "review X and create/generate a new version" → review + fileWrite
-  if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(new\s+)?(version|copy|file|improved)\b/i.test(lower)) {
-    // Extract source file
-    const fileMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i);
+  // Pattern: "review X and create/generate a [better/new/improved] version" → review + fileWrite
+  if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(\w+\s+)?(version|copy|file|variant|output)\b/i.test(lower)) {
+    // Extract source file (first file path after review/analyze)
+    const fileMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i) ||
+                      trimmed.match(/(?:review|analyze)\s+([a-zA-Z]:[\\\/][^\s]+)/i);
     const sourceFile = fileMatch ? fileMatch[1] : "the code";
+    // Extract destination path if present (second file path or "at/to <path>")
+    const destMatch = trimmed.match(/(?:at|to|in)\s+([a-zA-Z]:[\\\/][^\s]+)/i);
+    const destContext = destMatch ? { useChainContext: true, destinationPath: destMatch[1] } : { useChainContext: true };
     console.log(`[planner] Compound: review "${sourceFile}" → generate new version`);
     return [
       { tool: "review", input: sourceFile, context: {}, reasoning: "compound_review_source" },
-      { tool: "fileWrite", input: `Create improved version of ${sourceFile}`, context: { useChainContext: true }, reasoning: "compound_generate_improved" }
+      { tool: "fileWrite", input: trimmed, context: destContext, reasoning: "compound_generate_improved" }
     ];
   }
 
@@ -1127,12 +1178,16 @@ export async function plan({ message, chatContext = {} }) {
     }
   }
 
-  // Pattern: "X and email/send me the results"
-  const compoundMatch = trimmed.match(/^(.+?)\s+(?:and\s+(?:then\s+)?)(email|send|mail)\s+(?:me\s+)?(?:the\s+)?(?:results?|summary|info|output|it)/i);
+  // Pattern: "X and email/send me the results" or "X and send it to user@example.com"
+  const compoundMatch = trimmed.match(/^(.+?)\s+(?:and\s+(?:then\s+)?)(email|send|mail)\s+(?:me\s+)?(?:the\s+)?(?:results?|summary|info|output|it|a\s+\w+)(?:\s+to\s+(.+))?/i);
   if (compoundMatch) {
     const firstPart = compoundMatch[1].trim();
     const emailAction = compoundMatch[2];
-    console.log(`[planner] Compound query detected: "${firstPart}" → email results`);
+    const recipientPart = compoundMatch[3]?.trim() || "";
+    // Extract email address from recipient part or full message
+    const emailAddrMatch = trimmed.match(/[\w.+-]+@[\w.-]+\.\w{2,}/i);
+    const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
+    console.log(`[planner] Compound query detected: "${firstPart}" → email results${emailAddr ? ` to ${emailAddr}` : ""}`);
     // Determine the tool for the first part
     let firstTool = "search"; // default
     if (/\b(news|headlines?|articles?)\b/i.test(firstPart)) firstTool = "news";
@@ -1140,9 +1195,14 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(stock|finance|price)\b/i.test(firstPart)) firstTool = "finance";
     else if (/\b(github|repo|trending)\b/i.test(firstPart)) firstTool = "github";
     else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
+    else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
+    else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review";
+    const emailInput = emailAddr
+      ? `Send the results to ${emailAddr}`
+      : `Email me the results of: ${firstPart}`;
     return [
       { tool: firstTool, input: firstPart, context: {}, reasoning: "compound_step1" },
-      { tool: "email", input: `Email me the results of: ${firstPart}`, context: { action: "draft", useLastResult: true }, reasoning: "compound_step2_email" }
+      { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: emailAddr || undefined }, reasoning: "compound_step2_email" }
     ];
   }
 
