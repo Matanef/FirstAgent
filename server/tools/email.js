@@ -685,6 +685,12 @@ export async function email(query) {
 
     let { to, cc, bcc, subject, body, requestedAttachments, isHtml } = parsed;
 
+    // ── CHAIN CONTEXT: use recipient from planner if not extracted from text ──
+    if (!to && context.to) {
+      to = context.to;
+      console.log("📨 [email] Using recipient from planner context:", to);
+    }
+
     if (!to) {
       console.log("📨 [email] NO RECIPIENT FOUND");
       return {
@@ -693,6 +699,49 @@ export async function email(query) {
         final: true,
         error: "Could not detect recipient email address."
       };
+    }
+
+    // ── CHAIN CONTEXT: inject previous step output into email body ──
+    if (context.useLastResult && context.chainContext?.previousOutput) {
+      const prevTool = context.chainContext.previousTool || "previous step";
+      const prevOutput = context.chainContext.previousOutput;
+      console.log(`📨 [email] Injecting chain context from "${prevTool}" (${String(prevOutput).length} chars)`);
+
+      // Strip HTML tags for plain text email body, keeping text content
+      let plainContent = String(prevOutput)
+        .replace(/<style[\s\S]*?<\/style>/gi, "")    // remove style blocks
+        .replace(/<[^>]+>/g, " ")                     // strip HTML tags
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/\s{2,}/g, " ")                      // collapse whitespace
+        .trim();
+
+      // Truncate if too long (email body limit ~10k chars)
+      if (plainContent.length > 10000) {
+        plainContent = plainContent.slice(0, 10000) + "\n\n... (truncated)";
+      }
+
+      // Use chain content as the email body
+      body = plainContent;
+
+      // Generate a smart subject based on the previous tool
+      if (!subject || subject === "Message from AI Agent") {
+        const toolSubjects = {
+          news: "Latest News Summary",
+          search: "Search Results Summary",
+          weather: "Weather Report",
+          finance: "Stock Market Update",
+          sports: "Sports Scores Update",
+          review: "Code Review Results",
+          githubTrending: "Trending GitHub Repos",
+          youtube: "YouTube Search Results"
+        };
+        subject = toolSubjects[prevTool] || `Results from ${prevTool}`;
+      }
+      console.log(`📨 [email] Chain context injected. Subject: "${subject}", Body length: ${body.length}`);
     }
 
     // NEW: Get user name from memory
@@ -707,8 +756,9 @@ export async function email(query) {
     const sentiment = detectSentiment(queryText);
     console.log("🧠 [email] Detected sentiment:", sentiment);
 
-// If sentiment OR word count is present, generate a new body with the LLM
-    if (sentiment || wordCount) {
+    // If sentiment OR word count is present, generate a new body with the LLM
+    // Skip LLM generation if body was populated from chain context
+    if ((sentiment || wordCount) && !context.chainContext?.previousOutput) {
       console.log("🧠 [email] Generating body via LLM...");
       const purpose = subject || body || queryText;
       body = await generateEmailBody({

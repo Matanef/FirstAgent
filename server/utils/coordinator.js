@@ -277,7 +277,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             }
 
             // TOOL CHAINING: pass previous step output as chainContext
-            if (step.context?.useChainContext || step.context?.chainedFrom !== undefined) {
+            if (step.context?.useChainContext || step.context?.useLastResult || step.context?.chainedFrom !== undefined) {
                 const prevStep = stateGraph[stateGraph.length - 1];
                 if (prevStep) {
                     enrichedContext.chainContext = {
