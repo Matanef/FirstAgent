@@ -134,6 +134,15 @@ function hasCompoundIntent(text) {
   // Pattern 6: "X and also Y"
   if (/\band\s+also\b/i.test(lower)) return true;
 
+  // Pattern 7: "send/compose email ... with ... news/weather/stocks/scores"
+  // Catches "send an email with the summary of the news" (no "and" conjunction)
+  if (/\b(?:send|compose|draft|forward|write|sned)\s+(?:an?\s+)?(?:email|e-mail|mail)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
+
+  // Pattern 8: "email me the news/weather/stocks" (implicit compound)
+  if (/\b(?:email|mail)\s+(?:me|us)\s+(?:the|a|some)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) return true;
+
   return false;
 }
 
@@ -1203,6 +1212,28 @@ export async function plan({ message, chatContext = {} }) {
     return [
       { tool: firstTool, input: firstPart, context: {}, reasoning: "compound_step1" },
       { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: emailAddr || undefined }, reasoning: "compound_step2_email" }
+    ];
+  }
+
+  // Pattern: "send email to X with the summary of the news" — email-first compound (no "and")
+  // Also: "email me the news summary", "sned an email with the news"
+  if (/\b(?:send|compose|draft|forward|write|sned)\s+(?:an?\s+)?(?:email|e-mail|mail)\b/i.test(lower) &&
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
+    // Detect which content tool is needed
+    let contentTool = "news"; // default
+    if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
+    else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
+    else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
+    // Extract email address
+    const emailAddrMatch = trimmed.match(/[\w.+-]+@[\w.-]+\.\w{2,}/i);
+    const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
+    const emailInput = emailAddr
+      ? `Send the results to ${emailAddr}`
+      : "Email me the results";
+    console.log(`[planner] Compound (email-first): ${contentTool} → email${emailAddr ? ` to ${emailAddr}` : ""}`);
+    return [
+      { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_first_step1" },
+      { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: emailAddr || undefined }, reasoning: "compound_email_first_step2" }
     ];
   }
 
