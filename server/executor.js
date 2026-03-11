@@ -331,13 +331,12 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   let toolInput;
   if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
-      const queryText = message.text || message.input || "";
-      const ctx = message.context || {};
-      toolInput = queryText;
-      const result = await TOOLS[tool](toolInput, ctx);
+      // Pass the full message object so email() can extract both text AND context
+      // (email tool reads query.text and query.context internally)
+      const result = await TOOLS[tool](message);
       return {
         tool,
-        input: toolInput,
+        input: message.text || message.input || "",
         output: result,
         data: result.data,
         success: result.success,
