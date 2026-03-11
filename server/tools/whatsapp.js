@@ -65,8 +65,9 @@ function detectWhatsAppIntent(text) {
   }
 
   // ── Single send: "send a whatsapp to 0541234567 saying hello" ──
+  // Also handles: "send a whatsapp to 0541234567 hello" (no connector word)
   const singleMatch = text.match(
-    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\s+(?:message\s+)?(?:to\s+)([\d\s\-\+\(\)]{7,20})\s+(?:saying|with\s+message|הודעה|עם)?[:\s]+(.+)/iu
+    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\s+(?:message\s+)?(?:to\s+)([\d\s\-\+\(\)]{7,20})\s+(?:(?:saying|with\s+message|הודעה|עם)\s+)?(.+)/iu
   );
   if (singleMatch) {
     return { intent: "single_send", to: singleMatch[1].trim(), message: singleMatch[2].trim(), filename: null };
