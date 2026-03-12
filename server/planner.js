@@ -361,6 +361,10 @@ EXAMPLES (correct routing):
 - "evolve yourself" → selfEvolve
 - "improve your own code" → selfEvolve
 - "scan github and upgrade your tools" → selfEvolve
+- "trending on X" → x
+- "search tweets about AI" → x
+- "twitter trends in Israel" → x
+- "send a whatsapp to 0587426393 saying hello" → whatsapp
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
@@ -491,6 +495,7 @@ CRITICAL RULES:
 2. Do NOT invent tools.
 3. If multiple actions are requested, order them logically (e.g., read first, then write).
 4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
+5. Use "x" for Twitter/X trends, tweet search, and tweet sentiment analysis. Do NOT use "twitter" — the tool name is "x".
 
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
@@ -572,6 +577,10 @@ function resolveToolName(rawIntent, availableTools) {
     'summary': 'llm',
     'chat': 'llm',
     'conversation': 'llm',
+    'twitter': 'x',
+    'tweets': 'x',
+    'xtrends': 'x',
+    'xtwitter': 'x',
   };
 
   let cleaned = (rawIntent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
@@ -1291,6 +1300,7 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
     else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
     else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review";
+    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(firstPart)) firstTool = "x";
     const emailInput = emailAddr
       ? `Send the results to ${emailAddr}`
       : `Email me the results of: ${firstPart}`;
@@ -1304,12 +1314,13 @@ export async function plan({ message, chatContext = {} }) {
   // Also: "email me the news summary", "sned an email with the news", "send matan an email with the news"
   if (/\b(?:send|compose|draft|forward|write|sned)\b/i.test(lower) &&
       /\b(?:email|e-mail|mail)\b/i.test(lower) &&
-      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trend)\b/i.test(lower)) {
     // Detect which content tool is needed
     let contentTool = "news"; // default
     if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
     else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
+    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
     // Extract email address
     const emailAddrMatch = trimmed.match(/[\w.+-]+@[\w.-]+\.\w{2,}/i);
     const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
@@ -1325,11 +1336,12 @@ export async function plan({ message, chatContext = {} }) {
 
   // Pattern: "email me the news/weather/scores" — starts with "email" (no send verb)
   if (/\b(?:email|mail)\s+(?:me|us|him|her|them)\b/i.test(lower) &&
-      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article)\b/i.test(lower)) {
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trend)\b/i.test(lower)) {
     let contentTool = "news";
     if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
     else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
+    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
     console.log(`[planner] Compound (email-me): ${contentTool} → email`);
     return [
       { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_me_step1" },

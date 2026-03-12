@@ -783,7 +783,8 @@ export async function email(query) {
           sports: "Sports Scores Update",
           review: "Code Review Results",
           githubTrending: "Trending GitHub Repos",
-          youtube: "YouTube Search Results"
+          youtube: "YouTube Search Results",
+          x: "X/Twitter Trends & Tweets"
         };
         subject = toolSubjects[prevTool] || `Results from ${prevTool}`;
       }
