@@ -190,7 +190,7 @@ export async function github(request) {
         }));
 
         const text = `**Recent commits** (${owner}/${repo}):\n\n` +
-          commits.map(c => `[\`${c.sha}\`](${c.url}) ${c.message} — *${c.author}* (${new Date(c.date).toLocaleDateString()})`).join('\n');
+          commits.map(c => `[\`${c.sha}\`] ${c.message} — *${c.author}* (${new Date(c.date).toLocaleDateString()})`).join('\n');
 
         return {
           tool: 'github',

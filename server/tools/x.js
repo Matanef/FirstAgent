@@ -1,42 +1,60 @@
 // server/tools/x.js
-// X (Twitter) tool — trends, tweet search, and sentiment analysis via RapidAPI
+// X (Twitter) tool — trends, tweet search, and sentiment analysis via agent-twitter-client
 // Uses local LLM for sentiment/summarization
 
-import axios from "axios";
+import { Scraper, SearchMode } from "agent-twitter-client";
+import fs from "fs/promises";
 import { CONFIG } from "../utils/config.js";
 import { llm } from "./llm.js";
 
+// Initialize the scraper
+const scraper = new Scraper();
+let isLoggedIn = false;
+const COOKIE_PATH = "./twitter_cookies.json";
+
 // ============================================================
-// RAPIDAPI CONFIGURATION
+// AUTHENTICATION (With Cookie Caching)
 // ============================================================
 
-const WOEID_MAP = {
-  worldwide: 1,
-  world: 1,
-  global: 1,
-  us: 23424977,
-  usa: 23424977,
-  "united states": 23424977,
-  america: 23424977,
-  uk: 23424975,
-  "united kingdom": 23424975,
-  britain: 23424975,
-  england: 23424975,
-  israel: 23424852,
-  canada: 23424775,
-  australia: 23424748,
-  germany: 23424829,
-  france: 23424819,
-  japan: 23424856,
-  india: 23424848,
-  brazil: 23424768,
-};
+async function ensureLogin() {
+  if (isLoggedIn) return true;
 
-function getHeaders() {
-  return {
-    "X-RapidAPI-Key": CONFIG.X_RAPIDAPI_KEY,
-    "X-RapidAPI-Host": CONFIG.X_RAPIDAPI_HOST,
-  };
+  try {
+    // 1. Try to load saved cookies first (prevents account locks)
+    try {
+      const cookieData = await fs.readFile(COOKIE_PATH, "utf8");
+      const cookies = JSON.parse(cookieData);
+      await scraper.setCookies(cookies);
+      isLoggedIn = await scraper.isLoggedIn();
+      if (isLoggedIn) {
+        console.log("🐦 [x] Logged in successfully using saved cookies.");
+        return true;
+      }
+    } catch (e) {
+      console.log("🐦 [x] No valid cookies found, logging in fresh...");
+    }
+
+    // 2. If no cookies or expired, login with credentials
+    await scraper.login(
+      CONFIG.TWITTER_USERNAME,
+      CONFIG.TWITTER_PASSWORD,
+      CONFIG.TWITTER_EMAIL
+    );
+    
+    isLoggedIn = await scraper.isLoggedIn();
+    
+    // 3. Save the new cookies for next time
+    if (isLoggedIn) {
+      const newCookies = await scraper.getCookies();
+      await fs.writeFile(COOKIE_PATH, JSON.stringify(newCookies));
+      console.log("🐦 [x] Login successful! Cookies saved.");
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error("🐦 [x] Login failed:", err.message);
+    return false;
+  }
 }
 
 // ============================================================
@@ -52,7 +70,6 @@ function detectXIntent(text) {
 
 function extractSearchQuery(text) {
   const lower = (text || "").toLowerCase();
-  // Remove tool-routing words to isolate the actual query
   let query = text
     .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(tweets?|posts?|x\s+posts?)\s*(about|on|for|regarding|related\s+to)?\s*/gi, "")
     .replace(/\b(tweets?|posts?)\s+(about|on|for|regarding)\s*/gi, "")
@@ -62,14 +79,6 @@ function extractSearchQuery(text) {
   return query || text;
 }
 
-function extractCountry(text) {
-  const lower = (text || "").toLowerCase();
-  for (const [name, woeid] of Object.entries(WOEID_MAP)) {
-    if (lower.includes(name)) return { name, woeid };
-  }
-  return { name: "worldwide", woeid: 1 };
-}
-
 // ============================================================
 // API FUNCTIONS
 // ============================================================
@@ -77,40 +86,25 @@ function extractCountry(text) {
 /**
  * Get trending topics from X
  */
-async function getTrends(country = "worldwide") {
-  const { name, woeid } = typeof country === "string"
-    ? (WOEID_MAP[country.toLowerCase()] ? { name: country, woeid: WOEID_MAP[country.toLowerCase()] } : extractCountry(country))
-    : { name: "worldwide", woeid: 1 };
-
+async function getTrends() {
+  await ensureLogin();
   try {
-    const response = await axios.get(
-      `https://${CONFIG.X_RAPIDAPI_HOST}/v2/trends/`,
-      {
-        params: { woeid },
-        headers: getHeaders(),
-        timeout: 15000,
-      }
-    );
-
-    const trends = response.data?.trends || response.data || [];
-    const top10 = (Array.isArray(trends) ? trends : [])
-      .slice(0, 10)
-      .map((t, i) => ({
-        rank: i + 1,
-        name: t.name || t.trend || "Unknown",
-        tweet_volume: t.tweet_volume || t.tweetVolume || null,
-        url: t.url || null,
-      }));
+    const trendsRaw = await scraper.getTrends();
+    
+    const top10 = trendsRaw.slice(0, 10).map((t, i) => ({
+      rank: i + 1,
+      name: t.name || t.trendName || "Unknown",
+      tweet_volume: t.tweetCount || null
+    }));
 
     return {
       success: true,
       trends: top10,
-      location: name,
+      location: "For You",
     };
   } catch (err) {
-    const errorMsg = err.response?.data?.message || err.message;
-    console.error(`[x] getTrends error:`, errorMsg);
-    return { success: false, error: errorMsg, trends: [] };
+    console.error(`[x] getTrends error:`, err.message);
+    return { success: false, error: err.message, trends: [] };
   }
 }
 
@@ -118,32 +112,24 @@ async function getTrends(country = "worldwide") {
  * Search tweets by query
  */
 async function searchTweets(query, count = 10) {
+  await ensureLogin();
   try {
-    const response = await axios.get(
-      `https://${CONFIG.X_RAPIDAPI_HOST}/v2/search/`,
-      {
-        params: {
-          query,
-          count: Math.min(count, 20),
-        },
-        headers: getHeaders(),
-        timeout: 15000,
-      }
-    );
+    // agent-twitter-client returns an async generator for searches
+    const tweetStream = scraper.searchTweets(query, count, SearchMode.Latest);
+    const tweets = [];
 
-    // RapidAPI responses vary by provider — normalize
-    const results = response.data?.tweets || response.data?.results || response.data?.data || [];
-    const tweets = (Array.isArray(results) ? results : [])
-      .slice(0, count)
-      .map((t) => ({
-        text: t.text || t.full_text || t.content || "",
-        author: t.user?.screen_name || t.author?.username || t.username || "unknown",
-        author_name: t.user?.name || t.author?.name || "",
-        created_at: t.created_at || t.date || "",
-        retweets: t.retweet_count || t.public_metrics?.retweet_count || 0,
-        likes: t.favorite_count || t.public_metrics?.like_count || 0,
-        replies: t.reply_count || t.public_metrics?.reply_count || 0,
-      }));
+    for await (const tweet of tweetStream) {
+      tweets.push({
+        text: tweet.text || "",
+        author: tweet.username || "unknown",
+        author_name: tweet.name || "",
+        created_at: tweet.timeParsed || new Date(),
+        retweets: tweet.retweets || 0,
+        likes: tweet.likes || 0,
+        replies: tweet.replies || 0,
+      });
+      if (tweets.length >= count) break;
+    }
 
     return {
       success: true,
@@ -152,9 +138,8 @@ async function searchTweets(query, count = 10) {
       total: tweets.length,
     };
   } catch (err) {
-    const errorMsg = err.response?.data?.message || err.message;
-    console.error(`[x] searchTweets error:`, errorMsg);
-    return { success: false, error: errorMsg, tweets: [] };
+    console.error(`[x] searchTweets error:`, err.message);
+    return { success: false, error: err.message, tweets: [] };
   }
 }
 
@@ -181,7 +166,7 @@ ${tweetTexts}
 Return ONLY a valid JSON object:`;
 
   try {
-    const response = await llm(prompt, { timeoutMs: 30000, format: "json" });
+    const response = await llm(prompt, { timeoutMs: 60000, format: "json" });
     if (response.success && response.data?.text) {
       try {
         const cleaned = response.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -192,7 +177,6 @@ Return ONLY a valid JSON object:`;
           summary: parsed.summary || "Analysis complete.",
         };
       } catch {
-        // LLM returned non-JSON — extract what we can
         return {
           overall_sentiment: "mixed",
           themes: [],
@@ -213,20 +197,20 @@ Return ONLY a valid JSON object:`;
 
 function formatTrendsHTML(trends, location) {
   if (!trends || trends.length === 0) {
-    return `<div class="x-trends"><p>No trending topics found for ${location}.</p></div>`;
+    return `<div class="x-trends"><p>No trending topics found.</p></div>`;
   }
 
   const rows = trends.map((t) => {
     const vol = t.tweet_volume ? `(${Number(t.tweet_volume).toLocaleString()} tweets)` : "";
-    return `<div class="x-trend-item">
-      <span class="x-rank">#${t.rank}</span>
+    return `<div class="x-trend-item" style="margin-bottom: 8px;">
+      <span class="x-rank" style="color: var(--accent); font-weight: bold;">#${t.rank}</span>
       <span class="x-trend-name"><strong>${t.name}</strong></span>
-      <span class="x-tweet-volume">${vol}</span>
+      <span class="x-tweet-volume" style="font-size: 0.8em; color: gray;">${vol}</span>
     </div>`;
   });
 
   return `<div class="x-trends">
-    <h3>🔥 Trending on X — ${location}</h3>
+    <h3>🔥 Trending on X (${location})</h3>
     ${rows.join("\n")}
   </div>`;
 }
@@ -238,10 +222,10 @@ function formatTweetsHTML(tweets, query) {
 
   const cards = tweets.map((t) => {
     const engagement = `❤️ ${t.likes} · 🔁 ${t.retweets} · 💬 ${t.replies}`;
-    return `<div class="x-tweet-card">
+    return `<div class="x-tweet-card" style="border: 1px solid var(--border); padding: 10px; margin-bottom: 10px; border-radius: 8px;">
       <div class="x-tweet-author"><strong>@${t.author}</strong>${t.author_name ? ` (${t.author_name})` : ""}</div>
-      <div class="x-tweet-text">${t.text}</div>
-      <div class="x-tweet-engagement">${engagement}</div>
+      <div class="x-tweet-text" style="margin: 8px 0;">${t.text}</div>
+      <div class="x-tweet-engagement" style="font-size: 0.8em; color: gray;">${engagement}</div>
     </div>`;
   });
 
@@ -252,34 +236,27 @@ function formatTweetsHTML(tweets, query) {
 }
 
 function formatSentimentHTML(sentiment) {
-  const moodEmoji = {
-    positive: "😊",
-    negative: "😞",
-    neutral: "😐",
-    mixed: "🤔",
-    unknown: "❓",
-  };
-
+  const moodEmoji = { positive: "😊", negative: "😞", neutral: "😐", mixed: "🤔", unknown: "❓" };
   const emoji = moodEmoji[sentiment.overall_sentiment] || "❓";
   const themes = sentiment.themes.length > 0
-    ? sentiment.themes.map((t) => `<span class="x-theme-tag">${t}</span>`).join(" ")
+    ? sentiment.themes.map((t) => `<span style="background: var(--accent); color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 4px;">${t}</span>`).join(" ")
     : "No themes detected";
 
-  return `<div class="x-sentiment">
-    <h3>${emoji} Sentiment Analysis</h3>
-    <div class="x-sentiment-overall"><strong>Overall:</strong> ${sentiment.overall_sentiment}</div>
-    <div class="x-sentiment-themes"><strong>Key Themes:</strong> ${themes}</div>
-    <div class="x-sentiment-summary"><strong>Summary:</strong> ${sentiment.summary}</div>
+  return `<div class="x-sentiment" style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-top: 15px;">
+    <h3 style="margin-top: 0;">${emoji} Sentiment Analysis</h3>
+    <div style="margin-bottom: 8px;"><strong>Overall:</strong> <span style="text-transform: capitalize;">${sentiment.overall_sentiment}</span></div>
+    <div style="margin-bottom: 8px;"><strong>Key Themes:</strong> ${themes}</div>
+    <div><strong>Summary:</strong> ${sentiment.summary}</div>
   </div>`;
 }
 
 function formatTrendsPlain(trends, location) {
-  if (!trends || trends.length === 0) return `No trending topics found for ${location}.`;
+  if (!trends || trends.length === 0) return `No trending topics found.`;
   const lines = trends.map((t) => {
     const vol = t.tweet_volume ? ` (${Number(t.tweet_volume).toLocaleString()} tweets)` : "";
     return `${t.rank}. ${t.name}${vol}`;
   });
-  return `🔥 Trending on X — ${location}\n\n${lines.join("\n")}`;
+  return `🔥 Trending on X (${location})\n\n${lines.join("\n")}`;
 }
 
 // ============================================================
@@ -290,18 +267,10 @@ export async function x(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
 
-  // Check API key
-  if (!CONFIG.X_RAPIDAPI_KEY) {
+  if (!CONFIG.TWITTER_USERNAME || !CONFIG.TWITTER_PASSWORD) {
     return {
-      tool: "x",
-      success: false,
-      final: true,
-      data: {
-        text: "❌ X/Twitter tool is not configured. Please add your RapidAPI key:\n\n" +
-          "1. Go to https://rapidapi.com/Jeanyco/api/twitter-api47\n" +
-          "2. Subscribe to get an API key\n" +
-          "3. Add to `.env`:\n   `X_RAPIDAPI_KEY=your_key_here`\n   `X_RAPIDAPI_HOST=twitter-api47.p.rapidapi.com`",
-      },
+      tool: "x", success: false, final: true,
+      data: { text: "❌ X tool is not configured. Please add TWITTER_USERNAME and TWITTER_PASSWORD to your .env file." },
     };
   }
 
@@ -311,17 +280,10 @@ export async function x(request) {
   try {
     // ── TRENDS ──
     if (intent === "trends") {
-      const country = context.country || extractCountry(text);
-      const countryName = typeof country === "string" ? country : country.name;
-      const result = await getTrends(countryName);
-
+      const result = await getTrends();
       if (!result.success) {
-        return {
-          tool: "x", success: false, final: true,
-          data: { text: `❌ Failed to fetch X trends: ${result.error}` },
-        };
+        return { tool: "x", success: false, final: true, data: { text: `❌ Failed to fetch X trends: ${result.error}` } };
       }
-
       return {
         tool: "x", success: true, final: true,
         data: {
@@ -335,15 +297,14 @@ export async function x(request) {
     // ── ANALYZE (search + sentiment) ──
     if (intent === "analyze") {
       const query = extractSearchQuery(text);
-      const searchResult = await searchTweets(query, 15);
+      console.log(`🐦 [x] Searching for: ${query} (Analyze Mode)`);
+      const searchResult = await searchTweets(query, 10);
 
       if (!searchResult.success || searchResult.tweets.length === 0) {
-        return {
-          tool: "x", success: false, final: true,
-          data: { text: `❌ No tweets found to analyze for "${query}": ${searchResult.error || "empty results"}` },
-        };
+        return { tool: "x", success: false, final: true, data: { text: `❌ No tweets found to analyze for "${query}"` } };
       }
 
+      console.log(`🐦 [x] Found ${searchResult.tweets.length} tweets. Analyzing sentiment...`);
       const sentiment = await analyzeSentiment(searchResult.tweets);
 
       return {
@@ -358,13 +319,11 @@ export async function x(request) {
 
     // ── SEARCH (default) ──
     const query = extractSearchQuery(text);
-    const result = await searchTweets(query);
+    console.log(`🐦 [x] Searching for: ${query}`);
+    const result = await searchTweets(query, 10);
 
     if (!result.success) {
-      return {
-        tool: "x", success: false, final: true,
-        data: { text: `❌ Failed to search X: ${result.error}` },
-      };
+      return { tool: "x", success: false, final: true, data: { text: `❌ Failed to search X: ${result.error}` } };
     }
 
     return {
@@ -378,9 +337,6 @@ export async function x(request) {
 
   } catch (err) {
     console.error("[x] Unexpected error:", err);
-    return {
-      tool: "x", success: false, final: true,
-      data: { text: `❌ X tool error: ${err.message}` },
-    };
+    return { tool: "x", success: false, final: true, data: { text: `❌ X tool error: ${err.message}` } };
   }
 }

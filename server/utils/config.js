@@ -95,9 +95,10 @@ export const CONFIG = {
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,
 
-  // X (Twitter) via RapidAPI
-  X_RAPIDAPI_KEY: process.env.X_RAPIDAPI_KEY,
-  X_RAPIDAPI_HOST: process.env.X_RAPIDAPI_HOST || "twitter-api47.p.rapidapi.com",
+// X (Twitter) via agent-twitter-client
+  TWITTER_USERNAME: process.env.TWITTER_USERNAME,
+  TWITTER_PASSWORD: process.env.TWITTER_PASSWORD,
+  TWITTER_EMAIL: process.env.TWITTER_EMAIL,
 
   // WhatsApp Bot Config
   WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER,
