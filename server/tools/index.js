@@ -42,6 +42,7 @@ import { projectIndex } from "./projectIndex.js";
 import { githubScanner } from "./githubScanner.js";
 import { selfEvolve } from "./selfEvolve.js";
 import { whatsapp } from "./whatsapp.js";
+import { x } from "./x.js";
 
 export const TOOLS = {
   calculator,
@@ -84,8 +85,10 @@ export const TOOLS = {
   projectIndex,
   githubScanner,
   selfEvolve,
-  whatsapp
+  whatsapp,
+  x
 };
+
 
 // Validate all tools are functions at startup
 console.log("\n🔧 Validating tool registry...");

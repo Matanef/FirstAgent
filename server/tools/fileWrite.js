@@ -159,7 +159,6 @@ async function handleNaturalLanguageWrite(text, context = {}) {
   try {
     console.log("🧠 [fileWrite] Parsing natural language intent...");
 
-    // First, try to use any context path provided by the Orchestrator/UI
     const targetPath = context.targetPath || null;
 
     // ── CHAIN CONTEXT: generate improved file from review suggestions ──
@@ -168,70 +167,97 @@ async function handleNaturalLanguageWrite(text, context = {}) {
       const sourceFile = context.sourceFile;
       console.log(`📝 [fileWrite] Generating improved version of "${sourceFile}" using review suggestions`);
 
-      // Read the original source file
       let originalContent = "";
       try {
         originalContent = await fs.readFile(path.resolve(sourceFile), "utf-8");
-        console.log(`📝 [fileWrite] Read source file: ${originalContent.length} chars`);
       } catch (readErr) {
-        // Try resolving relative to project root
         try {
           const resolved = path.resolve("D:/local-llm-ui", sourceFile);
           originalContent = await fs.readFile(resolved, "utf-8");
-          console.log(`📝 [fileWrite] Read source file (resolved): ${originalContent.length} chars`);
         } catch {
           throw new Error(`Could not read source file: ${sourceFile}`);
         }
       }
 
-      // Truncate if file is very large (LLM context limit)
       const maxChars = 50000;
       const truncatedSource = originalContent.length > maxChars
         ? originalContent.slice(0, maxChars) + "\n\n// ... (truncated for LLM context)"
         : originalContent;
 
-      // Use LLM to generate improved version based on review suggestions
       const improvePrompt = `You are a senior code refactoring expert. Given the ORIGINAL SOURCE CODE and REVIEW SUGGESTIONS below, produce an IMPROVED VERSION of the code.
 
-RULES:
-- Apply the review suggestions where they make sense
-- Keep the same overall structure and functionality
-- Add comments explaining major changes
-- Output ONLY the improved code, no explanations before or after
+CRITICAL INSTRUCTIONS:
+1. You MUST output the ENTIRE updated file from start to finish. Do NOT be lazy. Do NOT output partial snippets. Do NOT leave placeholders like "// rest of the code".
+2. You must wrap your final, complete code exactly between the boundaries ===CODE_START=== and ===CODE_END===.
+3. Do not break existing Node.js logic. Do not use browser-only APIs like DOMParser.
+4. Keep all existing configurations, exports, and imports intact unless explicitly told to change them.
 
 REVIEW SUGGESTIONS:
 ${reviewOutput}
 
 ORIGINAL SOURCE CODE:
-\`\`\`
+\`\`\`javascript
 ${truncatedSource}
 \`\`\`
 
-IMPROVED CODE:`;
+OUTPUT YOUR ENTIRE REWRITTEN CODE BELOW. You MUST start your code with ===CODE_START=== and end with ===CODE_END===.
+AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the improvements you made.`;
 
-      // Use longer timeout for code generation — large files + 32B models need more time
-      const genTimeout = truncatedSource.length > 20000 ? 600_000 : 300_000; // 10min or 5min
+      const genTimeout = truncatedSource.length > 20000 ? 600_000 : 300_000;
       console.log(`📝 [fileWrite] Calling LLM for improved code (${truncatedSource.length} chars, timeout: ${genTimeout / 1000}s)...`);
-      const llmResult = await llm(improvePrompt, { timeoutMs: genTimeout });
-      // llm() returns { tool, success, data: { text } } — extract the text
+      
+      const llmResult = await llm(improvePrompt, { 
+        timeoutMs: genTimeout,
+        options: { num_predict: 8192 } 
+      });
+      
       const improvedCode = llmResult?.data?.text || llmResult?.text || (typeof llmResult === "string" ? llmResult : null);
       if (!improvedCode || improvedCode.length < 50) {
-        console.error("❌ [fileWrite] LLM result:", JSON.stringify(llmResult).slice(0, 500));
-        throw new Error("LLM failed to generate improved code." + (llmResult?.data?.text ? ` LLM said: ${llmResult.data.text.slice(0, 200)}` : ""));
+        throw new Error("LLM failed to generate improved code.");
       }
 
-      // Strip markdown code fences if present
-      let cleanCode = improvedCode
-        .replace(/^```[\w]*\n?/m, "")
-        .replace(/\n?```\s*$/m, "")
-        .trim();
+      // STRICT EXTRACTION
+      let cleanCode = improvedCode;
+      let changelog = "";
+      
+      // Make the end tag optional in the regex just in case Qwen forgot it
+      const boundaryMatch = improvedCode.match(/===CODE_START===([\s\S]*?)(?:===CODE_END===|$)/i);
+      
+      if (boundaryMatch) {
+        cleanCode = boundaryMatch[1];
+        
+        // Capture everything AFTER the code as our changelog
+        const afterMatch = improvedCode.match(/===CODE_END===([\s\S]*)/i);
+        if (afterMatch && afterMatch[1].trim().length > 0) {
+          changelog = afterMatch[1].trim();
+        }
+      }
+      
+      // THE NUCLEAR OPTION: Manually assassinate any surviving tags, markdown fences, or chatty text
+      cleanCode = cleanCode.replace(/===CODE_START===/gi, "");
+      cleanCode = cleanCode.replace(/===CODE_END===/gi, "");
+      cleanCode = cleanCode.replace(/```(javascript|js|typescript|ts)?/gi, ""); // Kill opening markdown
+      cleanCode = cleanCode.replace(/```/g, ""); // Kill closing markdown
+      cleanCode = cleanCode.replace(/^(Here is|Sure|Okay|Below is|I have applied)[^\n]*\n+/gi, "");
+      
+      cleanCode = cleanCode.trim();
 
       const finalPath = targetPath || `${sourceFile}.improved.js`;
       console.log(`📝 [fileWrite] Writing improved file to ${finalPath} (${cleanCode.length} chars)`);
-      return await performWrite(finalPath, cleanCode, "write");
-    }
+      
+      // Intercept the write result and attach the changelog
+      const writeResult = await performWrite(finalPath, cleanCode, "write");
+      
+      if (changelog) {
+        writeResult.data.text += `\n\n**What I Improved:**\n${changelog}`;
+      } else {
+        writeResult.data.text += `\n\n**What I Improved:**\nApplied code review suggestions to optimize and refactor the code.`;
+      }
+      
+      return writeResult;
+    } // <-- This is the bracket that usually gets deleted by mistake!
 
-    // Use our new extracted parsing function
+    // Use our extracted parsing function for generic text writes
     const { path: extractedPath, content, mode } = await parseNaturalLanguageWrite(text);
 
     const finalPath = targetPath || extractedPath;

@@ -157,6 +157,39 @@ function detectSchedulerIntent(text) {
 // SCHEDULE EXECUTION (in-process timer)
 // ──────────────────────────────────────────────────────────
 
+/**
+ * Execute a scheduled task by running it through the agent pipeline.
+ * Uses dynamic imports to avoid circular dependencies.
+ */
+async function executeScheduledTask(schedule) {
+  console.log(`\n⏰ [scheduler] Executing task: "${schedule.task}"`);
+  try {
+    // Dynamic import to avoid circular dependency (scheduler → planner → executor → tools → scheduler)
+    const { plan } = await import("../planner.js");
+    const { orchestrate } = await import("../utils/coordinator.js");
+
+    const steps = await plan({ message: schedule.task });
+    console.log(`[scheduler] Task planned as ${steps.length} step(s): ${steps.map(s => s.tool).join(" -> ")}`);
+
+    const results = await orchestrate(steps, schedule.task);
+
+    // Update schedule metadata
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === schedule.id);
+    if (idx !== -1) {
+      schedules[idx].lastRun = new Date().toISOString();
+      schedules[idx].runCount = (schedules[idx].runCount || 0) + 1;
+      if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true });
+      fsSync.writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2), "utf8");
+    }
+
+    console.log(`✅ [scheduler] Task "${schedule.task}" completed (${results?.length || 0} steps executed)`);
+    return results;
+  } catch (err) {
+    console.error(`❌ [scheduler] Task execution failed for "${schedule.task}":`, err.message);
+  }
+}
+
 function startTimer(schedule) {
   if (activeTimers.has(schedule.id)) {
     clearTimeout(activeTimers.get(schedule.id));
@@ -166,16 +199,37 @@ function startTimer(schedule) {
   if (schedule.type === "once") {
     const delay = new Date(schedule.runAt).getTime() - Date.now();
     if (delay > 0) {
-      const timer = setTimeout(() => {
-        console.log(`[scheduler] Firing one-time task: ${schedule.task}`);
+      const timer = setTimeout(async () => {
+        await executeScheduledTask(schedule);
         activeTimers.delete(schedule.id);
       }, delay);
       activeTimers.set(schedule.id, timer);
+      console.log(`[scheduler] One-time task "${schedule.task}" fires in ${Math.round(delay / 1000)}s`);
     }
+
   } else if (schedule.type === "interval") {
-    const timer = setInterval(() => {
-      console.log(`[scheduler] Firing recurring task: ${schedule.task}`);
+    const timer = setInterval(async () => {
+      await executeScheduledTask(schedule);
     }, schedule.intervalMs);
+    activeTimers.set(schedule.id, timer);
+    console.log(`[scheduler] Interval task "${schedule.task}" every ${Math.round(schedule.intervalMs / 60000)} min`);
+
+  } else if (schedule.type === "daily") {
+    // Calculate milliseconds until next firing time
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(schedule.hour || 0, schedule.minute || 0, 0, 0);
+    // If we already passed today's time, schedule for tomorrow
+    if (next <= now) next.setDate(next.getDate() + 1);
+    const delay = next.getTime() - now.getTime();
+
+    console.log(`[scheduler] Daily task "${schedule.task}" next run at ${next.toLocaleTimeString()} (in ${Math.round(delay / 60000)} min)`);
+
+    const timer = setTimeout(async () => {
+      await executeScheduledTask(schedule);
+      // Re-schedule for next day (recursive)
+      startTimer(schedule);
+    }, delay);
     activeTimers.set(schedule.id, timer);
   }
 }
@@ -402,3 +456,26 @@ export async function scheduler(query) {
     };
   }
 }
+
+// ──────────────────────────────────────────────────────────
+// AUTO-BOOTSTRAP: Restart active schedules on server startup
+// ──────────────────────────────────────────────────────────
+
+function bootstrapSchedules() {
+  try {
+    const schedules = loadSchedules();
+    const active = schedules.filter(s => s.status === "active");
+    if (active.length > 0) {
+      console.log(`\n⏰ [scheduler] Bootstrapping ${active.length} active schedule(s)...`);
+      active.forEach(s => {
+        console.log(`   → ${s.task} (${s.type}${s.type === "daily" ? ` at ${String(s.hour || 0).padStart(2, "0")}:${String(s.minute || 0).padStart(2, "0")}` : ""})`);
+        startTimer(s);
+      });
+    }
+  } catch (err) {
+    console.error("[scheduler] Bootstrap error:", err.message);
+  }
+}
+
+// Delay bootstrap to let other modules initialize
+setTimeout(bootstrapSchedules, 3000);

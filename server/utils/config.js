@@ -36,6 +36,11 @@ if (!process.env.YOUTUBE_API_KEY) {
   warnings.push("⚠️  YOUTUBE_API_KEY not set - YouTube tool will be unavailable");
 }
 
+// X (Twitter)
+if (!process.env.X_RAPIDAPI_KEY) {
+  warnings.push("⚠️  X_RAPIDAPI_KEY not set - X/Twitter tool will be unavailable");
+}
+
 // Email - CORRECTED: Check for Gmail OAuth OR SMTP OR Email API
 if (!process.env.GOOGLE_CLIENT_ID && !process.env.EMAIL_API_KEY && !process.env.SMTP_HOST) {
   warnings.push("⚠️  No email configuration found - email tool will be unavailable");
@@ -51,7 +56,7 @@ export const CONFIG = {
   NODE_ENV: process.env.NODE_ENV || 'development',
 
   // LLM
-  LLM_MODEL: process.env.LLM_MODEL || 'llama3:8b-instruct-q5_K_M',
+  LLM_MODEL: process.env.LLM_MODEL || 'qwen2.5-coder:14b',
   LLM_API_URL: process.env.LLM_API_URL || 'http://localhost:11434/',
 
   // Agent Limits
@@ -90,6 +95,14 @@ export const CONFIG = {
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,
 
+  // X (Twitter) via RapidAPI
+  X_RAPIDAPI_KEY: process.env.X_RAPIDAPI_KEY,
+  X_RAPIDAPI_HOST: process.env.X_RAPIDAPI_HOST || "twitter-api47.p.rapidapi.com",
+
+  // WhatsApp Bot Config
+  WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER,
+  WHATSAPP_DEFAULT_RECIPIENT: process.env.WHATSAPP_DEFAULT_RECIPIENT || "972587426393",
+
   // Credential Encryption
   CREDENTIAL_MASTER_KEY: process.env.CREDENTIAL_MASTER_KEY,
 
@@ -110,6 +123,10 @@ export const CONFIG = {
       this.SMTP_HOST ||
       (this.GOOGLE_CLIENT_ID && this.GOOGLE_CLIENT_SECRET && this.GOOGLE_REDIRECT_URI)
     );
+  },
+
+  isXAvailable() {
+    return !!this.X_RAPIDAPI_KEY;
   },
 
   getWarnings() {
@@ -147,6 +164,7 @@ if (CONFIG.isEmailAvailable()) {
   else if (CONFIG.SMTP_HOST) console.log('  ✓ SMTP configured');
   else console.log('  ✓ Email API configured');
 }
+if (CONFIG.isXAvailable()) console.log('  ✓ X/Twitter API configured');
 if (CONFIG.CREDENTIAL_MASTER_KEY) console.log('  ✓ Credential encryption configured');
 if (CONFIG.MOLTBOOK_BASE_URL !== 'https://moltbook.com') console.log(`  ✓ Moltbook URL: ${CONFIG.MOLTBOOK_BASE_URL}`);
 console.log('='.repeat(60) + '\n');

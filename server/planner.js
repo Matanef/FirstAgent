@@ -84,6 +84,8 @@ function inferToolFromText(text) {
   if (/\b(write|create|generate)\s+(a\s+)?(file|code|script)\b/.test(lower)) return "fileWrite";
   if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
   if (/\b(youtube|video)\b/.test(lower)) return "youtube";
+  if (/\b(tweet|twitter|x\s+trend|trending\s+on\s+x)\b/.test(lower)) return "x";
+  if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
   return "llm"; // fallback
 }
 
@@ -156,6 +158,11 @@ function hasCompoundIntent(text) {
   // "check weather and send it a whatsapp to 0587426393"
   if (/\band\s+(?:then\s+)?(?:send|whatsapp)\b/i.test(lower) &&
       /(?:\+?\d[\d\s\-\(\)]{6,18}\d)/.test(lower)) return true;
+
+  // Pattern 11: X/twitter + content delivery (email/whatsapp)
+  // "get twitter trends and email me", "get x trends and whatsapp to 0587426393"
+  if (/\b(?:twitter|tweet|x\s+trend|trending\s+on\s+x)\b/i.test(lower) &&
+      /\b(?:email|whatsapp|send)\b/i.test(lower)) return true;
 
   return false;
 }
@@ -464,53 +471,45 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
   const toolsListText = availableTools.length > 0
     ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}`
     : "";
+  // Sanitize Windows backslashes so they don't break strict JSON generation
+  const safeMessage = message.replace(/\\/g, "/");
+  // Stricter prompt specifically tuned for local models to force valid JSON
+  const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
-  const prompt = `You are a Sequential Logic Engine. Your job is to decompose a user's message into one or more sequential tool steps.
-
-TASK: Analyze the user's message and return a JSON array of steps. Each step is an object with:
-- "tool": the tool name (must be from the AVAILABLE TOOLS list)
-- "input": what to pass to that tool (a natural language instruction)
-- "reasoning": a brief explanation of why this step is needed
+  
+TASK: Decompose the user's message into sequential steps.
 ${toolsListText}
 ${signalText}
 
-RULES:
-1. Return ONLY a valid JSON array. No markdown, no explanation, no code fences.
-2. If the message has a single intent, return a single-element array.
-3. If the message has multiple intents (e.g. "do X and then Y"), decompose into multiple steps in order.
-4. Steps execute sequentially — later steps can use output from earlier steps.
-5. Use "llm" as the tool for general conversation, opinions, greetings, creative writing, explanations, and summarization.
-6. "search" for web lookups, "news" for news headlines, "weather" for weather forecasts, "email" for sending/drafting email.
-7. "calculator" for math, "finance" for stocks/market data, "memorytool" for remembering things.
-8. "review" for code review, "codeReview" for security audits, "codeTransform" for refactoring code.
-9. "gitLocal" for git operations, "github" for GitHub API, "githubTrending" for trending repos.
-10. "scheduler" for recurring tasks, "calendar" for events/meetings, "tasks" for todo items.
-11. "fileWrite" for creating/writing files, "file" for reading/listing files.
-12. "whatsapp" for sending WhatsApp messages.
-13. Maximum 5 steps. Most queries need 1-2 steps.
-14. Do NOT invent tools. Only use tools from the AVAILABLE TOOLS list.
+Each object in the JSON array MUST have exactly these keys:
+- "tool": (string) An exact tool name from the AVAILABLE TOOLS list.
+- "input": (string) The specific instruction for that tool.
+- "reasoning": (string) A brief reason for using this tool.
 
-EXAMPLES:
+CRITICAL RULES:
+1. Your entire response MUST start with [ and end with ].
+2. Do NOT invent tools.
+3. If multiple actions are requested, order them logically (e.g., read first, then write).
+4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
 
-Single intent:
-[{"tool":"weather","input":"weather in Paris","reasoning":"user wants weather forecast"}]
-
-Two intents:
-[{"tool":"news","input":"latest AI news","reasoning":"user wants AI news"},{"tool":"email","input":"email me the AI news results","reasoning":"user wants results emailed"}]
-
-Three intents:
-[{"tool":"search","input":"search for React best practices","reasoning":"user wants to research React"},{"tool":"fileWrite","input":"write a summary of React best practices to a file","reasoning":"user wants a written summary"},{"tool":"email","input":"email the summary","reasoning":"user wants it emailed"}]
-
-Conversation:
-[{"tool":"llm","input":"how are you doing today?","reasoning":"casual greeting, no tool needed"}]
+EXAMPLE INPUT:
+"review D:/project/news.js and create a fixed version at E:/testFolder/"
+EXAMPLE OUTPUT:
+[
+  {"tool": "codeReview", "input": "review D:/project/news.js", "reasoning": "Analyze the source file for improvements"},
+  {"tool": "fileWrite", "input": "create fixed news.js at E:/testFolder/", "reasoning": "Save the generated code to the new location"}
+]
 
 USER MESSAGE:
-"${message}"
+"${safeMessage}"
 
-Return ONLY the JSON array:`;
+OUTPUT ONLY THE JSON ARRAY:`;
 
   try {
-    const response = await llm(prompt, { timeoutMs: 30000 });
+    const response = await llm(prompt, { 
+      timeoutMs: 90000, // Give it 90 seconds to think
+      format: "json"    // Force strict JSON output!
+    });
     if (!response.success || !response.data?.text) {
       console.warn("[planner] decomposeIntentWithLLM: LLM returned no text, falling back");
       return null;
@@ -525,15 +524,18 @@ Return ONLY the JSON array:`;
       return parsed;
     }
 
-    // RETRY: If first parse failed, ask LLM to fix its output
+    // RETRY: If first parse failed, ask LLM to fix its output with strict rules
     console.warn("[planner] decomposeIntentWithLLM: first parse failed, retrying");
-    const retryPrompt = `Your previous response was not valid JSON. Return ONLY a JSON array of step objects.
+    const retryPrompt = `Your previous response was not valid JSON. Return ONLY a JSON array of step objects starting with [ and ending with ].
 Each object must have "tool", "input", and "reasoning" keys.
 Previous response: ${rawText.slice(0, 500)}
 
 Return valid JSON array only:`;
 
-    const retryResponse = await llm(retryPrompt, { timeoutMs: 20000 });
+    const retryResponse = await llm(retryPrompt, { 
+      timeoutMs: 60000, 
+      format: "json" 
+    });
     if (retryResponse.success && retryResponse.data?.text) {
       const retryParsed = tryParseStepsJSON(retryResponse.data.text.trim());
       if (retryParsed && retryParsed.length > 0) {
@@ -899,6 +901,22 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "email", input: trimmed, context: emailContext, reasoning: "certainty_email" }];
   }
 
+  // X (Twitter) — trends, tweet search, tweet sentiment analysis
+  // Guard: skip if compound intent detected (e.g. "get X trends and email me")
+  if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trend|twitter\s+trend|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: x");
+    const xContext = {};
+    if (/\b(trend|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
+    else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) xContext.action = "analyze";
+    else xContext.action = "search";
+    // Detect country for trends
+    if (/\b(israel|jerusalem|tel\s*aviv|ישראל)\b/i.test(lower)) xContext.country = "israel";
+    else if (/\b(us|usa|united\s+states|america)\b/i.test(lower)) xContext.country = "us";
+    else if (/\b(uk|united\s+kingdom|britain|london)\b/i.test(lower)) xContext.country = "uk";
+    return [{ tool: "x", input: trimmed, context: xContext, reasoning: "certainty_x" }];
+  }
+
   // WhatsApp — send single or bulk messages
   if (/\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
       /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower) &&
@@ -1245,6 +1263,7 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(sports?|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
     else if (/\b(youtube|video)\b/i.test(lower)) contentTool = "youtube";
     else if (/\b(github|repo|trending)\b/i.test(lower)) contentTool = "github";
+    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
     console.log(`[planner] Compound (whatsapp): ${contentTool} → whatsapp to ${phoneNum}`);
     return [
       { tool: contentTool, input: contentInput, context: {}, reasoning: "compound_whatsapp_step1" },
@@ -1355,7 +1374,27 @@ export async function plan({ message, chatContext = {} }) {
       }
     }
 
-    if (resolvedSteps.length > 0) {
+      if (resolvedSteps.length > 0) {
+      
+      // --- BEGIN NEW CHAIN LINKING LOGIC ---
+      // Auto-detect if we are doing a review -> rewrite chain
+      for (let i = 1; i < resolvedSteps.length; i++) {
+        const currentTool = resolvedSteps[i].tool;
+        const previousTool = resolvedSteps[i-1].tool;
+
+        if (currentTool === "fileWrite" && (previousTool === "codeReview" || previousTool === "review")) {
+          // Force the fileWrite tool into "improvement mode"
+          resolvedSteps[i].context.generateImproved = true;
+          
+          // Grab the exact D:/... path from Step 1's input so Step 2 knows what to read
+          const pathMatch = resolvedSteps[i-1].input.match(/([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/);
+          if (pathMatch) {
+            resolvedSteps[i].context.sourceFile = pathMatch[1];
+          }
+        }
+      }
+      // --- END NEW CHAIN LINKING LOGIC ---
+
       console.log(`[planner] Decomposed plan: ${resolvedSteps.map(s => s.tool).join(" -> ")}`);
       return resolvedSteps;
     }

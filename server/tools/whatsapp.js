@@ -127,7 +127,7 @@ function detectWhatsAppIntent(text) {
 // SEND A SINGLE WHATSAPP MESSAGE
 // ============================================================
 
-async function sendWhatsAppMessage(to, text) {
+export async function sendWhatsAppMessage(to, text) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_ID;
 

@@ -7,9 +7,9 @@ import path from "path";
 import { llm } from "./llm.js";
 import { loadReviewCache, saveReviewCache } from "../utils/cacheReview.js"
 
-const FAST_REVIEW_MODEL = "gemma3:4b";   // <— FAST MODEL FOR ALL CODE REVIEWS
-const FILE_TIMEOUT = 60_000;            // 60s per file
-const ARCH_TIMEOUT = 90_000;            // 90s for architecture review
+const FAST_REVIEW_MODEL = "qwen2.5-coder:7b";   // <— FAST MODEL FOR ALL CODE REVIEWS
+const FILE_TIMEOUT = 300_000;            // 60s per file
+const ARCH_TIMEOUT = 600_000;            // 90s for architecture review
 
 const MAX_FILE_SIZE = 256 * 1024; // 256 KB
 const MAX_FILES_PER_REVIEW = 20;
@@ -170,11 +170,23 @@ Be concise but thorough.`
 
   const prompt = prompts[reviewType] || prompts.full;
 
-  try {
+try {
     const response = await llm(prompt, {
       model: FAST_REVIEW_MODEL,
       timeoutMs: FILE_TIMEOUT
     });
+
+    // FIX: Explicitly check if the LLM wrapper reported a failure (like a timeout)
+    if (!response || response.success === false) {
+      const errorMsg = response?.error || response?.data?.text || "LLM request timed out.";
+      console.error(`[codeReview] LLM failed for ${filename}:`, errorMsg);
+      return {
+        file: filePath,
+        filename,
+        review: `Review failed: ${errorMsg}`,
+        success: false // This halts the chain!
+      };
+    }
 
     return {
       file: filePath,

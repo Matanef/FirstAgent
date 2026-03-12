@@ -38,11 +38,13 @@ async function fetchWithTimeout(url, body, timeoutMs = 120_000) {
 /**
  * Non-streaming LLM call
  */
-export async function llm(prompt, options = {}) {
+export async function llm(prompt, configOptions = {}) {
   const {
     timeoutMs = 120_000,
-    model = CONFIG.LLM_MODEL
-  } = options;
+    model = CONFIG.LLM_MODEL,
+    format, // <--- NEW: Capture the format command
+    options = {} 
+  } = configOptions;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
@@ -50,8 +52,12 @@ export async function llm(prompt, options = {}) {
     const body = {
       model,
       prompt,
-      stream: false
+      stream: false,
+      ...(format ? { format } : {}), // <--- NEW: Send format to Ollama
+      ...(Object.keys(options).length > 0 ? { options } : {})
     };
+    
+    // ... rest of the function stays exactly the same
 
     const response = await fetchWithTimeout(url, body, timeoutMs);
 
