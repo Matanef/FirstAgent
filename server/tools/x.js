@@ -63,7 +63,7 @@ async function ensureLogin() {
 
 function detectXIntent(text) {
   const lower = (text || "").toLowerCase();
-  if (/\b(trend|trending|popular|hot\s+topic|top\s+topic)\b/i.test(lower)) return "trends";
+  if (/\b(trends?|trending|popular|hot\s+topic|top\s+topic)\b/i.test(lower)) return "trends";
   if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) return "analyze";
   return "search"; // default: search tweets
 }

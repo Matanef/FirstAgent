@@ -36,9 +36,9 @@ if (!process.env.YOUTUBE_API_KEY) {
   warnings.push("⚠️  YOUTUBE_API_KEY not set - YouTube tool will be unavailable");
 }
 
-// X (Twitter)
-if (!process.env.X_RAPIDAPI_KEY) {
-  warnings.push("⚠️  X_RAPIDAPI_KEY not set - X/Twitter tool will be unavailable");
+// X (Twitter) via agent-twitter-client
+if (!process.env.TWITTER_USERNAME || !process.env.TWITTER_PASSWORD) {
+  warnings.push("⚠️  TWITTER_USERNAME/TWITTER_PASSWORD not set - X/Twitter tool will be unavailable");
 }
 
 // Email - CORRECTED: Check for Gmail OAuth OR SMTP OR Email API
@@ -127,7 +127,7 @@ export const CONFIG = {
   },
 
   isXAvailable() {
-    return !!this.X_RAPIDAPI_KEY;
+    return !!(this.TWITTER_USERNAME && this.TWITTER_PASSWORD);
   },
 
   getWarnings() {

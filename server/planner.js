@@ -84,7 +84,7 @@ function inferToolFromText(text) {
   if (/\b(write|create|generate)\s+(a\s+)?(file|code|script)\b/.test(lower)) return "fileWrite";
   if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
   if (/\b(youtube|video)\b/.test(lower)) return "youtube";
-  if (/\b(tweet|twitter|x\s+trend|trending\s+on\s+x)\b/.test(lower)) return "x";
+  if (/\b(tweet|twitter|x\s+trends?|trending\s+on\s+x)\b/.test(lower)) return "x";
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
   return "llm"; // fallback
 }
@@ -161,7 +161,7 @@ function hasCompoundIntent(text) {
 
   // Pattern 11: X/twitter + content delivery (email/whatsapp)
   // "get twitter trends and email me", "get x trends and whatsapp to 0587426393"
-  if (/\b(?:twitter|tweet|x\s+trend|trending\s+on\s+x)\b/i.test(lower) &&
+  if (/\b(?:twitter|tweet|x\s+trends?|trending\s+on\s+x)\b/i.test(lower) &&
       /\b(?:email|whatsapp|send)\b/i.test(lower)) return true;
 
   return false;
@@ -912,11 +912,11 @@ export async function plan({ message, chatContext = {} }) {
 
   // X (Twitter) — trends, tweet search, tweet sentiment analysis
   // Guard: skip if compound intent detected (e.g. "get X trends and email me")
-  if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trend|twitter\s+trend|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
+  if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: x");
     const xContext = {};
-    if (/\b(trend|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
+    if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
     else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) xContext.action = "analyze";
     else xContext.action = "search";
     // Detect country for trends
@@ -1272,7 +1272,7 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(sports?|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
     else if (/\b(youtube|video)\b/i.test(lower)) contentTool = "youtube";
     else if (/\b(github|repo|trending)\b/i.test(lower)) contentTool = "github";
-    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
+    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(lower)) contentTool = "x";
     console.log(`[planner] Compound (whatsapp): ${contentTool} → whatsapp to ${phoneNum}`);
     return [
       { tool: contentTool, input: contentInput, context: {}, reasoning: "compound_whatsapp_step1" },
@@ -1300,7 +1300,7 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
     else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
     else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review";
-    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(firstPart)) firstTool = "x";
+    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(firstPart)) firstTool = "x";
     const emailInput = emailAddr
       ? `Send the results to ${emailAddr}`
       : `Email me the results of: ${firstPart}`;
@@ -1314,13 +1314,13 @@ export async function plan({ message, chatContext = {} }) {
   // Also: "email me the news summary", "sned an email with the news", "send matan an email with the news"
   if (/\b(?:send|compose|draft|forward|write|sned)\b/i.test(lower) &&
       /\b(?:email|e-mail|mail)\b/i.test(lower) &&
-      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trend)\b/i.test(lower)) {
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trends?)\b/i.test(lower)) {
     // Detect which content tool is needed
     let contentTool = "news"; // default
     if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
     else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
-    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
+    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(lower)) contentTool = "x";
     // Extract email address
     const emailAddrMatch = trimmed.match(/[\w.+-]+@[\w.-]+\.\w{2,}/i);
     const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
@@ -1336,12 +1336,12 @@ export async function plan({ message, chatContext = {} }) {
 
   // Pattern: "email me the news/weather/scores" — starts with "email" (no send verb)
   if (/\b(?:email|mail)\s+(?:me|us|him|her|them)\b/i.test(lower) &&
-      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trend)\b/i.test(lower)) {
+      /\b(?:news|weather|forecast|stock|score|finance|sport|headline|article|tweet|twitter|x\s+trends?)\b/i.test(lower)) {
     let contentTool = "news";
     if (/\b(weather|forecast|temperature)\b/i.test(lower)) contentTool = "weather";
     else if (/\b(stock|finance)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sport|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
-    else if (/\b(tweet|twitter|x\s+trend)\b/i.test(lower)) contentTool = "x";
+    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(lower)) contentTool = "x";
     console.log(`[planner] Compound (email-me): ${contentTool} → email`);
     return [
       { tool: contentTool, input: `latest ${contentTool}`, context: {}, reasoning: "compound_email_me_step1" },
