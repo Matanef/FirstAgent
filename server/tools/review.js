@@ -20,8 +20,16 @@ function isPathAllowed(resolvedPath) {
 function extractFilePath(query) {
   const lower = query.toLowerCase();
 
+  // Pattern 0: Absolute path (Windows drive letter or Unix root)
+  // "review D:\local-llm-ui\server\planner.js" or "review /home/user/file.js"
+  let match = query.match(/([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']{2,})/);
+  if (match) {
+    const fullPath = match[1].trim();
+    return { fullPath };
+  }
+
   // Pattern 1: "review news.js in tools folder"
-  let match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)\s+in\s+(the\s+)?([a-zA-Z0-9_\-\/\s]+)/i);
+  match = query.match(/review\s+([a-zA-Z0-9_\-\.]+)\s+in\s+(the\s+)?([a-zA-Z0-9_\-\/\s]+)/i);
   if (match) {
     const filename = match[1];
     let folder = match[3].trim();

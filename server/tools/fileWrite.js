@@ -158,15 +158,78 @@ If the user wants to append, set mode to "append". Otherwise, set it to "write".
 async function handleNaturalLanguageWrite(text, context = {}) {
   try {
     console.log("🧠 [fileWrite] Parsing natural language intent...");
-    
+
     // First, try to use any context path provided by the Orchestrator/UI
     const targetPath = context.targetPath || null;
-    
+
+    // ── CHAIN CONTEXT: generate improved file from review suggestions ──
+    if (context.generateImproved && context.chainContext?.previousOutput && context.sourceFile) {
+      const reviewOutput = context.chainContext.previousOutput;
+      const sourceFile = context.sourceFile;
+      console.log(`📝 [fileWrite] Generating improved version of "${sourceFile}" using review suggestions`);
+
+      // Read the original source file
+      let originalContent = "";
+      try {
+        originalContent = await fs.readFile(path.resolve(sourceFile), "utf-8");
+        console.log(`📝 [fileWrite] Read source file: ${originalContent.length} chars`);
+      } catch (readErr) {
+        // Try resolving relative to project root
+        try {
+          const resolved = path.resolve("D:/local-llm-ui", sourceFile);
+          originalContent = await fs.readFile(resolved, "utf-8");
+          console.log(`📝 [fileWrite] Read source file (resolved): ${originalContent.length} chars`);
+        } catch {
+          throw new Error(`Could not read source file: ${sourceFile}`);
+        }
+      }
+
+      // Truncate if file is very large (LLM context limit)
+      const maxChars = 50000;
+      const truncatedSource = originalContent.length > maxChars
+        ? originalContent.slice(0, maxChars) + "\n\n// ... (truncated for LLM context)"
+        : originalContent;
+
+      // Use LLM to generate improved version based on review suggestions
+      const improvePrompt = `You are a senior code refactoring expert. Given the ORIGINAL SOURCE CODE and REVIEW SUGGESTIONS below, produce an IMPROVED VERSION of the code.
+
+RULES:
+- Apply the review suggestions where they make sense
+- Keep the same overall structure and functionality
+- Add comments explaining major changes
+- Output ONLY the improved code, no explanations before or after
+
+REVIEW SUGGESTIONS:
+${reviewOutput}
+
+ORIGINAL SOURCE CODE:
+\`\`\`
+${truncatedSource}
+\`\`\`
+
+IMPROVED CODE:`;
+
+      const improvedCode = await llm(improvePrompt);
+      if (!improvedCode || improvedCode.length < 50) {
+        throw new Error("LLM failed to generate improved code.");
+      }
+
+      // Strip markdown code fences if present
+      let cleanCode = improvedCode
+        .replace(/^```[\w]*\n?/m, "")
+        .replace(/\n?```\s*$/m, "")
+        .trim();
+
+      const finalPath = targetPath || `${sourceFile}.improved.js`;
+      console.log(`📝 [fileWrite] Writing improved file to ${finalPath} (${cleanCode.length} chars)`);
+      return await performWrite(finalPath, cleanCode, "write");
+    }
+
     // Use our new extracted parsing function
     const { path: extractedPath, content, mode } = await parseNaturalLanguageWrite(text);
-    
+
     const finalPath = targetPath || extractedPath;
-    
+
     if (!finalPath || !content) {
       throw new Error("Path and content are required.");
     }

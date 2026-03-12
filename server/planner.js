@@ -1179,17 +1179,37 @@ export async function plan({ message, chatContext = {} }) {
 
   // Pattern: "review X and create/generate a [better/new/improved] version" → review + fileWrite
   if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(\w+\s+)?(version|copy|file|variant|output)\b/i.test(lower)) {
-    // Extract source file (first file path after review/analyze)
-    const fileMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i) ||
-                      trimmed.match(/(?:review|analyze)\s+([a-zA-Z]:[\\\/][^\s]+)/i);
-    const sourceFile = fileMatch ? fileMatch[1] : "the code";
-    // Extract destination path if present (second file path or "at/to <path>")
-    const destMatch = trimmed.match(/(?:at|to|in)\s+([a-zA-Z]:[\\\/][^\s]+)/i);
-    const destContext = destMatch ? { useChainContext: true, destinationPath: destMatch[1] } : { useChainContext: true };
-    console.log(`[planner] Compound: review "${sourceFile}" → generate new version`);
+    // Extract source file — try absolute path first, then relative/filename
+    const absPathMatch = trimmed.match(/(?:review|analyze)\s+([A-Za-z]:[\\\/][^\s"']+)/i);
+    const relPathMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i);
+    const sourceFile = absPathMatch ? absPathMatch[1] : (relPathMatch ? relPathMatch[1] : "the code");
+    // Extract source filename (basename) for output naming
+    const sourceBasename = sourceFile.replace(/^.*[\\\/]/, ""); // "planner.js" from full path
+
+    // Extract destination directory/path (after "at/to/in")
+    const destMatch = trimmed.match(/(?:at|to|in)\s+([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/i);
+    let destDir = destMatch ? destMatch[1] : null;
+
+    // Generate smart filename: <name>.agent.<timestamp>.<ext>
+    // e.g. planner.agent.20260312-014700.js
+    const now = new Date();
+    const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 15).replace(/^(\d{8})(\d{6})/, "$1-$2");
+    const extMatch = sourceBasename.match(/(\.\w+)$/);
+    const ext = extMatch ? extMatch[1] : ".js";
+    const nameOnly = sourceBasename.replace(/\.\w+$/, "");
+    const smartFilename = `${nameOnly}.agent.${ts}${ext}`;
+    const targetPath = destDir ? `${destDir.replace(/[\\\/]$/, "")}/${smartFilename}` : smartFilename;
+
+    const destContext = {
+      useChainContext: true,
+      targetPath,
+      sourceFile,
+      generateImproved: true
+    };
+    console.log(`[planner] Compound: review "${sourceFile}" → generate "${targetPath}"`);
     return [
       { tool: "review", input: sourceFile, context: {}, reasoning: "compound_review_source" },
-      { tool: "fileWrite", input: trimmed, context: destContext, reasoning: "compound_generate_improved" }
+      { tool: "fileWrite", input: `Write improved version of ${sourceBasename} to ${targetPath}`, context: destContext, reasoning: "compound_generate_improved" }
     ];
   }
 
