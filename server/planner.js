@@ -1193,7 +1193,7 @@ export async function plan({ message, chatContext = {} }) {
     // Generate smart filename: <name>.agent.<timestamp>.<ext>
     // e.g. planner.agent.20260312-014700.js
     const now = new Date();
-    const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 15).replace(/^(\d{8})(\d{6})/, "$1-$2");
+    const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 14).replace(/^(\d{8})(\d{6})/, "$1-$2");
     const extMatch = sourceBasename.match(/(\.\w+)$/);
     const ext = extMatch ? extMatch[1] : ".js";
     const nameOnly = sourceBasename.replace(/\.\w+$/, "");

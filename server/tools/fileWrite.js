@@ -209,7 +209,9 @@ ${truncatedSource}
 
 IMPROVED CODE:`;
 
-      const improvedCode = await llm(improvePrompt);
+      const llmResult = await llm(improvePrompt);
+      // llm() returns { tool, success, data: { text } } — extract the text
+      const improvedCode = llmResult?.data?.text || llmResult?.text || (typeof llmResult === "string" ? llmResult : null);
       if (!improvedCode || improvedCode.length < 50) {
         throw new Error("LLM failed to generate improved code.");
       }
