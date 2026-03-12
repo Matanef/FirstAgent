@@ -248,7 +248,7 @@ IMPORTANT:
 - Focus on substance, not style`;
 
     // Get LLM review (use longer timeout for large files — 32B models need more time)
-    const fileSize = code.length;
+    const fileSize = content.length;
     const reviewTimeout = fileSize > 30000 ? 300_000 : 180_000; // 5min for large files, 3min otherwise
     console.log(`🤖 Calling LLM for review... (${fileSize} chars, timeout: ${reviewTimeout / 1000}s)`);
     const llmResponse = await llm(prompt, { timeoutMs: reviewTimeout });
