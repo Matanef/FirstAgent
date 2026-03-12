@@ -69,6 +69,12 @@ router.post("/chat", async (req, res) => {
       `data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`
     );
 
+    // SSE keepalive: send heartbeat every 15s to prevent connection timeout
+    // during long-running LLM calls (e.g. 32B model reviewing large files)
+    const heartbeat = setInterval(() => {
+      try { res.write(`: heartbeat\n\n`); } catch { /* connection closed */ }
+    }, 15_000);
+
     // EXECUTE via Orchestrator (routes to chatAgent or taskAgent based on intent)
     const result = await orchestratorHandle({
       message,
@@ -91,6 +97,7 @@ router.post("/chat", async (req, res) => {
       }
     });
 
+clearInterval(heartbeat);
 console.log("🟢 [chat.js] Agent returned. Formatting response...");
 
     const elapsed = Date.now() - startTime;
@@ -159,6 +166,7 @@ console.log("🟢 [chat.js] Agent returned. Formatting response...");
       console.error("⚠️ Post-response save error (non-blocking):", saveErr.message);
     }
   } catch (err) {
+    clearInterval(heartbeat);
     console.error("❌ CHAT ERROR:", err);
     res.write(
       `data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`

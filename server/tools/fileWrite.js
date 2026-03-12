@@ -209,11 +209,15 @@ ${truncatedSource}
 
 IMPROVED CODE:`;
 
-      const llmResult = await llm(improvePrompt);
+      // Use longer timeout for code generation — large files + 32B models need more time
+      const genTimeout = truncatedSource.length > 20000 ? 600_000 : 300_000; // 10min or 5min
+      console.log(`📝 [fileWrite] Calling LLM for improved code (${truncatedSource.length} chars, timeout: ${genTimeout / 1000}s)...`);
+      const llmResult = await llm(improvePrompt, { timeoutMs: genTimeout });
       // llm() returns { tool, success, data: { text } } — extract the text
       const improvedCode = llmResult?.data?.text || llmResult?.text || (typeof llmResult === "string" ? llmResult : null);
       if (!improvedCode || improvedCode.length < 50) {
-        throw new Error("LLM failed to generate improved code.");
+        console.error("❌ [fileWrite] LLM result:", JSON.stringify(llmResult).slice(0, 500));
+        throw new Error("LLM failed to generate improved code." + (llmResult?.data?.text ? ` LLM said: ${llmResult.data.text.slice(0, 200)}` : ""));
       }
 
       // Strip markdown code fences if present

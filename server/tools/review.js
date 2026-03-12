@@ -247,12 +247,15 @@ IMPORTANT:
 - Keep professional tone
 - Focus on substance, not style`;
 
-    // Get LLM review
-    console.log("🤖 Calling LLM for review...");
-    const llmResponse = await llm(prompt);
+    // Get LLM review (use longer timeout for large files — 32B models need more time)
+    const fileSize = code.length;
+    const reviewTimeout = fileSize > 30000 ? 300_000 : 180_000; // 5min for large files, 3min otherwise
+    console.log(`🤖 Calling LLM for review... (${fileSize} chars, timeout: ${reviewTimeout / 1000}s)`);
+    const llmResponse = await llm(prompt, { timeoutMs: reviewTimeout });
 
     if (!llmResponse.success) {
-      throw new Error("LLM review failed: " + (llmResponse.error || "Unknown error"));
+      console.error("❌ LLM review response:", JSON.stringify(llmResponse).slice(0, 500));
+      throw new Error("LLM review failed: " + (llmResponse.error || llmResponse.data?.text || "Unknown error"));
     }
 
     const reviewText = llmResponse.data?.text || "Review could not be generated.";
