@@ -207,50 +207,48 @@ export async function review(request) {
     const filename = path.basename(resolvedPath);
     const relativePath = path.relative("D:/local-llm-ui", resolvedPath);
 
+    // Truncate large files for LLM context — 30K chars is enough for meaningful review
+    const MAX_REVIEW_CHARS = 30000;
+    const truncated = content.length > MAX_REVIEW_CHARS;
+    const reviewContent = truncated
+      ? content.slice(0, MAX_REVIEW_CHARS) + `\n\n// ... (truncated: showing ${MAX_REVIEW_CHARS} of ${content.length} chars)`
+      : content;
+
     const prompt = `You are a senior software engineer conducting a code review.
 
 FILE: ${relativePath}
 PROJECT CONTEXT: Local LLM UI (Node.js/Express backend + React frontend)
-LINES: ${lines}
-SIZE: ${Math.round(content.length / 1024)}KB
+LINES: ${lines} total
+SIZE: ${Math.round(content.length / 1024)}KB${truncated ? ` (showing first ${Math.round(MAX_REVIEW_CHARS / 1024)}KB)` : ""}
 
 TASK: Provide a structured, professional code review with:
 
 1. **Summary** (2-3 sentences):
    - What this file does
    - How it fits into the project architecture
-   - Its role and responsibilities
 
 2. **Key Observations** (3-5 points):
    - Important design patterns used
    - Critical functionality
-   - Notable implementation details
 
 3. **Strengths** (2-3 points):
    - What's done well
-   - Good practices observed
 
 4. **Suggestions for Improvement** (3-5 points):
    - Specific, actionable improvements
    - Security considerations
    - Performance optimizations
-   - Code quality enhancements
 
 FILE CONTENT:
 \`\`\`javascript
-${content}
+${reviewContent}
 \`\`\`
 
-IMPORTANT: 
-- Be specific and reference actual code
-- Provide actionable suggestions
-- Keep professional tone
-- Focus on substance, not style`;
+IMPORTANT: Be specific, reference actual code, keep it concise.`;
 
-    // Get LLM review (use longer timeout for large files — 32B models need more time)
-    const fileSize = content.length;
-    const reviewTimeout = fileSize > 30000 ? 300_000 : 180_000; // 5min for large files, 3min otherwise
-    console.log(`🤖 Calling LLM for review... (${fileSize} chars, timeout: ${reviewTimeout / 1000}s)`);
+    // Timeout: 10min for 32B models on large files, 5min otherwise
+    const reviewTimeout = reviewContent.length > 20000 ? 600_000 : 300_000;
+    console.log(`🤖 Calling LLM for review... (${reviewContent.length} chars sent to LLM, timeout: ${reviewTimeout / 1000}s)`);
     const llmResponse = await llm(prompt, { timeoutMs: reviewTimeout });
 
     if (!llmResponse.success) {
