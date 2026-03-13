@@ -1,4 +1,4 @@
-// server/tools/nlp.js
+// E:\testFolder\nlp.js
 
 import natural from "natural";
 import nlp from "compromise";
@@ -8,18 +8,15 @@ import nlpDates from "compromise-dates";
 nlp.extend(nlpDates);
 
 class Analyzer {
-  constructor() {
-    // PorterStemmer is a static object in natural v6+, not a constructor
-    this.stemmer = natural.PorterStemmer;
-    this.analyzer = new natural.SentimentAnalyzer("English", this.stemmer, "afinn");
-  }
+  static stemmer = natural.PorterStemmer;
+  static analyzer = new natural.SentimentAnalyzer("English", Analyzer.stemmer, "afinn");
 
-  analyzeSentiment(text) {
+  static analyzeSentiment(text) {
     if (!text) return { score: 0, sentiment: "neutral" };
 
     const tokenizer = new natural.WordTokenizer();
     const tokens = tokenizer.tokenize(text);
-    const score = this.analyzer.getSentiment(tokens) || 0;
+    const score = Analyzer.analyzer.getSentiment(tokens) || 0;
 
     let sentiment = "neutral";
     if (score > 0.5) sentiment = "positive";
@@ -35,12 +32,10 @@ class Analyzer {
 }
 
 class EntityExtractor {
-  constructor() {
-    this.compromise = nlp;
-  }
+  static compromise = nlp;
 
-  extractEntities(text) {
-    const doc = nlp(text);
+  static extractEntities(text) {
+    const doc = EntityExtractor.compromise(text);
     
     return {
       people: typeof doc.people === 'function' ? doc.people().out('array') : [],
@@ -53,28 +48,34 @@ class EntityExtractor {
   }
 }
 
-export function analyzeSentiment(text) {
-  const analyzer = new Analyzer();
-  return analyzer.analyzeSentiment(text);
+export async function analyzeSentiment(text) {
+  try {
+    if (!text) throw new Error("Text cannot be empty");
+    return Analyzer.analyzeSentiment(text);
+  } catch (error) {
+    throw new Error(`Sentiment analysis failed: ${error.message}`);
+  }
 }
 
-export function extractEntities(text) {
-  const extractor = new EntityExtractor();
-  return extractor.extractEntities(text);
+export async function extractEntities(text) {
+  try {
+    if (!text) throw new Error("Text cannot be empty");
+    return EntityExtractor.extractEntities(text);
+  } catch (error) {
+    throw new Error(`Entity extraction failed: ${error.message}`);
+  }
 }
 
 export async function nlpTool(query) {
   try {
-    const textToAnalyze = query.text || query;
-
-    if (typeof textToAnalyze !== "string" || textToAnalyze.length < 2) {
-      throw new Error("Please provide text to analyze.");
+    if (typeof query.text !== "string" || query.text.length < 2) {
+      throw new Error("Please provide valid text to analyze.");
     }
 
+    const textToAnalyze = query.text;
     const sentiment = await analyzeSentiment(textToAnalyze);
-    const entities = extractEntities(textToAnalyze);
+    const entities = await extractEntities(textToAnalyze);
 
-    // Build text summary for LLM
     const textSummary = `NLP Analysis Results:
 
 Sentiment: ${sentiment.sentiment.toUpperCase()} (score: ${sentiment.score})
@@ -87,7 +88,6 @@ ${entities.dates.length > 0 ? `• Dates: ${entities.dates.join(", ")}` : ""}
 ${entities.emails.length > 0 ? `• Emails: ${entities.emails.join(", ")}` : ""}
 ${Object.values(entities).every(arr => arr.length === 0) ? "• No entities detected" : ""}`;
 
-    // Build HTML for rich display (stored in data, not returned as main text)
     const html = `
       <div class="nlp-analysis">
         <h3>🔍 NLP Analysis</h3>
@@ -95,7 +95,7 @@ ${Object.values(entities).every(arr => arr.length === 0) ? "• No entities dete
         <div class="sentiment-box ${sentiment.sentiment}">
           <strong>Sentiment:</strong> ${sentiment.sentiment.toUpperCase()} (${sentiment.score})
         </div>
-
+        
         <div class="entities-section">
           <h4>Entities Detected:</h4>
           ${entities.people.length > 0 || entities.places.length > 0 || entities.organizations.length > 0 || entities.dates.length > 0 || entities.emails.length > 0 ? `
@@ -143,7 +143,6 @@ ${Object.values(entities).every(arr => arr.length === 0) ? "• No entities dete
       </style>
     `;
 
-    // CRITICAL FIX: Return text in main output, HTML in data
     return {
       tool: "nlp_tool",
       success: true,
@@ -151,17 +150,17 @@ ${Object.values(entities).every(arr => arr.length === 0) ? "• No entities dete
       data: {
         sentiment,
         entities,
-        html,  // HTML stored here for optional rich rendering
-        text: textSummary  // Clean text for LLM
+        html,
+        text: textSummary
       }
     };
 
-  } catch (err) {
+  } catch (error) {
     return {
       tool: "nlp_tool",
       success: false,
       final: true,
-      error: `NLP Analysis failed: ${err.message}`
+      error: `NLP Analysis failed: ${error.message}`
     };
   }
 }

@@ -7,7 +7,7 @@ import { CONFIG } from "../utils/config.js";
 /**
  * Internal helper: perform a POST to Ollama with timeout + abort
  */
-async function fetchWithTimeout(url, body, timeoutMs = 120_000) {
+async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -39,10 +39,12 @@ async function fetchWithTimeout(url, body, timeoutMs = 120_000) {
  * Non-streaming LLM call
  */
 export async function llm(prompt, configOptions = {}) {
+  // Use the passed timeout, or default to 10 minutes (600,000ms) for safety
+  const timeoutMs = configOptions.timeoutMs || 600_000;
+  
   const {
-    timeoutMs = 120_000,
     model = CONFIG.LLM_MODEL,
-    format, // <--- NEW: Capture the format command
+    format, 
     options = {} 
   } = configOptions;
 
@@ -53,8 +55,11 @@ export async function llm(prompt, configOptions = {}) {
       model,
       prompt,
       stream: false,
-      ...(format ? { format } : {}), // <--- NEW: Send format to Ollama
-      ...(Object.keys(options).length > 0 ? { options } : {})
+      ...(format ? { format } : {}),
+      options: {
+        num_ctx: 8192, // <--- Hard cap to prevent VRAM overflow on 8GB cards
+        ...options
+      }
     };
     
     // ... rest of the function stays exactly the same
@@ -98,12 +103,15 @@ export async function llm(prompt, configOptions = {}) {
  * Streaming LLM call with chunk guard + timeout
  * Robust against multiple JSON objects per chunk and partial lines.
  */
-export async function llmStream(prompt, onChunk, options = {}) {
+export async function llmStream(prompt, onChunk, configOptions = {}) {
+  // Pull these out so they can be overridden, with much safer defaults
+  const timeoutMs = configOptions.timeoutMs || 300_000; // 5 minutes
+  const maxChunks = configOptions.maxChunks || 10000;   // <--- HUGE increase from 200!
+  
   const {
-    timeoutMs = 120_000,
-    maxChunks = 200,
-    model = CONFIG.LLM_MODEL
-  } = options;
+    model = CONFIG.LLM_MODEL,
+    options = {} // Allow passing Ollama specific options like num_ctx
+  } = configOptions;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
@@ -111,10 +119,14 @@ export async function llmStream(prompt, onChunk, options = {}) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const body = {
+const body = {
       model,
       prompt,
-      stream: true
+      stream: true,
+      options: {
+        num_ctx: 8192, // <--- Keep normal chat streams fast!
+        ...options
+      }
     };
 
     const response = await fetch(url, {

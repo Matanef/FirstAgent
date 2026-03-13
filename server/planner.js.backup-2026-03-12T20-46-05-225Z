@@ -1235,11 +1235,8 @@ export async function plan({ message, chatContext = {} }) {
     };
     console.log(`[planner] Compound: review "${sourceFile}" → generate "${targetPath}"`);
     return [
-      // Pass the FULL user request so the Reviewer reads your custom instructions
-      { tool: "review", input: trimmed, context: {}, reasoning: "compound_review_source" },
-      
-      // Pass the FULL user request so the Writer executes your custom instructions
-      { tool: "fileWrite", input: trimmed, context: destContext, reasoning: "compound_generate_improved" }
+      { tool: "review", input: sourceFile, context: {}, reasoning: "compound_review_source" },
+      { tool: "fileWrite", input: `Write improved version of ${sourceBasename} to ${targetPath}`, context: destContext, reasoning: "compound_generate_improved" }
     ];
   }
 

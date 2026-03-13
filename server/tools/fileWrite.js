@@ -179,18 +179,21 @@ async function handleNaturalLanguageWrite(text, context = {}) {
         }
       }
 
-      const maxChars = 50000;
+      const maxChars = 150000;
       const truncatedSource = originalContent.length > maxChars
         ? originalContent.slice(0, maxChars) + "\n\n// ... (truncated for LLM context)"
         : originalContent;
 
       const improvePrompt = `You are a senior code refactoring expert. Given the ORIGINAL SOURCE CODE and REVIEW SUGGESTIONS below, produce an IMPROVED VERSION of the code.
 
+USER'S SPECIFIC INSTRUCTION: "${text}"
+
 CRITICAL INSTRUCTIONS:
 1. You MUST output the ENTIRE updated file from start to finish. Do NOT be lazy. Do NOT output partial snippets. Do NOT leave placeholders like "// rest of the code".
 2. You must wrap your final, complete code exactly between the boundaries ===CODE_START=== and ===CODE_END===.
 3. Do not break existing Node.js logic. Do not use browser-only APIs like DOMParser.
 4. Keep all existing configurations, exports, and imports intact unless explicitly told to change them.
+5. Pay close attention to the USER'S SPECIFIC INSTRUCTION. Ensure your rewritten code accomplishes exactly what they asked for!
 
 REVIEW SUGGESTIONS:
 ${reviewOutput}
@@ -203,17 +206,29 @@ ${truncatedSource}
 OUTPUT YOUR ENTIRE REWRITTEN CODE BELOW. You MUST start your code with ===CODE_START=== and end with ===CODE_END===.
 AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the improvements you made.`;
 
-      const genTimeout = truncatedSource.length > 20000 ? 600_000 : 300_000;
+// Use longer timeout for massive files
+      const genTimeout = truncatedSource.length > 20000 ? 1800_000 : 300_000;
       console.log(`📝 [fileWrite] Calling LLM for improved code (${truncatedSource.length} chars, timeout: ${genTimeout / 1000}s)...`);
       
+      // We let Ollama auto-manage the memory allocation!
       const llmResult = await llm(improvePrompt, { 
-        timeoutMs: genTimeout,
-        options: { num_predict: 8192 } 
+        timeoutMs: genTimeout
       });
+
+      if (!llmResult || !llmResult.success) {
+        throw new Error(`LLM generation aborted: ${llmResult?.error || llmResult?.data?.text || "Unknown error"}`);
+      }
+
+      // NEW GUARDRAIL: Stop immediately if the LLM request timed out or failed
+      if (!llmResult || !llmResult.success) {
+        throw new Error(`LLM generation aborted: ${llmResult?.error || llmResult?.data?.text || "Unknown error"}`);
+      }
       
-      const improvedCode = llmResult?.data?.text || llmResult?.text || (typeof llmResult === "string" ? llmResult : null);
-      if (!improvedCode || improvedCode.length < 50) {
-        throw new Error("LLM failed to generate improved code.");
+      const improvedCode = llmResult.data?.text || llmResult.text || (typeof llmResult === "string" ? llmResult : null);
+      
+      // Secondary Guardrail: Don't write literal error strings
+      if (!improvedCode || improvedCode.length < 50 || improvedCode.includes("The language model encountered an error")) {
+        throw new Error("LLM failed to generate improved code or timed out.");
       }
 
       // STRICT EXTRACTION

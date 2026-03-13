@@ -214,14 +214,17 @@ export async function review(request) {
       ? content.slice(0, MAX_REVIEW_CHARS) + `\n\n// ... (truncated: showing ${MAX_REVIEW_CHARS} of ${content.length} chars)`
       : content;
 
-    const prompt = `You are a senior software engineer conducting a code review.
+const prompt = `You are a senior software engineer conducting a code review.
+
+USER'S SPECIFIC INSTRUCTION: "${query}"
 
 FILE: ${relativePath}
 PROJECT CONTEXT: Local LLM UI (Node.js/Express backend + React frontend)
 LINES: ${lines} total
 SIZE: ${Math.round(content.length / 1024)}KB${truncated ? ` (showing first ${Math.round(MAX_REVIEW_CHARS / 1024)}KB)` : ""}
 
-TASK: Provide a structured, professional code review with:
+TASK: Provide a structured, professional code review. 
+CRITICAL: You must heavily bias your review to address the USER'S SPECIFIC INSTRUCTION. If they asked to refactor, find bugs, or split functions, focus your suggestions entirely on how to achieve their exact goal!
 
 1. **Summary** (2-3 sentences):
    - What this file does
@@ -246,10 +249,16 @@ ${reviewContent}
 
 IMPORTANT: Be specific, reference actual code, keep it concise.`;
 
-    // Timeout: 10min for 32B models on large files, 5min otherwise
-    const reviewTimeout = reviewContent.length > 20000 ? 600_000 : 300_000;
-    console.log(`🤖 Calling LLM for review... (${reviewContent.length} chars sent to LLM, timeout: ${reviewTimeout / 1000}s)`);
-    const llmResponse = await llm(prompt, { timeoutMs: reviewTimeout });
+// ── DYNAMIC TIMEOUT (Auto-Memory) ──
+    const isMassiveFile = reviewContent.length > 20000;
+    const reviewTimeout = isMassiveFile ? 600_000 : 300_000;
+
+    console.log(`🤖 Calling LLM for review... (${reviewContent.length} chars, timeout: ${reviewTimeout / 1000}s)`);
+    
+    // We let Ollama auto-manage the memory allocation!
+    const llmResponse = await llm(prompt, { 
+      timeoutMs: reviewTimeout
+    });
 
     if (!llmResponse.success) {
       console.error("❌ LLM review response:", JSON.stringify(llmResponse).slice(0, 500));

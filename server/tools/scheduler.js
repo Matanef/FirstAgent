@@ -164,14 +164,17 @@ function detectSchedulerIntent(text) {
 async function executeScheduledTask(schedule) {
   console.log(`\n⏰ [scheduler] Executing task: "${schedule.task}"`);
   try {
-    // Dynamic import to avoid circular dependency (scheduler → planner → executor → tools → scheduler)
+    // Dynamic import to avoid circular dependency
     const { plan } = await import("../planner.js");
-    const { orchestrate } = await import("../utils/coordinator.js");
+    
+    // FIX: Import the correct function name based on your coordinator!
+    const { executeAgent } = await import("../utils/coordinator.js");
 
     const steps = await plan({ message: schedule.task });
     console.log(`[scheduler] Task planned as ${steps.length} step(s): ${steps.map(s => s.tool).join(" -> ")}`);
 
-    const results = await orchestrate(steps, schedule.task);
+    // FIX: Execute the planned steps using the correct function
+    const results = await executeAgent(steps, schedule.task);
 
     // Update schedule metadata
     const schedules = loadSchedules();
