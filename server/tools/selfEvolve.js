@@ -17,6 +17,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const EVOLUTION_LOG = path.resolve(__dirname, "..", "data", "evolution-log.json");
+const REVIEW_CACHE_PATH = path.resolve(__dirname, "..", "data", "review-rotation.json"); // <-- ADD THIS
 
 // ── Guardrails: paths the agent is allowed to modify during self-evolution ──
 const ALLOWED_EVOLVE_DIRS = ["server/tools", "server/utils", "server"];
@@ -190,6 +191,57 @@ function extractImprovementPlan(responseText) {
     ];
   }
 }
+/**
+ * Reads the directory and picks up to N files that haven't been reviewed recently.
+ */
+async function getFilesToReview(targetDir, maxFiles = 10) {
+  let cache = {};
+  try {
+    const raw = await fs.readFile(REVIEW_CACHE_PATH, "utf8");
+    cache = JSON.parse(raw);
+  } catch { /* Cache doesn't exist yet, that's fine */ }
+
+  const files = [];
+  try {
+    const items = await fs.readdir(targetDir, { withFileTypes: true });
+    for (const item of items) {
+      if (item.isFile() && item.name.endsWith(".js")) {
+        files.push(path.join(targetDir, item.name));
+      }
+    }
+  } catch (err) {
+    console.error(`[selfEvolve] Could not read directory ${targetDir}:`, err.message);
+    return [];
+  }
+
+  // Sort files by oldest timestamp (0 if never reviewed)
+  files.sort((a, b) => (cache[a] || 0) - (cache[b] || 0));
+  
+  return files.slice(0, maxFiles);
+}
+
+/**
+ * Updates the timestamps for the files we just reviewed.
+ */
+async function markFilesReviewed(files) {
+  let cache = {};
+  try {
+    const raw = await fs.readFile(REVIEW_CACHE_PATH, "utf8");
+    cache = JSON.parse(raw);
+  } catch { /* Cache doesn't exist yet */ }
+
+  const now = Date.now();
+  for (const f of files) {
+    cache[f] = now;
+  }
+
+  try {
+    await fs.writeFile(REVIEW_CACHE_PATH, JSON.stringify(cache, null, 2), "utf8");
+  } catch (err) {
+    console.error("[selfEvolve] Failed to save review cache:", err.message);
+  }
+}
+
 
 /**
  * Run a full self-improvement cycle
@@ -199,7 +251,7 @@ async function runImprovementCycle(options = {}) {
     scope = "tools",
     dryRun = false,
     focus = "",
-    maxDurationMs = 5 * 60 * 1000 // 5 minutes global guard
+    maxDurationMs = 15 * 60 * 1000 // 15 minutes global guard
   } = options;
 
   console.log("[selfEvolve] Starting improvement cycle:", { scope, dryRun, focus, maxDurationMs });
@@ -219,83 +271,118 @@ async function runImprovementCycle(options = {}) {
     }
   };
 
-  // Step 1: Scan GitHub for inspiration
-  console.log("[selfEvolve] Step 1: github_scan starting.");
-  results.steps.push({ step: "github_scan", status: "running" });
-  let githubInsights = "";
-  try {
-    ensureNotExpired("github_scan");
-    const scanQuery = normalizeFocus(focus) || "ai agent tools best practices node.js";
-    console.log("[selfEvolve] github_scan query:", scanQuery);
+  // Step 1: Targeted Code Review (Read Memory & Review)
+  console.log("[selfEvolve] Step 1: targeted_review starting.");
+  results.steps.push({ step: "targeted_review", status: "running" });
 
+  const targetDir = scope === "tools" ? path.join(PROJECT_ROOT, "server/tools") : path.join(PROJECT_ROOT, "server");
+  let reviewFindings = "";
+  let reviewedFilesList = [];
+
+  try {
+    ensureNotExpired("targeted_review");
+    
+    // 1. Ask Memory for 10 files that haven't been reviewed recently
+    const filesToReview = await getFilesToReview(targetDir, 10);
+    console.log(`[selfEvolve] Selected ${filesToReview.length} files from cache for review.`);
+
+    if (filesToReview.length === 0) {
+       throw new Error("No files found to review in " + targetDir);
+    }
+
+    // 2. Loop through and review ONLY these specific files
+    const controller = new AbortController();
+    let combinedNotes = [];
+
+    for (const file of filesToReview) {
+      try {
+        console.log(`[selfEvolve] Analyzing specific file: ${path.basename(file)}`);
+        const reviewResult = await withTimeout(
+          codeReview({
+            text: `quality review ${file}`,
+            context: {
+              source: "selfEvolve",
+              path: file,
+              reviewType: "quality",
+              signal: controller.signal,
+              budgetMs: 60_000 // Only give it 1 minute per file!
+            }
+          }),
+          75_000, 
+          `codeReview(${path.basename(file)})`,
+          controller
+        );
+        
+        if (reviewResult.data?.text) {
+          combinedNotes.push(`--- REVIEW FOR ${path.basename(file)} ---\n${reviewResult.data.text}`);
+          reviewedFilesList.push(file);
+        }
+      } catch (fileErr) {
+        console.warn(`[selfEvolve] Skipped ${path.basename(file)} due to timeout/error.`);
+      }
+    }
+
+    reviewFindings = combinedNotes.join("\n\n");
+    
+    // 3. Update the memory cache so we don't review these tomorrow!
+    await markFilesReviewed(reviewedFilesList);
+
+    const step = results.steps[results.steps.length - 1];
+    step.status = "done";
+    step.summary = `Reviewed ${reviewedFilesList.length} targeted files`;
+    console.log("[selfEvolve] targeted_review done. Summary:", step.summary);
+
+  } catch (err) {
+    const step = results.steps[results.steps.length - 1];
+    step.status = "failed";
+    step.error = err.message;
+    console.error("[selfEvolve] targeted_review failed:", err.message);
+  }
+
+  // Step 2: Dynamic GitHub Scan (Targeted Learning)
+  console.log("[selfEvolve] Step 2: dynamic_learning starting.");
+  results.steps.push({ step: "dynamic_learning", status: "running" });
+  let githubInsights = "";
+  
+  try {
+    ensureNotExpired("dynamic_learning");
+
+    // 1. Ask LLM what to search for based on the weaknesses we JUST found!
+    const queryPrompt = `Based on the following code review findings, identify the SINGLE most critical technical concept, library, or best practice we need to research to fix the underlying issues.
+    
+CODE REVIEW FINDINGS:
+${reviewFindings.slice(0, 15000)}
+
+Respond with ONLY a 3-to-6 word search query for GitHub. Do not include quotes, explanations, or markdown.
+Example: node.js robust error handling middleware`;
+
+    console.log("[selfEvolve] Asking LLM for dynamic search query...");
+    const queryResponse = await withTimeout(llm(queryPrompt), 60_000, "llm(search_query)");
+    
+    // Clean up the LLM's response so it's a perfect search string
+    const dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"]/g, '') || "ai agent tools best practices node.js";
+    console.log(`[selfEvolve] LLM generated targeted query: "${dynamicQuery}"`);
+
+    // 2. Run the targeted scan
     const scanResult = await withTimeout(
       githubScanner({
-        text: `scan github for ${scanQuery}`,
+        text: `scan github for ${dynamicQuery}`,
         context: { action: "improve" }
       }),
-      60_000,
+      120_000,
       "githubScanner"
     );
 
     githubInsights = scanResult.data?.analysis || scanResult.data?.text || "";
     const step = results.steps[results.steps.length - 1];
     step.status = "done";
-    step.summary = `Found insights from ${scanResult.data?.repos?.length || 0} repos`;
-    console.log("[selfEvolve] github_scan done. Summary:", step.summary);
+    step.summary = `Learned about "${dynamicQuery}" from ${scanResult.data?.repos?.length || 0} repos`;
+    console.log("[selfEvolve] dynamic_learning done. Summary:", step.summary);
   } catch (err) {
-    githubInsights = "";
     const step = results.steps[results.steps.length - 1];
     step.status = "failed";
     step.error = err.message;
-    console.error("[selfEvolve] github_scan failed:", err.message);
-  }
-
-  // Step 2: Review own code (NOW WITH BUDGET + CANCELLATION)
-  console.log("[selfEvolve] Step 2: self_review starting.");
-  results.steps.push({ step: "self_review", status: "running" });
-
-  const reviewTarget =
-    scope === "planner"
-      ? path.join(PROJECT_ROOT, "server/planner.js")
-      : scope === "tools"
-      ? path.join(PROJECT_ROOT, "server/tools")
-      : path.join(PROJECT_ROOT, "server");
-
-  console.log("[selfEvolve] self_review target:", reviewTarget);
-
-  let reviewFindings = "";
-  try {
-    ensureNotExpired("self_review");
-
-    const controller = new AbortController();
-
-    const reviewResult = await withTimeout(
-      codeReview({
-        text: `quality review ${reviewTarget}`,
-        context: {
-          source: "selfEvolve",
-          path: reviewTarget,
-          reviewType: "quality",
-          signal: controller.signal,
-          budgetMs: 120_000
-        }
-      }),
-      120_000,
-      "codeReview",
-      controller
-    );
-
-    reviewFindings = reviewResult.data?.text || "";
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `Reviewed ${reviewResult.data?.reviewedFiles || 1} files`;
-    console.log("[selfEvolve] self_review done. Summary:", step.summary);
-  } catch (err) {
-    reviewFindings = "";
-    const step = results.steps[results.steps.length - 1];
-    step.status = "failed";
-    step.error = err.message;
-    console.error("[selfEvolve] self_review failed:", err.message);
+    console.error("[selfEvolve] dynamic_learning failed:", err.message);
   }
 
   // Step 3: Check dependency health
@@ -334,13 +421,13 @@ async function runImprovementCycle(options = {}) {
   try {
     ensureNotExpired("improvement_plan");
 
-    // ── Gather real project context so the LLM doesn't hallucinate ──
+// ── Gather real project context so the LLM doesn't hallucinate ──
     const installedDeps = await getInstalledDependencies();
     const depsStr = installedDeps.length > 0
       ? installedDeps.join(", ")
       : "express, axios, cors, dotenv, googleapis";
 
-    const prompt = `You are an AI agent's self-improvement engine. Based on the following analysis, generate a specific improvement plan.
+    const prompt = `You are an AI agent's self-improvement engine. Based on the following code review and the targeted research you just completed, generate a specific improvement plan.
 
 ═══════════════════════════════════════════════════════════════
 PROJECT ARCHITECTURE RULES (MANDATORY — NEVER VIOLATE THESE):
@@ -359,44 +446,43 @@ PROJECT ARCHITECTURE RULES (MANDATORY — NEVER VIOLATE THESE):
    "CLI interfaces", or architecture wrappers. Improve EXISTING tools only.
 6. PRESERVE EXPORTS: Every tool file exports a single async function.
    Do NOT change the function signature or export name.
+7. ANTI-HALLUCINATION (CRITICAL): You may ONLY suggest improvements for files that are EXPLICITLY named in the CODE REVIEW FINDINGS below. If a file is not in the review findings, it does not exist. DO NOT guess or invent file names.
 ═══════════════════════════════════════════════════════════════
 
-GITHUB INSIGHTS:
-${(githubInsights || "No GitHub insights available").slice(0, 3000)}
+TARGETED RESEARCH (From dynamic GitHub scan):
+${(githubInsights || "No GitHub insights available").slice(0, 10000)}
 
-CODE REVIEW FINDINGS:
-${(reviewFindings || "No review findings available").slice(0, 3000)}
+CODE REVIEW FINDINGS (The 10 files you reviewed today):
+${(reviewFindings || "No review findings available").slice(0, 80000)}
 
 DEPENDENCY ANALYSIS:
 ${(depAnalysis || "No dependency analysis available").slice(0, 2000)}
 
-Generate a prioritized list of 3-5 specific, actionable improvements. For each:
-1. WHAT to change (specific EXISTING file and function — the file MUST already exist)
-2. WHY (based on findings above)
+Generate a prioritized list of 1 to 3 specific, actionable improvements based on the TARGETED RESEARCH. For each:
+1. WHAT to change (specific EXISTING file from the review findings)
+2. WHY (based on the targeted research above)
 3. HOW (specific code changes — use ES module syntax only)
 4. RISK level (low/medium/high)
 
 Focus on improvements that are:
 - Low risk (won't break existing functionality)
-- High impact (improve reliability, speed, or capabilities)
+- High impact (fix the exact weaknesses found in the review)
 - Modifying EXISTING files only (never creating new ones)
 - Using ONLY installed dependencies (never inventing packages)
 
 Format as JSON array:
 [
-  { "file": "server/tools/example.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" },
-  ...
+  { "file": "server/tools/example.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" }
 ]
 
-CRITICAL: The "file" field must be a relative path to an EXISTING file (e.g. "server/tools/email.js").
-Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
+CRITICAL: The "file" field must be a relative path to an EXISTING file from the review. Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
 
     console.log("[selfEvolve] Calling LLM for improvement_plan.");
-    const response = await withTimeout(llm(prompt), 120_000, "llm(selfEvolve)");
+    const response = await withTimeout(llm(prompt), 300_000, "llm(selfEvolve)");
     const responseText = response?.data?.text || "";
     improvementPlan = extractImprovementPlan(responseText);
 
-    // ── Post-filter: remove any suggestions targeting blocked paths ──
+// ── Post-filter: remove any suggestions targeting blocked paths ──
     const originalCount = improvementPlan.length;
     improvementPlan = improvementPlan.filter(imp => {
       if (!imp.file || imp.file === "none") return true; // info-only items
@@ -408,6 +494,14 @@ Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
         console.warn(`[selfEvolve] BLOCKED path outside allowed dirs: ${imp.file}`);
         return false;
       }
+      
+      // ── THE ANTI-HALLUCINATION SHIELD ──
+      // If the file name doesn't exist anywhere in the Code Review text, it's a hallucination!
+      if (reviewFindings && !reviewFindings.includes(path.basename(imp.file))) {
+        console.warn(`[selfEvolve] BLOCKED hallucinated file (not in review): ${imp.file}`);
+        return false;
+      }
+
       return true;
     });
     if (improvementPlan.length < originalCount) {
@@ -634,7 +728,13 @@ export async function selfEvolve(request) {
   console.log("[selfEvolve] Entry called with text:", text);
   console.log("[selfEvolve] Context:", context);
 
-  const intent = context.action || detectIntent(text);
+  let intent = context.action || detectIntent(text);
+  
+  // ── OVERRIDE: If the user explicitly typed "dry run", force it! ──
+  if (/\b(dry.?run|preview|plan)\b/i.test(text)) {
+    intent = "dryrun";
+  }
+
   console.log("[selfEvolve] Detected intent:", intent);
 
   try {

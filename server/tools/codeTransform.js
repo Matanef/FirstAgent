@@ -260,14 +260,42 @@ async function registerNewTool(toolFilePath, descriptionText) {
 }
 
 /**
- * Generate transformation using LLM
+ * Safely applies SEARCH/REPLACE blocks to the original source code
+ */
+function applyPatchBlocks(originalContent, llmOutput) {
+  let currentContent = originalContent;
+  let appliedCount = 0;
+
+  // Match <<<< followed by old code, ====, new code, >>>>
+  const blockRegex = /<<<<\n([\s\S]*?)\n====\n([\s\S]*?)\n>>>>/g;
+  const blocks = [...llmOutput.matchAll(blockRegex)];
+
+  if (blocks.length === 0) return null; // No valid patches found
+
+  for (const match of blocks) {
+    const searchBlock = match[1].trim();
+    const replaceBlock = match[2].trim();
+
+    // Only apply if the exact original code exists in the file
+    if (searchBlock && currentContent.includes(searchBlock)) {
+      currentContent = currentContent.replace(searchBlock, replaceBlock);
+      appliedCount++;
+    } else {
+      console.warn("[codeTransform] Patch block failed: Could not find exact search string in file.");
+    }
+  }
+
+  return appliedCount > 0 ? currentContent : null;
+}
+
+/**
+ * Generate transformation using LLM (Surgical Patching)
  * @param {object} options - Optional flags
  * @param {boolean} options.fromSelfEvolve - If true, adds stricter architectural rules
- * @param {string} options.existingContent - Pre-read snippet for additional context
  */
 async function generateTransformation(filePath, content, intent, instructions, options = {}) {
   const filename = path.basename(filePath);
-  const ext = path.extname(filename).slice(1);
+  const ext = path.extname(filename).slice(1) || "js";
 
   // When called from selfEvolve, inject strict architectural rules
   const architectureRules = options.fromSelfEvolve ? `
@@ -281,44 +309,82 @@ ARCHITECTURE RULES (MANDATORY — violations will be rejected):
 - Do NOT add CLI interfaces, EventEmitters, or generic boilerplate wrappers.
 - Keep changes MINIMAL and SURGICAL — only modify what the instruction asks for.` : "";
 
-  const prompt = `You are an expert code transformer. Your task: ${intent} the following ${ext} file.
+  const prompt = `You are a surgical code editor. Your task: ${intent} the following ${ext} file.
 
 File: ${filename}
 Path: ${filePath}
 
 Current code:
 \`\`\`${ext}
-${content.slice(0, 12000)}
+${content}
 \`\`\`
 
 User instructions: ${instructions}
 
-RULES:
-1. Return the COMPLETE transformed file contents (not just the changed parts)
-2. Preserve ALL existing functionality unless explicitly asked to remove it
-3. Maintain the same coding style and conventions
-4. Add comments explaining significant changes
-5. Do NOT add unnecessary dependencies${architectureRules}
+RULES FOR SURGICAL EDITING (CRITICAL):
+1. DO NOT REWRITE THE ENTIRE FILE! You must use SEARCH and REPLACE blocks.
+2. The code in the SEARCH block MUST match the existing code exactly, character for character.
+3. Start your response with a 1-sentence summary of the change.${architectureRules}
 
-Start your response with a brief summary of changes (2-3 lines), then output the complete transformed file wrapped in \`\`\`${ext} ... \`\`\` code fences.`;
+FORMAT YOUR CHANGES EXACTLY LIKE THIS:
+<<<<
+exact existing code to remove
+====
+new code to insert
+>>>>
+
+Example of a valid change:
+<<<<
+const maxRetries = 3;
+====
+const maxRetries = 5;
+>>>>`;
+
+  // ── DYNAMIC VRAM OPTIMIZATION ──
+  const isMassiveFile = content.length > 20000;
+  const timeoutMs = isMassiveFile ? 600_000 : 300_000;
+  const dynamicCtx = isMassiveFile ? 32768 : 8192; // Only expand brain for giant files
 
   try {
-    const response = await llm(prompt);
+    console.log(`🧠 [codeTransform] Calling LLM (${content.length} chars, timeout: ${timeoutMs / 1000}s, memory: ${dynamicCtx} tokens)`);
+    const response = await llm(prompt, {
+      timeoutMs,
+      options: { num_ctx: dynamicCtx }
+    });
+    
     const responseText = response?.data?.text || "";
 
-    // Extract code block from response
-    const codeBlockMatch = responseText.match(/```(?:\w+)?\n([\s\S]*?)```/);
+    // 1. Try to apply surgical patches first
+    const patchedContent = applyPatchBlocks(content, responseText);
+    if (patchedContent) {
+      return {
+        success: true,
+        newContent: patchedContent,
+        summary: responseText.split(/<<<</)[0].trim() || "Applied surgical patch successfully.",
+        rawResponse: responseText
+      };
+    }
+
+    // 2. Fallback: If the LLM ignored instructions and just output a full file block
+    // We use [\`]{3} instead of typing actual backticks so the chat UI doesn't break
+    const codeBlockMatch = responseText.match(/[\`]{3}(?:\w+)?\n([\s\S]*?)[\`]{3}/);
     const newContent = codeBlockMatch ? codeBlockMatch[1].trim() : null;
 
-    // Extract summary (text before code block)
-    const summaryMatch = responseText.split(/```/)[0].trim();
+    if (newContent) {
+      // ── TRUNCATION GUARD ──
+      if (content.length > 3000 && newContent.length < (content.length * 0.8)) {
+        console.warn(`[codeTransform] LLM truncated file from ${content.length} to ${newContent.length} chars.`);
+        throw new Error("LLM Safety Guard: The generated code was severely truncated. Patching failed.");
+      }
+      return {
+        success: true,
+        newContent,
+        summary: responseText.split(/[\`]{3}/)[0].trim() || "Full file rewrite applied.",
+        rawResponse: responseText
+      };
+    }
 
-    return {
-      success: !!newContent,
-      newContent,
-      summary: summaryMatch || "Transformation applied.",
-      rawResponse: responseText
-    };
+    return { success: false, error: "LLM did not output valid patches or code blocks." };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -457,7 +523,8 @@ Output ONLY the complete file contents wrapped in \`\`\`${ext} ... \`\`\` code f
   try {
     const response = await llm(prompt);
     const responseText = response?.data?.text || "";
-    const codeMatch = responseText.match(/```(?:\w+)?\n([\s\S]*?)```/);
+    // Using the same safe trick to avoid breaking chat parsing
+    const codeMatch = responseText.match(/[\`]{3}(?:\w+)?\n([\s\S]*?)[\`]{3}/);
     return {
       success: !!codeMatch,
       content: codeMatch ? codeMatch[1].trim() : null,

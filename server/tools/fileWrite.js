@@ -218,11 +218,6 @@ AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the impr
       if (!llmResult || !llmResult.success) {
         throw new Error(`LLM generation aborted: ${llmResult?.error || llmResult?.data?.text || "Unknown error"}`);
       }
-
-      // NEW GUARDRAIL: Stop immediately if the LLM request timed out or failed
-      if (!llmResult || !llmResult.success) {
-        throw new Error(`LLM generation aborted: ${llmResult?.error || llmResult?.data?.text || "Unknown error"}`);
-      }
       
       const improvedCode = llmResult.data?.text || llmResult.text || (typeof llmResult === "string" ? llmResult : null);
       
@@ -256,6 +251,18 @@ AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the impr
       cleanCode = cleanCode.replace(/^(Here is|Sure|Okay|Below is|I have applied)[^\n]*\n+/gi, "");
       
       cleanCode = cleanCode.trim();
+
+      // ── THE TRUNCATION GUARD (Anti-Laziness Shield) ──
+      // If the original file was over 3KB, and the LLM shrank the code by more than 20%
+      if (originalContent.length > 3000 && cleanCode.length < (originalContent.length * 0.8)) {
+        const origKB = Math.round(originalContent.length / 1024);
+        const newKB = Math.round(cleanCode.length / 1024);
+        
+        throw new Error(
+          `LLM Safety Guard: The generated code was severely truncated (${origKB}KB down to ${newKB}KB). ` +
+          `The LLM got lazy. For large files, please use the 'Refactor' tool instead of a full file rewrite.`
+        );
+      }
 
       const finalPath = targetPath || `${sourceFile}.improved.js`;
       console.log(`📝 [fileWrite] Writing improved file to ${finalPath} (${cleanCode.length} chars)`);

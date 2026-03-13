@@ -251,7 +251,7 @@ IMPORTANT: Be specific, reference actual code, keep it concise.`;
 
 // ── DYNAMIC TIMEOUT (Auto-Memory) ──
     const isMassiveFile = reviewContent.length > 20000;
-    const reviewTimeout = isMassiveFile ? 600_000 : 300_000;
+    const reviewTimeout = isMassiveFile ? 900_000 : 600_000;
 
     console.log(`🤖 Calling LLM for review... (${reviewContent.length} chars, timeout: ${reviewTimeout / 1000}s)`);
     
