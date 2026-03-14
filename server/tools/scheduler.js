@@ -68,18 +68,7 @@ function parseSchedule(text) {
     return { type: "interval", intervalMs, description: `every ${amount} ${unit}(s)` };
   }
 
-  // "every morning/evening/night"
-  if (/every\s+morning/i.test(lower)) {
-    return { type: "daily", hour: 8, minute: 0, description: "every morning at 8:00 AM" };
-  }
-  if (/every\s+evening/i.test(lower)) {
-    return { type: "daily", hour: 18, minute: 0, description: "every evening at 6:00 PM" };
-  }
-  if (/every\s+night/i.test(lower)) {
-    return { type: "daily", hour: 21, minute: 0, description: "every night at 9:00 PM" };
-  }
-
-  // "at HH:MM" or "at H AM/PM"
+// 1. SPECIFIC TIME (The highest priority)
   const atMatch = lower.match(/at\s+(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
   if (atMatch) {
     let hour = parseInt(atMatch[1]);
@@ -90,7 +79,7 @@ function parseSchedule(text) {
     return { type: "daily", hour, minute, description: `daily at ${hour}:${String(minute).padStart(2, "0")}` };
   }
 
-  // "in X minutes/hours"
+  // 2. SPECIFIC DELAY (Secondary priority)
   const inMatch = lower.match(/in\s+(\d+)\s*(minute|min|hour|hr|second|sec|day)s?/);
   if (inMatch) {
     const amount = parseInt(inMatch[1]);
@@ -102,6 +91,17 @@ function parseSchedule(text) {
     else if (unit.startsWith("day")) delayMs = amount * 86400 * 1000;
     const runAt = new Date(Date.now() + delayMs);
     return { type: "once", runAt: runAt.toISOString(), delayMs, description: `in ${amount} ${unit}(s)` };
+  }
+
+  // 3. GENERIC KEYWORDS (The fallbacks)
+  if (/every\s+morning/i.test(lower)) {
+    return { type: "daily", hour: 8, minute: 0, description: "every morning at 8:00 AM" };
+  }
+  if (/every\s+evening/i.test(lower)) {
+    return { type: "daily", hour: 18, minute: 0, description: "every evening at 6:00 PM" };
+  }
+  if (/every\s+night/i.test(lower)) {
+    return { type: "daily", hour: 21, minute: 0, description: "every night at 9:00 PM" };
   }
 
   // "daily" with no specific time
