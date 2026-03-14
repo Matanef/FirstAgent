@@ -26,82 +26,32 @@ export async function githubTrending(request) {
             const response = await fetch(searchUrl, {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             });
+            const data = await response.json();
+            const repos = (data.items || []).slice(0, 10).map(repo => ({
+                name: repo.full_name,
+                url: repo.html_url,
+                description: repo.description,
+                stars: repo.stargazers_count
+            }));
 
-            if (!response.ok) {
-                // Fallback to trending page if API fails/ratelimited
-                console.warn("⚠️ Search API failed, falling back to general trending.");
-            } else {
-                const data = await response.json();
-                const repos = (data.items || []).slice(0, 10).map(repo => ({
-                    name: repo.full_name,
-                    url: repo.html_url,
-                    description: repo.description,
-                    stars: repo.stargazers_count
-                }));
-
-                return {
-                    tool: "githubTrending",
-                    success: true,
-                    final: true,
-                    data: {
-                        count: repos.length,
-                        repositories: repos,
-                        topic: cleanQuery,
-                        timestamp: new Date().toISOString(),
-                        preformatted: true,
-                        text: `**Trending GitHub Repositories: ${cleanQuery}**\n\n` +
-                            repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}\n   ${r.description || 'No description'}`).join('\n\n')
-                    },
-                    reasoning: `Found ${repos.length} top repositories for topic "${cleanQuery}".`
-                };
-            }
-        }
-
-        // Use GitHub Search API instead of broken HTML scraping
-        console.log("🌏 Fetching GitHub Trending via Search API...");
-        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-        const searchUrl = `https://api.github.com/search/repositories?q=stars:>500+pushed:>${oneWeekAgo}&sort=stars&order=desc&per_page=15`;
-
-        const response = await fetch(searchUrl, {
-            headers: { 'Accept': 'application/vnd.github.v3+json' }
-        });
-
-        if (!response.ok) {
-            throw new Error(`GitHub API error: HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const repos = (data.items || []).slice(0, 15).map(repo => ({
-            name: repo.full_name,
-            url: repo.html_url,
-            description: repo.description,
-            stars: repo.stargazers_count,
-            language: repo.language
-        }));
-
-        if (repos.length === 0) {
             return {
                 tool: "githubTrending",
-                success: false,
-                error: "No trending repositories found."
+                success: true,
+                final: true,
+                data: {
+                    count: repos.length,
+                    repositories: repos,
+                    topic: cleanQuery,
+                    timestamp: new Date().toISOString(),
+                    preformatted: true,
+                    text: `**Trending GitHub Repositories: ${cleanQuery}**\n\n` +
+                        repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}\n   ${r.description || 'No description'}`).join('\n\n')
+                },
+                reasoning: `Found ${repos.length} top repositories for topic "${cleanQuery}".`
             };
         }
 
-        return {
-            tool: "githubTrending",
-            success: true,
-            final: true,
-            data: {
-                count: repos.length,
-                repositories: repos,
-                timestamp: new Date().toISOString(),
-                preformatted: true,
-                text: `**Trending GitHub Repositories (past week)**\n\n` +
-                    repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}${r.language ? ` (${r.language})` : ''}\n   ${r.description || 'No description'}`).join('\n\n')
-            },
-            reasoning: `Found ${repos.length} trending repositories on GitHub.`
-        };
-
+        return await fetchTrendingRepos('past week');
     } catch (err) {
         console.error("❌ GitHub Trending Error:", err);
         return {
@@ -111,4 +61,47 @@ export async function githubTrending(request) {
             error: `Failed to fetch trending: ${err.message}`
         };
     }
+}
+
+async function fetchTrendingRepos(timeframe) {
+    console.log(`🌏 Fetching GitHub Trending via Search API (${timeframe})...`);
+    const oneWeekAgo = timeframe === 'past week' ? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] : '';
+    const searchUrl = `https://api.github.com/search/repositories?q=stars:>500${oneWeekAgo ? `+pushed:>${oneWeekAgo}` : ''}&sort=stars&order=desc&per_page=15`;
+    const response = await fetch(searchUrl, {
+        headers: { 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (!response.ok) {
+        throw new Error(`GitHub API error: HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    const repos = (data.items || []).slice(0, 15).map(repo => ({
+        name: repo.full_name,
+        url: repo.html_url,
+        description: repo.description,
+        stars: repo.stargazers_count,
+        language: repo.language
+    }));
+
+    if (repos.length === 0) {
+        return {
+            tool: "githubTrending",
+            success: false,
+            error: "No trending repositories found."
+        };
+    }
+
+    return {
+        tool: "githubTrending",
+        success: true,
+        final: true,
+        data: {
+            count: repos.length,
+            repositories: repos,
+            timestamp: new Date().toISOString(),
+            preformatted: true,
+            text: `**Trending GitHub Repositories (${timeframe})**\n\n` +
+                repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}${r.language ? ` (${r.language})` : ''}\n   ${r.description || 'No description'}`).join('\n\n')
+        },
+        reasoning: `Found ${repos.length} trending repositories on GitHub.`
+    };
 }

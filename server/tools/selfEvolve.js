@@ -305,7 +305,7 @@ async function runImprovementCycle(options = {}) {
               path: file,
               reviewType: "quality",
               signal: controller.signal,
-              budgetMs: 60_000 // Only give it 1 minute per file!
+              budgetMs: 120_000 // Only give it 1 minute per file!
             }
           }),
           75_000, 
@@ -314,7 +314,8 @@ async function runImprovementCycle(options = {}) {
         );
         
         if (reviewResult.data?.text) {
-          combinedNotes.push(`--- REVIEW FOR ${path.basename(file)} ---\n${reviewResult.data.text}`);
+          const relativePath = path.relative(PROJECT_ROOT, file).replace(/\\/g, "/");
+          combinedNotes.push(`--- REVIEW FOR ${relativePath} ---\n${reviewResult.data.text}`);
           reviewedFilesList.push(file);
         }
       } catch (fileErr) {
@@ -357,7 +358,7 @@ Respond with ONLY a 3-to-6 word search query for GitHub. Do not include quotes, 
 Example: node.js robust error handling middleware`;
 
     console.log("[selfEvolve] Asking LLM for dynamic search query...");
-    const queryResponse = await withTimeout(llm(queryPrompt), 60_000, "llm(search_query)");
+    const queryResponse = await withTimeout(llm(queryPrompt), 90_000, "llm(search_query)");
     
     // Clean up the LLM's response so it's a perfect search string
     const dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"]/g, '') || "ai agent tools best practices node.js";
@@ -470,12 +471,12 @@ Focus on improvements that are:
 - Modifying EXISTING files only (never creating new ones)
 - Using ONLY installed dependencies (never inventing packages)
 
-Format as JSON array:
+Format as JSON array (DO NOT copy this dummy example):
 [
-  { "file": "server/tools/example.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" }
+  { "file": "EXACT_PATH_FROM_REVIEW_HEADER_HERE.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" }
 ]
 
-CRITICAL: The "file" field must be a relative path to an EXISTING file from the review. Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
+CRITICAL: The "file" field must be the EXACT relative path from the review headers above (e.g., "server/tools/email.js"). Do NOT invent directories. Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
 
     console.log("[selfEvolve] Calling LLM for improvement_plan.");
     const response = await withTimeout(llm(prompt), 300_000, "llm(selfEvolve)");

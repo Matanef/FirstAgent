@@ -129,7 +129,7 @@ async function analyzeForImprovements(repos, projectContext) {
     .map(r => `- ${r.name} (⭐${r.stars}): ${r.description || "no description"}\n  Topics: ${(r.topics || []).join(", ")}\n  URL: ${r.url}`)
     .join("\n\n");
 
-  const prompt = `You are an AI agent improvement advisor. Analyze these trending GitHub repositories and extract patterns, tools, or techniques that could improve an AI agent system.
+const promptConfig = CONFIG.PROMPT || `You are an AI agent improvement advisor. Analyze these trending GitHub repositories and extract patterns, tools, or techniques that could improve an AI agent system.
 
 Our agent's current capabilities:
 ${projectContext || "Multi-tool AI agent with: web search, file management, code review, scheduling, memory, weather, finance, sports, news, email, git integration, and self-improvement capabilities."}
@@ -145,8 +145,8 @@ Provide:
 
 Be practical and specific. Focus on improvements that make the agent smarter, more reliable, or more capable.`;
 
-  try {
-    const response = await llm(prompt);
+try {
+    const response = await llm(promptConfig);
     return response?.data?.text || "Analysis failed.";
   } catch (err) {
     return `Analysis error: ${err.message}`;

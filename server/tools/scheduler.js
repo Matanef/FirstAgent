@@ -32,10 +32,17 @@ function loadSchedules() {
 }
 
 async function saveSchedules(schedules) {
-  if (!fsSync.existsSync(DATA_DIR)) {
-    await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    if (!fsSync.existsSync(DATA_DIR)) {
+      await fs.mkdir(DATA_DIR, { recursive: true });
+    }
+    // Write to a temporary file first, then rename (prevents file corruption on crash)
+    const tempPath = SCHEDULES_FILE + ".tmp";
+    await fs.writeFile(tempPath, JSON.stringify(schedules, null, 2), "utf8");
+    await fs.rename(tempPath, SCHEDULES_FILE);
+  } catch (err) {
+    console.error("[scheduler] Persistence error:", err.message);
   }
-  await fs.writeFile(SCHEDULES_FILE, JSON.stringify(schedules, null, 2), "utf8");
 }
 
 // ──────────────────────────────────────────────────────────
@@ -164,32 +171,36 @@ function detectSchedulerIntent(text) {
 async function executeScheduledTask(schedule) {
   console.log(`\n⏰ [scheduler] Executing task: "${schedule.task}"`);
   try {
-    // Dynamic import to avoid circular dependency
     const { plan } = await import("../planner.js");
-    
-    // FIX: Import the correct function name based on your coordinator!
     const { executeAgent } = await import("../utils/coordinator.js");
 
     const steps = await plan({ message: schedule.task });
-    console.log(`[scheduler] Task planned as ${steps.length} step(s): ${steps.map(s => s.tool).join(" -> ")}`);
-
-    // FIX: Execute the planned steps using the correct function
-    const results = await executeAgent(steps, schedule.task);
-
-    // Update schedule metadata
-    const schedules = loadSchedules();
-    const idx = schedules.findIndex(s => s.id === schedule.id);
-    if (idx !== -1) {
-      schedules[idx].lastRun = new Date().toISOString();
-      schedules[idx].runCount = (schedules[idx].runCount || 0) + 1;
-      if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true });
-      fsSync.writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2), "utf8");
+    if (!steps || steps.length === 0) {
+      console.warn(`[scheduler] No steps planned for: ${schedule.task}`);
+      return;
     }
 
-    console.log(`✅ [scheduler] Task "${schedule.task}" completed (${results?.length || 0} steps executed)`);
+    const results = await executeAgent(steps, schedule.task);
+
+    // Update metadata safely
+    try {
+      const schedules = loadSchedules();
+      const idx = schedules.findIndex(s => s.id === schedule.id);
+      if (idx !== -1) {
+        schedules[idx].lastRun = new Date().toISOString();
+        schedules[idx].runCount = (schedules[idx].runCount || 0) + 1;
+        await saveSchedules(schedules); // Use the async version we'll define below
+      }
+    } catch (dbErr) {
+      console.error("[scheduler] Failed to update schedule metadata:", dbErr.message);
+    }
+
+    console.log(`✅ [scheduler] Task "${schedule.task}" completed.`);
     return results;
   } catch (err) {
-    console.error(`❌ [scheduler] Task execution failed for "${schedule.task}":`, err.message);
+    // THIS IS THE CRITICAL PART: Catch everything so the server stays alive
+    console.error(`❌ [scheduler] FATAL TASK ERROR ("${schedule.task}"):`, err.message);
+    console.error(err.stack);
   }
 }
 

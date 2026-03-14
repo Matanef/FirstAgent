@@ -122,9 +122,7 @@ Requirements:
   console.log("🧠 [email] Calling LLM for body generation. Words:", wordCount || "auto", "Sentiment:", safeSentiment);
 
   const result = await llm(prompt);
-  const text =
-    result?.data?.text ||
-    "Hi,\n\nThis is an automatically generated email.\n\nBest regards,\nYour AI agent";
+const text = result ? result.data.text : "Hi,\n\nThis is an automatically generated email.\n\nBest regards,\nYour AI agent";
 
   console.log("🧠 [email] LLM returned body length:", text.length);
 

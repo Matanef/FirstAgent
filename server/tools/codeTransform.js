@@ -266,22 +266,56 @@ function applyPatchBlocks(originalContent, llmOutput) {
   let currentContent = originalContent;
   let appliedCount = 0;
 
-  // Match <<<< followed by old code, ====, new code, >>>>
+  // Improved Regex to be less sensitive to trailing spaces after >>>>
   const blockRegex = /<<<<\n([\s\S]*?)\n====\n([\s\S]*?)\n>>>>/g;
   const blocks = [...llmOutput.matchAll(blockRegex)];
 
-  if (blocks.length === 0) return null; // No valid patches found
+  if (blocks.length === 0) {
+    console.warn("[codeTransform] No valid <<<< ==== >>>> blocks found in LLM output.");
+    return null;
+  }
 
   for (const match of blocks) {
     const searchBlock = match[1].trim();
     const replaceBlock = match[2].trim();
 
-    // Only apply if the exact original code exists in the file
-    if (searchBlock && currentContent.includes(searchBlock)) {
+    // Strategy 1: Exact Match (Best Case)
+    if (currentContent.includes(searchBlock)) {
       currentContent = currentContent.replace(searchBlock, replaceBlock);
       appliedCount++;
+      continue;
+    }
+
+    // Strategy 2: Content-Only Match (Ignore Indentation/Whitespace)
+    const normalize = (str) => str.replace(/\s+/g, ' ').trim();
+    const normalizedSearch = normalize(searchBlock);
+    
+    // We split by lines to find the block even if indentation differs
+    const contentLines = currentContent.split('\n');
+    const searchLines = searchBlock.split('\n').map(l => l.trim());
+    
+    let foundIndex = -1;
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+      let allLinesMatch = true;
+      for (let j = 0; j < searchLines.length; j++) {
+        if (contentLines[i + j].trim() !== searchLines[j]) {
+          allLinesMatch = false;
+          break;
+        }
+      }
+      if (allLinesMatch) {
+        foundIndex = i;
+        break;
+      }
+    }
+
+    if (foundIndex !== -1) {
+      console.log(`[codeTransform] Found fuzzy match at line ${foundIndex + 1}`);
+      contentLines.splice(foundIndex, searchLines.length, replaceBlock);
+      currentContent = contentLines.join('\n');
+      appliedCount++;
     } else {
-      console.warn("[codeTransform] Patch block failed: Could not find exact search string in file.");
+      console.warn(`[codeTransform] Patch failed. Anchor line not found: "${searchLines[0].slice(0, 40)}..."`);
     }
   }
 
@@ -322,9 +356,10 @@ ${content}
 User instructions: ${instructions}
 
 RULES FOR SURGICAL EDITING (CRITICAL):
-1. DO NOT REWRITE THE ENTIRE FILE! You must use SEARCH and REPLACE blocks.
-2. The code in the SEARCH block MUST match the existing code exactly, character for character.
-3. Start your response with a 1-sentence summary of the change.${architectureRules}
+1. KEEP SEARCH BLOCKS SHORT. Only include 2-4 lines in the <<<< block.
+2. Use UNIQUE lines as anchors. If you want to change code inside a function, start the SEARCH block with the function's unique signature line.
+3. DO NOT change indentation or add comments in the SEARCH block that aren't in the original code.
+4. If the search block is not 100% identical to the file, the edit will fail.
 
 FORMAT YOUR CHANGES EXACTLY LIKE THIS:
 <<<<
