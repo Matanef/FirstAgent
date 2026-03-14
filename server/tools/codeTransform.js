@@ -62,10 +62,14 @@ function detectIntent(text) {
  * Extract path from text
  */
 function extractPath(text) {
-  const pathMatch = text.match(/([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/);
-  if (pathMatch) return pathMatch[1].replace(/\\/g, "/");
+  // Regex looks for a drive letter path and stops at the first whitespace or newline
+  const pathMatch = text.match(/([a-zA-Z]:[\\/][^\s\n\r"']+)/);
+  if (pathMatch) {
+    // Remove trailing punctuation and whitespace
+    return pathMatch[1].replace(/[:"']+$/, '').trim().replace(/\\/g, "/");
+  }
   const quoted = text.match(/["']([^"']+)["']/);
-  if (quoted) return quoted[1];
+  if (quoted) return quoted[1].replace(/\\/g, "/");
   return null;
 }
 
@@ -343,8 +347,11 @@ ARCHITECTURE RULES (MANDATORY — violations will be rejected):
 - Do NOT add CLI interfaces, EventEmitters, or generic boilerplate wrappers.
 - Keep changes MINIMAL and SURGICAL — only modify what the instruction asks for.` : "";
 
-  const prompt = `You are a surgical code editor. Your task: ${intent} the following ${ext} file.
+const prompt = `You are a surgical code editor. 
+CRITICAL: The file is very large (${content.length} chars). 
+You ARE NOT ALLOWED to rewrite the whole file. If you output a full code block, the system will REJECT it and the edit will fail.
 
+Your task: ${intent} the following ${ext} file.
 File: ${filename}
 Path: ${filePath}
 
@@ -355,24 +362,25 @@ ${content}
 
 User instructions: ${instructions}
 
-RULES FOR SURGICAL EDITING (CRITICAL):
-1. KEEP SEARCH BLOCKS SHORT. Only include 2-4 lines in the <<<< block.
-2. Use UNIQUE lines as anchors. If you want to change code inside a function, start the SEARCH block with the function's unique signature line.
-3. DO NOT change indentation or add comments in the SEARCH block that aren't in the original code.
-4. If the search block is not 100% identical to the file, the edit will fail.
+RULES FOR SURGICAL EDITING (MANDATORY):
+1. Use ONLY <<<< ==== >>>> blocks. 
+2. KEEP SEARCH BLOCKS SHORT (2-4 lines).
+3. The SEARCH block must be an EXACT 100% match of the original code (indentation, spaces, semicolons).
+4. Focus ONLY on the specific lines requested in the instructions.${architectureRules}
 
-FORMAT YOUR CHANGES EXACTLY LIKE THIS:
+FORMAT:
 <<<<
 exact existing code to remove
 ====
 new code to insert
 >>>>
 
-Example of a valid change:
+Example:
 <<<<
-const maxRetries = 3;
+async function oldFunc() {
 ====
-const maxRetries = 5;
+async function oldFunc() {
+  try {
 >>>>`;
 
   // ── DYNAMIC VRAM OPTIMIZATION ──
@@ -574,8 +582,7 @@ Output ONLY the complete file contents wrapped in \`\`\`${ext} ... \`\`\` code f
  * Main entry point
  */
 export async function codeTransform(request) {
-  const text =
-    typeof request === "string" ? request : (request?.text || request?.input || "");
+  const text = typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
 
   if (!text.trim()) {
@@ -591,8 +598,13 @@ export async function codeTransform(request) {
   }
 
   const intent = context.action || detectIntent(text);
-  const targetPathRaw = context.path || extractPath(text);
+  let targetPathRaw = context.path || extractPath(text);
   const isSelfEvolve = context.source === "selfEvolve";
+
+  if (targetPathRaw) {
+    // Nuclear option: remove colons, quotes, and any hidden newline/carriage return characters
+    targetPathRaw = targetPathRaw.replace(/[\r\n]/g, '').replace(/[:"']+$/, '').trim();
+  }
 
   // Generate new file requires a target path
   if (intent === "add" && !targetPathRaw) {
@@ -653,12 +665,13 @@ export async function codeTransform(request) {
       if (intent === "add" || /\b(create|generate|write|new)\b/i.test(text)) {
         const generated = await generateNewCode(text, normalizedPath);
         if (generated.success && generated.content) {
-          // Ensure directory exists
-          await fs.mkdir(path.dirname(normalizedPath), { recursive: true });
-          await fs.writeFile(normalizedPath, generated.content, "utf8");
+          // ── STAGING FIX: Respect outputPath if provided ──
+          const outPath = context.outputPath || normalizedPath;
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, generated.content, "utf8");
 
           // Auto-register new tool if it's under server/tools
-          await registerNewTool(normalizedPath, text);
+          await registerNewTool(outPath, text);
 
           return {
             tool: "codeTransform",
@@ -666,10 +679,8 @@ export async function codeTransform(request) {
             final: true,
             data: {
               preformatted: true,
-              text: `✅ **Created new file: ${path.basename(
-                normalizedPath
-              )}**\n\n${generated.content.split("\n").length} lines generated at:\n${normalizedPath}`,
-              path: normalizedPath,
+              text: `✅ **Created new file: ${path.basename(outPath)}**\n\n${generated.content.split("\n").length} lines generated at:\n${outPath}`,
+              path: outPath,
               action: "created"
             }
           };
@@ -771,7 +782,11 @@ export async function codeTransform(request) {
       }
 
       const backupPath = await createBackup(normalizedPath);
-      await fs.writeFile(normalizedPath, transformation.newContent, "utf8");
+      
+      // ── STAGING FIX: Respect outputPath if provided ──
+      const outPath = context.outputPath || normalizedPath;
+      await fs.writeFile(outPath, transformation.newContent, "utf8");
+      
       const diff = generateDiffSummary(content, transformation.newContent);
 
       return {
@@ -781,13 +796,13 @@ export async function codeTransform(request) {
         data: {
           preformatted: true,
           text: `✅ **${intent.charAt(0).toUpperCase() + intent.slice(1)}: ${path.basename(
-            normalizedPath
+            outPath
           )}**\n\n${transformation.summary}\n\n📊 Changes: +${
             diff.linesAdded
           } -${diff.linesRemoved} (~${diff.linesChanged} lines affected)\n💾 Backup: ${
             backupPath || "none"
           }`,
-          path: normalizedPath,
+          path: outPath,
           backupPath,
           diff,
           action: intent

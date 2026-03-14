@@ -28,14 +28,19 @@ function resolveUserPath(request) {
   // This avoids NL word-stripping bugs like "in D:/..." or "me of E:/..."
   const absolutePathMatch = request.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
   if (absolutePathMatch) {
-    let extracted = absolutePathMatch[1].replace(/[\\/]+$/, ''); // trim trailing slashes
+    // We extract the path, trim trailing slashes, AND remove LLM-generated colons/quotes
+    let extracted = absolutePathMatch[1]
+      .replace(/[\\/]+$/, '')
+      .replace(/[:"']+$/, '')
+      .trim(); 
+      
     const sandboxRoot = findSandboxRoot(request);
-    const resolved = path.resolve(extracted);
-
+    const resolved = path.resolve(extracted); // Now 'resolved' uses the cleaned string
+  
     if (!isPathAllowed(resolved)) {
       throw new Error("Access outside allowed directories denied");
     }
-
+  
     const cleaned = path.relative(sandboxRoot, resolved) || '.';
     console.log(`[file] Path resolution (absolute): "${request}" → resolved="${resolved}"`);
     return { cleaned, resolved, sandboxRoot };

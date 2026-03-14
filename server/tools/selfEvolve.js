@@ -1,56 +1,63 @@
 // server/tools/selfEvolve.js
 // Self-evolution workflow — autonomous self-improvement cycle
-// Scans GitHub, reviews own code, generates improvements, applies patches
-// Designed to run on a schedule (e.g., daily at 09:00)
+// Uses Targeted Reflection: Reads memory rotation, conducts specific research, and applies surgical patches.
 
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { llm } from "./llm.js";
 import { githubScanner } from "./githubScanner.js";
 import { codeReview } from "./codeReview.js";
 import { codeTransform } from "./codeTransform.js";
+import { testGen } from "./testGen.js"; 
 import { projectGraph } from "./projectGraph.js";
 import { logImprovement } from "../telemetryAudit.js";
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const EVOLUTION_LOG = path.resolve(__dirname, "..", "data", "evolution-log.json");
-const REVIEW_CACHE_PATH = path.resolve(__dirname, "..", "data", "review-rotation.json"); // <-- ADD THIS
+const REVIEW_CACHE_PATH = path.resolve(__dirname, "..", "data", "review-rotation.json");
 
-// ── Guardrails: paths the agent is allowed to modify during self-evolution ──
+// ── Guardrails: paths the agent is allowed to modify ──
 const ALLOWED_EVOLVE_DIRS = ["server/tools", "server/utils", "server"];
 const BLOCKED_EVOLVE_FILES = new Set([
-  "server/routes/chat.js",       // core SSE route — never auto-modify
-  "server/planner.js",           // complex routing — too risky for auto-edit
-  "server/executor.js",          // execution pipeline — too risky
+  "server/routes/chat.js",
+  "server/planner.js",
+  "server/executor.js",
   "server/agents/orchestrator.js",
   "package.json",
   "package-lock.json",
   ".env",
 ]);
-const BLOCKED_EVOLVE_DIRS = new Set([
-  "client",       // never auto-modify React frontend
-  "agent",        // hallucinated directory — should not exist
-  "node_modules",
-]);
+const BLOCKED_EVOLVE_DIRS = new Set(["client", "agent", "node_modules"]);
 
 /**
  * Check if a file path is safe for selfEvolve to modify
  */
 function isEvolvePathAllowed(filePath) {
   const normalized = filePath.replace(/\\/g, "/");
-  // Block paths outside the project
-  const relative = path.relative(PROJECT_ROOT, path.resolve(PROJECT_ROOT, filePath)).replace(/\\/g, "/");
+  
+  // If the agent just gave a filename, try to find it in the tools/utils dirs
+  let finalPath = normalized;
+  if (!normalized.includes('/')) {
+     // This is likely just "email.js", let's assume it's in server/tools for the check
+     finalPath = `server/tools/${normalized}`;
+  }
+
+  const relative = path.relative(PROJECT_ROOT, path.resolve(PROJECT_ROOT, finalPath)).replace(/\\/g, "/");
+
   if (relative.startsWith("..")) return false;
-  // Block specific files
   if (BLOCKED_EVOLVE_FILES.has(relative)) return false;
-  // Block entire directories
+  
   for (const dir of BLOCKED_EVOLVE_DIRS) {
     if (relative.startsWith(dir + "/") || relative === dir) return false;
   }
-  // Must be within an allowed directory
+
   return ALLOWED_EVOLVE_DIRS.some(d => relative.startsWith(d + "/") || relative === d);
 }
 
@@ -69,137 +76,15 @@ async function getInstalledDependencies() {
 }
 
 /**
- * Read a brief snippet of each target file so the LLM has real context
+ * REWRITE: Investigative Rotation Memory
+ * Picks files that haven't been reviewed or haven't been reviewed for THIS topic.
  */
-async function readFileSnippets(filePaths) {
-  const snippets = [];
-  for (const fp of filePaths.slice(0, 5)) {
-    try {
-      const fullPath = fp.startsWith("/") || fp.includes(":") ? fp : path.join(PROJECT_ROOT, fp);
-      const content = await fs.readFile(fullPath, "utf8");
-      const lines = content.split("\n");
-      // First 40 lines (imports + main exports) + last 10 lines
-      const head = lines.slice(0, 40).join("\n");
-      const tail = lines.length > 50 ? "\n// ... (truncated) ...\n" + lines.slice(-10).join("\n") : "";
-      snippets.push(`--- ${fp} (${lines.length} lines) ---\n${head}${tail}`);
-    } catch {
-      // File might not exist — the LLM hallucinated the path
-    }
-  }
-  return snippets.join("\n\n");
-}
-
-// Normalize focus to avoid "yourself", "me", etc.
-function normalizeFocus(focus) {
-  if (!focus) return "";
-  const bad = new Set(["yourself", "me", "self", "agent", "system"]);
-  const cleaned = focus.trim().toLowerCase();
-  return bad.has(cleaned) ? "" : focus.trim();
-}
-
-/**
- * Simple timeout wrapper with AbortController support
- */
-async function withTimeout(promise, ms, label = "operation", controller = null) {
-  let timeoutId;
-  const timeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      if (controller) controller.abort();
-      reject(new Error(`${label} timed out after ${ms}ms`));
-    }, ms);
-  });
-
-  try {
-    console.log(`[selfEvolve] withTimeout start: ${label}, ${ms}ms`);
-    const result = await Promise.race([promise, timeout]);
-    clearTimeout(timeoutId);
-    console.log(`[selfEvolve] withTimeout success: ${label}`);
-    return result;
-  } catch (err) {
-    clearTimeout(timeoutId);
-    console.error(`[selfEvolve] withTimeout error in ${label}:`, err.message);
-    throw err;
-  }
-}
-
-/**
- * Load evolution history
- */
-async function loadEvolutionLog() {
-  try {
-    console.log("[selfEvolve] Loading evolution log:", EVOLUTION_LOG);
-    const raw = await fs.readFile(EVOLUTION_LOG, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    console.warn("[selfEvolve] No evolution log found, starting fresh.");
-    return { runs: [], totalImprovements: 0, lastRun: null };
-  }
-}
-
-/**
- * Save evolution history
- */
-async function saveEvolutionLog(log) {
-  try {
-    console.log("[selfEvolve] Saving evolution log.");
-    const dir = path.dirname(EVOLUTION_LOG);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(EVOLUTION_LOG, JSON.stringify(log, null, 2), "utf8");
-  } catch (err) {
-    console.error("[selfEvolve] Failed to save evolution log:", err.message);
-  }
-}
-
-/**
- * Safely extract improvement plan JSON from LLM response
- */
-function extractImprovementPlan(responseText) {
-  console.log("[selfEvolve] Extracting improvement plan from LLM response.");
-  if (!responseText || typeof responseText !== "string") {
-    console.warn("[selfEvolve] Empty or non-string LLM response.");
-    return [];
-  }
-
-  const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-  if (!jsonMatch) {
-    console.warn("[selfEvolve] No JSON array found in LLM response, returning fallback plan.");
-    return [
-      {
-        file: "none",
-        description: responseText.slice(0, 500),
-        priority: 0,
-        risk: "unknown",
-        type: "info"
-      }
-    ];
-  }
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    console.log("[selfEvolve] Parsed improvement plan JSON successfully.");
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch (err) {
-    console.error("[selfEvolve] Failed to parse improvement plan JSON:", err.message);
-    return [
-      {
-        file: "none",
-        description: responseText.slice(0, 500),
-        priority: 0,
-        risk: "parse_error",
-        type: "info"
-      }
-    ];
-  }
-}
-/**
- * Reads the directory and picks up to N files that haven't been reviewed recently.
- */
-async function getFilesToReview(targetDir, maxFiles = 10) {
+async function getFilesToReview(targetDir, currentTopic = "general", maxFiles = 10) {
   let cache = {};
   try {
     const raw = await fs.readFile(REVIEW_CACHE_PATH, "utf8");
     cache = JSON.parse(raw);
-  } catch { /* Cache doesn't exist yet, that's fine */ }
+  } catch { /* Cache doesn't exist yet */ }
 
   const files = [];
   try {
@@ -214,16 +99,27 @@ async function getFilesToReview(targetDir, maxFiles = 10) {
     return [];
   }
 
-  // Sort files by oldest timestamp (0 if never reviewed)
-  files.sort((a, b) => (cache[a] || 0) - (cache[b] || 0));
-  
-  return files.slice(0, maxFiles);
+  const scoredFiles = files.map(filePath => {
+    const fileData = cache[filePath] || { lastReviewed: 0, topicsChecked: [] };
+    const hasBeenCheckedForTopic = fileData.topicsChecked.includes(currentTopic);
+    let score = fileData.lastReviewed; 
+    
+    // If it hasn't seen this specific topic, prioritize it
+    if (!hasBeenCheckedForTopic) {
+      score -= (365 * 24 * 60 * 60 * 1000); 
+    }
+    return { filePath, score };
+  });
+
+  scoredFiles.sort((a, b) => a.score - b.score);
+  return scoredFiles.slice(0, maxFiles).map(f => f.filePath);
 }
 
 /**
- * Updates the timestamps for the files we just reviewed.
+ * REWRITE: Investigative Rotation Memory
+ * Updates the rotation cache with timestamp AND the specific topic research.
  */
-async function markFilesReviewed(files) {
+async function markFilesReviewed(files, topic = "general") {
   let cache = {};
   try {
     const raw = await fs.readFile(REVIEW_CACHE_PATH, "utf8");
@@ -232,7 +128,10 @@ async function markFilesReviewed(files) {
 
   const now = Date.now();
   for (const f of files) {
-    cache[f] = now;
+    if (!cache[f]) cache[f] = { lastReviewed: now, topicsChecked: [] };
+    cache[f].lastReviewed = now;
+    if (!cache[f].topicsChecked.includes(topic)) cache[f].topicsChecked.push(topic);
+    if (cache[f].topicsChecked.length > 10) cache[f].topicsChecked.shift();
   }
 
   try {
@@ -242,6 +141,67 @@ async function markFilesReviewed(files) {
   }
 }
 
+/**
+ * Simple timeout wrapper
+ */
+async function withTimeout(promise, ms, label = "operation", controller = null) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      if (controller) controller.abort();
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+  try {
+    const result = await Promise.race([promise, timeout]);
+    clearTimeout(timeoutId);
+    return result;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+/**
+ * Load evolution history
+ */
+async function loadEvolutionLog() {
+  try {
+    const raw = await fs.readFile(EVOLUTION_LOG, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return { runs: [], totalImprovements: 0, lastRun: null };
+  }
+}
+
+/**
+ * Save evolution history
+ */
+async function saveEvolutionLog(log) {
+  try {
+    const dir = path.dirname(EVOLUTION_LOG);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(EVOLUTION_LOG, JSON.stringify(log, null, 2), "utf8");
+  } catch (err) {
+    console.error("[selfEvolve] Failed to save evolution log:", err.message);
+  }
+}
+
+/**
+ * Safely extract plan from LLM
+ */
+function extractImprovementPlan(responseText) {
+  if (!responseText || typeof responseText !== "string") return [];
+  const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
+  if (!jsonMatch) return [];
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (err) {
+    console.error("[selfEvolve] Failed to parse plan JSON:", err.message);
+    return [];
+  }
+}
 
 /**
  * Run a full self-improvement cycle
@@ -251,27 +211,21 @@ async function runImprovementCycle(options = {}) {
     scope = "tools",
     dryRun = false,
     focus = "",
-    maxDurationMs = 15 * 60 * 1000 // 15 minutes global guard
+    forcedFile = null, // Integrated for Forced Re-Review
+    maxDurationMs = 15 * 60 * 1000 
   } = options;
 
-  console.log("[selfEvolve] Starting improvement cycle:", { scope, dryRun, focus, maxDurationMs });
+  console.log("[selfEvolve] Starting improvement cycle:", { scope, dryRun, forcedFile });
 
   const startedAt = Date.now();
-  const results = {
-    steps: [],
-    improvements: [],
-    timestamp: new Date().toISOString()
-  };
-
+  const results = { steps: [], improvements: [], timestamp: new Date().toISOString() };
+  let dynamicQuery = "code_quality_scan";
   const ensureNotExpired = (label) => {
     const elapsed = Date.now() - startedAt;
-    if (elapsed > maxDurationMs) {
-      console.error(`[selfEvolve] Global maxDuration exceeded during ${label}: ${elapsed}ms`);
-      throw new Error(`Global maxDuration exceeded during ${label}`);
-    }
+    if (elapsed > maxDurationMs) throw new Error(`Global maxDuration exceeded during ${label}`);
   };
 
-  // Step 1: Targeted Code Review (Read Memory & Review)
+  // ── Step 1: Targeted Code Review (with Forced Override logic) ──
   console.log("[selfEvolve] Step 1: targeted_review starting.");
   results.steps.push({ step: "targeted_review", status: "running" });
 
@@ -282,629 +236,392 @@ async function runImprovementCycle(options = {}) {
   try {
     ensureNotExpired("targeted_review");
     
-    // 1. Ask Memory for 10 files that haven't been reviewed recently
-    const filesToReview = await getFilesToReview(targetDir, 10);
-    console.log(`[selfEvolve] Selected ${filesToReview.length} files from cache for review.`);
-
-    if (filesToReview.length === 0) {
-       throw new Error("No files found to review in " + targetDir);
+    // FORCED RE-REVIEW LOGIC: Prioritize manual target over rotation
+    let filesToReview;
+    if (forcedFile && isEvolvePathAllowed(forcedFile)) {
+      filesToReview = [forcedFile];
+      console.log(`[selfEvolve] Forced re-review triggered for: ${forcedFile}`);
+    } else {
+      filesToReview = await getFilesToReview(targetDir, "code_quality_scan", 10);
     }
 
-    // 2. Loop through and review ONLY these specific files
     const controller = new AbortController();
     let combinedNotes = [];
 
     for (const file of filesToReview) {
       try {
-        console.log(`[selfEvolve] Analyzing specific file: ${path.basename(file)}`);
         const reviewResult = await withTimeout(
           codeReview({
             text: `quality review ${file}`,
-            context: {
-              source: "selfEvolve",
-              path: file,
-              reviewType: "quality",
-              signal: controller.signal,
-              budgetMs: 120_000 // Only give it 1 minute per file!
-            }
+            context: { source: "selfEvolve", path: file, reviewType: "quality", signal: controller.signal, budgetMs: 120_000 }
           }),
-          75_000, 
+          130_000, 
           `codeReview(${path.basename(file)})`,
           controller
         );
         
+        reviewedFilesList.push(file);
         if (reviewResult.data?.text) {
           const relativePath = path.relative(PROJECT_ROOT, file).replace(/\\/g, "/");
           combinedNotes.push(`--- REVIEW FOR ${relativePath} ---\n${reviewResult.data.text}`);
-          reviewedFilesList.push(file);
+          
         }
       } catch (fileErr) {
-        console.warn(`[selfEvolve] Skipped ${path.basename(file)} due to timeout/error.`);
+        console.warn(`[selfEvolve] Skipped ${path.basename(file)}: ${fileErr.message}`);
       }
     }
 
     reviewFindings = combinedNotes.join("\n\n");
     
-    // 3. Update the memory cache so we don't review these tomorrow!
-    await markFilesReviewed(reviewedFilesList);
-
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `Reviewed ${reviewedFilesList.length} targeted files`;
-    console.log("[selfEvolve] targeted_review done. Summary:", step.summary);
-
+    // ENSURE THIS IS OUTSIDE THE LOOP BUT INSIDE THE TRY
+    results.steps[results.steps.length - 1].status = "done";
+    results.steps[results.steps.length - 1].summary = `Reviewed ${reviewedFilesList.length} files`;
   } catch (err) {
-    const step = results.steps[results.steps.length - 1];
-    step.status = "failed";
-    step.error = err.message;
-    console.error("[selfEvolve] targeted_review failed:", err.message);
+    results.steps[results.steps.length - 1].status = "failed";
+    results.steps[results.steps.length - 1].error = err.message;
   }
 
-  // Step 2: Dynamic GitHub Scan (Targeted Learning)
+  // ── Step 2: Dynamic Learning ──
   console.log("[selfEvolve] Step 2: dynamic_learning starting.");
   results.steps.push({ step: "dynamic_learning", status: "running" });
   let githubInsights = "";
   
+  
   try {
     ensureNotExpired("dynamic_learning");
 
-    // 1. Ask LLM what to search for based on the weaknesses we JUST found!
-    const queryPrompt = `Based on the following code review findings, identify the SINGLE most critical technical concept, library, or best practice we need to research to fix the underlying issues.
-    
+const queryPrompt = `You are a technical researcher. 
+Review the following CODE REVIEW FINDINGS for the file: ${forcedFile || "current scope"}.
+
+STRICT RULE: You MUST NOT suggest new libraries (like Axios) or entirely new features.
+ONLY suggest improvements to the EXISTING logic found in the code review.
+If the findings say 'regex is fine,' DO NOT suggest changing it.
+
+CRITICAL: Ignore any mentions of Regex, string patterns, or imports. 
+Identify the SINGLE most important LOGIC flaw, ARCHITECTURAL weakness, or MISSING ERROR HANDLING in this code.
+
+Respond with ONLY a 3-to-6 word search query for GitHub that provides a solution for that specific logic flaw. 
+DO NOT talk about Git, project management, or Regex.
+
 CODE REVIEW FINDINGS:
-${reviewFindings.slice(0, 15000)}
-
-Respond with ONLY a 3-to-6 word search query for GitHub. Do not include quotes, explanations, or markdown.
-Example: node.js robust error handling middleware`;
-
-    console.log("[selfEvolve] Asking LLM for dynamic search query...");
+${reviewFindings.slice(0, 15000)}`;
     const queryResponse = await withTimeout(llm(queryPrompt), 90_000, "llm(search_query)");
-    
-    // Clean up the LLM's response so it's a perfect search string
-    const dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"]/g, '') || "ai agent tools best practices node.js";
-    console.log(`[selfEvolve] LLM generated targeted query: "${dynamicQuery}"`);
-
-    // 2. Run the targeted scan
+    dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"]/g, '') || "node.js best practices";
+    console.log(`\nDEBUG: LLM chose topic "${dynamicQuery}" based on findings from: ${reviewedFilesList.join(', ')}`);
+    console.log(`\n🔍 [selfEvolve] TOPIC COMPILED: "${dynamicQuery}"`);
     const scanResult = await withTimeout(
-      githubScanner({
-        text: `scan github for ${dynamicQuery}`,
-        context: { action: "improve" }
-      }),
+      githubScanner({ text: `scan github for ${dynamicQuery}`, context: { action: "improve" } }),
       120_000,
       "githubScanner"
     );
 
     githubInsights = scanResult.data?.analysis || scanResult.data?.text || "";
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `Learned about "${dynamicQuery}" from ${scanResult.data?.repos?.length || 0} repos`;
-    console.log("[selfEvolve] dynamic_learning done. Summary:", step.summary);
+    
+    // TOPIC MEMORY: Mark files reviewed against this specific topic
+    await markFilesReviewed(reviewedFilesList, dynamicQuery);
+
+    results.steps[results.steps.length - 1].status = "done";
+    results.steps[results.steps.length - 1].summary = `Learned about "${dynamicQuery}"`;
   } catch (err) {
-    const step = results.steps[results.steps.length - 1];
-    step.status = "failed";
-    step.error = err.message;
-    console.error("[selfEvolve] dynamic_learning failed:", err.message);
+    results.steps[results.steps.length - 1].status = "failed";
   }
 
-  // Step 3: Check dependency health
+  // ── Step 3: Dependency Check ──
   console.log("[selfEvolve] Step 3: dependency_check starting.");
   results.steps.push({ step: "dependency_check", status: "running" });
   let depAnalysis = "";
   try {
     ensureNotExpired("dependency_check");
     const graphResult = await withTimeout(
-      projectGraph({
-        text: `analyze ${PROJECT_ROOT}`,
-        context: { path: PROJECT_ROOT, action: "full" }
-      }),
-      90_000,
-      "projectGraph"
+      projectGraph({ text: `analyze ${PROJECT_ROOT}`, context: { path: PROJECT_ROOT, action: "full" } }),
+      90_000, "projectGraph"
     );
     depAnalysis = graphResult.data?.text || "";
-    const circularCount = graphResult.data?.circularDeps?.length || 0;
-    const deadCount = graphResult.data?.deadCode?.length || 0;
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `${circularCount} circular deps, ${deadCount} dead files`;
-    console.log("[selfEvolve] dependency_check done. Summary:", step.summary);
+    results.steps[results.steps.length - 1].status = "done";
+    results.steps[results.steps.length - 1].summary = `${graphResult.data?.circularDeps?.length || 0} circular deps`;
   } catch (err) {
-    depAnalysis = "";
-    const step = results.steps[results.steps.length - 1];
-    step.status = "failed";
-    step.error = err.message;
-    console.error("[selfEvolve] dependency_check failed:", err.message);
+    results.steps[results.steps.length - 1].status = "failed";
   }
 
-  // Step 4: Generate improvement plan using LLM (with architectural context)
+// ── Step 4: Strategic Improvement Planning ──
   console.log("[selfEvolve] Step 4: improvement_plan starting.");
   results.steps.push({ step: "improvement_plan", status: "running" });
   let improvementPlan = [];
   try {
     ensureNotExpired("improvement_plan");
-
-// ── Gather real project context so the LLM doesn't hallucinate ──
     const installedDeps = await getInstalledDependencies();
-    const depsStr = installedDeps.length > 0
-      ? installedDeps.join(", ")
-      : "express, axios, cors, dotenv, googleapis";
+    const depsStr = installedDeps.join(", ");
 
-    const prompt = `You are an AI agent's self-improvement engine. Based on the following code review and the targeted research you just completed, generate a specific improvement plan.
+const prompt = `You are an AI's self-improvement engine. 
+${forcedFile ? `CRITICAL: You are ONLY allowed to suggest improvements for the specific file: [${path.basename(forcedFile)}]. DO NOT suggest changes for any other files.` : `CRITICAL: You are only allowed to suggest improvements for the following files: [${reviewedFilesList.map(f => path.basename(f)).join(", ")}].`}
 
-═══════════════════════════════════════════════════════════════
-PROJECT ARCHITECTURE RULES (MANDATORY — NEVER VIOLATE THESE):
-═══════════════════════════════════════════════════════════════
-1. MODULE SYSTEM: This project uses ES Modules EXCLUSIVELY (import/export).
-   NEVER use CommonJS (require/module.exports).
-2. FRONTEND: React 19 with functional components and hooks. The frontend
-   lives in client/src/. You are NOT allowed to modify frontend files.
-3. DEPENDENCIES: You may ONLY use packages currently installed:
-   [${depsStr}]
-   Do NOT invent, hallucinate, or import packages that are not in this list.
-4. BOUNDARIES: You may ONLY modify existing files in server/tools/ or
-   server/utils/. Do NOT create new files. Do NOT create new directories.
-   Do NOT touch client/, agent/, or root-level files.
-5. NO BOILERPLATE: Do NOT generate generic "API hubs", "event emitters",
-   "CLI interfaces", or architecture wrappers. Improve EXISTING tools only.
-6. PRESERVE EXPORTS: Every tool file exports a single async function.
-   Do NOT change the function signature or export name.
-7. ANTI-HALLUCINATION (CRITICAL): You may ONLY suggest improvements for files that are EXPLICITLY named in the CODE REVIEW FINDINGS below. If a file is not in the review findings, it does not exist. DO NOT guess or invent file names.
-═══════════════════════════════════════════════════════════════
+DO NOT suggest new files.
+DO NOT suggest installing new libraries or packages.
+DO NOT suggest calling external APIs (like REST endpoints) unless they already exist in the file.
+DO NOT suggest example.js. 
+DO NOT suggest files from your imagination (like trading bots).
+DO NOT change synchronous functions into asynchronous functions (no 'async' keyword) unless specifically instructed.
+Focus ONLY on pure algorithmic, logic, or regex improvements.
 
-TARGETED RESEARCH (From dynamic GitHub scan):
-${(githubInsights || "No GitHub insights available").slice(0, 10000)}
+If the research insights don't apply to the files listed above, ignore the research and focus on the Code Review findings instead.
 
-CODE REVIEW FINDINGS (The 10 files you reviewed today):
-${(reviewFindings || "No review findings available").slice(0, 80000)}
+STRICT INSTRUCTION FOLLOW-THROUGH:
+1. You MUST implement the EXACT technical solution requested in the user's prompt.
+2. If the user asks for a 'Regex with named capture groups', you MUST provide that, even if you think a 'Set' is faster.
+3. If you do not follow the technical constraints, the patch will be REJECTED.
 
-DEPENDENCY ANALYSIS:
-${(depAnalysis || "No dependency analysis available").slice(0, 2000)}
+CODE REVIEW FINDINGS:
+${reviewFindings.slice(0, 50000)}
 
-Generate a prioritized list of 1 to 3 specific, actionable improvements based on the TARGETED RESEARCH. For each:
-1. WHAT to change (specific EXISTING file from the review findings)
-2. WHY (based on the targeted research above)
-3. HOW (specific code changes — use ES module syntax only)
-4. RISK level (low/medium/high)
+RESEARCH INSIGHTS:
+${githubInsights.slice(0, 5000)}
 
-Focus on improvements that are:
-- Low risk (won't break existing functionality)
-- High impact (fix the exact weaknesses found in the review)
-- Modifying EXISTING files only (never creating new ones)
-- Using ONLY installed dependencies (never inventing packages)
-
-Format as JSON array (DO NOT copy this dummy example):
-[
-  { "file": "EXACT_PATH_FROM_REVIEW_HEADER_HERE.js", "description": "what to do", "priority": 1, "risk": "low", "type": "fix|optimize|refactor" }
-]
-
-CRITICAL: The "file" field must be the EXACT relative path from the review headers above (e.g., "server/tools/email.js"). Do NOT invent directories. Do NOT use type "add" — only "fix", "optimize", or "refactor".`;
+Format as JSON array using the FULL relative path from the project root:
+[ { "file": "server/tools/email.js", "description": "add try-catch error handling to Gmail API calls", "priority": 1, "risk": "low", "type": "fix" } ]`;
 
     console.log("[selfEvolve] Calling LLM for improvement_plan.");
     const response = await withTimeout(llm(prompt), 300_000, "llm(selfEvolve)");
     const responseText = response?.data?.text || "";
-    improvementPlan = extractImprovementPlan(responseText);
+    const rawPlan = extractImprovementPlan(responseText);
 
-// ── Post-filter: remove any suggestions targeting blocked paths ──
-    const originalCount = improvementPlan.length;
-    improvementPlan = improvementPlan.filter(imp => {
-      if (!imp.file || imp.file === "none") return true; // info-only items
-      if (imp.type === "add") {
-        console.warn(`[selfEvolve] BLOCKED "add" type suggestion: ${imp.file} — ${imp.description}`);
-        return false;
-      }
-      if (!isEvolvePathAllowed(imp.file)) {
-        console.warn(`[selfEvolve] BLOCKED path outside allowed dirs: ${imp.file}`);
-        return false;
-      }
-      
-      // ── THE ANTI-HALLUCINATION SHIELD ──
-      // If the file name doesn't exist anywhere in the Code Review text, it's a hallucination!
-      if (reviewFindings && !reviewFindings.includes(path.basename(imp.file))) {
-        console.warn(`[selfEvolve] BLOCKED hallucinated file (not in review): ${imp.file}`);
-        return false;
+    console.log(`📋 [selfEvolve] LLM SUGGESTED ${rawPlan.length} IMPROVEMENTS.`);
+
+// ── THE ANTI-HALLUCINATION SHIELD (Reinforced & Path-Aware) ──
+    const filteredPlan = [];
+    for (const imp of rawPlan) {
+      // 1. Block the "example.js" hallucination or empty entries
+      if (!imp.file || imp.file.includes('example.js') || imp.file === "none") {
+        console.log(`  🚫 Filtering out placeholder/empty suggestion.`);
+        continue;
       }
 
-      return true;
-    });
-    if (improvementPlan.length < originalCount) {
-      console.log(`[selfEvolve] Filtered out ${originalCount - improvementPlan.length} unsafe suggestions.`);
+      // 2. Normalize path for the Guardrail check
+      // If the LLM sent "email.js", we treat it as "server/tools/email.js" for the check
+      let checkPath = imp.file;
+      if (!checkPath.includes('/') && !checkPath.includes('\\')) {
+        checkPath = `server/tools/${checkPath}`;
+      }
+
+      // 3. Guardrail Check: Is the path allowed?
+      if (!isEvolvePathAllowed(checkPath)) {
+        console.log(`  🚫 Filtering out ${imp.file} (Path Protected)`);
+        continue;
+      }
+
+      // 4. Finding Check: Was this file actually reviewed in Step 1?
+      // (Uses path.basename to allow matches between "email.js" and "server/tools/email.js")
+      const fileName = path.basename(imp.file);
+      if (reviewFindings && !reviewFindings.includes(fileName)) {
+        console.log(`  🚫 Filtering out ${imp.file} (Hallucination - not in findings)`);
+        continue;
+      }
+
+      // 5. Physical Disk Check: Does the file actually exist?
+      try {
+        const fullPath = path.resolve(PROJECT_ROOT, checkPath);
+        await fs.access(fullPath);
+        
+        // Success: Update the imp.file to the verified path and accept it
+        imp.file = checkPath; 
+        console.log(`  🎯 Accepted: ${imp.file} -> ${imp.description}`);
+        filteredPlan.push(imp);
+      } catch {
+        console.log(`  🚫 Filtering out ${imp.file} (File does not exist on disk)`);
+      }
     }
 
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `Generated ${improvementPlan.length} improvement suggestions (${originalCount - improvementPlan.length} blocked)`;
-    console.log("[selfEvolve] improvement_plan done. Suggestions:", improvementPlan.length);
+    improvementPlan = filteredPlan;
+    results.steps[results.steps.length - 1].status = "done";
+    results.steps[results.steps.length - 1].summary = `Planned ${improvementPlan.length} improvements`;
+    
+    console.log(`✅ [selfEvolve] FINAL PLAN: ${improvementPlan.length} improvements passed all safety checks.`);
   } catch (err) {
-    improvementPlan = [];
-    const step = results.steps[results.steps.length - 1];
-    step.status = "failed";
-    step.error = err.message;
-    console.error("[selfEvolve] improvement_plan failed:", err.message);
+    results.steps[results.steps.length - 1].status = "failed";
+    results.steps[results.steps.length - 1].error = err.message;
   }
 
-  // Step 5: Apply improvements (with guardrails)
+  // ── Step 5: Application & Autonomous QA (Apply Improvements) ──
   console.log("[selfEvolve] Step 5: apply_improvements starting.");
   if (!dryRun && improvementPlan.length > 0) {
     results.steps.push({ step: "apply_improvements", status: "running" });
+    
+    // Define the dedicated test folder
+    const testFolder = path.resolve(PROJECT_ROOT, "server", "toolTests");
+    await fs.mkdir(testFolder, { recursive: true });
 
-    const lowRiskImprovements = improvementPlan.filter(
-      (i) => i.risk === "low" && i.file !== "none"
-    );
-    console.log(
-      "[selfEvolve] apply_improvements low-risk candidates:",
-      lowRiskImprovements.length
-    );
+    for (const improvement of improvementPlan) {
+      ensureNotExpired("apply_improvements");
 
-    for (const improvement of lowRiskImprovements.slice(0, 3)) {
+      // 🔍 GATEKEEPER: High-Risk Detection
+      const lowerDesc = improvement.description.toLowerCase();
+      const isHighRisk = /\b(library|axios|install|package|external|architecture|refactor-all|major)\b/i.test(lowerDesc);
+
+      if (isHighRisk) {
+        console.log(`⚠️ [selfEvolve] High-risk improvement detected: ${improvement.description}`);
+        return {
+          tool: "selfEvolve",
+          success: true,
+          final: true,
+          data: {
+            message: `✋ HOLD ON! I have a major evolution idea: "${improvement.description}". This involves architectural changes or new libraries. Do you want me to proceed? (Type "evolve confirm" or "cancel")`,
+            pendingImprovement: improvement,
+            preformatted: true
+          }
+        };
+      }
+
+      const filePath = path.resolve(PROJECT_ROOT, improvement.file);
+      const stagingPath = `${filePath}.tmp.js`;
+
       try {
-        ensureNotExpired("apply_improvements");
+        const fileContent = await fs.readFile(filePath, "utf8");
 
-        const filePath =
-          improvement.file.startsWith("/") || improvement.file.includes(":")
-            ? improvement.file
-            : path.join(PROJECT_ROOT, improvement.file);
-
-        // ── GUARDRAIL 1: Path must be in allowed directories ──
-        if (!isEvolvePathAllowed(improvement.file)) {
-          console.warn(`[selfEvolve] BLOCKED: path not allowed: ${improvement.file}`);
-          results.improvements.push({
-            file: improvement.file,
-            description: improvement.description,
-            applied: false,
-            error: `Blocked: path "${improvement.file}" is outside allowed directories (${ALLOWED_EVOLVE_DIRS.join(", ")})`
-          });
-          continue;
-        }
-
-        // ── GUARDRAIL 2: File must already exist (no new file creation) ──
-        try {
-          await fs.access(filePath);
-        } catch {
-          console.warn(`[selfEvolve] BLOCKED: file does not exist: ${filePath}`);
-          results.improvements.push({
-            file: improvement.file,
-            description: improvement.description,
-            applied: false,
-            error: `Blocked: file "${improvement.file}" does not exist. Self-evolve cannot create new files.`
-          });
-          continue;
-        }
-
-        // ── GUARDRAIL 3: Pre-read the file so codeTransform has real context ──
-        let fileContent = "";
-        try {
-          fileContent = await fs.readFile(filePath, "utf8");
-        } catch { /* proceed anyway — codeTransform will read it too */ }
-
-        console.log(
-          "[selfEvolve] Applying improvement:",
-          improvement.description,
-          "->",
-          filePath
-        );
-
+        // 📝 WRITE TO STAGING FILE INSTEAD OF LIVE FILE
         const transformResult = await withTimeout(
           codeTransform({
             text: `${improvement.type} ${filePath}: ${improvement.description}`,
-            context: {
-              path: filePath,
-              action: improvement.type,
-              source: "selfEvolve",           // signals codeTransform to use guardrails
-              existingContent: fileContent.slice(0, 2000)  // first 2K chars for LLM context
+            context: { 
+              path: filePath, 
+              action: improvement.type, 
+              source: "selfEvolve", 
+              existingContent: fileContent,
+              outputPath: stagingPath // 👈 INSTRUCTS CODETRANSFORM TO USE .tmp
             }
           }),
-          60_000,
+          300_000,
           "codeTransform"
         );
 
         if (transformResult.success) {
-          console.log("[selfEvolve] codeTransform success for:", improvement.file);
-          results.improvements.push({
-            file: improvement.file,
-            description: improvement.description,
-            applied: true,
-            diff: transformResult.data?.diff
-          });
+          console.log(`[selfEvolve] Generated patch written to staging: ${stagingPath}`);
+          
+          // 🛡️ VERIFICATION: Run Node Syntax Check on Staging File
+          let syntaxPassed = true;
+          try {
+            console.log(`[selfEvolve] Running syntax verification...`);
+            await execAsync(`node --check "${stagingPath}"`);
+            console.log(`[selfEvolve] 🟢 Syntax verification passed!`);
+          } catch (syntaxErr) {
+            syntaxPassed = false;
+            console.error(`[selfEvolve] 🔴 Syntax error detected! Rolling back.`);
+            await fs.unlink(stagingPath).catch(() => {}); // Clean up broken tmp file
+            throw new Error(`Syntax verification failed. The LLM generated broken code: ${syntaxErr.message}`);
+          }
 
-          await logImprovement({
-            category: improvement.type || "code_change",
-            action: improvement.description,
-            file: improvement.file,
-            reason: "Self-evolution cycle",
-            source: "selfEvolve"
-          });
+          if (syntaxPassed) {
+            // 🔄 ATOMIC SWAP: Overwrite original file since tests passed
+            await fs.rename(stagingPath, filePath);
+            console.log(`[selfEvolve] 🔄 Atomic swap complete for ${filePath}`);
+
+            // 🧪 AUTONOMOUS QA: Save tests
+            console.log(`[selfEvolve] Generating QA tests in: ${testFolder}`);
+            await testGen({ 
+              text: `generate tests for ${improvement.file} and save them specifically in ${testFolder}`, 
+              context: { targetDir: testFolder, forcePath: true } 
+            });
+
+            results.improvements.push({ file: improvement.file, description: improvement.description, applied: true });
+            await logImprovement({ category: improvement.type, action: improvement.description, file: improvement.file, reason: "Self-evolve cycle", source: "selfEvolve" });
+          }
         } else {
-          console.warn(
-            "[selfEvolve] codeTransform reported failure for:",
-            improvement.file,
-            transformResult.data?.message
-          );
-          results.improvements.push({
-            file: improvement.file,
-            description: improvement.description,
-            applied: false,
-            error: transformResult.data?.message
-          });
+          results.improvements.push({ file: improvement.file, applied: false, error: transformResult.data?.message });
         }
       } catch (err) {
-        console.error(
-          "[selfEvolve] Error applying improvement for:",
-          improvement.file,
-          err.message
-        );
-        results.improvements.push({
-          file: improvement.file,
-          description: improvement.description,
-          applied: false,
-          error: err.message
-        });
+        // Fallback cleanup if loop crashed mid-way
+        await fs.unlink(stagingPath).catch(() => {});
+        results.improvements.push({ file: improvement.file, applied: false, error: err.message });
       }
     }
-
-    const step = results.steps[results.steps.length - 1];
-    step.status = "done";
-    step.summary = `Applied ${
-      results.improvements.filter((i) => i.applied).length
-    } of ${lowRiskImprovements.length} improvements`;
-    console.log("[selfEvolve] apply_improvements done. Summary:", step.summary);
+    results.steps[results.steps.length - 1].status = "done";
   } else if (dryRun) {
-    console.log("[selfEvolve] Dry run mode: not applying improvements.");
-    results.improvements = improvementPlan.map((i) => ({
-      ...i,
-      applied: false,
-      dryRun: true
-    }));
-  } else {
-    console.log("[selfEvolve] No improvements to apply.");
+    results.improvements = improvementPlan.map(i => ({ ...i, applied: false, dryRun: true }));
   }
 
-  // Save evolution log
-  console.log("[selfEvolve] Saving evolution log and finishing cycle.");
+  // Save Final Log
   const log = await loadEvolutionLog();
   log.runs.push(results);
-  log.totalImprovements += results.improvements.filter((i) => i.applied).length;
+  log.totalImprovements += results.improvements.filter(i => i.applied).length;
   log.lastRun = results.timestamp;
-
-  // Keep only last 50 runs
   if (log.runs.length > 50) log.runs = log.runs.slice(-50);
   await saveEvolutionLog(log);
 
-  console.log("[selfEvolve] Improvement cycle complete at", results.timestamp);
   return results;
 }
 
 /**
- * Show evolution history
- */
-async function showHistory() {
-  console.log("[selfEvolve] showHistory called.");
-  const log = await loadEvolutionLog();
-  if (!log.runs || log.runs.length === 0) {
-    console.log("[selfEvolve] No history available.");
-    return "No self-improvement runs recorded yet.";
-  }
-
-  let output = `📈 **Self-Evolution History**\n\n`;
-  output += `Total runs: ${log.runs.length}\n`;
-  output += `Total improvements applied: ${log.totalImprovements}\n`;
-  output += `Last run: ${log.lastRun || "never"}\n\n`;
-
-  const recentRuns = log.runs.slice(-5).reverse();
-  for (const run of recentRuns) {
-    const applied = run.improvements?.filter((i) => i.applied)?.length || 0;
-    const total = run.improvements?.length || 0;
-    output += `**${run.timestamp}**\n`;
-    output += `  Steps: ${run.steps
-      ?.map((s) => `${s.step}:${s.status}`)
-      .join(", ")}\n`;
-    output += `  Improvements: ${applied}/${total} applied\n\n`;
-  }
-
-  return output;
-}
-
-/**
- * Detect intent
- */
-function detectIntent(text) {
-  const lower = text.toLowerCase();
-  if (/\b(history|log|previous|past)\b/.test(lower)) return "history";
-  if (/\b(dry.?run|preview|plan|what\s+would)\b/.test(lower)) return "dryrun";
-  if (/\b(run|start|execute|begin|scan|improve|evolve|upgrade)\b/.test(lower))
-    return "run";
-  if (/\b(status|last|recent)\b/.test(lower)) return "status";
-  return "run";
-}
-
-/**
- * Main entry point
+ * Main Entry Point
  */
 export async function selfEvolve(request) {
-  const text =
-    typeof request === "string"
-      ? request
-      : request?.text || request?.input || "";
-  const context =
-    typeof request === "object" ? request?.context || {} : {};
-
-  console.log("[selfEvolve] Entry called with text:", text);
-  console.log("[selfEvolve] Context:", context);
-
-  let intent = context.action || detectIntent(text);
+  const text = typeof request === "string" ? request : request?.text || "";
+  const context = typeof request === "object" ? (request.context || {}) : {};
   
-  // ── OVERRIDE: If the user explicitly typed "dry run", force it! ──
-  if (/\b(dry.?run|preview|plan)\b/i.test(text)) {
-    intent = "dryrun";
+  // ── Smart Path & Force Detection ──
+  // This now catches: "look at X", "focus on X", "specifically X", "only X", "re-review X"
+  const isForced = /\b(force|forced|manual|re-review|specifically|focus|only|look at|target)\b/i.test(text);
+  
+  // This regex is now more robust for different path styles
+  const fileMatch = text.match(/([a-zA-Z0-9._\-\/]+\.js)/i);
+  let forcedFile = isForced && fileMatch ? fileMatch[0] : null;
+
+  // Clean the path (remove leading "for ", "at ", etc if the regex caught them)
+  if (forcedFile) {
+    forcedFile = forcedFile.replace(/^(for|at|on|to)\s+/i, "").trim();
   }
 
-  console.log("[selfEvolve] Detected intent:", intent);
+  let intent = context.action || detectIntent(text);
+  if (/\b(dry.?run|preview|plan)\b/i.test(text)) intent = "dryrun";
 
   try {
     switch (intent) {
-      case "history": {
-        console.log("[selfEvolve] Handling 'history' intent.");
+      case "history":
         const history = await showHistory();
-        return {
-          tool: "selfEvolve",
-          success: true,
-          final: true,
-          data: { preformatted: true, text: history }
-        };
-      }
-
-      case "status": {
-        console.log("[selfEvolve] Handling 'status' intent.");
-        const log = await loadEvolutionLog();
-        const lastRun = log.runs?.[log.runs.length - 1];
-        const msg = lastRun
-          ? `🤖 **Last Self-Improvement Run**\nTime: ${lastRun.timestamp}\nSteps: ${
-              lastRun.steps?.length || 0
-            }\nImprovements applied: ${
-              lastRun.improvements?.filter((i) => i.applied)?.length || 0
-            }\nTotal lifetime improvements: ${log.totalImprovements}`
-          : "No self-improvement runs recorded yet. Run 'self evolve' to start.";
-
-        return {
-          tool: "selfEvolve",
-          success: true,
-          final: true,
-          data: { preformatted: true, text: msg }
-        };
-      }
-
-      case "dryrun": {
-        console.log("[selfEvolve] Handling 'dryrun' intent.");
-        const scope =
-          /\b(planner|tools|server|full)\b/i.exec(text)?.[1]?.toLowerCase() ||
-          "tools";
-        const focus = normalizeFocus(
-          text.replace(/.*(?:dry.?run|preview|plan)\s*/i, "").trim()
-        );
-
-        console.log("[selfEvolve] dryrun scope/focus:", scope, focus);
-
-        const results = await runImprovementCycle({
-          scope,
-          dryRun: true,
-          focus
-        });
-
-        let output = `🔍 **Self-Improvement Preview (Dry Run)**\n\n`;
-        output += `**Steps:**\n`;
-        for (const step of results.steps) {
-          const icon =
-            step.status === "done"
-              ? "✅"
-              : step.status === "failed"
-              ? "❌"
-              : "⏳";
-          output += `  ${icon} ${step.step}: ${
-            step.summary || step.error || step.status
-          }\n`;
-        }
-
-        output += `\n**Suggested Improvements:**\n`;
-        for (const imp of results.improvements || []) {
-          output += `  📌 [${imp.priority || "?"}] ${imp.description}\n`;
-          output += `     File: ${imp.file} | Risk: ${imp.risk} | Type: ${
-            imp.type
-          }\n\n`;
-        }
-
-        if (results.improvements?.length > 0) {
-          output += `\nSay "apply" or "run self evolve" to apply these improvements.`;
-        }
-
-        return {
-          tool: "selfEvolve",
-          success: true,
-          final: true,
-          data: { preformatted: true, text: output, results }
-        };
-      }
-
+        return { tool: "selfEvolve", success: true, final: true, data: { preformatted: true, text: history } };
+      case "dryrun":
+        const dryRes = await runImprovementCycle({ dryRun: true, forcedFile });
+        return { tool: "selfEvolve", success: true, final: true, data: { results: dryRes } };
       case "run":
       default: {
-        console.log("[selfEvolve] Handling 'run' intent.");
-        const scope =
-          /\b(planner|tools|server|full)\b/i.exec(text)?.[1]?.toLowerCase() ||
-          "tools";
-        const focus = normalizeFocus(
-          text
-            .replace(
-              /.*(?:run|start|execute|begin|scan|improve|evolve|upgrade)\s*/i,
-              ""
-            )
-            .trim()
-        );
+        const results = await runImprovementCycle({ dryRun: false, forcedFile });
+        
+        // GATEKEEPER CHECK: If gatekeeper tripped, it returns early with data.message
+        if (results && results.tool === "selfEvolve") return results;
 
-        console.log("[selfEvolve] run scope/focus:", scope, focus);
-
-        const results = await runImprovementCycle({
-          scope,
-          dryRun: false,
-          focus
-        });
-
-        let output = `🤖 **Self-Improvement Cycle Complete**\n\n`;
-        output += `**Steps:**\n`;
+        let output = `🤖 **Self-Improvement Cycle Complete**\n\n**Steps:**\n`;
         for (const step of results.steps) {
-          const icon =
-            step.status === "done"
-              ? "✅"
-              : step.status === "failed"
-              ? "❌"
-              : "⏳";
-          output += `  ${icon} ${step.step}: ${
-            step.summary || step.error || step.status
-          }\n`;
+          const icon = step.status === "done" ? "✅" : step.status === "failed" ? "❌" : "⏳";
+          output += `  ${icon} ${step.step}: ${step.summary || step.error || step.status}\n`;
         }
-
-        const applied =
-          results.improvements?.filter((i) => i.applied) || [];
-        const failed =
-          results.improvements?.filter(
-            (i) => !i.applied && !i.dryRun
-          ) || [];
-
+        const applied = results.improvements?.filter((i) => i.applied) || [];
+        const failed = results.improvements?.filter((i) => !i.applied && !i.dryRun) || [];
         if (applied.length > 0) {
           output += `\n**Applied Improvements (${applied.length}):**\n`;
-          for (const imp of applied) {
-            output += `  ✅ ${imp.description}\n`;
-            output += `     File: ${imp.file}\n`;
-            if (imp.diff) {
-              output += `     Changes: +${
-                imp.diff.linesAdded || 0
-              } -${imp.diff.linesRemoved || 0}\n`;
-            }
-          }
+          for (const imp of applied) output += `  ✅ ${imp.description}\n     File: ${imp.file}\n`;
         }
-
         if (failed.length > 0) {
           output += `\n**Failed Improvements (${failed.length}):**\n`;
-          for (const imp of failed) {
-            output += `  ❌ ${imp.description}: ${imp.error}\n`;
-          }
+          for (const imp of failed) output += `  ❌ ${imp.description}: ${imp.error}\n`;
         }
-
-        if (applied.length === 0 && failed.length === 0) {
-          output += `\nNo low-risk improvements to apply at this time. The codebase looks healthy!`;
-        }
-
-        return {
-          tool: "selfEvolve",
-          success: true,
-          final: true,
-          data: { preformatted: true, text: output, results }
-        };
+        return { tool: "selfEvolve", success: true, final: true, data: { preformatted: true, text: output, results } };
       }
     }
   } catch (err) {
-    console.error("[selfEvolve] Top-level error:", err.message);
-    return {
-      tool: "selfEvolve",
-      success: false,
-      final: true,
-      data: { message: `Self-evolution error: ${err.message}` }
-    };
+    return { tool: "selfEvolve", success: false, final: true, data: { message: err.message } };
   }
+}
+
+function detectIntent(text) {
+  const lower = text.toLowerCase();
+  if (/\b(history|log)\b/.test(lower)) return "history";
+  if (/\b(dry.?run|preview|plan)\b/.test(lower)) return "dryrun";
+  return "run";
+}
+
+async function showHistory() {
+  const log = await loadEvolutionLog();
+  let output = `📈 **Self-Evolution History**\nTotal improvements: ${log.totalImprovements}\nLast run: ${log.lastRun || "never"}\n\n`;
+  const recent = log.runs.slice(-5).reverse();
+  for (const run of recent) {
+    output += `**${run.timestamp}**: ${run.improvements?.filter(i => i.applied).length || 0} applied\n`;
+  }
+  return output;
 }

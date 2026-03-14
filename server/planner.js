@@ -614,6 +614,35 @@ export async function plan({ message, chatContext = {} }) {
 
   console.log("🧠 Planning steps for:", trimmed);
 
+// ── REFINED TECHNICAL OVERRIDE ──
+  // 1. SELF-EVOLVE: Active code modification / Autonomous growth
+  // Triggers ONLY on explicit "evolve" commands or "force run" on a file.
+  if (
+    /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) || 
+    (/\.js\b/.test(lower) && /\b(specifically|force\s+run|evolve)\b/i.test(lower))
+  ) {
+    console.log("[planner] technical override: forcing selfEvolve tool");
+    const evolveContext = {};
+    if (/\b(dry.?run|preview|plan)\b/i.test(lower)) evolveContext.action = "dryrun";
+    else evolveContext.action = "run";
+    
+    return [{ 
+      tool: "selfEvolve", 
+      input: trimmed, 
+      context: evolveContext, 
+      reasoning: "technical_intent_evolve" 
+    }];
+  }
+
+  // 2. SELF-IMPROVEMENT: Reporting, Accuracy, and Telemetry Audit
+  // Triggers for "how accurate", "telemetry", "what have you improved lately".
+  if (
+    /\b(accuracy|telemetry|misrouting|routing\s+report|what\s+have\s+you\s+improved|recent\s+changes)\b/i.test(lower)
+  ) {
+    console.log("[planner] technical override: forcing selfImprovement tool");
+    return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "technical_intent_audit" }];
+  }
+
     // ──────────────────────────────────────────────────────────
   // EMAIL OVERRIDE: If the user is composing an email, ignore file paths
   // Guard: skip if compound intent (e.g. "email me the news", "email with weather summary")
@@ -643,6 +672,33 @@ export async function plan({ message, chatContext = {} }) {
     return [{ tool: "fileReview", input: trimmed, context: { fileIds: chatContext.fileIds }, reasoning: "certainty_file_review" }];
   }
 
+  // ──────────────────────────────────────────────────────────
+  // NEW: CODE TRANSFORM (Action-Verb Priority)
+  // ──────────────────────────────────────────────────────────
+  if (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
+      (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))) {
+    console.log("[planner] certainty branch: codeTransform");
+    const ctContext = { source: "manual_refactor" };
+    
+    // Auto-detect the specific action for the tool
+    if (/\brefactor\b/i.test(lower)) ctContext.action = "refactor";
+    else if (/\boptimize\b/i.test(lower)) ctContext.action = "optimize";
+    else if (/\bdocument|jsdoc|comment/i.test(lower)) ctContext.action = "document";
+    else ctContext.action = "transform";
+    
+    return [{ tool: "codeTransform", input: trimmed, context: ctContext, reasoning: "certainty_code_transform" }];
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // NEW: FILE WRITE (Creation/Modification Priority)
+  // ──────────────────────────────────────────────────────────
+  if ((/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
+       /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
+       (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
+       !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: fileWrite");
+    return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
+  }
   // ──────────────────────────────────────────────────────────
   // DUPLICATE SCANNER: detect duplicate scan requests
   // ──────────────────────────────────────────────────────────
@@ -964,10 +1020,13 @@ export async function plan({ message, chatContext = {} }) {
 
   // Code Transform — refactor, optimize, rewrite, improve code in a file
   // Must come BEFORE review (which is read-only) since transforms are write operations
-  if (/\b(refactor|rewrite|transform|optimize\s+code|optimize\s+the|improve\s+the\s+code|add\s+error\s+handling|add\s+types?|add\s+jsdoc|add\s+comments?|modernize|migrate|convert\s+to|simplify\s+the\s+code|clean\s+up\s+the\s+code)\b/i.test(lower) &&
-      (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))) {
-    console.log("[planner] certainty branch: codeTransform");
-    const ctContext = {};
+  // ── REFINED CODE TRANSFORM BRANCH ──
+  if (
+    /\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
+    (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))
+  ) {
+    console.log("[planner] certainty branch: codeTransform (Surgical)");
+    const ctContext = { source: "manual_refactor" };
     if (/\brefactor\b/i.test(lower)) ctContext.action = "refactor";
     else if (/\boptimize\b/i.test(lower)) ctContext.action = "optimize";
     else if (/\brewrite\b/i.test(lower)) ctContext.action = "upgrade";
