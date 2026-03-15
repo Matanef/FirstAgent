@@ -306,7 +306,7 @@ DO NOT talk about Git, project management, or Regex.
 CODE REVIEW FINDINGS:
 ${reviewFindings.slice(0, 15000)}`;
     const queryResponse = await withTimeout(llm(queryPrompt), 90_000, "llm(search_query)");
-    dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"]/g, '') || "node.js best practices";
+    dynamicQuery = queryResponse?.data?.text?.trim().replace(/['"`]/g, '').substring(0, 50) || "node.js best practices";
     console.log(`\nDEBUG: LLM chose topic "${dynamicQuery}" based on findings from: ${reviewedFilesList.join(', ')}`);
     console.log(`\n🔍 [selfEvolve] TOPIC COMPILED: "${dynamicQuery}"`);
     const scanResult = await withTimeout(
@@ -365,6 +365,8 @@ Focus ONLY on pure algorithmic, logic, or regex improvements.
 
 If the research insights don't apply to the files listed above, ignore the research and focus on the Code Review findings instead.
 
+CRITICAL FORCED CONSTRAINT: 
+Do NOT repeat previous improvements. Do NOT suggest changes to 'email.js' unless it is explicitly in the allowed files list. You MUST generate a NEW improvement based ONLY on the NEW Code Review Findings below.
 STRICT INSTRUCTION FOLLOW-THROUGH:
 1. You MUST implement the EXACT technical solution requested in the user's prompt.
 2. If the user asks for a 'Regex with named capture groups', you MUST provide that, even if you think a 'Set' is faster.
@@ -408,11 +410,15 @@ Format as JSON array using the FULL relative path from the project root:
         continue;
       }
 
-      // 4. Finding Check: Was this file actually reviewed in Step 1?
-      // (Uses path.basename to allow matches between "email.js" and "server/tools/email.js")
-      const fileName = path.basename(imp.file);
-      if (reviewFindings && !reviewFindings.includes(fileName)) {
-        console.log(`  🚫 Filtering out ${imp.file} (Hallucination - not in findings)`);
+// 4. Finding Check: Was this file ACTUALLY in the array of reviewed files?
+      const normalizedImpFile = checkPath.replace(/\\/g, '/');
+      const wasReviewed = reviewedFilesList.some(reviewedFile => {
+        const normalizedReviewed = reviewedFile.replace(/\\/g, '/');
+        return normalizedReviewed.endsWith(normalizedImpFile) || normalizedImpFile.endsWith(path.basename(normalizedReviewed));
+      });
+
+      if (!wasReviewed) {
+        console.log(`  🚫 Filtering out ${imp.file} (Hallucination - not in the current active review list)`);
         continue;
       }
 
@@ -440,7 +446,7 @@ Format as JSON array using the FULL relative path from the project root:
     results.steps[results.steps.length - 1].error = err.message;
   }
 
-  // ── Step 5: Application & Autonomous QA (Apply Improvements) ──
+// ── Step 5: Application & Autonomous QA (Apply Improvements) ──
   console.log("[selfEvolve] Step 5: apply_improvements starting.");
   if (!dryRun && improvementPlan.length > 0) {
     results.steps.push({ step: "apply_improvements", status: "running" });
@@ -449,7 +455,15 @@ Format as JSON array using the FULL relative path from the project root:
     const testFolder = path.resolve(PROJECT_ROOT, "server", "toolTests");
     await fs.mkdir(testFolder, { recursive: true });
 
-    for (const improvement of improvementPlan) {
+    // 🚦 THROTTLE: Only process the Top 3 improvements to prevent 15-minute global timeouts
+    const MAX_IMPROVEMENTS_PER_CYCLE = 3;
+    const improvementsToApply = improvementPlan.slice(0, MAX_IMPROVEMENTS_PER_CYCLE);
+    
+    if (improvementPlan.length > MAX_IMPROVEMENTS_PER_CYCLE) {
+      console.log(`[selfEvolve] 🚦 Throttling improvements from ${improvementPlan.length} to ${MAX_IMPROVEMENTS_PER_CYCLE} to stay within global time limits.`);
+    }
+
+    for (const improvement of improvementsToApply) {
       ensureNotExpired("apply_improvements");
 
       // 🔍 GATEKEEPER: High-Risk Detection
@@ -473,65 +487,115 @@ Format as JSON array using the FULL relative path from the project root:
       const filePath = path.resolve(PROJECT_ROOT, improvement.file);
       const stagingPath = `${filePath}.tmp.js`;
 
-      try {
-        const fileContent = await fs.readFile(filePath, "utf8");
+      // ♻️ AUTO-HEALING PIPELINE
+      let attempts = 0;
+      const MAX_ATTEMPTS = 3;
+      let validationPassed = false;
+      let lastError = null;
+      let appliedSuccessfully = false;
 
-        // 📝 WRITE TO STAGING FILE INSTEAD OF LIVE FILE
-        const transformResult = await withTimeout(
-          codeTransform({
-            text: `${improvement.type} ${filePath}: ${improvement.description}`,
-            context: { 
-              path: filePath, 
-              action: improvement.type, 
-              source: "selfEvolve", 
-              existingContent: fileContent,
-              outputPath: stagingPath // 👈 INSTRUCTS CODETRANSFORM TO USE .tmp
+      while (attempts < MAX_ATTEMPTS && !validationPassed) {
+        attempts++;
+        ensureNotExpired("apply_improvements_loop");
+
+        try {
+          const fileContent = await fs.readFile(filePath, "utf8");
+
+          // Build dynamic instruction (inject error on retries)
+          let instruction = `${improvement.type} ${filePath}: ${improvement.description}`;
+          if (lastError) {
+            console.log(`[selfEvolve] ♻️ Attempt ${attempts}/${MAX_ATTEMPTS} for ${path.basename(filePath)} (Fixing previous error...)`);
+          } else {
+            console.log(`[selfEvolve] ▶️ Attempt ${attempts}/${MAX_ATTEMPTS} for ${path.basename(filePath)}`);
+          }
+
+          // 📝 WRITE TO STAGING FILE
+          const transformResult = await withTimeout(
+            codeTransform({
+              text: instruction,
+              context: { 
+                path: filePath, 
+                action: improvement.type, 
+                source: "selfEvolve", 
+                existingContent: fileContent,
+                outputPath: stagingPath,
+                previousError: lastError // 👈 Feed the error back!
+              }
+            }),
+            300_000,
+            "codeTransform"
+          );
+
+          if (transformResult.success) {
+            console.log(`[selfEvolve] Generated patch written to staging: ${stagingPath}`);
+            validationPassed = true; // Assume true until checks fail
+
+            // 🛡️ VERIFICATION 1: Syntax
+            try {
+              console.log(`[selfEvolve] Running syntax verification...`);
+              await execAsync(`node --check "${stagingPath}"`);
+              console.log(`[selfEvolve] 🟢 Syntax verification passed!`);
+            } catch (syntaxErr) {
+              validationPassed = false;
+              lastError = `Syntax Error: ${syntaxErr.message}`;
+              console.error(`[selfEvolve] 🔴 Syntax error detected! Rolling back.`);
+              await fs.unlink(stagingPath).catch(() => {});
             }
-          }),
-          300_000,
-          "codeTransform"
-        );
 
-        if (transformResult.success) {
-          console.log(`[selfEvolve] Generated patch written to staging: ${stagingPath}`);
-          
-          // 🛡️ VERIFICATION: Run Node Syntax Check on Staging File
-          let syntaxPassed = true;
-          try {
-            console.log(`[selfEvolve] Running syntax verification...`);
-            await execAsync(`node --check "${stagingPath}"`);
-            console.log(`[selfEvolve] 🟢 Syntax verification passed!`);
-          } catch (syntaxErr) {
-            syntaxPassed = false;
-            console.error(`[selfEvolve] 🔴 Syntax error detected! Rolling back.`);
-            await fs.unlink(stagingPath).catch(() => {}); // Clean up broken tmp file
-            throw new Error(`Syntax verification failed. The LLM generated broken code: ${syntaxErr.message}`);
+            // 🛡️ VERIFICATION 2: Semantic Logic (ESLint)
+            if (validationPassed) {
+              try {
+                console.log(`[selfEvolve] Running semantic logic check (ESLint)...`);
+                const lintCmd = `npx eslint@8 --no-eslintrc --env node --env es2024 --parser-options=ecmaVersion:latest --parser-options=sourceType:module --rule no-undef:error "${stagingPath}"`;
+                await execAsync(lintCmd);
+                console.log(`[selfEvolve] 🟢 Semantic logic check passed!`);
+              } catch (lintErr) {
+                validationPassed = false;
+                const cleanError = (lintErr.stdout || lintErr.message || "").split('\n').filter(l => l.includes('error')).join(' | ');
+                lastError = `ESLint Error: ${cleanError}`;
+                console.error(`[selfEvolve] 🔴 Semantic logic error detected! Rolling back.`);
+                await fs.unlink(stagingPath).catch(() => {});
+              }
+            }
+
+            if (validationPassed) {
+              appliedSuccessfully = true;
+              break; // 🎯 Exit loop on success
+            }
+          } else {
+            lastError = transformResult.data?.message || "LLM failed to output valid code blocks.";
+            console.warn(`[selfEvolve] Patch generation failed: ${lastError}`);
           }
-
-          if (syntaxPassed) {
-            // 🔄 ATOMIC SWAP: Overwrite original file since tests passed
-            await fs.rename(stagingPath, filePath);
-            console.log(`[selfEvolve] 🔄 Atomic swap complete for ${filePath}`);
-
-            // 🧪 AUTONOMOUS QA: Save tests
-            console.log(`[selfEvolve] Generating QA tests in: ${testFolder}`);
-            await testGen({ 
-              text: `generate tests for ${improvement.file} and save them specifically in ${testFolder}`, 
-              context: { targetDir: testFolder, forcePath: true } 
-            });
-
-            results.improvements.push({ file: improvement.file, description: improvement.description, applied: true });
-            await logImprovement({ category: improvement.type, action: improvement.description, file: improvement.file, reason: "Self-evolve cycle", source: "selfEvolve" });
-          }
-        } else {
-          results.improvements.push({ file: improvement.file, applied: false, error: transformResult.data?.message });
+        } catch (err) {
+          lastError = err.message;
+          console.error(`[selfEvolve] System error during patch application: ${lastError}`);
+          await fs.unlink(stagingPath).catch(() => {});
         }
-      } catch (err) {
-        // Fallback cleanup if loop crashed mid-way
-        await fs.unlink(stagingPath).catch(() => {});
-        results.improvements.push({ file: improvement.file, applied: false, error: err.message });
+      } // End Retry Loop
+
+      // 🎯 Final Result Handling
+      if (appliedSuccessfully) {
+        // 🔄 ATOMIC SWAP
+        await fs.rename(stagingPath, filePath);
+        console.log(`[selfEvolve] 🔄 Atomic swap complete for ${filePath}`);
+        results.improvements.push({ file: improvement.file, description: improvement.description, applied: true });
+
+        // 🧪 OPTIONAL: Autonomous QA
+        try {
+          console.log(`[selfEvolve] Generating QA tests in: ${testFolder}`);
+          await testGen({ 
+            text: `generate tests for ${improvement.file} and save them specifically in ${testFolder}`, 
+            context: { targetDir: testFolder, forcePath: true } 
+          });
+          await logImprovement({ category: improvement.type, action: improvement.description, file: improvement.file, reason: "Self-evolve cycle", source: "selfEvolve" });
+        } catch (postErr) {
+          console.warn(`[selfEvolve] ⚠️ Patch applied successfully, but post-processing failed: ${postErr.message}`);
+        }
+      } else {
+        results.improvements.push({ file: improvement.file, applied: false, error: `Failed after ${MAX_ATTEMPTS} attempts. Last error: ${lastError}` });
       }
-    }
+    } // End Improvements Loop
+
     results.steps[results.steps.length - 1].status = "done";
   } else if (dryRun) {
     results.improvements = improvementPlan.map(i => ({ ...i, applied: false, dryRun: true }));

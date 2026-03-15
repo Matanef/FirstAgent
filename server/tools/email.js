@@ -49,7 +49,7 @@ Requirements:
   console.log("🧠 [email] Calling LLM for body generation. Words:", wordCount || "auto", "Sentiment:", safeSentiment);
 
   const result = await llm(prompt);
-const text = result ? result.data.text : "Hi,\n\nThis is an automatically generated email.\n\nBest regards,\nYour AI agent";
+const text = result && result.data ? result.data.text : "Hi,\n\nThis is an automatically generated email.\n\nBest regards,\nYour AI agent";
 
   console.log("🧠 [email] LLM returned body length:", text.length);
 
@@ -237,12 +237,22 @@ export async function browseEmails(queryText, context = {}) {
     // Subject/keyword filter
     const aboutMatch = lower.match(/(?:about|regarding|subject)\s+(.+?)(?:\s+in\s+|\s+from\s+|$)/i);
     if (aboutMatch) q += ` ${aboutMatch[1].trim()}`;
-
-    const res = await gmail.users.messages.list({
-      userId: "me",
-      q,
-      maxResults: 10
-    });
+let res;
+try {
+  res = await gmail.users.messages.list({
+    userId: "me",
+    q,
+    maxResults: 10
+  });
+} catch (err) {
+  console.error("[email] Browse error:", err);
+  return {
+    tool: "email",
+    success: false,
+    final: true,
+    error: `Failed to browse emails: ${err.message}`
+  };
+}
 
     if (!res.data.messages || res.data.messages.length === 0) {
       const text = "No emails found matching your criteria.";
@@ -559,10 +569,21 @@ export async function email(query) {
 
       console.log("📨 [email] Sending reply...");
 
-      const res = await gmail.users.messages.send({
-        userId: "me",
-        requestBody: { raw }
-      });
+let res;
+try {
+  res = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw }
+  });
+} catch (err) {
+  console.error("[email] Send error:", err);
+  return {
+    tool: "email",
+    success: false,
+    final: true,
+    error: `Email sending failed: ${err.message}`
+  };
+}
 
       console.log("📨 [email] Reply sent!");
 

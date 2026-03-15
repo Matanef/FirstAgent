@@ -362,6 +362,7 @@ async function generateTransformation(filePath, content, intent, instructions, o
   const ext = path.extname(filename).slice(1) || "js";
 
   // When called from selfEvolve, inject strict architectural rules
+// When called from selfEvolve, inject strict architectural rules
   const architectureRules = options.fromSelfEvolve ? `
 
 ARCHITECTURE RULES (MANDATORY — violations will be rejected):
@@ -372,6 +373,16 @@ ARCHITECTURE RULES (MANDATORY — violations will be rejected):
 - Do NOT remove existing functionality unless the instruction explicitly says to.
 - Do NOT add CLI interfaces, EventEmitters, or generic boilerplate wrappers.
 - Keep changes MINIMAL and SURGICAL — only modify what the instruction asks for.` : "";
+
+  // ♻️ AUTO-HEALING: Inject error context if the previous attempt failed
+  const errorRecoveryMode = options.previousError ? `
+
+⚠️ CRITICAL RECOVERY MODE:
+Your previous attempt to modify this file FAILED with the following error:
+[ERROR START]
+${options.previousError}
+[ERROR END]
+You MUST analyze this error and fix the scope, syntax, or logic issue in your new patch. Do not repeat the same mistake.` : "";
 
 const prompt = `### STRICT OPERATING MODE: SURGICAL CODE EDITOR ###
 - YOU ARE A CODE EDITING TOOL, NOT A CHATBOT.
@@ -390,7 +401,7 @@ Current code:
 ${content}
 \`\`\`
 
-USER INSTRUCTIONS: ${instructions}
+USER INSTRUCTIONS: ${instructions}${errorRecoveryMode}
 
 RULES FOR SURGICAL EDITING (MANDATORY):
 1. Use ONLY <<<< ==== >>>> blocks. 
@@ -761,7 +772,10 @@ export async function codeTransform(request) {
         };
       }
 
-      const transformOpts = { fromSelfEvolve: isSelfEvolve };
+      const transformOpts = { 
+        fromSelfEvolve: isSelfEvolve,
+        previousError: context.previousError // 👈 Pass the error down
+      };
 
       // Preview mode: show what would change without applying
       if (

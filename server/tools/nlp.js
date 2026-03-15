@@ -1,4 +1,3 @@
-// Manual Override Test
 // E:\testFolder\nlp.js
 
 import natural from "natural";

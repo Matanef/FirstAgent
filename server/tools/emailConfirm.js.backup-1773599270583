@@ -23,17 +23,7 @@ export async function email_confirm(request) {
 
     // ── SEND ─────────────────────────────────────────────────
     if (action === "send_confirmed") {
-      let draft;
-      try {
-        draft = await getDraft(sessionId);
-      } catch (getDraftErr) {
-        return {
-          tool: "email_confirm",
-          success: false,
-          final: true,
-          error: `Error fetching draft: ${getDraftErr.message || String(getDraftErr)}`
-        };
-      }
+      const draft = await getDraft(sessionId);
 
       if (!draft) {
         return {
