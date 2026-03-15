@@ -5,6 +5,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { getMemory } from "../memory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,7 +52,7 @@ const BUILT_IN_WORKFLOWS = [
     description: "Check weather, browse emails, and get top news",
     builtIn: true,
     steps: [
-      { tool: "weather", input: "weather today", label: "Weather" },
+      { tool: "weather", input: "weather today", context: { city: "__USE_GEOLOCATION__" }, label: "Weather" },
       { tool: "email", input: "check my recent emails", context: { action: "browse" }, label: "Emails" },
       { tool: "news", input: "top news today", label: "News" },
     ],
@@ -178,6 +179,18 @@ export async function executeWorkflow(idOrName, toolExecutor, onStep) {
 
     try {
       const stepContext = { ...step.context, ...context };
+
+      // Resolve __USE_GEOLOCATION__ for weather steps (workflow bypasses coordinator)
+      if (step.tool === "weather" && stepContext.city === "__USE_GEOLOCATION__") {
+        try {
+          const memory = await getMemory();
+          stepContext.city = memory.profile?.location || memory.profile?.city || null;
+          if (stepContext.city) console.log(`[workflow] Resolved weather city from memory: ${stepContext.city}`);
+        } catch (e) {
+          console.warn("[workflow] Could not resolve weather city:", e.message);
+        }
+      }
+
       const result = await toolExecutor(step.tool, step.input, stepContext);
 
       const stepResult = {

@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { llm } from "./tools/llm.js";
 import { getMemory } from "./memory.js";
+import { CONFIG } from "./utils/config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -955,6 +956,16 @@ if (
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
   }
 
+  // "Send <phone_number> <message>" without WhatsApp keyword → route to whatsapp
+  // Must come BEFORE email to prevent "send 0587426393 hello" → email
+  if (/\bsend\b/i.test(lower) &&
+      /(?:\+?\d[\d\s\-()]{6,18}\d)/.test(trimmed) &&
+      !/\b(email|e-mail|mail)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: whatsapp (phone number detected)");
+    return [{ tool: "whatsapp", input: trimmed, context: {}, reasoning: "certainty_whatsapp_phone" }];
+  }
+
   // Email keywords: compose, browse/read, or draft
   // Guard: skip if compound intent (e.g. "send email with summary of the news")
   if (/\b(email|e-mail|mail|inbox|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
@@ -1160,20 +1171,26 @@ if (
   }
 
   // YouTube keywords
-  if (/\b(youtube|video|watch|tutorial\s+video|how\s+to\s+video)\b/i.test(lower)) {
+  // Guard: skip if compound intent detected (e.g. "find a video and email me the link")
+  if (/\b(youtube|video|watch|tutorial\s+video|how\s+to\s+video)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: youtube");
     return [{ tool: "youtube", input: trimmed, context: {}, reasoning: "certainty_youtube" }];
   }
 
   // GitHub Trending — must come BEFORE general github
-  if (/\b(trending|popular|top)\b/i.test(lower) && /\b(repo|repository|github|project|open\s*source)\b/i.test(lower)) {
+  // Guard: skip if compound intent detected (e.g. "search trending repos and send to whatsapp")
+  if (/\b(trending|popular|top)\b/i.test(lower) && /\b(repo|repository|github|project|open\s*source)\b/i.test(lower) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: githubTrending");
     return [{ tool: "githubTrending", input: trimmed, context: {}, reasoning: "certainty_github_trending" }];
   }
 
   // GitHub keywords
+  // Guard: skip if compound intent detected (e.g. "check github issues and email me")
   if (/\b(github|repo|repository|pull\s+request|issue|commit|branch|merge|fork)\b/i.test(lower) &&
-      !hasExplicitFilePath(trimmed)) {
+      !hasExplicitFilePath(trimmed) &&
+      !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: github");
     return [{ tool: "github", input: trimmed, context: {}, reasoning: "certainty_github" }];
   }
@@ -1206,7 +1223,7 @@ if (
 
   // Workflow management — "run morning briefing workflow", "list workflows", "create workflow"
   // Must come BEFORE scheduler to prevent "run workflow" → scheduler
-  if (/\b(run|execute|start|create|list|show|delete|remove)\s+(the\s+)?(a\s+)?workflow/i.test(lower) ||
+  if (/\b(run|execute|start|create|list|show|delete|remove)\s+(the\s+)?(a\s+)?(my\s+)?workflow/i.test(lower) ||
       /\bworkflow\s+(named?|called)\b/i.test(lower) ||
       /\b(morning\s+briefing|market\s+check|code\s+review\s+cycle)\b/i.test(lower)) {
     console.log("[planner] certainty branch: workflow");
@@ -1372,12 +1389,14 @@ if (
     else if (/\b(refactor|rewrite|transform|optimize|modify|codetransform)\b/i.test(firstPart)) firstTool = "codeTransform";
     else if (/\b(write|create|generate|filewrite)\b/i.test(firstPart)) firstTool = "fileWrite";
     
-    const emailInput = emailAddr
-      ? `Send the results to ${emailAddr}`
+    // Resolve "me" to default email if no explicit address
+    const resolvedEmail = emailAddr || ((/\b(me|myself)\b/i.test(trimmed) && CONFIG.DEFAULT_EMAIL) ? CONFIG.DEFAULT_EMAIL : "");
+    const emailInput = resolvedEmail
+      ? `Send the results to ${resolvedEmail}`
       : `Email me the results of: ${firstPart}`;
     return [
       { tool: firstTool, input: firstPart, context: {}, reasoning: "compound_step1" },
-      { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: emailAddr || undefined }, reasoning: "compound_step2_email" }
+      { tool: "email", input: emailInput, context: { action: "draft", useLastResult: true, to: resolvedEmail || undefined }, reasoning: "compound_step2_email" }
     ];
   }
 

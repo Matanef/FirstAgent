@@ -53,6 +53,8 @@ async function ensureLogin() {
     return false;
   } catch (err) {
     console.error("🐦 [x] Login failed:", err.message);
+    // Clear stale cookies on failure to force fresh login next time
+    try { await fs.unlink(COOKIE_PATH); } catch {}
     return false;
   }
 }

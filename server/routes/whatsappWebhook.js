@@ -1,8 +1,10 @@
 // server/routes/whatsappWebhook.js
 // WhatsApp Business Cloud API webhook — receives incoming messages from Meta
 // TWO-WAY LOOP: incoming message → agent pipeline → auto-reply via WhatsApp
+// STATEFUL CONVERSATIONS: greeting, weather, news categories, calendar, tasks
 
 import express from "express";
+import { getState, setState, clearState } from "../utils/whatsappState.js";
 
 const router = express.Router();
 
@@ -12,11 +14,81 @@ const MAX_PROCESSED_CACHE = 500;
 
 function trackMessage(messageId) {
   processedMessages.add(messageId);
-  // Prune cache if it gets too large
   if (processedMessages.size > MAX_PROCESSED_CACHE) {
     const first = processedMessages.values().next().value;
     processedMessages.delete(first);
   }
+}
+
+// ── WhatsApp formatting helpers ──
+
+function stripHtmlToPlain(html) {
+  return (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function formatWeatherWA(result) {
+  if (!result?.success || !result?.data) return "❌ Could not fetch weather.";
+  const d = result.data;
+  const parts = ["🌤️ *Weather Report*"];
+  if (d.city) parts.push(`📍 ${d.city}${d.country ? `, ${d.country}` : ""}`);
+  if (d.temp != null) parts.push(`🌡️ ${d.temp}°C${d.feels_like != null ? ` (feels like ${d.feels_like}°C)` : ""}`);
+  if (d.description) parts.push(`☁️ ${d.description}`);
+  if (d.wind_speed != null) parts.push(`💨 Wind: ${d.wind_speed} m/s`);
+  if (d.humidity != null) parts.push(`💧 Humidity: ${d.humidity}%`);
+  return parts.join("\n");
+}
+
+function formatNewsWA(result, label = "News") {
+  if (!result?.success) return `❌ Could not fetch ${label}.`;
+  const items = result.data?.items || result.data?.articles || [];
+  if (items.length === 0) return `No ${label} found.`;
+  const lines = items.slice(0, 6).map((item, i) => {
+    const title = item.title || "Untitled";
+    const source = item.source ? ` _(${item.source})_` : "";
+    const link = item.link ? `\n   ${item.link}` : "";
+    return `${i + 1}. *${title}*${source}${link}`;
+  });
+  return `📰 *${label}*\n\n${lines.join("\n\n")}`;
+}
+
+function formatTasksWA(result) {
+  if (!result?.success) return "❌ Task operation failed.";
+  const text = result.data?.text || result.data?.plain || JSON.stringify(result.data);
+  return stripHtmlToPlain(text);
+}
+
+function formatCalendarWA(result) {
+  if (!result?.success) return "❌ Calendar operation failed.";
+  const text = result.data?.text || result.data?.plain || "Calendar event processed.";
+  return stripHtmlToPlain(text);
+}
+
+async function getSavedCity() {
+  try {
+    const { getMemory } = await import("../memory.js");
+    const memory = await getMemory();
+    return memory.profile?.location || memory.profile?.city || null;
+  } catch { return null; }
+}
+
+async function loadTools() {
+  const { default: TOOLS } = await import("../tools/index.js");
+  return TOOLS;
 }
 
 // ============================================================
@@ -29,7 +101,7 @@ router.get("/", (req, res) => {
 
   if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     console.log("✅ [WhatsApp] Webhook verified successfully");
-    return res.status(200).send(challenge); // must be plain text, NOT JSON
+    return res.status(200).send(challenge);
   }
 
   console.warn("⚠️ [WhatsApp] Webhook verification failed — token mismatch");
@@ -58,103 +130,243 @@ router.post("/", async (req, res) => {
     // Incoming message
     const message = value?.messages?.[0];
     if (!message) return;
-
-    // Only handle text messages for now
     if (message.type !== "text") {
-      console.log(`📱 [WhatsApp] Received ${message.type} (non-text) — skipping auto-reply`);
+      console.log(`📱 [WhatsApp] Received ${message.type} (non-text) — skipping`);
       return;
     }
 
     const messageId = message.id;
-    const from = message.from;             // sender phone number (e.g., "972541234567")
+    const from = message.from;
     const body = message.text?.body || "";
     const contactName = value?.contacts?.[0]?.profile?.name || "Unknown";
     const timestamp = new Date(parseInt(message.timestamp) * 1000).toLocaleString();
 
-    // ── DUPLICATE GUARD: Skip if we already processed this message ──
+    // ── DUPLICATE GUARD ──
     if (processedMessages.has(messageId)) {
-      console.log(`📱 [WhatsApp] Duplicate message ${messageId} — skipping`);
+      console.log(`📱 [WhatsApp] Duplicate ${messageId} — skipping`);
       return;
     }
     trackMessage(messageId);
 
-    // ── LOOP GUARD: Skip messages from the bot's own number ──
+    // ── LOOP GUARD ──
     const botNumber = process.env.WHATSAPP_BOT_NUMBER || process.env.WHATSAPP_PHONE_ID;
     if (from === botNumber) {
-      console.log("[WhatsApp] Skipping self-sent message (loop guard)");
+      console.log("[WhatsApp] Skipping self-sent (loop guard)");
       return;
     }
 
-    // ── EMPTY MESSAGE GUARD ──
-    if (!body.trim()) {
-      console.log("[WhatsApp] Empty message body — skipping");
-      return;
-    }
+    // ── EMPTY GUARD ──
+    if (!body.trim()) return;
 
     console.log("\n" + "─".repeat(60));
-    console.log(`📱 [WhatsApp] Incoming Message → Agent Pipeline`);
-    console.log(`   From:    ${contactName} (${from})`);
-    console.log(`   Time:    ${timestamp}`);
-    console.log(`   Message: ${body}`);
+    console.log(`📱 [WhatsApp] From: ${contactName} (${from}) → "${body}"`);
     console.log("─".repeat(60));
 
-    // ── PROCESS THROUGH AGENT PIPELINE ──
-    // Dynamic imports to avoid circular dependencies
+    const { sendWhatsAppMessage } = await import("../tools/whatsapp.js");
+    const lower = body.trim().toLowerCase();
+
+    // ──────────────────────────────────────────────────────
+    // STATEFUL CONVERSATION: Check if user is mid-flow
+    // ──────────────────────────────────────────────────────
+    const convState = getState(from);
+
+    if (convState?.state === "awaiting_news_category") {
+      console.log(`📱 [WhatsApp] Continuing news flow: category = "${body.trim()}"`);
+      clearState(from);
+      try {
+        const TOOLS = await loadTools();
+        const category = body.trim();
+        const result = await TOOLS.news({ text: `${category} news`, context: {} });
+        const formatted = formatNewsWA(result, `${category} News`);
+        await sendWhatsAppMessage(from, formatted);
+      } catch (e) {
+        await sendWhatsAppMessage(from, `❌ Could not fetch news: ${e.message}`);
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // GREETING: hi/hello/morning → comprehensive response
+    // ──────────────────────────────────────────────────────
+    if (/^(hi|hello|hey|morning|good\s+morning|good\s+evening|good\s+afternoon|בוקר\s+טוב|שלום|ערב\s+טוב)\b/i.test(lower) && lower.length < 40) {
+      console.log(`📱 [WhatsApp] Greeting detected → comprehensive response`);
+      try {
+        const TOOLS = await loadTools();
+        const city = await getSavedCity();
+        const parts = ["👋 *Good day!*\n"];
+
+        // Weather
+        try {
+          const weatherResult = await TOOLS.weather({ text: "weather today", context: { city: city || "__USE_GEOLOCATION__" } });
+          parts.push(formatWeatherWA(weatherResult));
+        } catch { parts.push("🌤️ Weather: unavailable"); }
+
+        // Tech news (4 links)
+        try {
+          const techNews = await TOOLS.news({ text: "latest technology news", context: {} });
+          const items = techNews?.data?.items || techNews?.data?.articles || [];
+          if (items.length > 0) {
+            parts.push("\n📱 *Tech News*");
+            items.slice(0, 4).forEach((item, i) => {
+              parts.push(`${i + 1}. ${item.title || "Untitled"}${item.link ? `\n   ${item.link}` : ""}`);
+            });
+          }
+        } catch { /* skip */ }
+
+        // Regional news (6 links)
+        try {
+          const regionalNews = await TOOLS.news({ text: "Israel news", context: {} });
+          const items = regionalNews?.data?.items || regionalNews?.data?.articles || [];
+          if (items.length > 0) {
+            parts.push("\n🌍 *Regional News*");
+            items.slice(0, 6).forEach((item, i) => {
+              parts.push(`${i + 1}. ${item.title || "Untitled"}${item.link ? `\n   ${item.link}` : ""}`);
+            });
+          }
+        } catch { /* skip */ }
+
+        // X Trends (if available)
+        try {
+          const { CONFIG } = await import("../utils/config.js");
+          if (CONFIG.isXAvailable()) {
+            const xResult = await TOOLS.x({ text: "trending", context: { action: "trends" } });
+            if (xResult?.success && xResult?.data?.raw?.trends?.length > 0) {
+              parts.push("\n🔥 *Trending on X*");
+              xResult.data.raw.trends.slice(0, 5).forEach(t => {
+                parts.push(`• ${t.name}`);
+              });
+            }
+          }
+        } catch { /* skip */ }
+
+        const greeting = parts.join("\n");
+        await sendWhatsAppMessage(from, greeting.length > 4000 ? greeting.slice(0, 4000) + "\n..." : greeting);
+      } catch (e) {
+        console.error("[WhatsApp] Greeting response error:", e.message);
+        await sendWhatsAppMessage(from, "👋 Hello! I'm your AI assistant. How can I help?");
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // WEATHER: direct weather queries
+    // ──────────────────────────────────────────────────────
+    if (/\b(weather|forecast|temperature|מזג\s+אוויר|what'?s?\s+the\s+weather)\b/i.test(lower)) {
+      console.log(`📱 [WhatsApp] Weather query detected`);
+      try {
+        const TOOLS = await loadTools();
+        const city = await getSavedCity();
+        const result = await TOOLS.weather({ text: body, context: { city: city || "__USE_GEOLOCATION__" } });
+        await sendWhatsAppMessage(from, formatWeatherWA(result));
+      } catch (e) {
+        await sendWhatsAppMessage(from, `❌ Weather error: ${e.message}`);
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // NEWS: show categories → stateful flow
+    // ──────────────────────────────────────────────────────
+    if (/\b(news|חדשות|latest\s+news|headlines|what'?s?\s+happening)\b/i.test(lower) &&
+        !/\b(tech|technology|sport|business|science|world|israel)\b/i.test(lower)) {
+      console.log(`📱 [WhatsApp] News query → showing categories`);
+      setState(from, "awaiting_news_category");
+      await sendWhatsAppMessage(from,
+        "📰 *News Categories*\n\n" +
+        "1️⃣ Technology\n" +
+        "2️⃣ Business\n" +
+        "3️⃣ Sports\n" +
+        "4️⃣ Science\n" +
+        "5️⃣ World\n" +
+        "6️⃣ Israel\n\n" +
+        "Reply with a category name:"
+      );
+      return;
+    }
+
+    // News with specific category (direct)
+    if (/\b(tech|technology|sport|business|science|world|israel)\s*(news|headlines)?\b/i.test(lower)) {
+      console.log(`📱 [WhatsApp] Specific news category detected`);
+      try {
+        const TOOLS = await loadTools();
+        const category = lower.match(/\b(tech|technology|sport|business|science|world|israel)\b/i)?.[0] || "general";
+        const result = await TOOLS.news({ text: `${category} news`, context: {} });
+        await sendWhatsAppMessage(from, formatNewsWA(result, `${category} News`));
+      } catch (e) {
+        await sendWhatsAppMessage(from, `❌ News error: ${e.message}`);
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // CALENDAR: set/schedule/book events
+    // ──────────────────────────────────────────────────────
+    if (/\b(set|schedule|book|appointment|meeting|conference|event|פגישה|תזכורת)\b/i.test(lower) &&
+        /\b(at|on|for|ב|ל)\b/i.test(lower)) {
+      console.log(`📱 [WhatsApp] Calendar intent detected`);
+      try {
+        const TOOLS = await loadTools();
+        const result = await TOOLS.calendar({ text: body, context: {} });
+        await sendWhatsAppMessage(from, formatCalendarWA(result));
+      } catch (e) {
+        await sendWhatsAppMessage(from, `❌ Calendar error: ${e.message}`);
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // TASKS: add/list/mark/remove tasks
+    // ──────────────────────────────────────────────────────
+    if (/\b(add\s+task|my\s+tasks|current\s+tasks|mark.*done|remove.*task|tasks?\s+due|what\s+tasks|todo|to-do)\b/i.test(lower)) {
+      console.log(`📱 [WhatsApp] Task intent detected`);
+      try {
+        const TOOLS = await loadTools();
+        const result = await TOOLS.tasks({ text: body, context: {} });
+        await sendWhatsAppMessage(from, formatTasksWA(result));
+      } catch (e) {
+        await sendWhatsAppMessage(from, `❌ Task error: ${e.message}`);
+      }
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────
+    // GENERIC: Route through full agent pipeline (fallback)
+    // ──────────────────────────────────────────────────────
+    console.log(`🤖 [WhatsApp] Routing through agent pipeline: "${body.slice(0, 60)}..."`);
+
     const { plan } = await import("../planner.js");
     const { orchestrate } = await import("../utils/coordinator.js");
-    const { sendWhatsAppMessage } = await import("../tools/whatsapp.js");
-
-    console.log(`🤖 [WhatsApp] Processing "${body.slice(0, 60)}..." through agent...`);
 
     const steps = await plan({ message: body });
     console.log(`🤖 [WhatsApp] Planned ${steps.length} step(s): ${steps.map(s => s.tool).join(" → ")}`);
 
     const results = await orchestrate(steps, body);
 
-    // ── EXTRACT RESPONSE TEXT ──
+    // Extract response text
     const lastResult = results?.[results.length - 1];
     let responseText =
-      lastResult?.output?.data?.text ||
       lastResult?.output?.data?.plain ||
+      lastResult?.output?.data?.text ||
       lastResult?.output?.text ||
       lastResult?.data?.text ||
       "I processed your request but couldn't generate a response.";
 
-    // Strip HTML tags for WhatsApp plain-text format
-    responseText = responseText
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/div>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<\/h[1-6]>/gi, "\n\n")
-      .replace(/<\/li>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\n{3,}/g, "\n\n")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+    // Strip HTML for WhatsApp
+    responseText = stripHtmlToPlain(responseText);
 
-    // WhatsApp has a 4096 char limit
+    // WhatsApp 4096 char limit
     if (responseText.length > 4000) {
       responseText = responseText.slice(0, 4000) + "\n\n... (truncated)";
     }
 
-    // ── SEND REPLY ──
     const sendResult = await sendWhatsAppMessage(from, responseText);
-
     if (sendResult.success) {
       console.log(`✅ [WhatsApp] Replied to ${contactName} (${from}) — ${responseText.length} chars`);
     } else {
-      console.error(`❌ [WhatsApp] Failed to reply to ${from}: ${sendResult.error}`);
+      console.error(`❌ [WhatsApp] Failed to reply: ${sendResult.error}`);
     }
 
   } catch (err) {
-    // Never let errors propagate — we already sent 200
     console.error("❌ [WhatsApp] Agent pipeline error:", err.message);
     console.error(err.stack);
   }

@@ -327,14 +327,20 @@ export async function news(request) {
         }
         .news-summaries {
           display: flex;
-          flex-direction: column;
+          flex-wrap: wrap;
           gap: 1rem;
+          justify-content: flex-start;
         }
         .news-summary-card {
           background: var(--bg-tertiary);
           border: 1px solid var(--border);
           border-radius: 8px;
           padding: 1.5rem;
+          width: 510px;
+          height: 280px;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
         }
         .news-summary-header {
           margin-bottom: 0.5rem;
@@ -356,6 +362,8 @@ export async function news(request) {
           margin: 1rem 0;
           line-height: 1.6;
           color: var(--text-secondary);
+          flex: 1;
+          overflow: hidden;
         }
         .news-summary-link {
           color: var(--accent);

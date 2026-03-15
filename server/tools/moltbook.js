@@ -8,6 +8,7 @@
 import fetch from "node-fetch";
 import fs from "fs/promises";
 import fsSync from "fs";
+import { llm } from "./llm.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
@@ -980,44 +981,98 @@ async function handleHeartbeat(text, context) {
       }
     }
 
-    // 2b. Interact with feed — upvote 1-2 interesting posts
-    const postsToUpvote = feedPosts
-      .filter(p => p.id && p.score != null)
-      .slice(0, 2);
+    // 2b. LLM-driven engagement — read posts, decide what's interesting, interact meaningfully
+    if (feedPosts.length > 0) {
+      const postSummaries = feedPosts.slice(0, 8).map((p, i) =>
+        `${i + 1}. "${p.title || "Untitled"}" by ${p.author || "unknown"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
+      ).join("\n");
 
-    if (postsToUpvote.length > 0) {
-      output += `\n**Interactions:**\n`;
-      for (const p of postsToUpvote) {
-        try {
-          const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
-          if (voteResult.ok) {
-            output += `  ⬆️ Upvoted: "${(p.title || "Untitled").substring(0, 50)}"\n`;
-            actions.push(`Upvoted post by ${p.author || "unknown"}`);
-          } else if (voteResult.status === 429) {
-            output += `  ⛔ Rate limited — skipping further interactions\n`;
-            break;
-          } else {
-            output += `  ⚠️ Could not upvote: ${voteResult.status}\n`;
-          }
-        } catch (e) {
-          output += `  ⚠️ Upvote failed: ${e.message}\n`;
+      const analysisPrompt = `You are an AI agent on Moltbook, a social platform for AI agents. Read these posts from your feed and decide how to engage.
+
+POSTS:
+${postSummaries}
+
+Instructions:
+1. Pick 1-3 posts you find genuinely interesting (return their numbers)
+2. For the MOST interesting one, write a thoughtful comment (2-3 sentences, be specific about the topic — do NOT write generic "great post" comments)
+3. Optionally, suggest a NEW post idea you'd like to share based on your experience as an AI agent (something insightful about AI, automation, or your capabilities). If no good idea, return null.
+
+Return ONLY valid JSON:
+{"upvote": [1, 3], "comment": {"post": 1, "text": "your thoughtful comment here"}, "newPostIdea": "your post idea or null"}`;
+
+      let llmEngagement = null;
+      try {
+        const llmResult = await llm(analysisPrompt, { timeoutMs: 45000, format: "json" });
+        if (llmResult.success && llmResult.data?.text) {
+          const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+          llmEngagement = JSON.parse(cleaned);
         }
+      } catch (e) {
+        console.warn("[moltbook] LLM engagement analysis failed:", e.message);
       }
 
-      // 2c. Comment on 1 post (the most popular one) with a contextual remark
-      const topPost = feedPosts.find(p => p.id && p.title);
-      if (topPost) {
-        try {
-          const commentBody = `Great post about "${(topPost.title || "").substring(0, 30)}"! Interesting perspective. 🤖`;
-          const commentResult = await apiRequest("POST", `/posts/${topPost.id}/comments`, { content: commentBody }, apiKey);
-          if (commentResult.ok) {
-            output += `  💬 Commented on: "${(topPost.title || "Untitled").substring(0, 50)}"\n`;
-            actions.push(`Commented on post by ${topPost.author || "unknown"}`);
-          } else if (commentResult.status !== 429) {
-            output += `  ⚠️ Comment failed: ${commentResult.status}\n`;
+      output += `\n**Interactions:**\n`;
+
+      if (llmEngagement) {
+        // Upvote LLM-selected posts
+        const upvoteIndices = Array.isArray(llmEngagement.upvote) ? llmEngagement.upvote : [];
+        for (const idx of upvoteIndices) {
+          const post = feedPosts[idx - 1]; // 1-indexed
+          if (!post?.id) continue;
+          try {
+            const voteResult = await apiRequest("POST", `/posts/${post.id}/upvote`, null, apiKey);
+            if (voteResult.ok) {
+              output += `  ⬆️ Upvoted: "${(post.title || "Untitled").substring(0, 50)}"\n`;
+              actions.push(`Upvoted post by ${post.author || "unknown"}`);
+            } else if (voteResult.status === 429) {
+              output += `  ⛔ Rate limited — skipping further interactions\n`;
+              break;
+            } else {
+              output += `  ⚠️ Could not upvote: ${voteResult.status}\n`;
+            }
+          } catch (e) {
+            output += `  ⚠️ Upvote failed: ${e.message}\n`;
           }
-        } catch (e) {
-          output += `  ⚠️ Comment failed: ${e.message}\n`;
+        }
+
+        // Comment with LLM-generated thoughtful text
+        if (llmEngagement.comment?.post && llmEngagement.comment?.text) {
+          const commentPost = feedPosts[(llmEngagement.comment.post) - 1];
+          if (commentPost?.id) {
+            try {
+              const commentResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, { content: llmEngagement.comment.text }, apiKey);
+              if (commentResult.ok) {
+                output += `  💬 Commented on: "${(commentPost.title || "Untitled").substring(0, 50)}"\n`;
+                output += `     _"${llmEngagement.comment.text.substring(0, 120)}..."_\n`;
+                actions.push(`Commented on post by ${commentPost.author || "unknown"}`);
+              } else if (commentResult.status !== 429) {
+                output += `  ⚠️ Comment failed: ${commentResult.status}\n`;
+              }
+            } catch (e) {
+              output += `  ⚠️ Comment failed: ${e.message}\n`;
+            }
+          }
+        }
+
+        // Post idea suggestion (suggest only — no auto-posting)
+        if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
+          output += `\n💡 **Post Idea:** ${llmEngagement.newPostIdea}\n`;
+          output += `  _Say "moltbook post: ${llmEngagement.newPostIdea.substring(0, 60)}..." to publish_\n`;
+          actions.push(`Suggested post idea: "${llmEngagement.newPostIdea.substring(0, 60)}"`);
+        }
+      } else {
+        // Fallback: simple upvote of top 2 posts if LLM analysis failed
+        output += `  _(LLM analysis unavailable — using simple engagement)_\n`;
+        for (const p of feedPosts.filter(p => p.id).slice(0, 2)) {
+          try {
+            const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
+            if (voteResult.ok) {
+              output += `  ⬆️ Upvoted: "${(p.title || "Untitled").substring(0, 50)}"\n`;
+              actions.push(`Upvoted post by ${p.author || "unknown"}`);
+            } else if (voteResult.status === 429) {
+              break;
+            }
+          } catch (e) { /* skip */ }
         }
       }
     }

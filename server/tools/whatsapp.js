@@ -298,19 +298,32 @@ export async function whatsapp(request) {
         ? `📰 *Latest News*\n\n${headlines.join("\n")}`
         : null;
     } else if (prevTool === "weather") {
-      const tempMatch = prevOutput.match(/([\d.]+)°C/);
-      const feelsMatch = prevOutput.match(/[Ff]eels?\s*like[:\s]*([\d.]+)°C/);
-      const condMatch = prevOutput.match(/moderate\s+\w+|clear\s+sky|overcast|light\s+\w+|heavy\s+\w+|sunny|cloudy|rainy/i);
-      const windMatch = prevOutput.match(/[Ww]ind[:\s]*([\d.]+)\s*m\/s/);
-      const humidMatch = prevOutput.match(/[Hh]umidity[:\s]*([\d.]+)%/);
-      const cityMatch = prevOutput.match(/weather (?:in|for) ([^,\n<]+)/i);
-      const parts = ["🌤️ *Weather Report*"];
-      if (cityMatch) parts.push(`📍 ${cityMatch[1].trim()}`);
-      if (tempMatch) parts.push(`🌡️ ${tempMatch[1]}°C${feelsMatch ? ` (feels like ${feelsMatch[1]}°C)` : ""}`);
-      if (condMatch) parts.push(`☁️ ${condMatch[0].trim()}`);
-      if (windMatch) parts.push(`💨 Wind: ${windMatch[1]} m/s`);
-      if (humidMatch) parts.push(`💧 Humidity: ${humidMatch[1]}%`);
-      messageBody = parts.length > 1 ? parts.join("\n") : null;
+      // Try raw data first (more reliable than HTML regex)
+      const raw = context.chainContext.previousRaw || null;
+      if (raw?.temp != null) {
+        const parts = ["🌤️ *Weather Report*"];
+        if (raw.city) parts.push(`📍 ${raw.city}${raw.country ? `, ${raw.country}` : ""}`);
+        parts.push(`🌡️ ${raw.temp}°C${raw.feels_like != null ? ` (feels like ${raw.feels_like}°C)` : ""}`);
+        if (raw.description) parts.push(`☁️ ${raw.description}`);
+        if (raw.wind_speed != null) parts.push(`💨 Wind: ${raw.wind_speed} m/s`);
+        if (raw.humidity != null) parts.push(`💧 Humidity: ${raw.humidity}%`);
+        messageBody = parts.join("\n");
+      } else {
+        // Fallback: HTML regex parsing
+        const tempMatch = prevOutput.match(/([\d.]+)°C/);
+        const feelsMatch = prevOutput.match(/[Ff]eels?\s*like[:\s]*([\d.]+)°C/);
+        const condMatch = prevOutput.match(/moderate\s+\w+|clear\s+sky|overcast|light\s+\w+|heavy\s+\w+|sunny|cloudy|rainy/i);
+        const windMatch = prevOutput.match(/[Ww]ind[:\s]*([\d.]+)\s*m\/s/);
+        const humidMatch = prevOutput.match(/[Hh]umidity[:\s]*([\d.]+)%/);
+        const cityMatch = prevOutput.match(/weather (?:in|for) ([^,\n<]+)/i);
+        const parts = ["🌤️ *Weather Report*"];
+        if (cityMatch) parts.push(`📍 ${cityMatch[1].trim()}`);
+        if (tempMatch) parts.push(`🌡️ ${tempMatch[1]}°C${feelsMatch ? ` (feels like ${feelsMatch[1]}°C)` : ""}`);
+        if (condMatch) parts.push(`☁️ ${condMatch[0].trim()}`);
+        if (windMatch) parts.push(`💨 Wind: ${windMatch[1]} m/s`);
+        if (humidMatch) parts.push(`💧 Humidity: ${humidMatch[1]}%`);
+        messageBody = parts.length > 1 ? parts.join("\n") : null;
+      }
     } else if (prevTool === "x") {
       // X/Twitter: extract trends or tweet info
       const trendItems = [];

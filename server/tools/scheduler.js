@@ -16,6 +16,18 @@ const SCHEDULES_FILE = path.join(DATA_DIR, "schedules.json");
 // In-memory timers
 const activeTimers = new Map();
 
+// ── Notification system ──
+const notifications = [];
+const MAX_NOTIFICATIONS = 50;
+
+export function addNotification(notif) {
+  notifications.unshift(notif);
+  if (notifications.length > MAX_NOTIFICATIONS) notifications.pop();
+}
+
+export function getNotifications() { return [...notifications]; }
+export function clearNotifications() { notifications.length = 0; }
+
 // ──────────────────────────────────────────────────────────
 // PERSISTENCE
 // ──────────────────────────────────────────────────────────
@@ -196,11 +208,45 @@ async function executeScheduledTask(schedule) {
     }
 
     console.log(`✅ [scheduler] Task "${schedule.task}" completed.`);
+
+    // ── Notification: in-app + WhatsApp ──
+    const notif = {
+      type: "scheduled_task_complete",
+      taskId: schedule.id,
+      taskName: schedule.task,
+      result: "success",
+      timestamp: new Date().toISOString()
+    };
+    addNotification(notif);
+
+    // Send WhatsApp notification if configured
+    try {
+      const { CONFIG } = await import("../utils/config.js");
+      const recipient = CONFIG.WHATSAPP_DEFAULT_RECIPIENT;
+      if (recipient && process.env.WHATSAPP_TOKEN) {
+        const { sendWhatsAppMessage } = await import("./whatsapp.js");
+        const summary = `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}`;
+        await sendWhatsAppMessage(recipient, summary);
+      }
+    } catch (waErr) {
+      console.warn("[scheduler] WhatsApp notification failed:", waErr.message);
+    }
+
     return results;
   } catch (err) {
     // THIS IS THE CRITICAL PART: Catch everything so the server stays alive
     console.error(`❌ [scheduler] FATAL TASK ERROR ("${schedule.task}"):`, err.message);
     console.error(err.stack);
+
+    // Notification for failure
+    addNotification({
+      type: "scheduled_task_complete",
+      taskId: schedule.id,
+      taskName: schedule.task,
+      result: "failed",
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
   }
 }
 
@@ -328,7 +374,7 @@ function handleList() {
     output += `**Active (${active.length}):**\n`;
     for (const s of active) {
       output += `- **${s.task}** -- ${s.description} (ID: ${s.id})\n`;
-      if (s.lastRun) output += `  Last run: ${new Date(s.lastRun).toLocaleString()}\n`;
+      if (s.lastRun) output += `  Last run: ${new Date(s.lastRun).toLocaleString()} | Runs: ${s.runCount || 0}\n`;
     }
   }
 

@@ -182,4 +182,17 @@ router.post("/chat", async (req, res) => {
   }
 });
 
+// ── Scheduler notifications endpoint ──
+router.get("/notifications", async (req, res) => {
+  try {
+    const { getNotifications, clearNotifications } = await import("../tools/scheduler.js");
+    const clear = req.query.clear === "true";
+    const notifs = getNotifications();
+    if (clear) clearNotifications();
+    res.json(notifs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

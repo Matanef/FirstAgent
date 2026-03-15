@@ -284,6 +284,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
                         previousTool: prevStep.tool,
                         previousOutput: prevStep.output,
                         previousSuccess: prevStep.success,
+                        previousRaw: prevStep.rawData || null,
                     };
                 }
             }
@@ -366,14 +367,15 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             { step: stepNumber, tool: step.tool, success: finalized.success }
         );
 
-        // Add to state graph
+        // Add to state graph (include rawData for chain context formatting)
         stateGraph.push({
             step: stepNumber,
             tool: step.tool,
             input: stepMessage.text,
             output: finalized.reply,
             success: finalized.success,
-            final: finalized.final
+            final: finalized.final,
+            rawData: stepResult.output?.data || stepResult.data || null
         });
 
         lastFinalized = finalized;

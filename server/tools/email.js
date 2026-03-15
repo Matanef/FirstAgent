@@ -4,7 +4,7 @@ import { getAuthorizedClient } from "../utils/googleOAuth.js";
 import { resolveContact, extractContactRef } from "./contacts.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PROJECT_ROOT } from "../utils/config.js";
+import { PROJECT_ROOT, CONFIG } from "../utils/config.js";
 import { getMemory } from "../memory.js";
 import { llm } from "./llm.js";
 
@@ -90,6 +90,17 @@ export async function parseEmailRequest(query) {
       if (resolved?.contact?.email) {
         to = resolved.contact.email;
         console.log(`📧 Resolved contact "${contactRef}" → ${to}`);
+      }
+    }
+  }
+
+  // If no email found via regex or contacts, check for "me"/"myself" → default email
+  if (!to) {
+    if (/\b(email\s+me|send\s+(it\s+)?to\s+me|mail\s+me|to\s+myself|send\s+me|for\s+me)\b/i.test(lower) ||
+        /\bemail\s+me\b/i.test(lower)) {
+      if (CONFIG.DEFAULT_EMAIL) {
+        to = CONFIG.DEFAULT_EMAIL;
+        console.log(`📧 Resolved "me" → default email: ${to}`);
       }
     }
   }

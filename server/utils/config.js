@@ -100,6 +100,9 @@ export const CONFIG = {
   TWITTER_PASSWORD: process.env.TWITTER_PASSWORD,
   TWITTER_EMAIL: process.env.TWITTER_EMAIL,
 
+  // Default Email (for "email me" resolution)
+  DEFAULT_EMAIL: process.env.DEFAULT_EMAIL || "",
+
   // WhatsApp Bot Config
   WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER,
   WHATSAPP_DEFAULT_RECIPIENT: process.env.WHATSAPP_DEFAULT_RECIPIENT || "972587426393",
