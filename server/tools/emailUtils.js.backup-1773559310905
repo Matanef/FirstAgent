@@ -1,3 +1,5 @@
+console.log('Surgical test successful');
+
 export const emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}/i;
 export const subjectRegex = /subject[:\s]+([^\n]+)/i;
 export const sayingRegex = /saying[:\s]+(.+?)(?:\s+with\s+(?:the\s+)?(?:planner|executor|subject|attachment)|$)/is;
@@ -18,11 +20,6 @@ export function stripMarkdown(text) {
   return text.replace(/[_*`~]/g, "").trim();
 }
 
-/**
- * Detects the sentiment of a given text.
- * @param {string} text - The text to analyze.
- * @returns {string|null} - The detected sentiment keyword or null if none found.
- */
 export function detectSentiment(text) {
   const lower = text.toLowerCase();
   const sentimentPattern = new RegExp(

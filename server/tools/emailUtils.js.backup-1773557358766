@@ -18,11 +18,6 @@ export function stripMarkdown(text) {
   return text.replace(/[_*`~]/g, "").trim();
 }
 
-/**
- * Detects the sentiment of a given text.
- * @param {string} text - The text to analyze.
- * @returns {string|null} - The detected sentiment keyword or null if none found.
- */
 export function detectSentiment(text) {
   const lower = text.toLowerCase();
   const sentimentPattern = new RegExp(

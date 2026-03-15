@@ -11,7 +11,7 @@ import { getMemory } from "../memory.js";
 // EMOTIONAL INTELLIGENCE LAYER (D5)
 // ============================================================
 
-const FRUSTRATION_WINDOW = 6; // Check last N messages for frustration patterns
+const FRUSTRATION_WINDOW = 5; // Check last N messages for frustration patterns
 const FRUSTRATION_THRESHOLD = 3; // Number of signals needed to trigger adaptation
 
 /**

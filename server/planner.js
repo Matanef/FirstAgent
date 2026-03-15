@@ -617,9 +617,12 @@ export async function plan({ message, chatContext = {} }) {
 // ── REFINED TECHNICAL OVERRIDE ──
   // 1. SELF-EVOLVE: Active code modification / Autonomous growth
   // Triggers ONLY on explicit "evolve" commands or "force run" on a file.
-  if (
-    /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) || 
-    (/\.js\b/.test(lower) && /\b(specifically|force\s+run|evolve)\b/i.test(lower))
+  // GUARD: Do NOT trigger if the user explicitly asks for codeTransform or fileWrite
+if (
+    !/\b(codetransform|filewrite|filereview)\b/i.test(lower) && (
+      /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) || 
+      (/\.js\b/.test(lower) && /\b(specifically|force\s+run|evolve)\b/i.test(lower))
+    )
   ) {
     console.log("[planner] technical override: forcing selfEvolve tool");
     const evolveContext = {};
@@ -675,8 +678,11 @@ export async function plan({ message, chatContext = {} }) {
   // ──────────────────────────────────────────────────────────
   // NEW: CODE TRANSFORM (Action-Verb Priority)
   // ──────────────────────────────────────────────────────────
-  if (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
-      (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))) {
+if (
+    /\b(codetransform)\b/i.test(lower) || 
+    (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
+    (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower)))
+  ) {
     console.log("[planner] certainty branch: codeTransform");
     const ctContext = { source: "manual_refactor" };
     
@@ -1363,6 +1369,9 @@ export async function plan({ message, chatContext = {} }) {
     else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
     else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review";
     else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(firstPart)) firstTool = "x";
+    else if (/\b(refactor|rewrite|transform|optimize|modify|codetransform)\b/i.test(firstPart)) firstTool = "codeTransform";
+    else if (/\b(write|create|generate|filewrite)\b/i.test(firstPart)) firstTool = "fileWrite";
+    
     const emailInput = emailAddr
       ? `Send the results to ${emailAddr}`
       : `Email me the results of: ${firstPart}`;

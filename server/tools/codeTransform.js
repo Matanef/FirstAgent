@@ -12,7 +12,7 @@ const MAX_FILE_SIZE = 256 * 1024;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, "..");
-const PROJECT_ROOT = path.resolve(SERVER_ROOT, "..");
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 /**
  * Read file safely
@@ -58,18 +58,44 @@ function detectIntent(text) {
   return "transform";
 }
 
+
 /**
- * Extract path from text
+ * Extract path from text using heuristic validation
  */
 function extractPath(text) {
-  // Regex looks for a drive letter path and stops at the first whitespace or newline
-  const pathMatch = text.match(/([a-zA-Z]:[\\/][^\s\n\r"']+)/);
-  if (pathMatch) {
-    // Remove trailing punctuation and whitespace
-    return pathMatch[1].replace(/[:"']+$/, '').trim().replace(/\\/g, "/");
-  }
-  const quoted = text.match(/["']([^"']+)["']/);
+  // 1. SAFEST: Explicitly quoted paths (e.g., "server/tools/nlp.js" or 'D:/file.js')
+  const quoted = text.match(/(?:["'])([^"']*\.[a-zA-Z0-9]{1,5})(?:["'])/) || 
+                 text.match(/(?:["'])([a-zA-Z]:[\\/][^"']+)(?:["'])/);
   if (quoted) return quoted[1].replace(/\\/g, "/");
+
+  // 2. SMART TOKENIZER: Split the sentence into words and apply your rules
+  const tokens = text.split(/\s+/); // Splits by any whitespace
+  
+  for (let token of tokens) {
+    // Clean trailing punctuation (e.g., "nlp.js." -> "nlp.js")
+    let cleanToken = token.replace(/[:"'\.,;]+$/, '').replace(/\\/g, "/");
+
+    // RULE 1: Reject obvious code comments (Fixes the "// Manual Override" bug!)
+    if (cleanToken.startsWith("//")) continue;
+
+    // RULE 2: Is it an absolute Windows path? (e.g., D:/projects/...)
+    if (/^[a-zA-Z]:\//.test(cleanToken)) return cleanToken;
+
+    // RULE 3: Does it have folder separators AND a file extension? (e.g., server/tools/nlp.js)
+    if (cleanToken.includes("/") && /\.[a-zA-Z0-9]{1,5}$/.test(cleanToken)) {
+      return cleanToken;
+    }
+
+    // RULE 4: Does it explicitly start with relative pathing? (e.g., ./utils.js)
+    if (/^\.\.?\//.test(cleanToken)) return cleanToken;
+  }
+
+  // 3. FALLBACK: Look for just a standalone filename with a known code extension
+  const fallbackMatch = text.match(/([\w.-]+\.(?:js|jsx|ts|tsx|json|py|md|html|css))\b/i);
+  if (fallbackMatch && !fallbackMatch[1].startsWith("//")) {
+    return fallbackMatch[1];
+  }
+
   return null;
 }
 
@@ -347,11 +373,15 @@ ARCHITECTURE RULES (MANDATORY — violations will be rejected):
 - Do NOT add CLI interfaces, EventEmitters, or generic boilerplate wrappers.
 - Keep changes MINIMAL and SURGICAL — only modify what the instruction asks for.` : "";
 
-const prompt = `You are a surgical code editor. 
-CRITICAL: The file is very large (${content.length} chars). 
-You ARE NOT ALLOWED to rewrite the whole file. If you output a full code block, the system will REJECT it and the edit will fail.
+const prompt = `### STRICT OPERATING MODE: SURGICAL CODE EDITOR ###
+- YOU ARE A CODE EDITING TOOL, NOT A CHATBOT.
+- DO NOT SAY "SURE", "HERE IS THE CODE", OR "I CAN HELP".
+- DO NOT PROVIDE ANY PROSE, INTRODUCTIONS, OR EXPLANATIONS.
+- IF YOU TALK TO THE USER, THE SYSTEM WILL CRASH.
+- THIS PROJECT USES ES MODULES (import/export). NEVER USE require() OR module.exports.
+- DO NOT INVENT LIBRARIES. USE THE EXISTING CODE CONTEXT ONLY.
 
-Your task: ${intent} the following ${ext} file.
+TASK: ${intent} the following ${ext} file.
 File: ${filename}
 Path: ${filePath}
 
@@ -360,7 +390,7 @@ Current code:
 ${content}
 \`\`\`
 
-User instructions: ${instructions}
+USER INSTRUCTIONS: ${instructions}
 
 RULES FOR SURGICAL EDITING (MANDATORY):
 1. Use ONLY <<<< ==== >>>> blocks. 
@@ -381,7 +411,9 @@ async function oldFunc() {
 ====
 async function oldFunc() {
   try {
->>>>`;
+>>>>
+
+YOUR RESPONSE (CODE BLOCKS ONLY):`;
 
   // ── DYNAMIC VRAM OPTIMIZATION ──
   const isMassiveFile = content.length > 20000;
@@ -602,8 +634,8 @@ export async function codeTransform(request) {
   const isSelfEvolve = context.source === "selfEvolve";
 
   if (targetPathRaw) {
-    // Nuclear option: remove colons, quotes, and any hidden newline/carriage return characters
-    targetPathRaw = targetPathRaw.replace(/[\r\n]/g, '').replace(/[:"']+$/, '').trim();
+    // Nuclear option: remove colons, quotes, periods, and any hidden newline/carriage return characters
+    targetPathRaw = targetPathRaw.replace(/[\r\n]/g, '').replace(/[:"'\.,;]+$/, '').trim();
   }
 
   // Generate new file requires a target path
@@ -630,18 +662,33 @@ export async function codeTransform(request) {
     };
   }
 
-  // Option B: if this looks like a bare filename for a tool, default to server/tools
+// ── NEW UNIVERSAL PATH RESOLUTION ──
   let targetPath = targetPathRaw;
-  if (
-    !path.isAbsolute(targetPathRaw) &&
-    !targetPathRaw.includes("/") &&
-    !targetPathRaw.includes("\\") &&
-    targetPathRaw.endsWith(".js")
-  ) {
+  
+  // Option B: Bare filename fallback (e.g., "emailUtils.js")
+  if (!targetPathRaw.includes("/") && !targetPathRaw.includes("\\") && targetPathRaw.endsWith(".js")) {
     targetPath = path.join(SERVER_ROOT, "tools", targetPathRaw);
   }
 
-  const normalizedPath = path.resolve(targetPath);
+  // Final Path Validation: Check absolute vs. relative (PROJECT_ROOT)
+  let normalizedPath = path.resolve(targetPath);
+  
+  try {
+    // Check if the path exists as-is
+    await fs.access(normalizedPath);
+  } catch {
+    // If it doesn't exist, try joining it with PROJECT_ROOT (for paths like "server/tools/nlp.js")
+    const fallbackPath = path.resolve(PROJECT_ROOT, targetPathRaw);
+    try {
+      await fs.access(fallbackPath);
+      normalizedPath = fallbackPath; // It found the file in the project root!
+      console.log(`[codeTransform] Resolved relative path: ${normalizedPath}`);
+    } catch (err) {
+      // If it STILL doesn't exist, we let the existing logic below handle the error 
+      // or "create new file" flow based on normalizedPath.
+    }
+  }
+  // ── END UNIVERSAL PATH RESOLUTION ──
 
   try {
     let stat;
