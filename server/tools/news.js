@@ -312,56 +312,75 @@ export async function news(request) {
       </div>
       
       <style>
-        .news-topic-banner {
-          background: var(--accent);
-          color: white;
-          padding: 0.75rem 1rem;
-          border-radius: 6px;
-          margin-bottom: 1rem;
-          font-size: 1.1rem;
-        }
-        .news-container {
-          display: flex;
-          flex-direction: column;
-          gap: 2rem;
-        }
+
+/* 1. Force the H2 to take up 100% width and center the text */
+  .news-summaries h2 {
+    width: 100%;
+    text-align: center;
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+  }
+
+  .news-topic-banner {
+    background: var(--accent);
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+    text-align: center; /* Also centering the banner for a cleaner look */
+  }
+
+  .news-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+  }
+
         .news-summaries {
           display: flex;
           flex-wrap: wrap;
           gap: 1rem;
-          justify-content: flex-start;
+          /* 2. Center the cards themselves if there is extra space */
+          justify-content: center; 
         }
+
         .news-summary-card {
           background: var(--bg-tertiary);
           border: 1px solid var(--border);
           border-radius: 8px;
-          padding: 1.5rem;
-          width: 510px;
+          padding: 2rem;
+          width: 440px;
           height: 280px;
           overflow: hidden;
           display: flex;
           flex-direction: column;
+          text-align: left; /* Keep card text left-aligned */
+        }-direction: column;
         }
         .news-summary-header {
+          height: 14px
           margin-bottom: 0.5rem;
         }
         .news-source {
           background: var(--accent);
           color: white;
-          padding: 0.25rem 0.75rem;
+          padding: 0.10rem 0.50rem;
           border-radius: 4px;
           font-size: 0.75rem;
-          font-weight: 600;
+          font-weight: 400;
+          width: 0.1rem
         }
         .news-summary-title {
           margin: 0.5rem 0;
-          font-size: 1.2rem;
+          font-size: 1.1rem;
           color: var(--text-primary);
         }
         .news-summary-text {
           margin: 1rem 0;
           line-height: 1.6;
           color: var(--text-secondary);
+          font-size: 0.9rem;
           flex: 1;
           overflow: hidden;
         }
@@ -372,6 +391,7 @@ export async function news(request) {
         }
         .news-summary-link:hover {
           text-decoration: underline;
+          opacity: 0.7;
         }
       </style>
     `;

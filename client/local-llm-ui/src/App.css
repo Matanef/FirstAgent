@@ -299,12 +299,14 @@ body {
 }
 
 .conversation-flow {
+  margin-left: 200px;
   flex: 1;
   overflow-y: auto;
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+  width: 1000px;
 }
 
 .message-entry {

@@ -80,23 +80,13 @@ function inferToolFromText(text) {
   if (/\b(calendar|event|meeting|schedule|appointment)\b/.test(lower)) return "calendar";
   if (/\b(search|look\s+up|find|google)\b/.test(lower)) return "search";
   if (/\b(git|commit|branch|github)\b/.test(lower)) return "gitLocal";
+  if (/\b(review|inspect|audit)\b/.test(lower)) return "review";
   if (/\b(task|todo|reminder)\b/.test(lower)) return "tasks";
-  if (/\b(write|create|generate)\s+(a\s+)?(file|script)\b/.test(lower)) return "fileWrite";
+  if (/\b(write|create|generate)\s+(a\s+)?(file|code|script)\b/.test(lower)) return "fileWrite";
   if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
   if (/\b(youtube|video)\b/.test(lower)) return "youtube";
   if (/\b(tweet|twitter|x\s+trends?|trending\s+on\s+x)\b/.test(lower)) return "x";
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
-
-  // ── CODE GURU & SYSTEM TOOLS ──
-  if (/\b(refactor|rewrite|transform|optimize|improve|modify)\b/.test(lower)) return "codeTransform";
-  if (/\b(code\s+review|security|performance|quality|audit|smell)\b/.test(lower)) return "codeReview";
-  if (/\b(review|inspect|examine)\b/.test(lower)) return "review"; // Fallback general review
-  if (/\b(evolve|autonomous|self[- ]?evolve)\b/.test(lower)) return "selfEvolve";
-  if (/\b(dependency|graph|circular|dead\s+code)\b/.test(lower)) return "projectGraph";
-  if (/\b(index|symbols|class|function\s+list)\b/.test(lower)) return "projectIndex";
-  if (/\b(folder|directory|tree|scan\s+folder)\b/.test(lower)) return "folderAccess";
-  if (/\b(duplicate)\b/.test(lower)) return "duplicateScanner";
-
   return "llm"; // fallback
 }
 
@@ -686,8 +676,34 @@ if (
     return [{ tool: "fileReview", input: trimmed, context: { fileIds: chatContext.fileIds }, reasoning: "certainty_file_review" }];
   }
 
+  // ──────────────────────────────────────────────────────────
+  // NEW: CODE TRANSFORM (Action-Verb Priority)
+  // ──────────────────────────────────────────────────────────
+  if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint|code\s+analysis|security\s+audit|code\s+audit)\b/i.test(lower) ||
+      (/\b(review|analyze|audit)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?)\b/i.test(lower))) {
 
+    console.log("[planner] certainty branch: codeTransform");
+    const ctContext = { source: "manual_refactor" };
+    
+    // Auto-detect the specific action for the tool
+    if (/\brefactor\b/i.test(lower)) ctContext.action = "refactor";
+    else if (/\boptimize\b/i.test(lower)) ctContext.action = "optimize";
+    else if (/\bdocument|jsdoc|comment/i.test(lower)) ctContext.action = "document";
+    else ctContext.action = "transform";
+    
+    return [{ tool: "codeTransform", input: trimmed, context: ctContext, reasoning: "certainty_code_transform" }];
+  }
 
+  // ──────────────────────────────────────────────────────────
+  // NEW: FILE WRITE (Creation/Modification Priority)
+  // ──────────────────────────────────────────────────────────
+  if ((/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
+       /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
+       (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
+       !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: fileWrite");
+    return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
+  }
   // ──────────────────────────────────────────────────────────
   // DUPLICATE SCANNER: detect duplicate scan requests
   // ──────────────────────────────────────────────────────────
@@ -994,11 +1010,12 @@ if (
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
   }
 
-// ──────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────
   // CODE GURU TOOLS — must come BEFORE general review to prevent collision
   // ──────────────────────────────────────────────────────────
 
   // Self-Evolution — active code modification (NOT diagnostics)
+  // Must come BEFORE selfImprovement to catch "evolve", "improve my code", "scan github and improve"
   if (/\b(self[- ]?evolv|evolve\s+(yourself|your|my)|improve\s+(yourself|your\s+code|my\s+code)|scan\s+github\s+and\s+(improve|evolve|upgrade)|upgrade\s+(yourself|your\s+tools)|autonomous\s+improv|make\s+yourself\s+better|evolution\s+cycle)\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfEvolve");
     const evolveContext = {};
@@ -1010,12 +1027,11 @@ if (
   }
 
   // Code Transform — refactor, optimize, rewrite, improve code in a file
-  // GUARD: If the prompt contains "review", "suggest", or "examine", skip this and let codeReview handle it!
+  // Must come BEFORE review (which is read-only) since transforms are write operations
+  // ── REFINED CODE TRANSFORM BRANCH ──
   if (
-    !/\b(review|suggest|examine|inspect)\b/i.test(lower) && 
-    (/\b(codetransform)\b/i.test(lower) || 
-    (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
-    (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower) || /\.[a-z]{2,4}\b/i.test(lower))))
+    /\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
+    (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower))
   ) {
     console.log("[planner] certainty branch: codeTransform (Surgical)");
     const ctContext = { source: "manual_refactor" };
@@ -1029,9 +1045,9 @@ if (
   }
 
   // Deep Code Review — quality, security, performance analysis
-  // Expanded to explicitly catch "review... suggest improvement"
+  // More specific than general "review": triggers on explicit review types or "code review"
   if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint|code\s+analysis|security\s+audit|code\s+audit)\b/i.test(lower) ||
-      (/\b(review|analyze|audit)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?)\b/i.test(lower))) {
+      (/\b(review|analyze|audit)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code)\b/i.test(lower))) {
     console.log("[planner] certainty branch: codeReview");
     const crContext = {};
     if (/\bsecur/i.test(lower)) crContext.reviewType = "security";
@@ -1041,7 +1057,6 @@ if (
     else crContext.reviewType = "full";
     return [{ tool: "codeReview", input: trimmed, context: crContext, reasoning: "certainty_code_review" }];
   }
-  
 
   // Folder Access — browse any folder, directory tree, folder structure
   // Must come BEFORE file tool to catch "scan folder", "browse directory", "show tree"
@@ -1358,7 +1373,6 @@ if (
     const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
     console.log(`[planner] Compound query detected: "${firstPart}" → email results${emailAddr ? ` to ${emailAddr}` : ""}`);
     // Determine the tool for the first part
-// Determine the tool for the first part
     let firstTool = "search"; // default
     if (/\b(news|headlines?|articles?)\b/i.test(firstPart)) firstTool = "news";
     else if (/\b(weather|forecast|temperature)\b/i.test(firstPart)) firstTool = "weather";
@@ -1366,10 +1380,9 @@ if (
     else if (/\b(github|repo|trending)\b/i.test(firstPart)) firstTool = "github";
     else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
     else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
+    else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review";
     else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(firstPart)) firstTool = "x";
-    else if (/\b(refactor|rewrite|transform|optimize|improve|modify|codetransform)\b/i.test(firstPart)) firstTool = "codeTransform";
-    else if (/\b(code\s+review|security|performance|quality|audit|smell)\b/i.test(firstPart)) firstTool = "codeReview";
-    else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review"; // Fallback generic review
+    else if (/\b(refactor|rewrite|transform|optimize|modify|codetransform)\b/i.test(firstPart)) firstTool = "codeTransform";
     else if (/\b(write|create|generate|filewrite)\b/i.test(firstPart)) firstTool = "fileWrite";
     
     // Resolve "me" to default email if no explicit address
