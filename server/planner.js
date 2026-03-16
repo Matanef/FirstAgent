@@ -831,7 +831,9 @@ if (
   }
 
   // MOLTBOOK: Single-action detection — expanded for full API coverage
-  if (/\bmoltbook\b/i.test(lower)) {
+  // Guard: if the user wants to SCHEDULE a moltbook task, let it fall through to the scheduler branch
+  if (/\bmoltbook\b/i.test(lower) &&
+      !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate)\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook");
     const context = {};
     // Registration & Auth
@@ -860,6 +862,7 @@ if (
     else if (/\b(subscribe\s+to|join\s+submolt|join\s+community)\b/i.test(lower)) context.action = "subscribe";
     else if (/\b(follow)\b/i.test(lower)) context.action = "follow";
     // Communities
+    else if (/\b(allow|unlock|approve|increase|raise).*(communit|submolt|more\s+communit)/i.test(lower)) context.action = "unlockCommunities";
     else if (/\b(create\s+submolt|create\s+community|new\s+submolt)\b/i.test(lower)) context.action = "createSubmolt";
     else if (/\b(submolt\s+feed|community\s+feed)\b/i.test(lower)) context.action = "submoltFeed";
     else if (/\b(communities?|submolts?)\b/i.test(lower)) context.action = "communities";

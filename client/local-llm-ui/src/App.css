@@ -969,6 +969,249 @@ body {
   overflow-x: auto;
 }
 
+/* ============================================================
+   SELF-IMPROVEMENT REPORTS
+   ============================================================ */
+
+/* — Improvements Report — */
+.improvements-report,
+.accuracy-report,
+.issues-report {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  max-width: 750px;
+}
+
+.improvements-report h2,
+.accuracy-report h2,
+.issues-report h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.improvement-category {
+  margin-bottom: 1rem;
+}
+
+.improvement-category h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  background: rgba(29, 155, 240, 0.08);
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.improvement-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.improvement-item {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  transition: border-color 0.2s;
+}
+
+.improvement-item:hover {
+  border-color: var(--accent);
+}
+
+.improvement-action {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  margin-bottom: 0.3rem;
+  line-height: 1.4;
+}
+
+.improvement-reason,
+.improvement-source,
+.improvement-file {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.improvement-file {
+  color: var(--text-secondary);
+}
+
+.improvement-timestamp {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+.improvement-summary {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.improvement-summary p {
+  margin-bottom: 0.25rem;
+}
+
+/* — Accuracy Report — */
+.accuracy-stats {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.stat-box {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.accuracy-report h3,
+.issues-report h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 1rem 0 0.5rem;
+}
+
+.accuracy-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.accuracy-table th {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.accuracy-table td {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.accuracy-table tr:last-child td {
+  border-bottom: none;
+}
+
+.accuracy-table tr:hover td {
+  background: var(--bg-hover);
+}
+
+/* — Issues Report — */
+.issues-list,
+.recommendations-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.issue-item,
+.recommendation-item {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+}
+
+.issue-type {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--warning);
+  letter-spacing: 0.5px;
+  margin-bottom: 0.25rem;
+}
+
+.issue-recommendation {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.recommendation-header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.recommendation-priority {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.recommendation-item.priority-high .recommendation-priority {
+  background: rgba(244, 33, 46, 0.15);
+  color: var(--error);
+}
+
+.recommendation-item.priority-medium .recommendation-priority {
+  background: rgba(255, 212, 0, 0.15);
+  color: var(--warning);
+}
+
+.recommendation-item.priority-low .recommendation-priority {
+  background: rgba(0, 186, 124, 0.15);
+  color: var(--success);
+}
+
+.recommendation-category {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.recommendation-details {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
 /* Input Area */
 .input-area {
   padding: 1rem 1.5rem;
@@ -1070,8 +1313,10 @@ body {
   font-size: 2.5rem;
   margin-bottom: 0.5rem;
   background: linear-gradient(135deg, var(--accent), var(--success));
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .welcome-screen p {

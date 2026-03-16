@@ -16,7 +16,7 @@ function detectContentType(content, data, tool) {
     if (content.includes("```") || tool === "calculator") return "code";
     if (tool === "file" && data?.items) return "filesystem";
     if (tool === "weather" && data?.temp) return "weather";
-    if (content.includes("<table") || content.includes("ai-table")) return "html";
+    if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
     return "text";
 }
 

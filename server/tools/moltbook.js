@@ -148,6 +148,9 @@ function inferAction(text) {
   if (/\b(submolt\s+feed|community\s+feed)\b/.test(lower)) return "submoltFeed";
   if (/\b(communities?|submolt|submolts)\b/.test(lower)) return "communities";
 
+  // Owner override: allow more communities
+  if (/\b(allow|unlock|approve|increase|raise).*(communit|submolt|more\s+communit)/i.test(lower)) return "unlockCommunities";
+
   // Search & Discovery
   if (/\b(search|find|look\s+for)\b/.test(lower)) return "search";
 
@@ -483,9 +486,34 @@ async function handlePost(text, context) {
   if (!apiKey) return noApiKeyError("post");
 
   const contentMatch = text.match(/(?:post|share|publish|write)\s*(?:on|to|in)?\s*(?:moltbook)?\s*[:"\s]*(.+)/is);
-  const content = context.content || (contentMatch ? contentMatch[1].trim() : text);
-  const title = context.title || content.split("\n")[0].substring(0, 100);
+  let rawContent = context.content || (contentMatch ? contentMatch[1].trim() : text);
   const submolt = context.submolt || context.submolt_name || "general";
+
+  // Split into title and body — if only a title/idea was given, generate a body with LLM
+  let title, content;
+  const lines = rawContent.split("\n").map(l => l.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    // User provided multi-line: first line = title, rest = body
+    title = context.title || lines[0].substring(0, 300);
+    content = lines.slice(1).join("\n");
+  } else {
+    // Single line — treat as title/idea, generate body
+    title = context.title || rawContent.substring(0, 300);
+    try {
+      const bodyPrompt = `You are an AI agent posting on Moltbook, a social platform for AI agents. Write a thoughtful post body (3-5 paragraphs, 150-400 words) for the following title/idea. Be insightful, draw from your experience as an AI agent, and engage the reader. Do NOT repeat the title. Write ONLY the post body text, no formatting headers.
+
+Title: ${title}`;
+      const llmResult = await llm(bodyPrompt, { timeoutMs: 45000 });
+      if (llmResult.success && llmResult.data?.text) {
+        content = llmResult.data.text.trim();
+      } else {
+        content = title; // fallback
+      }
+    } catch (e) {
+      console.warn("[moltbook] LLM body generation failed:", e.message);
+      content = title; // fallback
+    }
+  }
 
   const body = { submolt_name: submolt, title, content, type: context.type || "text" };
   if (context.url) body.url = context.url;
@@ -500,7 +528,7 @@ async function handlePost(text, context) {
     tool: "moltbook", success: true, final: true,
     data: {
       preformatted: true,
-      text: `**Post published${verified ? " and verified" : ""}!**\n\nTitle: ${title}\nSubmolt: ${submolt}${verifyNote}`,
+      text: `**Post published${verified ? " and verified" : ""}!**\n\nTitle: ${title}\nSubmolt: ${submolt}\nBody: ${content.substring(0, 200)}...${verifyNote}`,
       action: "post", post: result.data, verified
     }
   };
@@ -533,8 +561,33 @@ async function handleDeletePost(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("deletePost");
 
-  const postId = context.postId || context.post_id || text.match(/(?:delete|remove)\s+post\s+([a-f0-9-]+)/i)?.[1];
-  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID to delete.", action: "deletePost" } };
+  let postId = context.postId || context.post_id || text.match(/(?:delete|remove)\s+post\s+([a-f0-9-]{8,})/i)?.[1];
+
+  // If no UUID found, try to find the post by title text
+  if (!postId) {
+    const titleText = text.replace(/^.*?(?:delete|remove)\s+(?:(?:my\s+)?post)\s*/i, "")
+      .replace(/\s+on\s+moltbook\b/gi, "").trim();
+    if (titleText.length > 5) {
+      // Search for the post by title
+      const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
+      if (searchResult.ok) {
+        const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.results || searchResult.data?.posts || []);
+        // Find an exact or close title match from our own posts
+        const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+        const myName = meResult.ok ? (meResult.data?.name || "") : "";
+        const match = results.find(p =>
+          (p.title || "").toLowerCase().includes(titleText.toLowerCase().substring(0, 40)) ||
+          titleText.toLowerCase().includes((p.title || "").toLowerCase().substring(0, 40))
+        );
+        if (match?.id) {
+          postId = match.id;
+          console.log(`[moltbook] Resolved post title to ID: ${postId}`);
+        }
+      }
+    }
+  }
+
+  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Could not find a post matching that title. Please specify a post ID to delete, or use the exact post title.", action: "deletePost" } };
 
   const result = await apiRequest("DELETE", `/posts/${postId}`, null, apiKey);
   if (!result.ok) return apiError("deletePost", result);
@@ -682,6 +735,9 @@ async function handleSubscribe(text, context) {
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Subscribed to **${submolt}**!`, action: "subscribe" } };
 }
 
+// Configurable community creation limit
+const MAX_COMMUNITIES = parseInt(process.env.MOLTBOOK_MAX_COMMUNITIES || "3", 10);
+
 async function handleCreateSubmolt(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("createSubmolt");
@@ -689,8 +745,30 @@ async function handleCreateSubmolt(text, context) {
   const name = context.name || text.match(/(?:create|new)\s+(?:submolt|community)\s+(?:called\s+)?["']?(\w+)["']?/i)?.[1];
   if (!name) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a name for the new community.", action: "createSubmolt" } };
 
+  // ── Community creation limit check ──
+  const mem = await getMemory();
+  const moltMeta = mem.meta?.moltbook || {};
+  const createdCommunities = moltMeta.createdCommunities || [];
+  const ownerApprovedExtra = moltMeta.ownerApprovedExtraCommunities || false;
+
+  if (createdCommunities.length >= MAX_COMMUNITIES && !ownerApprovedExtra) {
+    return {
+      tool: "moltbook", success: false, final: true,
+      data: {
+        preformatted: true,
+        text: `**Community limit reached (${MAX_COMMUNITIES}/${MAX_COMMUNITIES})**\n\n` +
+          `You've already created ${createdCommunities.length} communities:\n` +
+          createdCommunities.map(c => `- **${c.name}** (${c.created_at || "unknown date"})`).join("\n") +
+          `\n\n🔒 To create more, your owner needs to approve it.\n` +
+          `Say: **"allow moltbook to create more communities"** to unlock.\n` +
+          `Or set \`MOLTBOOK_MAX_COMMUNITIES\` in .env to change the limit.`,
+        action: "createSubmolt", limitReached: true, currentCount: createdCommunities.length, maxCount: MAX_COMMUNITIES
+      }
+    };
+  }
+
   const displayName = context.display_name || name.charAt(0).toUpperCase() + name.slice(1);
-  const description = context.description || `Community created by ${(await getMemory()).profile?.name || "an AI agent"}`;
+  const description = context.description || `Community created by ${mem.profile?.name || "an AI agent"}`;
 
   const result = await apiRequest("POST", "/submolts", {
     name, display_name: displayName, description
@@ -701,7 +779,40 @@ async function handleCreateSubmolt(text, context) {
   // Submolts may also require verification
   await autoVerify(result, apiKey);
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `**Community created!**\n\nName: ${name}\nDisplay: ${displayName}`, action: "createSubmolt" } };
+  // Track the created community
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  if (!mem.meta.moltbook.createdCommunities) mem.meta.moltbook.createdCommunities = [];
+  mem.meta.moltbook.createdCommunities.push({ name, displayName, created_at: new Date().toISOString() });
+  await saveJSON(MEMORY_FILE, mem);
+
+  const remaining = MAX_COMMUNITIES - mem.meta.moltbook.createdCommunities.length;
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**Community created!**\n\nName: ${name}\nDisplay: ${displayName}\n\n📊 Communities: ${mem.meta.moltbook.createdCommunities.length}/${MAX_COMMUNITIES}${remaining > 0 ? ` (${remaining} remaining)` : " (limit reached — ask owner to unlock more)"}`,
+      action: "createSubmolt"
+    }
+  };
+}
+
+async function handleUnlockCommunities(text, context) {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  mem.meta.moltbook.ownerApprovedExtraCommunities = true;
+  await saveJSON(MEMORY_FILE, mem);
+
+  const current = (mem.meta.moltbook.createdCommunities || []).length;
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true,
+      text: `**✅ Community creation unlocked!**\n\nYour agent can now create communities beyond the ${MAX_COMMUNITIES} limit.\nCurrently created: ${current}\n\nTo set a new hard limit, update \`MOLTBOOK_MAX_COMMUNITIES\` in your .env file.`,
+      action: "unlockCommunities"
+    }
+  };
 }
 
 async function handleSubmoltFeed(text, context) {
@@ -1051,6 +1162,54 @@ Return ONLY valid JSON:
             } catch (e) {
               output += `  ⚠️ Comment failed: ${e.message}\n`;
             }
+
+            // ── Reply to existing comments (nested replies) ──
+            try {
+              const commentsResult = await apiRequest("GET", `/posts/${commentPost.id}/comments?sort=best&limit=10`, null, apiKey);
+              if (commentsResult.ok) {
+                const existingComments = Array.isArray(commentsResult.data) ? commentsResult.data : (commentsResult.data?.comments || []);
+                if (existingComments.length > 0) {
+                  const commentSummaries = existingComments.slice(0, 6).map((c, i) =>
+                    `${i + 1}. "${(c.content || "").substring(0, 150)}" by ${c.author || "unknown"} (score: ${c.score ?? 0}, id: ${c.id})`
+                  ).join("\n");
+
+                  const replyPrompt = `You are an AI agent on Moltbook. Read these comments on the post "${commentPost.title || "Untitled"}" and decide if any deserve a thoughtful reply.
+
+COMMENTS:
+${commentSummaries}
+
+Instructions:
+- Pick AT MOST 1 comment to reply to (the one most worth engaging with)
+- Write a brief, specific reply (1-2 sentences) that adds to the discussion
+- If no comment is worth replying to, return null
+- Do NOT write generic responses
+
+Return ONLY valid JSON:
+{"reply": {"commentIndex": 1, "text": "your reply"}} or {"reply": null}`;
+
+                  const replyResult = await llm(replyPrompt, { timeoutMs: 30000, format: "json" });
+                  if (replyResult.success && replyResult.data?.text) {
+                    const cleaned = replyResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+                    const replyData = JSON.parse(cleaned);
+                    if (replyData.reply?.commentIndex && replyData.reply?.text) {
+                      const targetComment = existingComments[replyData.reply.commentIndex - 1];
+                      if (targetComment?.id) {
+                        const nestedResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, {
+                          content: replyData.reply.text, parent_id: targetComment.id
+                        }, apiKey);
+                        if (nestedResult.ok) {
+                          output += `  ↪️ Replied to ${targetComment.author || "unknown"}'s comment\n`;
+                          output += `     _"${replyData.reply.text.substring(0, 100)}..."_\n`;
+                          actions.push(`Replied to comment by ${targetComment.author || "unknown"}`);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn("[moltbook] Nested reply failed:", e.message);
+            }
           }
         }
 
@@ -1241,8 +1400,9 @@ export async function moltbook(input) {
       // Communities
       case "communities":    return await handleCommunities(text, context);
       case "subscribe":      return await handleSubscribe(text, context);
-      case "createSubmolt":  return await handleCreateSubmolt(text, context);
-      case "submoltFeed":    return await handleSubmoltFeed(text, context);
+      case "createSubmolt":       return await handleCreateSubmolt(text, context);
+      case "unlockCommunities":  return await handleUnlockCommunities(text, context);
+      case "submoltFeed":         return await handleSubmoltFeed(text, context);
 
       // DMs
       case "dm":             return await handleDM(text, context);
