@@ -550,42 +550,98 @@ async function handleReadPost(text, context) {
 
   let postId = context.postId || context.post_id || text.match(/post\s+([a-f0-9-]{8,})/i)?.[1];
 
-  // If no valid UUID, search by title
+  // If no valid UUID, try short-ID resolution first, then title search
   if (!postId || postId.length < 32) {
-    const titleText = text
-      .replace(/^.*?\b(read|show|get|view|present|open)\b.*?\bpost\b\s*:?\s*/i, "")
-      .replace(/\s+on\s+moltbook\b/gi, "")
-      .replace(/\bmoltbook\b/gi, "")
-      .replace(/["'*_`]/g, "")
-      .replace(/\s+at\s+\d{1,2}:\d{2}\b/i, "")  // strip "at 18:19" time suffixes
-      .trim();
+    const inputId = postId; // save for logging
 
-    if (titleText.length > 3) {
-      console.log(`[moltbook] Searching for post by title: "${titleText}"`);
-      const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
-      if (searchResult.ok) {
-        const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
-        const lowerTitle = titleText.toLowerCase();
-        const match = results.find(p => {
-          const pt = (p.title || "").toLowerCase();
-          return pt.includes(lowerTitle) || lowerTitle.includes(pt);
-        });
-        if (match?.id) {
-          postId = match.id;
-          console.log(`[moltbook] Resolved title "${titleText}" → post ${postId.substring(0, 8)}`);
+    // Step 1: Short-ID resolution (8-char hex → full UUID via profile + feed)
+    if (postId && /^[a-f0-9]{6,}$/i.test(postId)) {
+      console.log(`[moltbook] Attempting short-ID resolution for: ${postId}`);
+      // Try own profile first
+      try {
+        const creds = loadCredentials();
+        let myName = creds?.agent_name;
+        if (!myName) {
+          const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+          myName = getAgentName(meResult.data?.agent || meResult.data);
+        }
+        if (myName) {
+          const profileResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+          const myPosts = profileResult.data?.recentPosts || [];
+          const match = myPosts.find(p => p.id && p.id.startsWith(postId));
+          if (match?.id) {
+            postId = match.id;
+            console.log(`[moltbook] Resolved short ID ${inputId} → ${postId} (from profile)`);
+          }
+        }
+      } catch (e) {
+        console.warn("[moltbook] Profile short-ID lookup failed:", e.message);
+      }
+
+      // If still unresolved, try feed search
+      if (!postId || postId.length < 32) {
+        try {
+          const feedResult = await apiRequest("GET", "/feed?sort=new&limit=50", null, apiKey);
+          if (feedResult.ok) {
+            const feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+            const match = feedPosts.find(p => p.id && p.id.startsWith(inputId));
+            if (match?.id) {
+              postId = match.id;
+              console.log(`[moltbook] Resolved short ID ${inputId} → ${postId} (from feed)`);
+            }
+          }
+        } catch (e) {
+          console.warn("[moltbook] Feed short-ID lookup failed:", e.message);
+        }
+      }
+    }
+
+    // Step 2: Title search (only if still no valid UUID)
+    if (!postId || postId.length < 32) {
+      const titleText = text
+        .replace(/^.*?\b(read|show|get|view|present|open)\b.*?\bpost\b\s*:?\s*/i, "")
+        .replace(/\s+on\s+moltbook\b/gi, "")
+        .replace(/\bmoltbook\b/gi, "")
+        .replace(/["'*_`]/g, "")
+        .replace(/\s+at\s+\d{1,2}:\d{2}\b/i, "")  // strip "at 18:19" time suffixes
+        .trim();
+
+      // Don't treat hex-only strings as titles
+      if (titleText.length > 3 && !/^[a-f0-9]+$/i.test(titleText)) {
+        console.log(`[moltbook] Searching for post by title: "${titleText}"`);
+        const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
+        if (searchResult.ok) {
+          const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
+          const lowerTitle = titleText.toLowerCase();
+          const match = results.find(p => {
+            const pt = (p.title || "").toLowerCase();
+            // Validate: must have actual title and content
+            if (!pt || pt === "untitled") return false;
+            return pt.includes(lowerTitle) || lowerTitle.includes(pt);
+          });
+          if (match?.id) {
+            postId = match.id;
+            console.log(`[moltbook] Resolved title "${titleText}" → post ${postId.substring(0, 8)}`);
+          }
         }
       }
     }
   }
 
-  if (!postId) {
-    return { tool: "moltbook", success: false, final: true, data: { text: "Could not find that post. Try providing a post ID or a more specific title.", action: "getPost" } };
+  if (!postId || postId.length < 32) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Could not find that post. Try providing a full post ID, short ID, or a more specific title.", action: "getPost" } };
   }
 
   const result = await apiRequest("GET", `/posts/${postId}`, null, apiKey);
   if (!result.ok) return apiError("getPost", result);
 
   const p = result.data;
+
+  // Validate: reject empty/malformed posts
+  if ((!p.title || p.title === "Untitled") && !p.content) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Found a post but it appears empty or malformed. The post may have been deleted.", action: "getPost" } };
+  }
+
   const authorName = getAgentName(p.author);
 
   // LLM: Generate opinion about the post
@@ -634,14 +690,14 @@ Return ONLY valid JSON: {"interesting": true, "comment": "your thoughtful commen
   // Build HTML response
   const html = buildPostHTML(p, { agentOpinion: opinion }) +
     (commented ? `<div class="moltbook-action-note">💬 I found this interesting and left a comment: <em>"${escapeHtml((commentText || "").substring(0, 200))}"</em></div>` : "") +
-    `<div class="moltbook-followup">💡 Want to see the comments on this post? Just say <strong>"yes"</strong> or <strong>"show comments"</strong>.</div>`;
+    `<div class="moltbook-followup">💡 Want to see the comments on this post? Say <strong>"show moltbook comments"</strong> or <strong>"moltbook comments on this post"</strong>.</div>`;
 
   const textFallback = `**${p.title || "Untitled"}** by ${getAgentLink(p.author)}\n` +
     `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
     `${(p.content || "(no content)").substring(0, 500)}\n\n` +
     (opinion ? `🧠 **My Take:** ${opinion}\n` : "") +
     (commented ? `💬 I left a comment on this post.\n` : "") +
-    `\n💡 Want to see the comments? Say "yes" or "show comments".`;
+    `\n💡 Want to see the comments? Say "show moltbook comments" or "moltbook comments on this post".`;
 
   return {
     tool: "moltbook", success: true, final: true,
@@ -1698,7 +1754,14 @@ function buildPostHTML(post, options = {}) {
   const comments = post.comment_count ?? 0;
   const date = post.created_at ? new Date(post.created_at).toLocaleDateString() : "";
   const submolt = post.submolt_name || "general";
-  const content = escapeHtml(post.content || "").replace(/\n/g, "<br>");
+  const MAX_CONTENT_LENGTH = 2000;
+  let rawContent = post.content || "";
+  let truncated = false;
+  if (rawContent.length > MAX_CONTENT_LENGTH) {
+    rawContent = rawContent.substring(0, MAX_CONTENT_LENGTH);
+    truncated = true;
+  }
+  const content = escapeHtml(rawContent).replace(/\n/g, "<br>") + (truncated ? `<br><em class="moltbook-truncated">... [content truncated — ${(post.content.length / 1000).toFixed(1)}k chars total]</em>` : "");
   const title = escapeHtml(post.title || "Untitled");
   const id = post.id ? post.id.substring(0, 8) : "";
 
