@@ -553,9 +553,11 @@ async function handleReadPost(text, context) {
   // If no valid UUID, search by title
   if (!postId || postId.length < 32) {
     const titleText = text
-      .replace(/^.*?\b(read|show|get|view|present|open)\b.*?\bpost\b\s*/i, "")
+      .replace(/^.*?\b(read|show|get|view|present|open)\b.*?\bpost\b\s*:?\s*/i, "")
       .replace(/\s+on\s+moltbook\b/gi, "")
-      .replace(/["']/g, "")
+      .replace(/\bmoltbook\b/gi, "")
+      .replace(/["'*_`]/g, "")
+      .replace(/\s+at\s+\d{1,2}:\d{2}\b/i, "")  // strip "at 18:19" time suffixes
       .trim();
 
     if (titleText.length > 3) {
@@ -563,7 +565,11 @@ async function handleReadPost(text, context) {
       const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
       if (searchResult.ok) {
         const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
-        const match = results.find(p => (p.title || "").toLowerCase().includes(titleText.toLowerCase()));
+        const lowerTitle = titleText.toLowerCase();
+        const match = results.find(p => {
+          const pt = (p.title || "").toLowerCase();
+          return pt.includes(lowerTitle) || lowerTitle.includes(pt);
+        });
         if (match?.id) {
           postId = match.id;
           console.log(`[moltbook] Resolved title "${titleText}" → post ${postId.substring(0, 8)}`);
