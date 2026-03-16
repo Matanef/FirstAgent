@@ -46,7 +46,11 @@ The test file should be named: ${targetFile.replace(".js", ".test.js")}`;
       throw new Error("LLM failed to generate valid test code.");
     }
 
-    const testPath = fullPath.replace(".js", ".test.js");
+    // Save to centralized server/toolTests/ directory
+    const testFolder = path.resolve(PROJECT_ROOT, "server", "toolTests");
+    await fs.mkdir(testFolder, { recursive: true });
+    const baseName = path.basename(targetFile);
+    const testPath = path.join(testFolder, baseName.replace(".js", ".test.js"));
     await fs.writeFile(testPath, testCode, "utf8");
 
     return {

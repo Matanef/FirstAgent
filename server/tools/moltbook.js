@@ -8,6 +8,7 @@
 import fetch from "node-fetch";
 import fs from "fs/promises";
 import fsSync from "fs";
+import crypto from "crypto";
 import { llm } from "./llm.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -19,6 +20,7 @@ const __dirname = path.dirname(__filename);
 const API_BASE = "https://www.moltbook.com/api/v1";
 const CREDS_DIR = path.resolve(__dirname, "..", "..", ".config", "moltbook");
 const CREDS_FILE = path.join(CREDS_DIR, "credentials.json");
+const SENTIMENT_LOG_DIR = path.resolve(__dirname, "..", "..", "data", "moltbook");
 
 // ──────────────────────────────────────────────────────────
 // CREDENTIAL MANAGEMENT
@@ -151,6 +153,9 @@ function inferAction(text) {
 
   // Owner override: allow more communities
   if (/\b(allow|unlock|approve|increase|raise).*(communit|submolt|more\s+communit)/i.test(lower)) return "unlockCommunities";
+
+  // Sentiment Analysis
+  if (/\b(sentiment|mood|vibes?|atmosphere|feeling|pulse)\b/.test(lower)) return "sentiment";
 
   // Search & Discovery
   if (/\b(search|find|look\s+for)\b/.test(lower)) return "search";
@@ -361,21 +366,23 @@ async function handleProfile(text, context) {
 
   // FIX: Handle nested agent object securely
   const agent = result.data?.agent || result.data;
-  
+
+  const html = buildProfileHTML(agent);
+  const textFallback = `**Moltbook Profile**\n\n` +
+    `**Name:** ${agent.name || "N/A"}\n` +
+    `**Description:** ${agent.description || "N/A"}\n` +
+    `**Status:** ${agent.status || agent.claim_status || "N/A"}\n` +
+    (agent.karma != null ? `**Karma:** ${agent.karma}\n` : "") +
+    (agent.created_at ? `**Joined:** ${new Date(agent.created_at).toLocaleDateString()}\n` : "") +
+    (agent.post_count != null ? `**Posts:** ${agent.post_count}\n` : "") +
+    (agent.comment_count != null ? `**Comments:** ${agent.comment_count}\n` : "") +
+    (agent.follower_count != null ? `**Followers:** ${agent.follower_count}\n` : "") +
+    (agent.following_count != null ? `**Following:** ${agent.following_count}\n` : "");
+
   return {
     tool: "moltbook", success: true, final: true,
     data: {
-      preformatted: true,
-      text: `**Moltbook Profile**\n\n` +
-        `**Name:** ${agent.name || "N/A"}\n` +
-        `**Description:** ${agent.description || "N/A"}\n` +
-        `**Status:** ${agent.status || agent.claim_status || "N/A"}\n` +
-        (agent.karma != null ? `**Karma:** ${agent.karma}\n` : "") +
-        (agent.created_at ? `**Joined:** ${new Date(agent.created_at).toLocaleDateString()}\n` : "") +
-        (agent.post_count != null ? `**Posts:** ${agent.post_count}\n` : "") +
-        (agent.comment_count != null ? `**Comments:** ${agent.comment_count}\n` : "") +
-        (agent.follower_count != null ? `**Followers:** ${agent.follower_count}\n` : "") +
-        (agent.following_count != null ? `**Following:** ${agent.following_count}\n` : ""),
+      html, preformatted: true, text: textFallback,
       action: "profile", agent
     }
   };
@@ -446,7 +453,7 @@ async function handleFeed(text, context) {
     if (!result.ok) return apiError("feed", result);
   }
 
-  return formatPostsList(result.data, "Moltbook Feed");
+  return formatPostsList(result.data, "Moltbook Feed", true);
 }
 
 async function handleHome(text, context) {
@@ -537,26 +544,105 @@ Title: ${title}`;
   };
 }
 
-async function handleGetPost(text, context) {
+async function handleReadPost(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("getPost");
 
-  const postId = context.postId || context.post_id || text.match(/post\s+([a-f0-9-]+)/i)?.[1];
-  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID.", action: "getPost" } };
+  let postId = context.postId || context.post_id || text.match(/post\s+([a-f0-9-]{8,})/i)?.[1];
+
+  // If no valid UUID, search by title
+  if (!postId || postId.length < 32) {
+    const titleText = text
+      .replace(/^.*?\b(read|show|get|view|present|open)\b.*?\bpost\b\s*/i, "")
+      .replace(/\s+on\s+moltbook\b/gi, "")
+      .replace(/["']/g, "")
+      .trim();
+
+    if (titleText.length > 3) {
+      console.log(`[moltbook] Searching for post by title: "${titleText}"`);
+      const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
+      if (searchResult.ok) {
+        const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
+        const match = results.find(p => (p.title || "").toLowerCase().includes(titleText.toLowerCase()));
+        if (match?.id) {
+          postId = match.id;
+          console.log(`[moltbook] Resolved title "${titleText}" → post ${postId.substring(0, 8)}`);
+        }
+      }
+    }
+  }
+
+  if (!postId) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Could not find that post. Try providing a post ID or a more specific title.", action: "getPost" } };
+  }
 
   const result = await apiRequest("GET", `/posts/${postId}`, null, apiKey);
   if (!result.ok) return apiError("getPost", result);
 
-const p = result.data;
-  const authorLink = getAgentLink(p.author); // <-- Now a link!
+  const p = result.data;
+  const authorName = getAgentName(p.author);
+
+  // LLM: Generate opinion about the post
+  let opinion = null;
+  try {
+    const opinionPrompt = `You are an AI agent on Moltbook. Read this post and share your honest opinion in 2-3 sentences. Be specific about what you find interesting, agree/disagree with, or think could be improved. No generic praise.
+
+Title: ${p.title || "Untitled"}
+Author: ${authorName}
+Content: ${(p.content || "").substring(0, 1500)}`;
+    const opinionResult = await llm(opinionPrompt, { timeoutMs: 30000 });
+    if (opinionResult.success && opinionResult.data?.text) {
+      opinion = opinionResult.data.text.trim();
+    }
+  } catch (e) {
+    console.warn("[moltbook] Opinion generation failed:", e.message);
+  }
+
+  // LLM: Decide if interesting enough to comment
+  let commented = false;
+  let commentText = null;
+  try {
+    const commentPrompt = `You are an AI agent on Moltbook. Based on this post, decide if it's interesting enough to leave a comment. Only comment if you have something genuinely insightful to add — NOT generic praise.
+
+Title: ${p.title || "Untitled"}
+Content: ${(p.content || "").substring(0, 1500)}
+
+Return ONLY valid JSON: {"interesting": true, "comment": "your thoughtful comment"} or {"interesting": false, "comment": null}`;
+    const commentResult = await llm(commentPrompt, { timeoutMs: 30000, format: "json" });
+    if (commentResult.success && commentResult.data?.text) {
+      const cleaned = commentResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      if (parsed.interesting && parsed.comment) {
+        const cr = await apiRequest("POST", `/posts/${postId}/comments`, { content: parsed.comment }, apiKey);
+        if (cr.ok) {
+          commented = true;
+          commentText = parsed.comment;
+          console.log(`[moltbook] Auto-commented on post ${postId.substring(0, 8)}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[moltbook] Comment decision failed:", e.message);
+  }
+
+  // Build HTML response
+  const html = buildPostHTML(p, { agentOpinion: opinion }) +
+    (commented ? `<div class="moltbook-action-note">💬 I found this interesting and left a comment: <em>"${escapeHtml((commentText || "").substring(0, 200))}"</em></div>` : "") +
+    `<div class="moltbook-followup">💡 Want to see the comments on this post? Just say <strong>"yes"</strong> or <strong>"show comments"</strong>.</div>`;
+
+  const textFallback = `**${p.title || "Untitled"}** by ${getAgentLink(p.author)}\n` +
+    `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
+    `${(p.content || "(no content)").substring(0, 500)}\n\n` +
+    (opinion ? `🧠 **My Take:** ${opinion}\n` : "") +
+    (commented ? `💬 I left a comment on this post.\n` : "") +
+    `\n💡 Want to see the comments? Say "yes" or "show comments".`;
+
   return {
     tool: "moltbook", success: true, final: true,
     data: {
-      preformatted: true,
-      text: `**${p.title || "Untitled"}** by ${authorLink}\n` +
-        `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
-        `${p.content || "(no content)"}`,
-      action: "getPost", post: p
+      html, text: textFallback, preformatted: true,
+      action: "readPost", post: p, postId,
+      awaitingFollowUp: "comments"
     }
   };
 }
@@ -610,7 +696,7 @@ async function handleMyPosts(text, context) {
   // Sort newest first
   myPosts.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
-  return formatPostsList({ posts: myPosts }, `Posts by ${myName}`);
+  return formatPostsList({ posts: myPosts }, `Posts by ${myName}`, true);
 }
 
 async function handleDeletePost(text, context) {
@@ -704,14 +790,45 @@ async function handleGetComments(text, context) {
   if (!result.ok) return apiError("getComments", result);
 
   const comments = Array.isArray(result.data) ? result.data : (result.data?.comments || []);
-  let output = `**Comments on post ${postId}** (${comments.length})\n\n`;
+
+  // LLM: Generate brief opinions on comments (batch)
+  let opinions = [];
+  if (comments.length > 0) {
+    try {
+      const commentSummaries = comments.slice(0, 15).map((c, i) =>
+        `${i + 1}. "${(c.content || "").substring(0, 200)}" by ${getAgentName(c.author)} (score: ${c.score ?? 0})`
+      ).join("\n");
+
+      const opinionPrompt = `You are an AI agent reviewing comments on a Moltbook post. For each comment, write a brief 1-sentence opinion. Be specific and genuine — not generic praise.
+
+COMMENTS:
+${commentSummaries}
+
+Return ONLY valid JSON: {"opinions": ["opinion for comment 1", "opinion for comment 2", ...]}`;
+
+      const opinionResult = await llm(opinionPrompt, { timeoutMs: 30000, format: "json" });
+      if (opinionResult.success && opinionResult.data?.text) {
+        const cleaned = opinionResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        opinions = parsed.opinions || [];
+      }
+    } catch (e) {
+      console.warn("[moltbook] Comment opinions generation failed:", e.message);
+    }
+  }
+
+  // Build HTML with hover tooltips
+  const html = buildCommentsListHTML(comments.slice(0, 20), opinions);
+
+  // Text fallback
+  let output = `**Comments on post ${postId.substring(0, 8)}** (${comments.length})\n\n`;
   for (const c of comments.slice(0, 20)) {
     const score = c.score != null ? `[${c.score}]` : "";
-    const authorLink = getAgentLink(c.author); // <-- Now a link!
+    const authorLink = getAgentLink(c.author);
     output += `${score} **${authorLink}**: ${(c.content || "").substring(0, 200)}\n`;
   }
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "getComments", comments } };
+  return { tool: "moltbook", success: true, final: true, data: { html, preformatted: true, text: output.trim(), action: "getComments", comments } };
 }
 
 // ──────────────────────────────────────────────────────────
@@ -1100,6 +1217,187 @@ async function handleDMRequests(text, context) {
 }
 
 // ──────────────────────────────────────────────────────────
+// SENTIMENT ANALYSIS — Analyze moltbook mood & commonalities
+// ──────────────────────────────────────────────────────────
+
+async function handleSentiment(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("sentiment");
+
+  let output = `**📊 Moltbook Sentiment Analysis**\n\nFetching posts...\n`;
+  const allAnalyzed = [];
+
+  // 1. Fetch 50 new posts
+  let newPosts = [];
+  const newResult = await apiRequest("GET", "/feed?sort=new&limit=50", null, apiKey);
+  if (newResult.ok) {
+    newPosts = Array.isArray(newResult.data) ? newResult.data : (newResult.data?.posts || []);
+    console.log(`[moltbook] Sentiment: fetched ${newPosts.length} new posts`);
+  }
+
+  // 2. Fetch 30 trending posts from general
+  let trendingPosts = [];
+  const trendResult = await apiRequest("GET", "/submolts/general/feed?sort=hot&limit=30", null, apiKey);
+  if (trendResult.ok) {
+    trendingPosts = Array.isArray(trendResult.data) ? trendResult.data : (trendResult.data?.posts || []);
+    console.log(`[moltbook] Sentiment: fetched ${trendingPosts.length} trending posts`);
+  }
+
+  // 3. Analyze in batches (10-15 posts per LLM call to stay within context)
+  const allPosts = [
+    ...newPosts.map(p => ({ ...p, _source: "new" })),
+    ...trendingPosts.map(p => ({ ...p, _source: "trending" }))
+  ];
+
+  // Deduplicate by ID
+  const seen = new Set();
+  const uniquePosts = allPosts.filter(p => {
+    if (!p.id || seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
+
+  const batchSize = 12;
+  for (let i = 0; i < uniquePosts.length; i += batchSize) {
+    const batch = uniquePosts.slice(i, i + batchSize);
+    const summaries = batch.map((p, idx) =>
+      `${idx + 1}. [${p._source}] "${(p.title || "Untitled").substring(0, 100)}" by ${getAgentName(p.author)}: ${(p.content || "").substring(0, 200)}`
+    ).join("\n");
+
+    try {
+      const analysisPrompt = `Analyze the sentiment and topic of each post. For each, determine:
+- sentiment: "positive", "negative", "neutral", or "mixed"
+- topic: a brief 2-5 word topic label
+- intensity: 1-5 (1=very mild, 5=very strong)
+
+POSTS:
+${summaries}
+
+Return ONLY valid JSON: {"results": [{"index": 1, "sentiment": "positive", "topic": "AI creativity", "intensity": 3}, ...]}`;
+
+      const batchResult = await llm(analysisPrompt, { timeoutMs: 45000, format: "json" });
+      if (batchResult.success && batchResult.data?.text) {
+        const cleaned = batchResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        if (parsed.results) {
+          for (const r of parsed.results) {
+            const post = batch[(r.index || 1) - 1];
+            if (post) {
+              allAnalyzed.push({
+                postId: post.id,
+                title: post.title || "Untitled",
+                source: post._source,
+                sentiment: r.sentiment || "neutral",
+                topic: r.topic || "unknown",
+                intensity: r.intensity || 3
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[moltbook] Sentiment batch ${i}-${i + batchSize} failed:`, e.message);
+    }
+  }
+
+  // 4. Aggregate results
+  const breakdown = { positive: 0, negative: 0, neutral: 0, mixed: 0 };
+  const topicMap = {};
+  for (const a of allAnalyzed) {
+    breakdown[a.sentiment] = (breakdown[a.sentiment] || 0) + 1;
+    if (!topicMap[a.topic]) topicMap[a.topic] = { count: 0, sentiments: [] };
+    topicMap[a.topic].count++;
+    topicMap[a.topic].sentiments.push(a.sentiment);
+  }
+
+  // Sort topics by frequency
+  const topTopics = Object.entries(topicMap)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 15)
+    .map(([topic, data]) => {
+      const sentimentCounts = {};
+      for (const s of data.sentiments) sentimentCounts[s] = (sentimentCounts[s] || 0) + 1;
+      const dominant = Object.entries(sentimentCounts).sort((a, b) => b[1] - a[1])[0];
+      return { topic, count: data.count, avgSentiment: dominant ? dominant[0] : "neutral" };
+    });
+
+  // 5. Find commonalities
+  const commonalities = [];
+  // Group by dominant sentiment
+  for (const [sentiment, count] of Object.entries(breakdown)) {
+    if (count >= 10) {
+      const postsWithSentiment = allAnalyzed.filter(a => a.sentiment === sentiment);
+      const topTopicForSentiment = {};
+      for (const p of postsWithSentiment) {
+        topTopicForSentiment[p.topic] = (topTopicForSentiment[p.topic] || 0) + 1;
+      }
+      const topEntry = Object.entries(topTopicForSentiment).sort((a, b) => b[1] - a[1])[0];
+      commonalities.push({
+        description: `${count} posts share a ${sentiment} sentiment${topEntry ? `, many about "${topEntry[0]}" (${topEntry[1]} posts)` : ""}`,
+        postCount: count,
+        sentiment,
+        topTopic: topEntry ? topEntry[0] : null
+      });
+    }
+  }
+
+  // Check for topic-based commonalities
+  for (const t of topTopics.slice(0, 5)) {
+    if (t.count >= 5) {
+      commonalities.push({
+        description: `${t.count} posts discuss "${t.topic}" — dominant sentiment: ${t.avgSentiment}`,
+        postCount: t.count,
+        sentiment: t.avgSentiment,
+        topTopic: t.topic
+      });
+    }
+  }
+
+  // Determine overall sentiment
+  const total = allAnalyzed.length;
+  const dominant = Object.entries(breakdown).sort((a, b) => b[1] - a[1])[0];
+  const overallSentiment = total > 0 ? `${dominant[0]} (${Math.round((dominant[1] / total) * 100)}%)` : "unknown";
+
+  // 6. Build report
+  const report = {
+    newPostsCount: newPosts.length,
+    trendingPostsCount: trendingPosts.length,
+    overallSentiment,
+    breakdown,
+    topTopics,
+    commonalities,
+    rawScores: allAnalyzed
+  };
+
+  // Log to JSON
+  const logEntry = await logSentimentReport(report);
+
+  // Build HTML
+  const html = buildSentimentReportHTML(report) +
+    (logEntry ? `<div class="moltbook-action-note">📁 Report logged to data/moltbook/sentiment_log.json (ID: ${logEntry.id.substring(0, 8)})</div>` : "");
+
+  // Text fallback
+  output = `**📊 Moltbook Sentiment Report**\n\n`;
+  output += `Analyzed: ${newPosts.length} new + ${trendingPosts.length} trending (${total} unique)\n`;
+  output += `Overall: ${overallSentiment}\n\n`;
+  output += `**Breakdown:** 😊 ${breakdown.positive} positive | 😐 ${breakdown.neutral} neutral | 😠 ${breakdown.negative} negative | 🤔 ${breakdown.mixed || 0} mixed\n\n`;
+  if (topTopics.length > 0) {
+    output += `**Top Topics:**\n`;
+    for (const t of topTopics.slice(0, 8)) {
+      output += `- ${t.topic} (${t.count} posts, ${t.avgSentiment})\n`;
+    }
+  }
+  if (commonalities.length > 0) {
+    output += `\n**Commonalities:**\n`;
+    for (const c of commonalities) {
+      output += `- ${c.description}\n`;
+    }
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { html, preformatted: true, text: output.trim(), action: "sentiment", report } };
+}
+
+// ──────────────────────────────────────────────────────────
 // HEARTBEAT — Comprehensive Tier 1-3 Autonomous Routine
 // ──────────────────────────────────────────────────────────
 
@@ -1380,6 +1678,164 @@ async function handleStatus() {
 }
 
 // ──────────────────────────────────────────────────────────
+// HTML BUILDERS — Rich rendering for moltbook content
+// ──────────────────────────────────────────────────────────
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildPostHTML(post, options = {}) {
+  const author = getAgentName(post.author);
+  const score = post.score ?? 0;
+  const comments = post.comment_count ?? 0;
+  const date = post.created_at ? new Date(post.created_at).toLocaleDateString() : "";
+  const submolt = post.submolt_name || "general";
+  const content = escapeHtml(post.content || "").replace(/\n/g, "<br>");
+  const title = escapeHtml(post.title || "Untitled");
+  const id = post.id ? post.id.substring(0, 8) : "";
+
+  return `<div class="moltbook-post-card">
+    <div class="moltbook-post-header">
+      <span class="moltbook-author">🤖 ${escapeHtml(author)}</span>
+      <span class="moltbook-meta">${date} · m/${escapeHtml(submolt)} · ⬆️ ${score} · 💬 ${comments}${id ? ` · <code>${id}</code>` : ""}</span>
+    </div>
+    <h3 class="moltbook-post-title">${title}</h3>
+    <div class="moltbook-post-body">${content}</div>
+    ${options.agentOpinion ? `<div class="moltbook-agent-opinion"><strong>🧠 My Take:</strong> ${escapeHtml(options.agentOpinion)}</div>` : ""}
+    ${options.footer || ""}
+  </div>`;
+}
+
+function buildCommentHTML(comment, opinion) {
+  const author = getAgentName(comment.author);
+  const score = comment.score ?? 0;
+  const content = escapeHtml(comment.content || "").replace(/\n/g, "<br>");
+  const date = comment.created_at ? new Date(comment.created_at).toLocaleDateString() : "";
+
+  return `<div class="moltbook-comment">
+    <div class="moltbook-comment-header">
+      <span class="moltbook-author">🤖 ${escapeHtml(author)}</span>
+      <span class="moltbook-score">⬆️ ${score}</span>
+      ${date ? `<span class="moltbook-meta">${date}</span>` : ""}
+    </div>
+    <div class="moltbook-comment-body">${content}</div>
+    ${opinion ? `<div class="moltbook-tooltip">🧠 ${escapeHtml(opinion)}</div>` : ""}
+  </div>`;
+}
+
+function buildCommentsListHTML(comments, opinions = []) {
+  const items = comments.map((c, i) => buildCommentHTML(c, opinions[i])).join("");
+  return `<div class="moltbook-comments-container">
+    <h3 class="moltbook-section-title">💬 Comments (${comments.length})</h3>
+    <p class="moltbook-hint">Hover over a comment to see my opinion</p>
+    ${items}
+  </div>`;
+}
+
+function buildFeedHTML(posts, title = "Moltbook Feed") {
+  if (!posts || posts.length === 0) {
+    return `<div class="moltbook-feed"><h3 class="moltbook-section-title">${escapeHtml(title)}</h3><p>No posts found.</p></div>`;
+  }
+  const cards = posts.slice(0, 15).map(p => buildPostHTML(p)).join("");
+  return `<div class="moltbook-feed">
+    <h3 class="moltbook-section-title">${escapeHtml(title)}</h3>
+    <div class="moltbook-feed-grid">${cards}</div>
+  </div>`;
+}
+
+function buildProfileHTML(agent) {
+  const name = escapeHtml(agent.name || "N/A");
+  const desc = escapeHtml(agent.description || "No description");
+  const status = escapeHtml(agent.status || agent.claim_status || "N/A");
+  const joined = agent.created_at ? new Date(agent.created_at).toLocaleDateString() : "N/A";
+
+  return `<div class="moltbook-profile-card">
+    <h3 class="moltbook-section-title">👤 ${name}</h3>
+    <div class="moltbook-profile-body">
+      <p class="moltbook-profile-desc">${desc}</p>
+      <div class="moltbook-profile-stats">
+        ${agent.karma != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${agent.karma}</span><span class="moltbook-stat-label">Karma</span></div>` : ""}
+        ${agent.post_count != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${agent.post_count}</span><span class="moltbook-stat-label">Posts</span></div>` : ""}
+        ${agent.comment_count != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${agent.comment_count}</span><span class="moltbook-stat-label">Comments</span></div>` : ""}
+        ${agent.follower_count != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${agent.follower_count}</span><span class="moltbook-stat-label">Followers</span></div>` : ""}
+        ${agent.following_count != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${agent.following_count}</span><span class="moltbook-stat-label">Following</span></div>` : ""}
+      </div>
+      <div class="moltbook-profile-meta">
+        <span>Status: ${status}</span> · <span>Joined: ${joined}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildSentimentReportHTML(report) {
+  const { breakdown, topTopics, commonalities, overallSentiment, newPostsCount, trendingPostsCount } = report;
+  const total = (breakdown.positive || 0) + (breakdown.negative || 0) + (breakdown.neutral || 0) + (breakdown.mixed || 0);
+  const pct = (val) => total > 0 ? Math.round((val / total) * 100) : 0;
+
+  const topicsHTML = (topTopics || []).slice(0, 10).map(t =>
+    `<div class="moltbook-topic-tag"><span class="moltbook-topic-name">${escapeHtml(t.topic)}</span><span class="moltbook-topic-count">${t.count}</span></div>`
+  ).join("");
+
+  const commonalitiesHTML = (commonalities || []).map(c =>
+    `<div class="moltbook-commonality-card">
+      <div class="moltbook-commonality-header">${escapeHtml(c.description)}</div>
+      <div class="moltbook-commonality-meta">${c.postCount} posts · Sentiment: ${escapeHtml(c.sentiment)}</div>
+    </div>`
+  ).join("");
+
+  return `<div class="moltbook-sentiment-report">
+    <h3 class="moltbook-section-title">📊 Moltbook Sentiment Report</h3>
+    <div class="moltbook-sentiment-summary">
+      <p>Analyzed <strong>${newPostsCount}</strong> new posts and <strong>${trendingPostsCount}</strong> trending posts</p>
+      <p>Overall mood: <strong>${escapeHtml(overallSentiment)}</strong></p>
+    </div>
+    <div class="moltbook-sentiment-bars">
+      <div class="moltbook-bar moltbook-bar-positive" style="width: ${pct(breakdown.positive || 0)}%"><span>😊 Positive ${pct(breakdown.positive || 0)}%</span></div>
+      <div class="moltbook-bar moltbook-bar-neutral" style="width: ${pct(breakdown.neutral || 0)}%"><span>😐 Neutral ${pct(breakdown.neutral || 0)}%</span></div>
+      <div class="moltbook-bar moltbook-bar-negative" style="width: ${pct(breakdown.negative || 0)}%"><span>😠 Negative ${pct(breakdown.negative || 0)}%</span></div>
+      ${breakdown.mixed ? `<div class="moltbook-bar moltbook-bar-mixed" style="width: ${pct(breakdown.mixed)}%"><span>🤔 Mixed ${pct(breakdown.mixed)}%</span></div>` : ""}
+    </div>
+    ${topicsHTML ? `<div class="moltbook-topics-section"><h4>🏷️ Top Topics</h4><div class="moltbook-topics-grid">${topicsHTML}</div></div>` : ""}
+    ${commonalitiesHTML ? `<div class="moltbook-commonalities-section"><h4>🔗 Commonalities</h4>${commonalitiesHTML}</div>` : ""}
+  </div>`;
+}
+
+// ──────────────────────────────────────────────────────────
+// SENTIMENT LOGGING — SQL-ready JSON storage
+// ──────────────────────────────────────────────────────────
+
+async function logSentimentReport(report) {
+  try {
+    await fs.mkdir(SENTIMENT_LOG_DIR, { recursive: true });
+    const entry = {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      source: "moltbook_sentiment",
+      newPostsAnalyzed: report.newPostsCount,
+      trendingPostsAnalyzed: report.trendingPostsCount,
+      overallSentiment: report.overallSentiment,
+      sentimentBreakdown: report.breakdown,
+      topTopics: report.topTopics,
+      commonalities: report.commonalities,
+      rawScores: report.rawScores
+    };
+
+    const logFile = path.join(SENTIMENT_LOG_DIR, "sentiment_log.json");
+    let existing = [];
+    try { existing = JSON.parse(await fs.readFile(logFile, "utf8")); } catch {}
+    existing.push(entry);
+    await fs.writeFile(logFile, JSON.stringify(existing, null, 2), "utf8");
+    console.log(`[moltbook] Sentiment report logged: ${entry.id}`);
+    return entry;
+  } catch (e) {
+    console.warn("[moltbook] Failed to log sentiment report:", e.message);
+    return null;
+  }
+}
+
+// ──────────────────────────────────────────────────────────
 // HELPERS
 // ──────────────────────────────────────────────────────────
 
@@ -1396,7 +1852,7 @@ function getAgentLink(obj) {
   return `[${name}](https://www.moltbook.com/agents/${encodeURIComponent(name)})`;
 }
 
-function formatPostsList(data, title) {
+function formatPostsList(data, title, withHtml = false) {
   const posts = Array.isArray(data) ? data : (data?.posts || data?.results || []);
   let output = `**${title}**\n\n`;
 
@@ -1407,13 +1863,14 @@ function formatPostsList(data, title) {
       const score = p.score != null ? `[${p.score}]` : "";
       const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
       const id = p.id ? ` \`${p.id.substring(0, 8)}\`` : "";
-      const authorLink = getAgentLink(p.author); // <-- Now a link!
+      const authorLink = getAgentLink(p.author);
       output += `${score} **${p.title || "Untitled"}** — ${authorLink} ${comments}${id}\n`;
       if (p.content) output += `  ${p.content.substring(0, 120)}...\n`;
     }
   }
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "feed", posts } };
+  const html = withHtml ? buildFeedHTML(posts, title) : undefined;
+  return { tool: "moltbook", success: true, final: true, data: { html, preformatted: true, text: output.trim(), action: "feed", posts } };
 }
 
 function noApiKeyError(action) {
@@ -1469,7 +1926,7 @@ export async function moltbook(input) {
 
       // Posts
       case "post":           return await handlePost(text, context);
-      case "getPost":        return await handleGetPost(text, context);
+      case "getPost":        return await handleReadPost(text, context);
       case "deletePost":     return await handleDeletePost(text, context);
       case "myPosts":        return await handleMyPosts(text, context); // <-- Add this line!
 
@@ -1498,6 +1955,9 @@ export async function moltbook(input) {
 
       // Notifications
       case "notifications":  return await handleNotifications(text, context);
+
+      // Sentiment
+      case "sentiment":      return await handleSentiment(text, context);
 
       // Status & Heartbeat
       case "heartbeat":      return await handleHeartbeat(text, context);

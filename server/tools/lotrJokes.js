@@ -39,24 +39,25 @@ async function loadJokes() {
 function getRandomJoke(character = null) {
   if (!jokesData) return null;
 
-  // If character specified, get from that category
-  if (character && jokesData.jokes[character]) {
-    const jokes = jokesData.jokes[character];
-    // Get next joke (sequential with wrap-around to avoid repeats)
-    lastUsedIndices[character] = (lastUsedIndices[character] + 1) % jokes.length;
-    let index = lastUsedIndices[character];
+  const jokes = jokesData.jokes[character] || Object.values(jokesData.jokes).flat();
+  const totalJokes = jokes.length;
+  let joke = null;
 
-    return {
-      joke: jokes[index],
-      character: character.charAt(0).toUpperCase() + character.slice(1),
-      source: "LOTR Jokes Database"
-    };
+  if (character) {
+    const lastUsedIndex = lastUsedIndices[character];
+    const currentIndex = (lastUsedIndex + 1) % totalJokes;
+    joke = jokes[currentIndex];
+    lastUsedIndices[character] = currentIndex;
+  } else {
+    const randomIndex = Math.floor(Math.random() * totalJokes);
+    joke = jokes[randomIndex];
   }
 
-  // Random character
-  const characters = Object.keys(jokesData.jokes);
-  const randomChar = characters[Math.floor(Math.random() * characters.length)];
-  return getRandomJoke(randomChar);
+  return {
+    joke: joke,
+    character: character ? character.charAt(0).toUpperCase() + character.slice(1) : "LOTR Characters",
+    source: "LOTR Jokes Database"
+  };
 }
 
 function parseCharacter(query) {

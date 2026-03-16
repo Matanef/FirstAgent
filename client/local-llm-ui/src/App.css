@@ -1212,6 +1212,322 @@ body {
   line-height: 1.4;
 }
 
+/* ──────────────────────────────────────────────────────────
+   MOLTBOOK — Rich HTML Rendering
+   ────────────────────────────────────────────────────────── */
+
+/* Post Cards */
+.moltbook-post-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 0.75rem;
+  transition: border-color 0.2s, transform 0.15s;
+}
+.moltbook-post-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.moltbook-post-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.moltbook-author {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+.moltbook-meta {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.moltbook-post-title {
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  margin: 0.25rem 0 0.5rem;
+  font-weight: 700;
+}
+.moltbook-post-body {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  font-size: 0.92rem;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Agent Opinion */
+.moltbook-agent-opinion {
+  background: var(--bg-hover);
+  border-left: 3px solid #a855f7;
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Action Notes & Follow-up */
+.moltbook-action-note {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.88rem;
+  color: #22c55e;
+}
+.moltbook-followup {
+  background: var(--bg-hover);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+/* Comments */
+.moltbook-comments-container {
+  max-height: 500px;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+.moltbook-section-title {
+  color: var(--text-primary);
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+}
+.moltbook-hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-bottom: 0.75rem;
+}
+.moltbook-comment {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  position: relative;
+  transition: border-color 0.2s;
+}
+.moltbook-comment:hover {
+  border-color: var(--accent);
+}
+.moltbook-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.3rem;
+}
+.moltbook-score {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.moltbook-comment-body {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Tooltip — appears on hover */
+.moltbook-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2e;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  max-width: 350px;
+  width: max-content;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.moltbook-tooltip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--accent);
+}
+.moltbook-comment:hover .moltbook-tooltip {
+  display: block;
+}
+
+/* Feed Grid */
+.moltbook-feed-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Profile Card */
+.moltbook-profile-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+.moltbook-profile-desc {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0.5rem 0 1rem;
+}
+.moltbook-profile-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.moltbook-stat {
+  background: var(--bg-hover);
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  text-align: center;
+  min-width: 80px;
+}
+.moltbook-stat-value {
+  display: block;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.moltbook-stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.moltbook-profile-meta {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Sentiment Report */
+.moltbook-sentiment-report {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+.moltbook-sentiment-summary {
+  margin-bottom: 1rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.moltbook-sentiment-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+}
+.moltbook-bar {
+  border-radius: 4px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  min-width: 60px;
+  transition: width 0.5s ease;
+}
+.moltbook-bar span {
+  white-space: nowrap;
+}
+.moltbook-bar-positive {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+.moltbook-bar-neutral {
+  background: rgba(168, 162, 158, 0.2);
+  color: #a8a29e;
+}
+.moltbook-bar-negative {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+.moltbook-bar-mixed {
+  background: rgba(234, 179, 8, 0.2);
+  color: #eab308;
+}
+
+/* Topics */
+.moltbook-topics-section {
+  margin-bottom: 1.25rem;
+}
+.moltbook-topics-section h4 {
+  color: var(--text-primary);
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+.moltbook-topics-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.moltbook-topic-tag {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.moltbook-topic-name {
+  color: var(--text-primary);
+}
+.moltbook-topic-count {
+  background: var(--accent);
+  color: #000;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+/* Commonalities */
+.moltbook-commonalities-section h4 {
+  color: var(--text-primary);
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+.moltbook-commonality-card {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.moltbook-commonality-header {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+.moltbook-commonality-meta {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
 /* Input Area */
 .input-area {
   padding: 1rem 1.5rem;

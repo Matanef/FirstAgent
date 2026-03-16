@@ -184,8 +184,31 @@ export async function applyPatch(request) {
       filename: targetFile
     });
 
-    // 6. Create backup
-    const backupPath = `${filePath}.backup`;
+    // 6. Syntax check before writing (staging → validate → swap)
+    const stagingPath = `${filePath}.staging.js`;
+    await fs.writeFile(stagingPath, improvedCode, 'utf8');
+
+    try {
+      const { execSync } = await import("child_process");
+      execSync(`node --check "${stagingPath}"`, { timeout: 10000 });
+      console.log(`✅ Syntax check passed for ${targetFile}`);
+    } catch (syntaxErr) {
+      await fs.unlink(stagingPath).catch(() => {});
+      return {
+        tool: "applyPatch",
+        success: false,
+        final: true,
+        error: `Syntax check failed — patch NOT applied:\n${syntaxErr.stderr?.toString() || syntaxErr.message}`
+      };
+    }
+
+    // 7. Create categorized backup: server/tools/backups/[tool_name]/[tool_name]_[timestamp].js.backup
+    const toolName = path.basename(filePath, ".js");
+    const backupDir = path.resolve(path.dirname(filePath), "backups", toolName);
+    await fs.mkdir(backupDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = path.join(backupDir, `${toolName}_${timestamp}.js.backup`);
+
     try {
       await fs.copyFile(filePath, backupPath);
       console.log(`💾 Backup created: ${backupPath}`);
@@ -193,24 +216,32 @@ export async function applyPatch(request) {
       console.warn(`⚠️ Could not create backup: ${err.message}`);
     }
 
-    // 7. Write improved code
+    // 8. Atomic swap: staging → live
     try {
-      await fs.writeFile(filePath, improvedCode, 'utf8');
-      console.log(`✅ Updated ${targetFile}`);
+      await fs.rename(stagingPath, filePath);
+      console.log(`✅ Updated ${targetFile} (atomic swap)`);
     } catch (err) {
-      return {
-        tool: "applyPatch",
-        success: false,
-        final: true,
-        error: `Failed to write file: ${err.message}`
-      };
+      // Fallback to copy if rename fails (cross-device)
+      try {
+        await fs.copyFile(stagingPath, filePath);
+        await fs.unlink(stagingPath).catch(() => {});
+        console.log(`✅ Updated ${targetFile} (copy fallback)`);
+      } catch (err2) {
+        return {
+          tool: "applyPatch",
+          success: false,
+          final: true,
+          error: `Failed to write file: ${err2.message}`
+        };
+      }
     }
 
-    // 8. Generate diff summary
+    // 9. Generate diff summary
     const originalLines = originalCode.split('\n').length;
     const improvedLines = improvedCode.split('\n').length;
     const lineDiff = improvedLines - originalLines;
 
+    const relativeBackup = path.relative(path.resolve(path.dirname(filePath), ".."), backupPath);
     const html = `
       <div class="apply-patch-tool">
         <h3>✅ Code Patch Applied</h3>
@@ -220,11 +251,11 @@ export async function applyPatch(request) {
             <strong>Original:</strong> ${originalLines} lines<br/>
             <strong>Improved:</strong> ${improvedLines} lines<br/>
             <strong>Change:</strong> ${lineDiff > 0 ? '+' : ''}${lineDiff} lines<br/>
-            <strong>Backup:</strong> ${path.basename(backupPath)}
+            <strong>Backup:</strong> ${relativeBackup}
           </div>
           <div class="patch-actions">
-            <p>✅ File has been updated with improvements</p>
-            <p>💾 Original backed up to ${path.basename(backupPath)}</p>
+            <p>✅ Syntax validated and file updated (atomic swap)</p>
+            <p>💾 Original backed up to backups/${toolName}/</p>
             <p>📦 Ready to commit changes</p>
           </div>
         </div>
@@ -266,7 +297,7 @@ export async function applyPatch(request) {
         improvedLines,
         lineDiff,
         html,
-        text: `✅ Applied improvements to ${targetFile}\n\nOriginal: ${originalLines} lines\nImproved: ${improvedLines} lines\nChange: ${lineDiff > 0 ? '+' : ''}${lineDiff} lines\n\nBackup saved to: ${path.basename(backupPath)}\nReady to commit!`
+        text: `✅ Applied improvements to ${targetFile}\n\nOriginal: ${originalLines} lines\nImproved: ${improvedLines} lines\nChange: ${lineDiff > 0 ? '+' : ''}${lineDiff} lines\n\nBackup saved to: ${relativeBackup}\nSyntax validated ✅ — Ready to commit!`
       }
     };
 

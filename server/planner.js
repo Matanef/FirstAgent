@@ -88,6 +88,7 @@ function inferToolFromText(text) {
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
 
   // ── CODE GURU & SYSTEM TOOLS ──
+  if (/\b(apply\s*patch|full\s+rewrite|rewrite\s+entire)\b/.test(lower)) return "applyPatch";
   if (/\b(refactor|rewrite|transform|optimize|improve|modify)\b/.test(lower)) return "codeTransform";
   if (/\b(code\s+review|security|performance|quality|audit|smell)\b/.test(lower)) return "codeReview";
   if (/\b(review|inspect|examine)\b/.test(lower)) return "review"; // Fallback general review
@@ -866,6 +867,8 @@ if (
     else if (/\b(create\s+submolt|create\s+community|new\s+submolt)\b/i.test(lower)) context.action = "createSubmolt";
     else if (/\b(submolt\s+feed|community\s+feed)\b/i.test(lower)) context.action = "submoltFeed";
     else if (/\b(communities?|submolts?)\b/i.test(lower)) context.action = "communities";
+    // Sentiment
+    else if (/\b(sentiment|mood|vibes?|pulse|atmosphere)\b/i.test(lower)) context.action = "sentiment";
     // Search
     else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
     // Notifications
@@ -1012,11 +1015,25 @@ if (
     return [{ tool: "selfEvolve", input: trimmed, context: evolveContext, reasoning: "certainty_self_evolve" }];
   }
 
+  // applyPatch — Multi-change architectural requests (3+ distinct changes) → full rewrite, not surgical patch
+  // GUARD: Requires a file target AND multiple distinct action verbs or numbered list
+  if (
+    !/\b(review|suggest|examine|inspect)\b/i.test(lower) &&
+    (hasExplicitFilePath(trimmed) || /\.[a-z]{2,4}\b/i.test(lower)) &&
+    (
+      /(?:1\.|first|step\s*1)[\s\S]*(?:2\.|second|step\s*2)[\s\S]*(?:3\.|third|step\s*3)/i.test(lower) ||
+      (lower.match(/\b(refactor|add|fix|remove|rename|update|implement|move|extract)\b/gi) || []).length >= 3
+    )
+  ) {
+    console.log("[planner] certainty branch: applyPatch (multi-change rewrite)");
+    return [{ tool: "applyPatch", input: trimmed, context: { source: "multi_change" }, reasoning: "certainty_apply_patch_multi" }];
+  }
+
   // Code Transform — refactor, optimize, rewrite, improve code in a file
   // GUARD: If the prompt contains "review", "suggest", or "examine", skip this and let codeReview handle it!
   if (
-    !/\b(review|suggest|examine|inspect)\b/i.test(lower) && 
-    (/\b(codetransform)\b/i.test(lower) || 
+    !/\b(review|suggest|examine|inspect)\b/i.test(lower) &&
+    (/\b(codetransform)\b/i.test(lower) ||
     (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
     (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower) || /\.[a-z]{2,4}\b/i.test(lower))))
   ) {
