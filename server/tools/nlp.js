@@ -62,8 +62,12 @@ export async function analyzeSentiment(text) {
 }
 
 export async function extractEntities(text) {
+  // Null Guard: Prevent crashes from empty scheduled tasks
+  if (!text || text.trim() === "") {
+    return { people: [], places: [], organizations: [], dates: [], emails: [], numbers: [] };
+  }
+  
   try {
-    if (!text) throw new Error("Text cannot be empty");
     return EntityExtractor.extractEntities(text);
   } catch (error) {
     throw new Error(`Entity extraction failed: ${error.message}`);

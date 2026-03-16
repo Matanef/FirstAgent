@@ -352,7 +352,12 @@ ${reviewFindings.slice(0, 15000)}`;
     const installedDeps = await getInstalledDependencies();
     const depsStr = installedDeps.join(", ");
 
-const prompt = `You are an AI's self-improvement engine. 
+    // Create a dynamic example filename to prevent "Example Hijacking"
+    const exampleFileName = reviewedFilesList.length > 0 
+      ? path.relative(PROJECT_ROOT, reviewedFilesList[0]).replace(/\\/g, "/") 
+      : "server/tools/your_target_file.js";
+
+    const prompt = `You are an AI's self-improvement engine. 
 ${forcedFile ? `CRITICAL: You are ONLY allowed to suggest improvements for the specific file: [${path.basename(forcedFile)}]. DO NOT suggest changes for any other files.` : `CRITICAL: You are only allowed to suggest improvements for the following files: [${reviewedFilesList.map(f => path.basename(f)).join(", ")}].`}
 
 DO NOT suggest new files.
@@ -366,7 +371,7 @@ Focus ONLY on pure algorithmic, logic, or regex improvements.
 If the research insights don't apply to the files listed above, ignore the research and focus on the Code Review findings instead.
 
 CRITICAL FORCED CONSTRAINT: 
-Do NOT repeat previous improvements. Do NOT suggest changes to 'email.js' unless it is explicitly in the allowed files list. You MUST generate a NEW improvement based ONLY on the NEW Code Review Findings below.
+Do NOT repeat previous improvements. You MUST generate a NEW improvement based ONLY on the NEW Code Review Findings below.
 STRICT INSTRUCTION FOLLOW-THROUGH:
 1. You MUST implement the EXACT technical solution requested in the user's prompt.
 2. If the user asks for a 'Regex with named capture groups', you MUST provide that, even if you think a 'Set' is faster.
@@ -379,7 +384,7 @@ RESEARCH INSIGHTS:
 ${githubInsights.slice(0, 5000)}
 
 Format as JSON array using the FULL relative path from the project root:
-[ { "file": "server/tools/email.js", "description": "add try-catch error handling to Gmail API calls", "priority": 1, "risk": "low", "type": "fix" } ]`;
+[ { "file": "${exampleFileName}", "description": "Fix null pointer exception in the data parsing logic", "priority": 1, "risk": "low", "type": "fix" } ]`;
 
     console.log("[selfEvolve] Calling LLM for improvement_plan.");
     const response = await withTimeout(llm(prompt), 300_000, "llm(selfEvolve)");

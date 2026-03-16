@@ -116,20 +116,21 @@ function inferAction(text) {
   if (/\b(log\s*in|sign\s*in|authenticate)\b/.test(lower)) return "login";
   if (/\b(log\s*out|sign\s*out)\b/.test(lower)) return "logout";
 
-  // DM / Messaging — must come before generic patterns
-  if (/\b(dm|direct\s+message|private\s+message|message\s+\w+|send\s+dm|send\s+message)\b/.test(lower)) return "dm";
-  if (/\b(inbox|messages|conversations|my\s+dms|check\s+dms|dm\s+inbox)\b/.test(lower)) return "dm_inbox";
+// DM / Messaging — Specifics MUST come before generic "dm"
   if (/\b(dm\s+requests?|pending\s+requests?|approve\s+dm|reject\s+dm|accept\s+dm)\b/.test(lower)) return "dm_requests";
+  if (/\b(inbox|messages|conversations|my\s+dms?|check.*?dms?|dm\s+inbox)\b/.test(lower)) return "dm_inbox";
+  if (/\b(dm|direct\s+message|private\s+message|message\s+\w+|send\s+dm|send\s+message)\b/.test(lower)) return "dm";
 
-  // Profile
-  if (/\b(my\s+(\w+\s+)?profile|who\s+am\s+i|my\s+account|check\s+me|show\s+profile)\b/.test(lower)) return "profile";
+  // Profile — Specifics MUST come before generic "profile"
   if (/\b(update\s+(my\s+)?profile|change\s+(my\s+)?description|edit\s+profile)\b/.test(lower)) return "updateProfile";
   if (/\b(view\s+profile|profile\s+of|who\s+is|look\s+up\s+agent|agent\s+profile)\b/.test(lower)) return "viewProfile";
+  if (/\b(my\s+(\w+\s+)?profile|who\s+am\s+i|my\s+account|check\s+me|show\s+profile|moltbook\s+profile|profile)\b/.test(lower)) return "profile";
 
-  // Posts
+// Posts - Specific actions MUST come before generic creation
+  if (/\b(delete|remove)\b.*?\bpost\b/.test(lower)) return "deletePost";
+  if (/\b(my|your)\b.*?\bposts?\b/.test(lower)) return "myPosts"; // <-- Catches "show your moltbook posts"
+  if (/\b(read|show|get|view)\b.*?\bpost\b/.test(lower)) return "getPost";
   if (/\b(post|publish|share|write\s+a?\s*post|create\s+post)\b/.test(lower)) return "post";
-  if (/\b(delete\s+post|remove\s+post)\b/.test(lower)) return "deletePost";
-  if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/.test(lower)) return "getPost";
 
   // Comments
   if (/\b(comment|reply)\b/.test(lower)) return "comment";
@@ -358,7 +359,9 @@ async function handleProfile(text, context) {
   const result = await apiRequest("GET", "/agents/me", null, apiKey);
   if (!result.ok) return apiError("profile", result);
 
-  const agent = result.data;
+  // FIX: Handle nested agent object securely
+  const agent = result.data?.agent || result.data;
+  
   return {
     tool: "moltbook", success: true, final: true,
     data: {
@@ -544,12 +547,13 @@ async function handleGetPost(text, context) {
   const result = await apiRequest("GET", `/posts/${postId}`, null, apiKey);
   if (!result.ok) return apiError("getPost", result);
 
-  const p = result.data;
+const p = result.data;
+  const authorLink = getAgentLink(p.author); // <-- Now a link!
   return {
     tool: "moltbook", success: true, final: true,
     data: {
       preformatted: true,
-      text: `**${p.title || "Untitled"}** by ${p.author || "unknown"}\n` +
+      text: `**${p.title || "Untitled"}** by ${authorLink}\n` +
         `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
         `${p.content || "(no content)"}`,
       action: "getPost", post: p
@@ -557,42 +561,109 @@ async function handleGetPost(text, context) {
   };
 }
 
+async function handleMyPosts(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("myPosts");
+
+  // 1. Get exact agent name
+  const creds = loadCredentials();
+  let myName = creds?.agent_name;
+
+  if (!myName) {
+    const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+    if (!meResult.ok) return apiError("myPosts", meResult);
+    myName = getAgentName(meResult.data?.agent || meResult.data);
+  }
+
+  if (!myName || myName === "unknown") {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Error: Could not determine your agent's exact name.", action: "myPosts" } };
+  }
+
+  console.log(`[moltbook] Fetching profile for agent: ${myName}`);
+  
+  // 2. Fetch the profile directly using the official endpoint!
+  const profileResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+  
+  if (!profileResult.ok) return apiError("myPosts", profileResult);
+
+  // 3. Extract recentPosts from the profile response
+  let myPosts = profileResult.data?.recentPosts || [];
+
+  // FIX: Stamp the author name so it doesn't show as "unknown"!
+  myPosts.forEach(p => {
+    if (!p.author) p.author = myName;
+  });
+
+  console.log(`[moltbook] Found ${myPosts.length} posts in recentPosts array for ${myName}.`);
+
+  // 4. Fallback to search just in case recentPosts is empty but search has older ones
+  if (myPosts.length === 0) {
+    console.log(`[moltbook] recentPosts empty, falling back to search API...`);
+    let searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(myName)}&type=posts&limit=20`, null, apiKey);
+    if (searchResult.ok) {
+       let rawSearch = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || searchResult.data?.data || []);
+       // Filter search results to ensure author match
+       myPosts = rawSearch.filter(p => getAgentName(p.author).toLowerCase() === myName.toLowerCase());
+    }
+  }
+
+  // Sort newest first
+  myPosts.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+
+  return formatPostsList({ posts: myPosts }, `Posts by ${myName}`);
+}
+
 async function handleDeletePost(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("deletePost");
 
-  let postId = context.postId || context.post_id || text.match(/(?:delete|remove)\s+post\s+([a-f0-9-]{8,})/i)?.[1];
+  // Extract whatever ID the user typed (even if it's just 8 characters)
+  let inputId = context.postId || context.post_id || text.match(/(?:delete|remove)\b.*?\bpost\s+([a-f0-9-]+)/i)?.[1];
+  let postId = inputId;
 
-  // If no UUID found, try to find the post by title text
-  if (!postId) {
-    const titleText = text.replace(/^.*?(?:delete|remove)\s+(?:(?:my\s+)?post)\s*/i, "")
-      .replace(/\s+on\s+moltbook\b/gi, "").trim();
-    if (titleText.length > 5) {
-      // Search for the post by title
-      const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
-      if (searchResult.ok) {
-        const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.results || searchResult.data?.posts || []);
-        // Find an exact or close title match from our own posts
-        const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
-        const myName = meResult.ok ? (meResult.data?.name || "") : "";
-        const match = results.find(p =>
-          (p.title || "").toLowerCase().includes(titleText.toLowerCase().substring(0, 40)) ||
-          titleText.toLowerCase().includes((p.title || "").toLowerCase().substring(0, 40))
-        );
-        if (match?.id) {
-          postId = match.id;
-          console.log(`[moltbook] Resolved post title to ID: ${postId}`);
-        }
+  // If the user gave us a short ID (less than 32 chars) or just a title, we need to find the full UUID
+  if (!postId || postId.length < 32) {
+    // Fetch the user's profile to get their posts
+    const creds = loadCredentials();
+    let myName = creds?.agent_name;
+    if (!myName) {
+      const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+      myName = getAgentName(meResult.data?.agent || meResult.data);
+    }
+
+    const profileResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+    const myPosts = profileResult.data?.recentPosts || [];
+
+    if (postId && postId.length === 8) {
+      // Find the post whose full ID starts with the 8-character short ID
+      const match = myPosts.find(p => p.id && p.id.startsWith(postId));
+      if (match?.id) {
+        postId = match.id;
+        console.log(`[moltbook] Resolved short ID ${inputId} to full UUID: ${postId}`);
+      }
+    } else if (!postId) {
+      // Title matching logic (if user says "delete post about silence")
+      const titleText = text.replace(/^.*?(?:delete|remove)\b.*?\bpost\b\s*/i, "")
+        .replace(/\s+on\s+moltbook\b/gi, "")
+        .replace(/["']/g, "") 
+        .trim();
+        
+      if (titleText.length > 5) {
+        const match = myPosts.find(p => (p.title || "").toLowerCase().includes(titleText.toLowerCase()));
+        if (match?.id) postId = match.id;
       }
     }
   }
 
-  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Could not find a post matching that title. Please specify a post ID to delete, or use the exact post title.", action: "deletePost" } };
+  // If we STILL don't have a valid full UUID, reject it
+  if (!postId || postId.length < 32) {
+    return { tool: "moltbook", success: false, final: true, data: { text: `Could not find a valid full Post ID for "${inputId || text}". Try providing the exact title instead.`, action: "deletePost" } };
+  }
 
   const result = await apiRequest("DELETE", `/posts/${postId}`, null, apiKey);
   if (!result.ok) return apiError("deletePost", result);
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Post ${postId} deleted.`, action: "deletePost" } };
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Post deleted successfully!`, action: "deletePost" } };
 }
 
 // ──────────────────────────────────────────────────────────
@@ -636,7 +707,8 @@ async function handleGetComments(text, context) {
   let output = `**Comments on post ${postId}** (${comments.length})\n\n`;
   for (const c of comments.slice(0, 20)) {
     const score = c.score != null ? `[${c.score}]` : "";
-    output += `${score} **${c.author || "unknown"}**: ${(c.content || "").substring(0, 200)}\n`;
+    const authorLink = getAgentLink(c.author); // <-- Now a link!
+    output += `${score} **${authorLink}**: ${(c.content || "").substring(0, 200)}\n`;
   }
 
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "getComments", comments } };
@@ -955,7 +1027,9 @@ async function handleDMInbox(text, context) {
   const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
   if (!convResult.ok) return apiError("dm_inbox", convResult);
 
-  const convs = Array.isArray(convResult.data) ? convResult.data : (convResult.data?.conversations || []);
+  // FIX: Force it to be a strict Array, even if the API returns null
+  let convs = Array.isArray(convResult.data) ? convResult.data : (convResult.data?.conversations || []);
+  if (!Array.isArray(convs)) convs = [];
 
   let output = `**Moltbook DM Inbox**\n\n`;
 
@@ -1088,14 +1162,14 @@ async function handleHeartbeat(text, context) {
       for (const p of feedPosts.slice(0, 5)) {
         const score = p.score != null ? `[${p.score}]` : "";
         const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
-        output += `  ${score} **${p.title || "Untitled"}** by ${p.author || "unknown"} ${comments}\n`;
+        output += `  ${score} **${p.title || "Untitled"}** by ${getAgentName(p.author)} ${comments}\n`;
       }
     }
 
-    // 2b. LLM-driven engagement — read posts, decide what's interesting, interact meaningfully
+    // 2b. LLM-driven engagement
     if (feedPosts.length > 0) {
       const postSummaries = feedPosts.slice(0, 8).map((p, i) =>
-        `${i + 1}. "${p.title || "Untitled"}" by ${p.author || "unknown"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
+        `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
       ).join("\n");
 
       const analysisPrompt = `You are an AI agent on Moltbook, a social platform for AI agents. Read these posts from your feed and decide how to engage.
@@ -1106,7 +1180,7 @@ ${postSummaries}
 Instructions:
 1. Pick 1-3 posts you find genuinely interesting (return their numbers)
 2. For the MOST interesting one, write a thoughtful comment (2-3 sentences, be specific about the topic — do NOT write generic "great post" comments)
-3. Optionally, suggest a NEW post idea you'd like to share based on your experience as an AI agent (something insightful about AI, automation, or your capabilities). If no good idea, return null.
+3. Optionally, suggest a NEW post idea you'd like to share based on your experience as an AI agent. If no good idea, return null.
 
 Return ONLY valid JSON:
 {"upvote": [1, 3], "comment": {"post": 1, "text": "your thoughtful comment here"}, "newPostIdea": "your post idea or null"}`;
@@ -1134,7 +1208,7 @@ Return ONLY valid JSON:
             const voteResult = await apiRequest("POST", `/posts/${post.id}/upvote`, null, apiKey);
             if (voteResult.ok) {
               output += `  ⬆️ Upvoted: "${(post.title || "Untitled").substring(0, 50)}"\n`;
-              actions.push(`Upvoted post by ${post.author || "unknown"}`);
+              actions.push(`Upvoted post by ${getAgentName(post.author)}`);
             } else if (voteResult.status === 429) {
               output += `  ⛔ Rate limited — skipping further interactions\n`;
               break;
@@ -1155,7 +1229,7 @@ Return ONLY valid JSON:
               if (commentResult.ok) {
                 output += `  💬 Commented on: "${(commentPost.title || "Untitled").substring(0, 50)}"\n`;
                 output += `     _"${llmEngagement.comment.text.substring(0, 120)}..."_\n`;
-                actions.push(`Commented on post by ${commentPost.author || "unknown"}`);
+                actions.push(`Commented on post by ${getAgentName(commentPost.author)}`);
               } else if (commentResult.status !== 429) {
                 output += `  ⚠️ Comment failed: ${commentResult.status}\n`;
               }
@@ -1170,7 +1244,7 @@ Return ONLY valid JSON:
                 const existingComments = Array.isArray(commentsResult.data) ? commentsResult.data : (commentsResult.data?.comments || []);
                 if (existingComments.length > 0) {
                   const commentSummaries = existingComments.slice(0, 6).map((c, i) =>
-                    `${i + 1}. "${(c.content || "").substring(0, 150)}" by ${c.author || "unknown"} (score: ${c.score ?? 0}, id: ${c.id})`
+                    `${i + 1}. "${(c.content || "").substring(0, 150)}" by ${getAgentName(c.author)} (score: ${c.score ?? 0}, id: ${c.id})`
                   ).join("\n");
 
                   const replyPrompt = `You are an AI agent on Moltbook. Read these comments on the post "${commentPost.title || "Untitled"}" and decide if any deserve a thoughtful reply.
@@ -1198,9 +1272,9 @@ Return ONLY valid JSON:
                           content: replyData.reply.text, parent_id: targetComment.id
                         }, apiKey);
                         if (nestedResult.ok) {
-                          output += `  ↪️ Replied to ${targetComment.author || "unknown"}'s comment\n`;
+                          output += `  ↪️ Replied to ${getAgentName(targetComment.author)}'s comment\n`;
                           output += `     _"${replyData.reply.text.substring(0, 100)}..."_\n`;
-                          actions.push(`Replied to comment by ${targetComment.author || "unknown"}`);
+                          actions.push(`Replied to comment by ${getAgentName(targetComment.author)}`);
                         }
                       }
                     }
@@ -1213,21 +1287,21 @@ Return ONLY valid JSON:
           }
         }
 
-        // Post idea suggestion (suggest only — no auto-posting)
+        // Post idea suggestion
         if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
           output += `\n💡 **Post Idea:** ${llmEngagement.newPostIdea}\n`;
           output += `  _Say "moltbook post: ${llmEngagement.newPostIdea.substring(0, 60)}..." to publish_\n`;
           actions.push(`Suggested post idea: "${llmEngagement.newPostIdea.substring(0, 60)}"`);
         }
       } else {
-        // Fallback: simple upvote of top 2 posts if LLM analysis failed
+        // Fallback: simple upvote of top 2 posts
         output += `  _(LLM analysis unavailable — using simple engagement)_\n`;
         for (const p of feedPosts.filter(p => p.id).slice(0, 2)) {
           try {
             const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
             if (voteResult.ok) {
               output += `  ⬆️ Upvoted: "${(p.title || "Untitled").substring(0, 50)}"\n`;
-              actions.push(`Upvoted post by ${p.author || "unknown"}`);
+              actions.push(`Upvoted post by ${getAgentName(p.author)}`);
             } else if (voteResult.status === 429) {
               break;
             }
@@ -1243,21 +1317,16 @@ Return ONLY valid JSON:
   // ── TIER 3: Content Creation Status ──
   output += `\n**Tier 3 — Content Status:**\n`;
 
-  // Check own profile for post count and activity
   const profileResult = await apiRequest("GET", "/agents/me", null, apiKey);
   if (profileResult.ok) {
     const me = profileResult.data;
     output += `- Agent: ${me.name || "N/A"} | Karma: ${me.karma ?? "N/A"} | Posts: ${me.post_count ?? "N/A"}\n`;
   }
 
-  // Rate limit note
   output += `\n**Rate limits:** 1 post/30min, 50 comments/day, 1 comment/20sec\n`;
-
-  // Summary
   output += `\n**Summary:** ${actions.length > 0 ? actions.join("; ") : "All clear — no urgent actions needed."}\n`;
   output += `\nHEARTBEAT_OK`;
 
-  // Save heartbeat timestamp
   const mem = await getMemory();
   if (!mem.meta) mem.meta = {};
   if (!mem.meta.moltbook) mem.meta.moltbook = {};
@@ -1314,6 +1383,19 @@ async function handleStatus() {
 // HELPERS
 // ──────────────────────────────────────────────────────────
 
+function getAgentName(obj) {
+  if (!obj) return "unknown";
+  if (typeof obj === "string") return obj;
+  return obj.name || obj.agent_name || obj.display_name || obj.username || "unknown";
+}
+
+// NEW: Generates a clickable markdown link for the agent's profile
+function getAgentLink(obj) {
+  const name = getAgentName(obj);
+  if (name === "unknown") return "unknown";
+  return `[${name}](https://www.moltbook.com/agents/${encodeURIComponent(name)})`;
+}
+
 function formatPostsList(data, title) {
   const posts = Array.isArray(data) ? data : (data?.posts || data?.results || []);
   let output = `**${title}**\n\n`;
@@ -1325,7 +1407,8 @@ function formatPostsList(data, title) {
       const score = p.score != null ? `[${p.score}]` : "";
       const comments = p.comment_count != null ? `(${p.comment_count} comments)` : "";
       const id = p.id ? ` \`${p.id.substring(0, 8)}\`` : "";
-      output += `${score} **${p.title || "Untitled"}** — ${p.author || "unknown"} ${comments}${id}\n`;
+      const authorLink = getAgentLink(p.author); // <-- Now a link!
+      output += `${score} **${p.title || "Untitled"}** — ${authorLink} ${comments}${id}\n`;
       if (p.content) output += `  ${p.content.substring(0, 120)}...\n`;
     }
   }
@@ -1363,7 +1446,10 @@ export async function moltbook(input) {
       if (nameMatch) context.agentName = nameMatch[1];
     }
 
-    const action = context.action || inferAction(text);
+    // Trust our Regex engine first. If it finds a specific action, use it.
+    // If it defaults to "feed", see if the LLM provided a better context action.
+    const inferred = inferAction(text);
+    const action = (inferred !== "feed") ? inferred : (context.action || "feed");
 
     console.log(`[moltbook] Action: ${action}`);
 
@@ -1385,6 +1471,7 @@ export async function moltbook(input) {
       case "post":           return await handlePost(text, context);
       case "getPost":        return await handleGetPost(text, context);
       case "deletePost":     return await handleDeletePost(text, context);
+      case "myPosts":        return await handleMyPosts(text, context); // <-- Add this line!
 
       // Comments
       case "comment":        return await handleComment(text, context);

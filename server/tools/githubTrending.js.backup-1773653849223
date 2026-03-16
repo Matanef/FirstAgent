@@ -27,15 +27,12 @@ export async function githubTrending(request) {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             });
             const data = await response.json();
-const repos = (data.items || []).slice(0, 10).map(repo => {
-    if (!repo) return null;
-    return {
-        name: repo.full_name,
-        url: repo.html_url,
-        description: repo.description,
-        stars: repo.stargazers_count
-    };
-}).filter(repo => repo !== null);
+            const repos = (data.items || []).slice(0, 10).map(repo => ({
+                name: repo.full_name,
+                url: repo.html_url,
+                description: repo.description,
+                stars: repo.stargazers_count
+            }));
 
             return {
                 tool: "githubTrending",
