@@ -1,62 +1,41 @@
 // server/tools/x.js
-// X (Twitter) tool — trends, tweet search, and sentiment analysis via agent-twitter-client
-// Uses local LLM for sentiment/summarization
+// X (Twitter) tool — trends, tweet search, and sentiment analysis
+// Uses the standalone TwitterClient (replaces broken agent-twitter-client library)
 
-import { Scraper, SearchMode } from "agent-twitter-client";
 import fs from "fs/promises";
-import { CONFIG } from "../utils/config.js";
+import path from "path";
+import { CONFIG, PROJECT_ROOT } from "../utils/config.js";
 import { llm } from "./llm.js";
-
-// Initialize the scraper
-const scraper = new Scraper();
-let isLoggedIn = false;
-const COOKIE_PATH = "./twitter_cookies.json";
+import { TwitterClient } from "../utils/twitter-client.js";
 
 // ============================================================
-// AUTHENTICATION (With Cookie Caching)
+// CLIENT INITIALIZATION (lazy — initialized on first use)
 // ============================================================
 
-async function ensureLogin() {
-  if (isLoggedIn) return true;
+const COOKIE_PATH = path.join(PROJECT_ROOT, "twitter_cookies.json");
+let client = null;
+let initPromise = null;
 
-  try {
-    // 1. Try to load saved cookies first (prevents account locks)
+async function ensureClient() {
+  if (client) return client;
+
+  // Avoid multiple concurrent init attempts
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
     try {
-      const cookieData = await fs.readFile(COOKIE_PATH, "utf8");
-      const cookies = JSON.parse(cookieData);
-      await scraper.setCookies(cookies);
-      isLoggedIn = await scraper.isLoggedIn();
-      if (isLoggedIn) {
-        console.log("🐦 [x] Logged in successfully using saved cookies.");
-        return true;
-      }
-    } catch (e) {
-      console.log("🐦 [x] No valid cookies found, logging in fresh...");
+      const tc = new TwitterClient({ cookiePath: COOKIE_PATH });
+      await tc.init();
+      client = tc;
+      return client;
+    } catch (err) {
+      console.error("🐦 [x] Client initialization failed:", err.message);
+      initPromise = null; // Allow retry
+      throw err;
     }
+  })();
 
-    // 2. If no cookies or expired, login with credentials
-    await scraper.login(
-      CONFIG.TWITTER_USERNAME,
-      CONFIG.TWITTER_PASSWORD,
-      CONFIG.TWITTER_EMAIL
-    );
-    
-    isLoggedIn = await scraper.isLoggedIn();
-    
-    // 3. Save the new cookies for next time
-    if (isLoggedIn) {
-      const newCookies = await scraper.getCookies();
-      await fs.writeFile(COOKIE_PATH, JSON.stringify(newCookies));
-      console.log("🐦 [x] Login successful! Cookies saved.");
-      return true;
-    }
-    return false;
-  } catch (err) {
-    console.error("🐦 [x] Login failed:", err.message);
-    // Clear stale cookies on failure to force fresh login next time
-    try { await fs.unlink(COOKIE_PATH); } catch {}
-    return false;
-  }
+  return initPromise;
 }
 
 // ============================================================
@@ -71,7 +50,6 @@ function detectXIntent(text) {
 }
 
 function extractSearchQuery(text) {
-  const lower = (text || "").toLowerCase();
   let query = text
     .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(tweets?|posts?|x\s+posts?)\s*(about|on|for|regarding|related\s+to)?\s*/gi, "")
     .replace(/\b(tweets?|posts?)\s+(about|on|for|regarding)\s*/gi, "")
@@ -89,23 +67,23 @@ function extractSearchQuery(text) {
  * Get trending topics from X
  */
 async function getTrends() {
-  await ensureLogin();
   try {
-    const trendsRaw = await scraper.getTrends();
-    
+    const tc = await ensureClient();
+    const trendsRaw = await tc.getTrends();
+
     const top10 = trendsRaw.slice(0, 10).map((t, i) => ({
       rank: i + 1,
-      name: t.name || t.trendName || "Unknown",
-      tweet_volume: t.tweetCount || null
+      name: t.name,
+      tweet_volume: t.tweetVolume || null,
     }));
 
     return {
       success: true,
       trends: top10,
-      location: "For You",
+      location: "Worldwide",
     };
   } catch (err) {
-    console.error(`[x] getTrends error:`, err.message);
+    console.error("[x] getTrends error:", err.message);
     return { success: false, error: err.message, trends: [] };
   }
 }
@@ -114,24 +92,19 @@ async function getTrends() {
  * Search tweets by query
  */
 async function searchTweets(query, count = 10) {
-  await ensureLogin();
   try {
-    // agent-twitter-client returns an async generator for searches
-    const tweetStream = scraper.searchTweets(query, count, SearchMode.Latest);
-    const tweets = [];
+    const tc = await ensureClient();
+    const rawTweets = await tc.search(query, count, "Latest");
 
-    for await (const tweet of tweetStream) {
-      tweets.push({
-        text: tweet.text || "",
-        author: tweet.username || "unknown",
-        author_name: tweet.name || "",
-        created_at: tweet.timeParsed || new Date(),
-        retweets: tweet.retweets || 0,
-        likes: tweet.likes || 0,
-        replies: tweet.replies || 0,
-      });
-      if (tweets.length >= count) break;
-    }
+    const tweets = rawTweets.map((t) => ({
+      text: t.text || "",
+      author: t.user?.username || t.user?.id || "unknown",
+      author_name: t.user?.name || "",
+      created_at: t.createdAt || new Date(),
+      retweets: t.retweets || 0,
+      likes: t.likes || 0,
+      replies: t.replies || 0,
+    }));
 
     return {
       success: true,
@@ -140,7 +113,7 @@ async function searchTweets(query, count = 10) {
       total: tweets.length,
     };
   } catch (err) {
-    console.error(`[x] searchTweets error:`, err.message);
+    console.error("[x] searchTweets error:", err.message);
     return { success: false, error: err.message, tweets: [] };
   }
 }
@@ -269,10 +242,17 @@ export async function x(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
 
-  if (!CONFIG.TWITTER_USERNAME || !CONFIG.TWITTER_PASSWORD) {
+  // Check if cookie file exists
+  let hasCookies = false;
+  try {
+    await fs.access(COOKIE_PATH);
+    hasCookies = true;
+  } catch {}
+
+  if (!hasCookies) {
     return {
       tool: "x", success: false, final: true,
-      data: { text: "❌ X tool is not configured. Please add TWITTER_USERNAME and TWITTER_PASSWORD to your .env file." },
+      data: { text: "❌ X tool is not configured. Please add twitter_cookies.json with auth_token, ct0, and twid cookies from your browser." },
     };
   }
 

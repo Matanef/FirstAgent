@@ -1,8 +1,8 @@
 # Agent Tool Guide — Complete Reference
 
-> **43 registered tools** across 10 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning. Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
+> **43 registered tools** across 10 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning + conversational partner mode. Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
 >
-> _Last updated: March 2026 — Sprint 8 (X/Twitter tool with trends+search+sentiment, scheduler now executes tasks, two-way WhatsApp bot loop, compound X→email/WhatsApp routing)_
+> _Last updated: March 2026 — Sprint 10 (standalone twitter-client.js replacing broken library, conversational partner mode with isPersonalConversation(), heartbeat auto-publish, moltbook rich HTML, selfEvolve guardrails, applyPatch categorized backups)_
 
 ---
 
@@ -35,7 +35,9 @@
 
 The LLM is the agent's brain. It handles all conversational queries, creative writing, explanations, translations, and anything that doesn't need a specialized tool. It has access to your full conversation history and user profile.
 
-**Triggered by:** Greetings, open-ended questions, creative tasks, text manipulation, anything not matched by other tools.
+**Triggered by:** Greetings, open-ended questions, creative tasks, text manipulation, personal/emotional messages, anything not matched by other tools.
+
+**Conversational Partner Mode (Sprint 10):** When the planner detects a personal, emotional, or reflective message (first-person pronouns + emotional/reflective signals), it activates enriched profile context and a "supportive collaborator" directive. This makes the agent feel like a partner who knows you, not just a tool dispatcher. False-positive guards prevent tool requests like "I want to search for X" from triggering conversational mode.
 
 **Example prompts:**
 1. `"Hey, how are you doing today?"` — Casual conversation
@@ -47,6 +49,10 @@ The LLM is the agent's brain. It handles all conversational queries, creative wr
 7. `"What are the pros and cons of React vs Vue?"` — Comparison/analysis
 8. `"What can you do? List all your capabilities"` — Meta-conversation (agent explains itself)
 9. `"Help me write a cover letter for a software engineer position"` — Guided writing
+10. `"I've been feeling burned out lately and wondering if I should switch careers"` — Personal/emotional (activates conversational partner mode)
+11. `"What do you think about the current state of AI development?"` — Opinion-seeking (activates conversational mode)
+12. `"Based on what we've talked about, what would be a good side project for me?"` — Context-aware personal advice (uses enriched profile + conversation history)
+13. `"I'm struggling with motivation on this project, any thoughts?"` — Reflective/emotional (partner mode with empathy)
 
 ---
 
@@ -59,13 +65,16 @@ Stores and retrieves persistent user information: name, email, location, timezon
 **Example prompts:**
 1. `"Remember my name is Alex"` — Store name
 2. `"Remember my email is alex@example.com"` — Store email
-3. `"Remember my location is Tel Aviv"` — Store location (used by weather)
+3. `"Remember my location is Tel Aviv"` — Store location (used by weather, conversational context)
 4. `"Remember that my timezone is UTC+3"` — Store timezone
 5. `"Remember John's email is john@company.com"` — Store contact
 6. `"What do you know about me?"` — Retrieve full profile
 7. `"Who am I?"` — Quick profile recall
 8. `"Forget my location"` — Remove stored location
 9. `"Remember I prefer a professional and concise tone"` — Set tone preference
+10. `"Remember that I'm a full-stack developer working on a React + Node.js project"` — Store occupation/background (used in conversational partner mode)
+11. `"Remember my goals are to learn Rust and build a CLI tool this quarter"` — Store goals (enriches conversational responses)
+12. `"Remember that I'm interested in AI, distributed systems, and open source"` — Store interests (personalizes advice and recommendations)
 
 ---
 
@@ -133,6 +142,9 @@ Searches **6 sources in parallel**: Wikipedia, Google (SerpAPI), Yandex, DuckDuc
 6. `"Tell me about quantum computing"` — Knowledge query (LLM synthesis)
 7. `"How does photosynthesis work?"` — General knowledge (auto-routed, not sent to calculator)
 8. `"What are the system requirements for Windows 11?"` — Product info
+9. `"Find me a comparison of PostgreSQL vs MongoDB for a real-time analytics dashboard handling 10k events per second"` — Deep technical comparison with specific use case
+10. `"Search for the latest research on large language model fine-tuning techniques published in the last 6 months"` — Academic/recent research
+11. `"Look up what happened at the last G20 summit and which countries signed the AI governance agreement"` — Current events with specifics
 
 ---
 
@@ -151,26 +163,49 @@ Fetches from **19+ general RSS feeds** (Ynet, Kan, N12, JPost, Times of Israel, 
 6. `"Recent news from Israel"` — Regional news (Israeli sources prioritized)
 7. `"What's happening in the world of sports?"` — Sports news via RSS (not sports tool)
 8. `"Give me a news summary for today"` — General daily briefing
+9. `"Get me the latest tech and science news, I want to know what breakthroughs happened this week"` — Multi-category with natural language
+10. `"Show me the top headlines from all sources about the semiconductor industry and chip manufacturing"` — Specific industry topic across all feeds
+11. `"What are the most important world events happening right now? Give me a broad overview from multiple perspectives"` — Multi-source synthesis
 
 ---
 
 ### `x` — X (Twitter) Trends, Tweet Search & Sentiment Analysis
 
-Fetches trending topics, searches tweets, and performs LLM-powered sentiment analysis using the `agent-twitter-client` library (direct scraper, no API key needed — just a Twitter/X account). Authenticates via username/password with cookie caching to prevent rate limits. Results include engagement metrics (likes, retweets, replies).
+Fetches trending topics, searches tweets, and performs LLM-powered sentiment analysis using a **standalone `TwitterClient`** (`server/utils/twitter-client.js`) that replaced the broken `agent-twitter-client` library in Sprint 10. Authenticates via browser cookies (auth_token, ct0, twid) — no username/password needed. Dynamically extracts GraphQL operation hashes from Twitter's live JS bundle (cached 4 hours) to stay current with API changes. Uses POST fallback for SearchTimeline (GET returns 404). Results include engagement metrics (likes, retweets, replies, views).
 
-**Requires:** `TWITTER_USERNAME`, `TWITTER_PASSWORD`, and `TWITTER_EMAIL` in `.env` (a regular X/Twitter account)
+**Requires:** `twitter_cookies.json` in project root with `auth_token`, `ct0`, and `twid` cookies exported from your browser (use a browser extension like EditThisCookie or Cookie-Editor).
 
-**Authentication:** On first use, logs in with credentials and saves cookies to `twitter_cookies.json`. Subsequent calls reuse saved cookies. If cookies expire, auto-refreshes with a fresh login.
+**Authentication:** Cookie-based auth — no login flow needed. The standalone client injects proper headers (`x-csrf-token`, `authorization: Bearer`, `x-twitter-auth-type`, `user-agent`) on every request. If cookies expire, export fresh cookies from your browser.
 
-**Triggered by:** "tweet", "twitter", "trending on X", "X trends", "tweets about", "top tweets"
+**Architecture (Sprint 10):**
+```
+twitter-client.js (standalone, ~600 lines)
+├── fetchGraphQLHashes() → extracts current hashes from twitter.com's main.js bundle
+├── init() → loads cookies + fetches hashes (lazy, one-time)
+├── apiGet(path) → REST API calls (/1.1/trends/place.json)
+├── graphql(op, vars, features) → GraphQL with GET→POST fallback
+├── search(query, count, product) → SearchTimeline (POST)
+├── getProfile(username) → UserByScreenName
+├── getTweet(id) → TweetDetail
+├── getUserTweets(userId, count) → UserTweets
+├── getTrends() → /1.1/trends/place.json?id=1
+├── _parseTweetEntry(entry) → normalizes tweet from various response formats
+└── _parseUser(result) → handles 2025+ format (name/screen_name in result.core)
+```
+
+**Triggered by:** "tweet", "twitter", "trending on X", "X trends", "tweets about", "top tweets", "x posts"
 
 **Example prompts:**
-1. `"What's trending on X?"` — Current trending topics ("For You" feed)
-2. `"Search tweets about artificial intelligence"` — Keyword tweet search with engagement metrics (uses `SearchMode.Latest`)
-3. `"Analyze tweet sentiment about climate change"` — Search + LLM sentiment analysis (JSON mode) with themes
-4. `"Get X trends and email me the results"` — Compound: X trends → email (multi-step)
-5. `"Get twitter trends and whatsapp to 0587426393"` — Compound: X trends → WhatsApp (multi-step)
-6. `"Schedule X trends check every morning"` — Recurring daily trend reports via scheduler
+1. `"What's trending on X?"` — Current worldwide trending topics with tweet volumes
+2. `"Search tweets about artificial intelligence"` — Keyword tweet search with engagement metrics (likes, retweets, replies)
+3. `"Find the latest tweets about the JavaScript conference and show me the top discussions"` — Latest tweet search with engagement sorting
+4. `"Analyze tweet sentiment about climate change"` — Search + LLM sentiment analysis (JSON mode) with themes and overall mood
+5. `"What are people on Twitter saying about the new iPhone? Give me the sentiment breakdown"` — Full sentiment analysis with themes
+6. `"Get X trends and email me the results"` — Compound: X trends → email (multi-step)
+7. `"Get twitter trends and whatsapp to 0587426393"` — Compound: X trends → WhatsApp (multi-step)
+8. `"Schedule X trends check every morning"` — Recurring daily trend reports via scheduler
+9. `"Search for tweets about Bitcoin from the last hour and tell me if people are bullish or bearish"` — Search + analyze compound
+10. `"What are the trending topics in Israel on X right now?"` — Country-specific trends (supports Israel, US, UK)
 
 ---
 
@@ -191,6 +226,8 @@ Uses OpenWeather API. Supports city names, "here" (geolocation fallback from sav
 6. `"Is it snowing in Denver?"` — Condition check
 7. `"Weather"` — Uses saved location from memory (if set)
 8. `"How humid is it in Miami?"` — Humidity query
+9. `"Should I bring an umbrella today? I'm heading to the office in Tel Aviv and want to know if rain is expected"` — Natural language with contextual city extraction
+10. `"What's the weather like in both London and Paris this weekend? I'm trying to decide where to go for a short trip"` — Comparison intent (routes to weather, user gets forecast to decide)
 
 ---
 
@@ -217,6 +254,9 @@ Full email tool: draft & send emails (two-stage confirmation), browse inbox, rea
 8. `"Show my unread emails from last week"` — Search emails by date/status
 9. `"Read email #3"` — View full email content
 10. `"Go over my emails and find attachments named 'bills'"` — Search with attachment filter
+11. `"Draft a professional follow-up email to the recruiter at Google thanking them for the interview and reaffirming my interest in the role"` — Complex draft with tone + context
+12. `"Check my inbox, find any emails from Amazon about shipping, and summarize what's been delivered and what's still pending"` — Browse + search + summarize chain
+13. `"Send an email to efratimatan@gmail.com with a summary of today's top tech news and trending GitHub repos"` — Compound: news + githubTrending → email (3-step)
 
 ---
 
@@ -377,11 +417,16 @@ Scans directories for duplicate files using SHA256 hashing (two-stage: chunk the
 
 ---
 
-### `applyPatch` — Apply Code Patches
+### `applyPatch` — Apply Code Patches (Full Rewrite Engine)
 
-Applies code patches/diffs to files. Used in multi-step improvement flows after review.
+Applies comprehensive code improvements to files using LLM-powered full-rewrite generation. Creates **categorized backups** in `server/tools/backups/[tool_name]/` with timestamps (Sprint 10). Includes **syntax validation** before applying — writes to a staging file, runs `node --check`, and only swaps if valid. Used for multi-change requests where 3+ distinct modifications are needed (planner auto-routes these here instead of codeTransform).
 
-**Triggered by:** Part of improvement pipeline (review -> applyPatch), or "apply patch", "patch file"
+**Triggered by:** "apply patch", "full rewrite", "rewrite entire", or automatically by planner when detecting 3+ action verbs targeting a file
+
+**Example prompts:**
+1. `"Apply patch to server/tools/news.js"` — LLM-powered full rewrite with best practices
+2. `"Rewrite the entire search tool with better error handling, caching, and retry logic"` — Multi-change rewrite (auto-routed by planner)
+3. `"Refactor, add JSDoc, and fix the randomizer bug in server/tools/news.js"` — 3 changes → planner routes to applyPatch
 
 ---
 
@@ -579,6 +624,14 @@ Supports dry-run mode, scheduling, and improvement history. Each improvement is 
 6. `"Show evolution history"` — View past improvements from evolution-log.json
 7. `"Self evolve history"` — Same as above
 8. `"Schedule self evolve every 2 hours"` — Recurring autonomous improvement (via scheduler)
+9. `"Look at trending GitHub repos for AI agents, find patterns we can learn from, and evolve your planner and executor to be smarter"` — Targeted evolution with specific focus areas
+10. `"Evolve yourself but focus specifically on improving error handling and edge cases in the tools that have failed recently"` — Focused evolution with failure analysis
+
+**Guardrails (Sprint 9):**
+- Max 3 files modified per cycle (prevents runaway changes)
+- Syntax check before applying any patch
+- Git staging for easy rollback
+- Improvement logging to `improvements.jsonl` with timestamps and commit hashes
 
 **Data files:**
 - `server/data/evolution-log.json` — Full history of evolution runs with applied improvements
@@ -615,6 +668,8 @@ Fetches real-time stock prices from Alpha Vantage, Finnhub, and FMP. Includes a 
 4. `"Compare Apple and Google stock prices"` — Multi-stock
 5. `"How did the S&P 500 perform today?"` — Market index
 6. `"Show me NVDA stock data"` — Nvidia by ticker
+7. `"How are the major tech stocks performing today? Check Apple, Google, Microsoft, and Nvidia"` — Multi-stock comparison
+8. `"Is Tesla stock up or down this week? And what's the overall market sentiment around EV companies right now?"` — Stock check + contextual analysis
 
 ---
 
@@ -683,6 +738,8 @@ Full sports tool using API-Football v3. Supports: upcoming fixtures, past result
 7. `"Today's Premier League matches for Liverpool"` — Team + league filtered
 8. `"Bundesliga table"` — Full standings for German league
 9. `"Show me Man City's next games"` — Alias resolved to Manchester City
+10. `"Give me a complete breakdown of the Premier League — standings, top scorers, and upcoming fixtures for this weekend"` — Multi-aspect league overview
+11. `"Who won the Champions League match between Real Madrid and Bayern Munich last night? What was the score and who scored?"` — Specific match result with details
 
 ---
 
@@ -785,10 +842,16 @@ Complete integration with Moltbook, the social network for AI agents. Uses the R
 #### Heartbeat (Autonomous Routine)
 36. `"Run moltbook heartbeat"` — Full 3-tier autonomous check-in:
     - **Tier 1 (Critical):** Dashboard, unread notifications, pending DM requests, announcements
-    - **Tier 2 (Engagement):** Browse hot feed, display top posts with scores & comment counts
+    - **Tier 2 (Engagement):** Browse hot feed, display top posts with scores & comment counts, **auto-publish original post** (generates fresh content via LLM based on trending topics, skipped if rate-limited)
     - **Tier 3 (Status):** Own profile stats (karma, post count), rate limit summary
     - Returns `HEARTBEAT_OK` with action items (e.g., "3 DM requests pending")
     - Saves heartbeat timestamp to memory for scheduling
+    - **Auto-publish (Sprint 9):** The heartbeat now generates and posts an original thought piece inspired by trending topics, making your agent an active community participant
+
+#### Complex Moltbook Workflows
+37. `"Run moltbook heartbeat, then check if anyone replied to my posts, and DM the top commenter saying thanks"` — Multi-step engagement workflow
+38. `"Read the top trending post on moltbook, give me your honest opinion about it, and if it's interesting leave a thoughtful comment"` — Read + opinion + conditional comment flow
+39. `"Search moltbook for posts about autonomous agents, analyze the sentiment, and post a response sharing our perspective"` — Search + analyze + create flow
 
 ---
 
@@ -898,7 +961,7 @@ Tools like weather, YouTube, and calculator show both their visual widget AND th
 | `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` | whatsapp | For WhatsApp |
 | `WHATSAPP_VERIFY_TOKEN` | whatsapp webhook | For two-way bot |
 | `WHATSAPP_BOT_NUMBER` | whatsapp webhook | Optional (loop guard) |
-| `TWITTER_USERNAME` + `TWITTER_PASSWORD` + `TWITTER_EMAIL` | x (Twitter) | For X/Twitter |
+| `twitter_cookies.json` (file, not env var) | x (Twitter) — export `auth_token`, `ct0`, `twid` from browser | For X/Twitter |
 | `MOLTBOOK_API_KEY` | moltbook (auto-saved to `.config/moltbook/credentials.json` on registration) | For Moltbook |
 
 ### Generating a Credential Master Key
@@ -916,9 +979,11 @@ CREDENTIAL_MASTER_KEY=<your-generated-key-here>
 
 ## How the Agent Routes Your Messages
 
-The planner uses a **5-layer routing pipeline** to map natural language to tools:
+The planner uses a **6-layer routing pipeline** to map natural language to tools:
 
-1. **Certainty Layer** (deterministic, instant) — 45+ pattern-matching branches for keywords, file paths, URLs, tool-specific phrases. ~90% of single-intent messages are caught here. Each branch includes a **compound intent guard** (`hasCompoundIntent()`) that detects multi-tool queries and lets them pass through to the decomposition layers. Includes collision guards:
+1. **Personal Conversation Detection** (deterministic, instant) — Detects first-person emotional/reflective messages and routes to LLM with enriched profile context (conversational partner mode). Uses 5 guards to prevent false positives: tool-intent words, file paths, URLs, short commands, and opinion-about-tool-topic detection.
+
+2. **Certainty Layer** (deterministic, instant) — 45+ pattern-matching branches for keywords, file paths, URLs, tool-specific phrases. ~90% of single-intent messages are caught here. Each branch includes a **compound intent guard** (`hasCompoundIntent()`) that detects multi-tool queries and lets them pass through to the decomposition layers. Includes collision guards:
    - Calendar guard prevents "meeting with team" from routing to sports
    - Tasks guard prevents task keywords from routing to GitHub
    - General knowledge guard routes "what is X" to search instead of calculator
@@ -926,18 +991,18 @@ The planner uses a **5-layer routing pipeline** to map natural language to tools
    - Finance guard with company name → ticker resolution
    - **Compound intent guard** on 9 branches (email override, news, fileWrite, review, weather, finance, sports, file_path, email) prevents greedy single-tool routing when the query contains multiple intents
 
-2. **Hardcoded Compound Patterns** (deterministic, multi-step) — Regex patterns that detect known 2-3 step combinations and return multi-step arrays:
+3. **Hardcoded Compound Patterns** (deterministic, multi-step) — Regex patterns that detect known 2-3 step combinations and return multi-step arrays:
    - **Search + Email**: `"search for X and email me the results"` → [search → email]
    - **Review + FileWrite**: `"review planner.js and create an improved version"` → [review → fileWrite]
    - **Content + Email**: `"send an email with the summary of the news"` → [news → email]
    - **Email-me-the-X**: `"email me the weather"` → [weather → email]
    - **Generic chains**: `"do X, then Y, then Z"` → detected via `inferToolFromText()`
 
-3. **LLM Sequential Logic Engine** (AI-powered, 1-5 steps) — For complex queries not caught by hardcoded patterns. The LLM decomposes the query into a JSON array of `{"tool", "input", "reasoning"}` steps. This enables **3, 4, or 5-step plans** for truly complex queries. See [Multi-Step Intent Decomposition](#multi-step-intent-decomposition-sequential-logic-engine) for details.
+4. **LLM Sequential Logic Engine** (AI-powered, 1-5 steps) — For complex queries not caught by hardcoded patterns. The LLM decomposes the query into a JSON array of `{"tool", "input", "reasoning"}` steps. This enables **3, 4, or 5-step plans** for truly complex queries. See [Multi-Step Intent Decomposition](#multi-step-intent-decomposition-sequential-logic-engine) for details.
 
-4. **Single-Tool LLM Classifier** (safety net) — If the decomposer fails or returns unparseable JSON, falls back to the original single-tool classifier using few-shot examples. The LLM returns a single tool name, resolved via alias map and case-insensitive matching against all 42 tools.
+5. **Single-Tool LLM Classifier** (safety net) — If the decomposer fails or returns unparseable JSON, falls back to the original single-tool classifier using few-shot examples. The LLM returns a single tool name, resolved via alias map and case-insensitive matching against all 43 tools.
 
-5. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation).
+6. **Safe Fallback** — If no tool matches, the query goes to `llm` (general conversation).
 
 ### Compound Intent Detection (`hasCompoundIntent`)
 
@@ -1132,6 +1197,49 @@ Agent self-knowledge file containing:
 
 ---
 
+## New Capabilities (Sprint 10)
+
+### Standalone Twitter Client (`twitter-client.js`)
+The `agent-twitter-client@0.0.18` library was replaced with a standalone `TwitterClient` class (`server/utils/twitter-client.js`, ~600 lines) after discovering 6 independent breaking issues: revoked bearer token, deprecated `api.twitter.com` domain, cookie domain mismatches, missing `user-agent` header, SearchTimeline requiring POST, and `screen_name` migrated to `result.core`.
+
+**Key improvements:**
+- **Dynamic GraphQL hash extraction** — Fetches current hashes from Twitter's live JS bundle, cached 4 hours
+- **POST fallback** — Automatically retries GET→POST for endpoints that return 404
+- **2025+ response format** — Parses `name`/`screen_name` from `result.core` (not just `result.legacy`)
+- **Cookie-based auth** — No login flow needed, just export cookies from browser
+- **Zero dependencies** — Uses only native `fetch`, no third-party libraries
+
+### Conversational Partner Mode
+New `isPersonalConversation()` detection in planner.js routes personal, emotional, and reflective messages to LLM with enriched context. When active, executor.js injects:
+- Detailed user profile (occupation, interests, goals, background)
+- Recent conversation themes (last 10-15 messages)
+- Interaction statistics (total messages, first seen, conversation count)
+- Supportive collaborator directive (empathy-first, honest opinions, personalized responses)
+
+**5 false-positive guards** prevent tool requests from being misrouted:
+1. Tool-intent words ("search", "find", "get", "show") override personal detection
+2. File paths in message → code operation, not personal
+3. URLs in message → web request, not personal
+4. Short non-first-person messages → likely commands
+5. Opinion about tool topics → still routes to tool
+
+### Heartbeat Auto-Publish (Sprint 9)
+Moltbook heartbeat now generates and posts original content via LLM during Tier 2 engagement. Generates a thoughtful post inspired by trending topics, making your agent an active community participant rather than just a lurker.
+
+### SelfEvolve Guardrails (Sprint 9)
+- Maximum 3 files modified per evolution cycle
+- Syntax validation (`node --check`) before applying patches
+- Mandatory git staging for easy rollback
+- Structured logging to `improvements.jsonl`
+
+### applyPatch Categorized Backups (Sprint 10)
+Backups now organized as `server/tools/backups/[tool_name]/tool_name_2026-03-17T...js.backup` instead of flat `.backup` files. Includes syntax check via staging file + `node --check` before atomic swap.
+
+### Planner Multi-Change Routing (Sprint 10)
+When the planner detects 3+ distinct action verbs targeting a file (e.g., "refactor, add JSDoc, and fix the randomizer"), it routes to `applyPatch` instead of `codeTransform` for a comprehensive full rewrite.
+
+---
+
 ## New Capabilities (Sprint 7)
 
 ### Multi-Step Intent Decomposition
@@ -1287,6 +1395,10 @@ Weather tool falls back to your saved location from memory when no city is speci
 21. **Multi-step queries** — Phrase complex requests naturally: `"Get the latest news, summarize it, and save to a file"` → 3-step plan
 22. **Train of Thought** — Watch the agent's reasoning unfold in the collapsible Train of Thought panel
 23. **Complex chains** — The agent handles up to 5 steps: `"Check weather, get sports scores, search for AI news, summarize everything, and email me the results"`
+24. **Store your background** — `"Remember I'm a full-stack developer interested in AI and Rust"` — enriches conversational partner mode responses
+25. **Personal conversations** — Share thoughts, ask for opinions, discuss ideas — the agent activates partner mode automatically and remembers your context
+26. **X/Twitter cookies** — Export `auth_token`, `ct0`, and `twid` cookies from your browser to `twitter_cookies.json` for Twitter access (no username/password needed)
+27. **Multi-change refactoring** — Describe 3+ changes in one request: `"Refactor, add JSDoc, fix error handling in news.js"` — auto-routes to applyPatch for a comprehensive rewrite
 
 ---
 
@@ -1355,7 +1467,23 @@ These test the agent's ability to decompose longer sequences:
 These should be caught by certainty branches and stay as single steps:
 
 14. `"What's the weather in Paris?"` → [weather] (certainty branch)
-15. `"Hello, how are you?"` → [llm] (chat mode)
+15. `"Hello, how are you?"` → [llm] (conversational/greeting)
 16. `"What is 5 * 3?"` → [calculator] (certainty branch)
 17. `"Search for JavaScript tutorials"` → [search] (certainty branch)
 18. `"When does Arsenal play next?"` → [sports] (certainty branch)
+
+### Conversational Partner Mode Prompts (Should Route to LLM with Enriched Context)
+These should activate personal conversation detection and NOT trigger any tools:
+
+19. `"I've been thinking about switching from React to Svelte, what's your opinion?"` → [llm] (personal_conversation)
+20. `"I'm feeling overwhelmed with all the new AI tools coming out, how do you keep up?"` → [llm] (personal_conversation)
+21. `"Based on what we've talked about, what do you think would be a good side project for me?"` → [llm] (personal_conversation, uses full profile + conversation history)
+22. `"What do you think about the current state of open source?"` → [llm] (opinion-seeking, NOT search)
+
+### False-Positive Guard Tests (Should NOT Trigger Conversational Mode)
+These contain first-person pronouns but are tool requests:
+
+23. `"I want to search for the latest news about AI"` → [search] (tool intent overrides personal detection)
+24. `"I think the stock price of Tesla is interesting, show me"` → [finance] (tool intent)
+25. `"I feel like checking my emails"` → [email] (tool intent)
+26. `"Show me what I have on my calendar tomorrow"` → [calendar] (tool intent)

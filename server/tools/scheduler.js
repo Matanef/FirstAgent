@@ -183,16 +183,9 @@ function detectSchedulerIntent(text) {
 async function executeScheduledTask(schedule) {
   console.log(`\n⏰ [scheduler] Executing task: "${schedule.task}"`);
   try {
-    const { plan } = await import("../planner.js");
     const { executeAgent } = await import("../utils/coordinator.js");
 
-    const steps = await plan({ message: schedule.task });
-    if (!steps || steps.length === 0) {
-      console.warn(`[scheduler] No steps planned for: ${schedule.task}`);
-      return;
-    }
-
-    const results = await executeAgent(steps, schedule.task);
+    const results = await executeAgent({ message: schedule.task });
 
     // Update metadata safely
     try {

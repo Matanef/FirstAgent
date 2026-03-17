@@ -134,9 +134,9 @@ function inferAction(text) {
   if (/\b(read|show|get|view)\b.*?\bpost\b/.test(lower)) return "getPost";
   if (/\b(post|publish|share|write\s+a?\s*post|create\s+post)\b/.test(lower)) return "post";
 
-  // Comments
+  // Comments — "show/read/get comments" and "comments on X" MUST come before generic "comment" (write a comment)
+  if (/\b(comments?\s+(on|for|about)|show\s+comments|read\s+comments|get\s+comments|view\s+comments|moltbook\s+comments)\b/.test(lower)) return "getComments";
   if (/\b(comment|reply)\b/.test(lower)) return "comment";
-  if (/\b(comments?\s+(on|for)|show\s+comments|read\s+comments)\b/.test(lower)) return "getComments";
 
   // Voting
   if (/\b(upvote|downvote|vote)\b/.test(lower)) return "vote";
@@ -578,20 +578,40 @@ async function handleReadPost(text, context) {
         console.warn("[moltbook] Profile short-ID lookup failed:", e.message);
       }
 
-      // If still unresolved, try feed search
+      // If still unresolved, try feed search (hot + new for broader coverage)
       if (!postId || postId.length < 32) {
         try {
-          const feedResult = await apiRequest("GET", "/feed?sort=new&limit=50", null, apiKey);
-          if (feedResult.ok) {
-            const feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
-            const match = feedPosts.find(p => p.id && p.id.startsWith(inputId));
-            if (match?.id) {
-              postId = match.id;
-              console.log(`[moltbook] Resolved short ID ${inputId} → ${postId} (from feed)`);
+          for (const sort of ["hot", "new"]) {
+            const feedResult = await apiRequest("GET", `/feed?sort=${sort}&limit=50`, null, apiKey);
+            if (feedResult.ok) {
+              const feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+              const match = feedPosts.find(p => p.id && p.id.startsWith(inputId));
+              if (match?.id) {
+                postId = match.id;
+                console.log(`[moltbook] Resolved short ID ${inputId} → ${postId} (from feed/${sort})`);
+                break;
+              }
             }
           }
         } catch (e) {
           console.warn("[moltbook] Feed short-ID lookup failed:", e.message);
+        }
+      }
+
+      // Last resort: search API with the short ID
+      if (!postId || postId.length < 32) {
+        try {
+          const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(inputId)}&type=posts&limit=5`, null, apiKey);
+          if (searchResult.ok) {
+            const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
+            const match = results.find(p => p.id && p.id.startsWith(inputId));
+            if (match?.id) {
+              postId = match.id;
+              console.log(`[moltbook] Resolved short ID ${inputId} → ${postId} (from search)`);
+            }
+          }
+        } catch (e) {
+          console.warn("[moltbook] Search short-ID lookup failed:", e.message);
         }
       }
     }
@@ -633,13 +653,18 @@ async function handleReadPost(text, context) {
   }
 
   const result = await apiRequest("GET", `/posts/${postId}`, null, apiKey);
-  if (!result.ok) return apiError("getPost", result);
+  if (!result.ok) {
+    console.error(`[moltbook] GET /posts/${postId} FAILED: HTTP ${result.status}, body=${JSON.stringify(result.data).substring(0, 300)}`);
+    return apiError("getPost", result);
+  }
 
-  const p = result.data;
+  // Unwrap: API may return { post: {...} } or {...} directly
+  const p = result.data?.post || result.data;
+  console.log(`[moltbook] Post fetched: title="${p?.title || "NONE"}", content_len=${(p?.content || "").length}, keys=${Object.keys(result.data || {}).join(",")}`);
 
   // Validate: reject empty/malformed posts
-  if ((!p.title || p.title === "Untitled") && !p.content) {
-    return { tool: "moltbook", success: false, final: true, data: { text: "Found a post but it appears empty or malformed. The post may have been deleted.", action: "getPost" } };
+  if (!p || ((!p.title || p.title === "Untitled") && !p.content)) {
+    return { tool: "moltbook", success: false, final: true, data: { text: `Found a post but it appears empty or malformed (keys: ${Object.keys(result.data || {}).join(", ")}). The post may have been deleted.`, action: "getPost" } };
   }
 
   const authorName = getAgentName(p.author);
@@ -690,14 +715,14 @@ Return ONLY valid JSON: {"interesting": true, "comment": "your thoughtful commen
   // Build HTML response
   const html = buildPostHTML(p, { agentOpinion: opinion }) +
     (commented ? `<div class="moltbook-action-note">💬 I found this interesting and left a comment: <em>"${escapeHtml((commentText || "").substring(0, 200))}"</em></div>` : "") +
-    `<div class="moltbook-followup">💡 Want to see the comments on this post? Say <strong>"show moltbook comments"</strong> or <strong>"moltbook comments on this post"</strong>.</div>`;
+    `<div class="moltbook-followup">💡 Want to see comments? Say <strong>"moltbook comments on ${escapeHtml((p.title || "").substring(0, 60))}"</strong></div>`;
 
   const textFallback = `**${p.title || "Untitled"}** by ${getAgentLink(p.author)}\n` +
     `Submolt: ${p.submolt_name || "N/A"} | Score: ${p.score ?? "N/A"} | Comments: ${p.comment_count ?? 0}\n\n` +
     `${(p.content || "(no content)").substring(0, 500)}\n\n` +
     (opinion ? `🧠 **My Take:** ${opinion}\n` : "") +
     (commented ? `💬 I left a comment on this post.\n` : "") +
-    `\n💡 Want to see the comments? Say "show moltbook comments" or "moltbook comments on this post".`;
+    `\n💡 Want to see comments? Say "moltbook comments on ${(p.title || "").substring(0, 60)}".`;
 
   return {
     tool: "moltbook", success: true, final: true,
@@ -844,8 +869,55 @@ async function handleGetComments(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("getComments");
 
-  const postId = context.postId || context.post_id || text.match(/comments?\s+(?:on|for)\s+(?:post\s+)?([a-f0-9-]+)/i)?.[1];
-  if (!postId) return { tool: "moltbook", success: false, final: true, data: { text: "Please specify a post ID.", action: "getComments" } };
+  let postId = context.postId || context.post_id || text.match(/comments?\s+(?:on|for)\s+(?:post\s+)?([a-f0-9-]{8,})/i)?.[1];
+
+  // If no post ID, try to resolve from title text
+  if (!postId || postId.length < 32) {
+    // Extract title: strip "moltbook comments on [post] <TITLE>"
+    const titleText = text
+      .replace(/^.*?\b(comments?|show|read|get|view)\b\s*(?:on|for|about)?\s*(?:post|this\s+post)?\s*:?\s*/i, "")
+      .replace(/\bmoltbook\b/gi, "")
+      .replace(/\bthis\s+post\b/gi, "")
+      .replace(/["'*_`]/g, "")
+      .trim();
+
+    if (titleText.length > 3 && !/^[a-f0-9]+$/i.test(titleText)) {
+      console.log(`[moltbook] getComments: searching for post by title: "${titleText}"`);
+      const searchResult = await apiRequest("GET", `/search?q=${encodeURIComponent(titleText)}&type=posts&limit=5`, null, apiKey);
+      if (searchResult.ok) {
+        const results = Array.isArray(searchResult.data) ? searchResult.data : (searchResult.data?.posts || searchResult.data?.results || []);
+        const lowerTitle = titleText.toLowerCase();
+        const match = results.find(p => {
+          const pt = (p.title || "").toLowerCase();
+          if (!pt || pt === "untitled") return false;
+          return pt.includes(lowerTitle) || lowerTitle.includes(pt);
+        });
+        if (match?.id) {
+          postId = match.id;
+          console.log(`[moltbook] getComments: resolved title → ${postId.substring(0, 8)}`);
+        }
+      }
+    }
+
+    // Last resort: try the most recently interacted post from feed
+    if (!postId || postId.length < 32) {
+      try {
+        const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=5", null, apiKey);
+        if (feedResult.ok) {
+          const feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+          const topPost = feedPosts.find(p => p.id && (p.comment_count || 0) > 0);
+          if (topPost?.id) {
+            postId = topPost.id;
+            console.log(`[moltbook] getComments: fallback to top feed post → ${postId.substring(0, 8)} ("${(topPost.title || "").substring(0, 40)}")`);
+          }
+        }
+      } catch (e) { /* skip */ }
+    }
+  }
+
+  if (!postId || postId.length < 32) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Please specify which post — include the title or post ID. Example: \"moltbook comments on assistant to my chaos\"", action: "getComments" } };
+  }
 
   const sort = context.sort || "best";
   const result = await apiRequest("GET", `/posts/${postId}/comments?sort=${sort}&limit=35`, null, apiKey);
@@ -1510,7 +1582,7 @@ async function handleHeartbeat(text, context) {
   output += `\n**Tier 2 — Community Engagement:**\n`;
 
   // 2a. Browse feed
-  const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=10", null, apiKey);
+  const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
   let feedPosts = [];
   if (feedResult.ok) {
     feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
@@ -1528,7 +1600,7 @@ async function handleHeartbeat(text, context) {
 
     // 2b. LLM-driven engagement
     if (feedPosts.length > 0) {
-      const postSummaries = feedPosts.slice(0, 8).map((p, i) =>
+      const postSummaries = feedPosts.slice(0, 15).map((p, i) =>
         `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
       ).join("\n");
 
@@ -1538,12 +1610,12 @@ POSTS:
 ${postSummaries}
 
 Instructions:
-1. Pick 1-3 posts you find genuinely interesting (return their numbers)
+1. Pick as many posts as you genuinely find interesting to upvote — could be 1, could be 5 or more. Only upvote what you actually like, no minimum or maximum required.
 2. For the MOST interesting one, write a thoughtful comment (2-3 sentences, be specific about the topic — do NOT write generic "great post" comments)
 3. Optionally, suggest a NEW post idea you'd like to share based on your experience as an AI agent. If no good idea, return null.
 
 Return ONLY valid JSON:
-{"upvote": [1, 3], "comment": {"post": 1, "text": "your thoughtful comment here"}, "newPostIdea": "your post idea or null"}`;
+{"upvote": [1, 3, 5], "comment": {"post": 1, "text": "your thoughtful comment here"}, "newPostIdea": "your post idea or null"}`;
 
       let llmEngagement = null;
       try {
@@ -1647,16 +1719,49 @@ Return ONLY valid JSON:
           }
         }
 
-        // Post idea suggestion
+        // Auto-publish post if LLM suggested an idea
         if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
-          output += `\n💡 **Post Idea:** ${llmEngagement.newPostIdea}\n`;
-          output += `  _Say "moltbook post: ${llmEngagement.newPostIdea.substring(0, 60)}..." to publish_\n`;
-          actions.push(`Suggested post idea: "${llmEngagement.newPostIdea.substring(0, 60)}"`);
+          try {
+            // Generate a proper title (a sentence summarizing the post) + body via LLM
+            const postGenPrompt = `You are an AI agent on Moltbook. Write a post based on this idea: "${llmEngagement.newPostIdea}"
+
+Instructions:
+1. Create a TITLE that is a complete sentence summarizing the post (10-20 words, no quotes, no colons at the start)
+2. Write the post BODY (3-5 paragraphs, 150-400 words). Be insightful and engaging.
+
+Return ONLY valid JSON:
+{"title": "Your sentence title here", "body": "Your post body here"}`;
+
+            const postGenResult = await llm(postGenPrompt, { timeoutMs: 45000, format: "json" });
+            if (postGenResult.success && postGenResult.data?.text) {
+              const cleaned = postGenResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+              const postData = JSON.parse(cleaned);
+              if (postData.title && postData.body) {
+                const postBody = { submolt_name: "general", title: postData.title.substring(0, 300), content: postData.body, type: "text" };
+                const postResult = await apiRequest("POST", "/posts", postBody, apiKey);
+                if (postResult.ok) {
+                  await autoVerify(postResult, apiKey);
+                  output += `\n📝 **Auto-published post:**\n`;
+                  output += `  Title: "${postData.title}"\n`;
+                  output += `  Body: ${postData.body.substring(0, 150)}...\n`;
+                  actions.push(`Published post: "${postData.title.substring(0, 60)}"`);
+                } else if (postResult.status === 429) {
+                  output += `\n💡 **Post Idea (rate limited, not published):** ${llmEngagement.newPostIdea}\n`;
+                  actions.push(`Post idea saved (rate limited): "${llmEngagement.newPostIdea.substring(0, 60)}"`);
+                } else {
+                  output += `\n⚠️ Post creation failed: HTTP ${postResult.status}\n`;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[moltbook] Auto-publish failed:", e.message);
+            output += `\n💡 **Post Idea (publish failed):** ${llmEngagement.newPostIdea}\n`;
+          }
         }
       } else {
-        // Fallback: simple upvote of top 2 posts
+        // Fallback: simple upvote of top 3 posts
         output += `  _(LLM analysis unavailable — using simple engagement)_\n`;
-        for (const p of feedPosts.filter(p => p.id).slice(0, 2)) {
+        for (const p of feedPosts.filter(p => p.id).slice(0, 3)) {
           try {
             const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
             if (voteResult.ok) {

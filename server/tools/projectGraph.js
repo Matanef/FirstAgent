@@ -50,7 +50,9 @@ async function extractImports(filePath) {
   let content;
   try {
     content = await fs.readFile(filePath, "utf8");
-  } catch { return { imports: [], exports: [] }; }
+  } catch {
+    return { imports: [], exports: [], lineCount: 0 };
+  }
 
   const imports = [];
   const exports = [];

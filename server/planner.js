@@ -67,6 +67,56 @@ function isMathExpression(msg) {
   return /^\s*[\d\.\,\s()+\-*/^=%]+$/.test(trimmed);
 }
 
+// ============================================================
+// PERSONAL CONVERSATION DETECTION
+// Detects messages that are personal, emotional, reflective, or
+// opinion-seeking — NOT tool requests disguised with first-person pronouns.
+// ============================================================
+
+// Tool-intent keywords that OVERRIDE personal detection even if pronouns are present.
+// "I want to search for..." or "I need the weather" should NOT be personal.
+const TOOL_INTENT_WORDS = /\b(search|find|get|fetch|show|list|check|look\s+up|browse|scan|download|generate|create|write|send|compose|draft|schedule|remind|play|open|read|review|analyze|calculate|convert|compare|what(?:'?s| is| are)\s+(?:the|my)\s+(?:weather|stock|email|news|score|task|calendar|inbox|forecast|price|trend)|tell\s+me\s+(?:the|about\s+the)\s+(?:weather|news|stock|score))\b/i;
+
+// Genuine personal/emotional/reflective patterns — requires BOTH a first-person marker
+// AND an emotional/reflective signal to fire.
+const FIRST_PERSON = /\b(i|i'm|i've|i'll|i'd|my|me|myself)\b/i;
+const EMOTIONAL_REFLECTIVE = /\b(feel|feeling|felt|think|thinking|thought|believe|wonder|wondering|worried|worry|anxious|stressed|burned?\s*out|overwhelm|happy|sad|angry|frustrated|confused|excited|proud|afraid|scared|lonely|grateful|thankful|tired|exhausted|motivated|unmotivated|struggle|struggling|cope|coping|dealing\s+with|going\s+through|miss|missed|love|hate|enjoy|bored|curious|conflicted|uncertain|hopeful|hopeless|depressed|inspired|disappointed|nervous|nostalgic|regret|appreciate|vent|venting|opinion|advice|perspective|honest|honestly|what\s+do\s+you\s+think|should\s+i|do\s+you\s+think|how\s+do\s+you\s+feel|what\s+would\s+you|can\s+we\s+talk|let'?s\s+talk|chat\s+about|between\s+us)\b/i;
+
+// Short conversational messages that are inherently personal (no tool intent)
+const PURE_CONVERSATIONAL = /^(hey|hi|hello|good\s+morning|good\s+evening|good\s+night|how\s+are\s+you|what'?s\s+up|sup|yo|thanks?|thank\s+you|you'?re?\s+(?:the\s+best|awesome|great|amazing)|nice|cool|lol|haha|wow|oh\s+really|that'?s\s+(?:interesting|cool|great|nice|funny|sad|crazy)|never\s+mind|forget\s+it|ok(?:ay)?|got\s+it|i\s+see|makes?\s+sense|fair\s+enough|good\s+point|true|right)\s*[.!?]*$/i;
+
+function isPersonalConversation(lower, original) {
+  // Pure short greetings/acknowledgments → always personal
+  if (PURE_CONVERSATIONAL.test(original.trim())) return true;
+
+  // GUARD: If any tool-intent word is present, this is NOT personal
+  // "I want to search for crypto" → tool request, not personal
+  if (TOOL_INTENT_WORDS.test(lower)) return false;
+
+  // GUARD: If message contains a file path → likely a code/file operation
+  if (/[a-zA-Z]:[\\\/]|\.(?:js|ts|py|css|html|json|md|jsx|tsx)\b/i.test(original)) return false;
+
+  // GUARD: If message contains a URL → likely a web/tool request
+  if (/https?:\/\/|www\./i.test(original)) return false;
+
+  // GUARD: If message is very short (< 4 words) and doesn't match pure conversational
+  // it's probably a command like "news" or "weather"
+  const wordCount = original.trim().split(/\s+/).length;
+  if (wordCount <= 2 && !FIRST_PERSON.test(lower)) return false;
+
+  // Core detection: first-person + emotional/reflective signal
+  if (FIRST_PERSON.test(lower) && EMOTIONAL_REFLECTIVE.test(lower)) return true;
+
+  // Opinion-seeking without first-person: "what do you think about AI?"
+  if (/\b(what\s+do\s+you\s+think|what'?s\s+your\s+(opinion|take|view|thought)|do\s+you\s+(?:think|believe|agree)|how\s+do\s+you\s+feel)\b/i.test(lower)) {
+    // But NOT if it's about a tool topic: "what do you think about the stock price?"
+    if (TOOL_INTENT_WORDS.test(lower)) return false;
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Infer which tool to use from a step description (for compound query decomposition)
  */
@@ -508,6 +558,8 @@ CRITICAL RULES:
 3. If multiple actions are requested, order them logically (e.g., read first, then write).
 4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
 5. Use "x" for Twitter/X trends, tweet search, and tweet sentiment analysis. Do NOT use "twitter" — the tool name is "x".
+6. APPLYATCH BIAS: If the request contains a comprehensive list of suggestions, review findings, or 3+ structural changes targeting a single file, route to "applyPatch" (full rewrite) — NOT "codeTransform" (surgical patch). codeTransform is for single targeted edits only.
+7. SELFEVOLVE RESTRAINT: The "selfEvolve" tool must NOT be used for cosmetic changes or quota-driven busywork. Only route to selfEvolve when the user explicitly asks for autonomous evolution or self-improvement cycles.
 
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
@@ -718,6 +770,22 @@ if (
   }
 
   // ──────────────────────────────────────────────────────────
+  // PERSONAL / CONVERSATIONAL — route to LLM with enriched context
+  // Detects first-person emotional/reflective/opinion messages that
+  // are NOT tool requests in disguise. Must come BEFORE the certainty
+  // layer so "I'm feeling burned out" doesn't get routed to a tool.
+  // ──────────────────────────────────────────────────────────
+  if (isPersonalConversation(lower, trimmed)) {
+    console.log("[planner] conversational route: personal/emotional → llm (enriched)");
+    return [{
+      tool: "llm",
+      input: trimmed,
+      context: { conversational: true, enrichProfile: true },
+      reasoning: "personal_conversation"
+    }];
+  }
+
+  // ──────────────────────────────────────────────────────────
   // SINGLE-STEP: Certainty Layer (deterministic short commands)
   // ──────────────────────────────────────────────────────────
 
@@ -849,13 +917,13 @@ if (
     else if (/\b(update\s+profile|change\s+description|edit\s+profile)\b/i.test(lower)) context.action = "updateProfile";
     else if (/\b(view\s+profile|profile\s+of|who\s+is|agent\s+profile)\b/i.test(lower)) context.action = "viewProfile";
     else if (/\b(my\s+(\w+\s+)?profile|my\s+account|show\s+profile)\b/i.test(lower)) context.action = "profile";
+    // Comments — MUST come before "post" because "comments on this post" contains "post"
+    else if (/\b(comments?\s+(on|for|about)|show\s+comments|read\s+comments|get\s+comments|view\s+comments|moltbook\s+comments)\b/i.test(lower)) context.action = "getComments";
+    else if (/\b(comment|reply)\b/i.test(lower) && !/\bpost\b/i.test(lower)) context.action = "comment";
     // Posts
     else if (/\b(delete\s+post|remove\s+post)\b/i.test(lower)) context.action = "deletePost";
     else if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/i.test(lower)) context.action = "getPost";
     else if (/\b(post|publish|share|write)\b/i.test(lower)) context.action = "post";
-    // Comments
-    else if (/\b(comments?\s+(on|for)|show\s+comments|read\s+comments)\b/i.test(lower)) context.action = "getComments";
-    else if (/\b(comment|reply)\b/i.test(lower)) context.action = "comment";
     // Voting
     else if (/\b(upvote|downvote|vote)\b/i.test(lower)) context.action = "vote";
     // Following
@@ -1030,11 +1098,13 @@ if (
   }
 
   // Code Transform — refactor, optimize, rewrite, improve code in a file
-  // GUARD: If the prompt contains "review", "suggest", or "examine", skip this and let codeReview handle it!
+  // GUARD: Skip if prompt contains "review/suggest", UNLESS it also contains a strong explicit edit verb.
+  const hasStrongEditVerb = /\b(modify|update|refactor|rewrite|codetransform)\b/i.test(lower);
+  
   if (
-    !/\b(review|suggest|examine|inspect)\b/i.test(lower) &&
+    (hasStrongEditVerb || !/\b(review|suggest|examine|inspect)\b/i.test(lower)) &&
     (/\b(codetransform)\b/i.test(lower) ||
-    (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up)\b/i.test(lower) &&
+    (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up|add)\b/i.test(lower) &&
     (hasExplicitFilePath(trimmed) || /\b(file|function|module|class|component)\b/i.test(lower) || /\.[a-z]{2,4}\b/i.test(lower))))
   ) {
     console.log("[planner] certainty branch: codeTransform (Surgical)");

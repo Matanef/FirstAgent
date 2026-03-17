@@ -1,7 +1,7 @@
 // server/tools/selfEvolve.js
 // Self-evolution workflow — autonomous self-improvement cycle
 // Uses Targeted Reflection: Reads memory rotation, conducts specific research, and applies surgical patches.
-
+import { validateWithGemini } from "./geminiValidator.js";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -366,6 +366,9 @@ DO NOT suggest calling external APIs (like REST endpoints) unless they already e
 DO NOT suggest example.js. 
 DO NOT suggest files from your imagination (like trading bots).
 DO NOT change synchronous functions into asynchronous functions (no 'async' keyword) unless specifically instructed.
+DO NOT convert explicit null/undefined checks (if (x !== null), if (x != null)) to optional chaining (x?.prop) if the result feeds into .map(), .filter(), .forEach(), or any array method — optional chaining returns undefined which will crash those methods.
+DO NOT make cosmetic-only changes (renaming variables, reordering imports, adding comments, swapping === for !==). Every improvement MUST fix a real bug, memory leak, logic flaw, or measurable performance issue.
+If you cannot find any meaningful bugs or structural flaws, return an EMPTY array []. Do NOT invent busywork.
 Focus ONLY on pure algorithmic, logic, or regex improvements.
 
 If the research insights don't apply to the files listed above, ignore the research and focus on the Code Review findings instead.
@@ -446,6 +449,33 @@ Format as JSON array using the FULL relative path from the project root:
     results.steps[results.steps.length - 1].summary = `Planned ${improvementPlan.length} improvements`;
     
     console.log(`✅ [selfEvolve] FINAL PLAN: ${improvementPlan.length} improvements passed all safety checks.`);
+
+    // GUARDRAIL: Abort if no meaningful improvements survived filtering
+    if (improvementPlan.length === 0) {
+      console.log("[selfEvolve] 🛑 No meaningful improvements found — aborting to prevent busywork.");
+      results.steps[results.steps.length - 1].status = "done";
+      results.steps[results.steps.length - 1].summary = "No meaningful improvements found";
+      results.aborted = true;
+      results.abortReason = "No real bugs, memory leaks, or structural flaws detected. All suggestions were either cosmetic, hallucinated, or already applied.";
+
+      // Save log and return early
+      const log = await loadEvolutionLog();
+      log.runs.push(results);
+      log.lastRun = results.timestamp;
+      if (log.runs.length > 50) log.runs = log.runs.slice(-50);
+      await saveEvolutionLog(log);
+
+      return {
+        tool: "selfEvolve",
+        success: true,
+        final: true,
+        data: {
+          preformatted: true,
+          text: `**Self-Evolution Cycle Complete**\n\n🛑 No meaningful improvements found.\nReviewed files: ${reviewedFilesList.map(f => path.basename(f)).join(", ")}\n\nAll code passed quality checks — no real bugs, memory leaks, or structural flaws detected.`,
+          results
+        }
+      };
+    }
   } catch (err) {
     results.steps[results.steps.length - 1].status = "failed";
     results.steps[results.steps.length - 1].error = err.message;
@@ -561,6 +591,49 @@ Format as JSON array using the FULL relative path from the project root:
                 console.error(`[selfEvolve] 🔴 Semantic logic error detected! Rolling back.`);
                 await fs.unlink(stagingPath).catch(() => {});
               }
+            }
+
+            // --- 🛡️ VERIFICATION 3: GEMINI CRITIC ---
+            if (validationPassed) {
+              try {
+                console.log(`[selfEvolve] 🤖 Calling Gemini Critic for logic validation...`);
+                const stagedContent = await fs.readFile(stagingPath, "utf8");
+                
+                const validation = await validateWithGemini({
+                  filename: path.basename(filePath),
+                  originalCode: fileContent,
+                  proposedCode: stagedContent,
+                  intent: improvement.description
+                });
+
+                if (!validation.valid) {
+                  validationPassed = false;
+                  lastError = `Gemini Critic Rejected Patch: ${validation.explanation}`;
+                  console.error(`[selfEvolve] 🔴 Gemini rejected the code: ${validation.explanation}`);
+                  
+                  // If Gemini was smart enough to provide the fix, let's use it for the next attempt!
+                  if (validation.fixedCode) {
+                    console.log(`[selfEvolve] 🪄 Gemini provided a fix! Overwriting staging file for next pass.`);
+                    await fs.writeFile(stagingPath, validation.fixedCode, "utf8");
+                    // We set lastError so the loop runs one more time just to ensure 
+                    // Gemini's code passes syntax and ESLint too!
+                    lastError = "Applying Gemini's fixed code for safety verification.";
+                  } else {
+                    await fs.unlink(stagingPath).catch(() => {});
+                  }
+                } else {
+                  console.log(`[selfEvolve] 🟢 Gemini Critic approved the patch!`);
+                }
+              } catch (geminiErr) {
+                console.warn(`[selfEvolve] ⚠️ Gemini validation skipped/failed (Check API key): ${geminiErr.message}`);
+                // We don't fail the whole script if the network drops, we just trust the linter
+              }
+            }
+            // ----------------------------------------
+
+            if (validationPassed) {
+              appliedSuccessfully = true;
+              break; // 🎯 Exit loop on success
             }
 
             if (validationPassed) {

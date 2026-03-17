@@ -17,7 +17,7 @@ import {
 /* ============================================================
    BUILD LLM CONTEXT
 ============================================================ */
-function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph }) {
+function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph, conversational }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
 
@@ -62,10 +62,61 @@ ${stateGraph && stateGraph.length > 0 ? JSON.stringify(stateGraph, null, 2) : "n
 
   const userName = profile?.self?.name || profile?.name || "User";
 
+  // ── CONVERSATIONAL PARTNER MODE ──
+  // When the planner detects a personal/emotional/reflective message, we inject
+  // deeper profile context and a supportive collaborator directive. This makes
+  // the agent feel like a partner who knows you, not just a tool dispatcher.
+  let conversationalDirective = "";
+  let enrichedProfileText = "";
+
+  if (conversational) {
+    // Build a rich personality context from profile fields
+    const p = profile || {};
+    const self = p.self || {};
+    const details = [];
+    if (self.name) details.push(`Name: ${self.name}`);
+    if (self.occupation || p.occupation) details.push(`Occupation: ${self.occupation || p.occupation}`);
+    if (self.interests || p.interests) details.push(`Interests: ${JSON.stringify(self.interests || p.interests)}`);
+    if (self.location || p.location || p.city) details.push(`Location: ${self.location || p.location || p.city}`);
+    if (self.timezone || p.timezone) details.push(`Timezone: ${self.timezone || p.timezone}`);
+    if (self.background || p.background) details.push(`Background: ${self.background || p.background}`);
+    if (self.goals || p.goals) details.push(`Goals: ${JSON.stringify(self.goals || p.goals)}`);
+    if (self.preferences || p.preferences) details.push(`Preferences: ${JSON.stringify(self.preferences || p.preferences)}`);
+
+    // Gather recent conversation themes (last 10 user messages)
+    const recentUserMsgs = allMessages
+      .filter(m => m.role === "user")
+      .slice(-10)
+      .map(m => m.content);
+    const recentContext = recentUserMsgs.length > 0
+      ? `Recent conversation topics: ${recentUserMsgs.map(m => m.substring(0, 80)).join(" | ")}`
+      : "";
+
+    enrichedProfileText = details.length > 0
+      ? `\nDETAILED USER PROFILE:\n${details.join("\n")}\n${recentContext}\n`
+      : "";
+
+    conversationalDirective = `
+CONVERSATIONAL PARTNER MODE:
+This is a personal, reflective, or emotional message — NOT a tool request.
+Your role right now is a thoughtful, supportive collaborator who:
+- Remembers past conversations and references them naturally when relevant
+- Acknowledges emotions genuinely without being sycophantic or over-the-top
+- Offers honest, balanced perspectives — not just agreement
+- Asks follow-up questions to understand better when appropriate
+- Draws on what you know about ${userName} to personalize your response
+- Keeps responses warm but concise (2-4 paragraphs max unless the topic warrants more)
+- Never redirects to tools unless the user asks for something specific
+- If the user shares something personal, prioritize empathy over problem-solving
+`;
+  }
+
   return `${awarenessContext}
 ${CONTEXT_ENRICHMENT}
+${enrichedProfileText}
 
 The user's name is ${userName}. Always address them as ${userName}.
+${conversationalDirective}
 
 User profile (long-term memory):
 ${JSON.stringify(profile || {}, null, 2)}
@@ -86,7 +137,7 @@ Now write the final answer. Be aware of full conversation context and your capab
 /* ============================================================
    RUN LLM WITH FULL MEMORY
 ============================================================ */
-async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk }) {
+async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk, conversational }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
@@ -99,7 +150,8 @@ async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, en
     capabilities,
     sentiment,
     entities,
-    stateGraph
+    stateGraph,
+    conversational
   });
 
   let text = "";
@@ -292,13 +344,18 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // DIRECT LLM
   if (tool === "llm") {
+    // Check if planner flagged this as a personal conversation
+    const msgContext = typeof message === "object" ? (message.context || {}) : {};
+    const isConversational = msgContext.conversational === true;
+
     const reply = await runLLMWithFullMemory({
       userMessage: getMessageText(message),
       conversationId,
       sentiment,
       entities,
       stateGraph,
-      onChunk
+      onChunk,
+      conversational: isConversational
     });
 
     return {

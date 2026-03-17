@@ -142,6 +142,54 @@ export async function getProfile() {
   return mem.profile || {};
 }
 
+/**
+ * Returns an enriched profile for conversational mode.
+ * Includes profile fields + recent conversation themes + interaction stats.
+ * Used by executor.js when planner detects personal/emotional messages.
+ */
+export async function getEnrichedProfile(conversationId) {
+  const mem = await getMemory();
+  const profile = mem.profile || {};
+  const conversations = mem.conversations || {};
+  const convo = conversationId ? (conversations[conversationId] || []) : [];
+
+  // Count total interactions across all conversations
+  let totalInteractions = 0;
+  let firstSeen = null;
+  for (const [, msgs] of Object.entries(conversations)) {
+    if (Array.isArray(msgs)) {
+      totalInteractions += msgs.filter(m => m.role === "user").length;
+      for (const m of msgs) {
+        if (m.timestamp && (!firstSeen || m.timestamp < firstSeen)) {
+          firstSeen = m.timestamp;
+        }
+      }
+    }
+  }
+
+  // Extract recent topics from last 15 user messages in current conversation
+  const recentTopics = convo
+    .filter(m => m.role === "user")
+    .slice(-15)
+    .map(m => (m.content || "").substring(0, 100));
+
+  // Gather durable memory entries (things the user explicitly asked to remember)
+  const durableMemories = (mem.durable || []).slice(-10);
+
+  return {
+    ...profile,
+    _enriched: true,
+    _stats: {
+      totalInteractions,
+      currentConversationLength: convo.length,
+      firstSeen: firstSeen || null,
+      conversationCount: Object.keys(conversations).length,
+    },
+    _recentTopics: recentTopics,
+    _durableMemories: durableMemories,
+  };
+}
+
 export async function setProfileField(fieldPath, value) {
   return await withMemoryLock(async () => {
     const mem = await getMemory();

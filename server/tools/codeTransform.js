@@ -5,8 +5,12 @@
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { llm } from "./llm.js";
+import { validateWithGemini } from "./geminiValidator.js";
 
+const execAsync = promisify(exec);
 const MAX_FILE_SIZE = 256 * 1024;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -362,7 +366,6 @@ async function generateTransformation(filePath, content, intent, instructions, o
   const ext = path.extname(filename).slice(1) || "js";
 
   // When called from selfEvolve, inject strict architectural rules
-// When called from selfEvolve, inject strict architectural rules
   const architectureRules = options.fromSelfEvolve ? `
 
 ARCHITECTURE RULES (MANDATORY — violations will be rejected):
@@ -408,6 +411,7 @@ RULES FOR SURGICAL EDITING (MANDATORY):
 2. KEEP SEARCH BLOCKS SHORT (2-4 lines).
 3. The SEARCH block must be an EXACT 100% match of the original code (indentation, spaces, semicolons).
 4. Focus ONLY on the specific lines requested in the instructions.${architectureRules}
+5. When targeting the beginning of a function, the SEARCH block MUST include the function declaration (e.g., export async function name(args) {).
 
 FORMAT:
 <<<<
@@ -673,7 +677,7 @@ export async function codeTransform(request) {
     };
   }
 
-// ── NEW UNIVERSAL PATH RESOLUTION ──
+  // ── NEW UNIVERSAL PATH RESOLUTION ──
   let targetPath = targetPathRaw;
   
   // Option B: Bare filename fallback (e.g., "emailUtils.js")
@@ -772,22 +776,21 @@ export async function codeTransform(request) {
         };
       }
 
-      const transformOpts = { 
-        fromSelfEvolve: isSelfEvolve,
-        previousError: context.previousError // 👈 Pass the error down
-      };
-
       // Preview mode: show what would change without applying
       if (
         context.preview ||
         /\b(preview|dry.?run|what\s+would|show\s+changes)\b/i.test(text)
       ) {
+        const previewOpts = { 
+          fromSelfEvolve: isSelfEvolve,
+          previousError: context.previousError
+        };
         const transformation = await generateTransformation(
           normalizedPath,
           content,
           intent,
           text,
-          transformOpts
+          previewOpts
         );
         if (transformation.success) {
           const diff = generateDiffSummary(content, transformation.newContent);
@@ -825,30 +828,143 @@ export async function codeTransform(request) {
         };
       }
 
-      // Apply transformation
-      const transformation = await generateTransformation(
-        normalizedPath,
-        content,
-        intent,
-        text,
-        transformOpts
-      );
-      if (!transformation.success || !transformation.newContent) {
+      // ==========================================
+      // 🛡️ AUTO-HEALING PIPELINE (Single File) 🛡️
+      // ==========================================
+      let attempts = 0;
+      const MAX_ATTEMPTS = 3;
+      let validationPassed = false;
+      let lastError = null;
+      let appliedSuccessfully = false;
+      let finalNewContent = null;
+      let finalSummary = "";
+      const stagingPath = `${normalizedPath}.staging.js`;
+
+      while (attempts < MAX_ATTEMPTS && !validationPassed) {
+        attempts++;
+        const transformOpts = { 
+          fromSelfEvolve: isSelfEvolve,
+          previousError: lastError || context.previousError // Feed the error back to the LLM
+        };
+
+        if (lastError) {
+          console.log(`[codeTransform] ♻️ Attempt ${attempts}/${MAX_ATTEMPTS} for ${path.basename(normalizedPath)} (Fixing error...)`);
+        }
+
+        const transformation = await generateTransformation(
+          normalizedPath,
+          content,
+          intent,
+          text,
+          transformOpts
+        );
+
+        if (!transformation.success || !transformation.newContent) {
+          lastError = transformation.error || "LLM could not generate transformation.";
+          console.warn(`[codeTransform] Attempt ${attempts} failed: ${lastError}`);
+          continue;
+        }
+
+        finalNewContent = transformation.newContent;
+        finalSummary = transformation.summary;
+        
+        // If called by selfEvolve, skip local validation (selfEvolve already does it)
+        // We just return the new content and let selfEvolve handle the atomic swap.
+        if (isSelfEvolve) {
+          validationPassed = true;
+          appliedSuccessfully = true;
+          break;
+        }
+
+        // Write to staging for validation
+        await fs.writeFile(stagingPath, finalNewContent, "utf8");
+        validationPassed = true; // Assume true until proven otherwise
+
+        // 1. Syntax Check (node --check)
+        try {
+          console.log(`[codeTransform] Running syntax verification...`);
+          await execAsync(`node --check "${stagingPath}"`);
+          console.log(`[codeTransform] 🟢 Syntax verification passed!`);
+        } catch (syntaxErr) {
+          validationPassed = false;
+          lastError = `Syntax Error: ${syntaxErr.message}`;
+          console.error(`[codeTransform] 🔴 Syntax error detected! Retrying...`);
+          continue;
+        }
+
+        // 2. Semantic Logic Check (ESLint)
+        if (validationPassed) {
+          try {
+            console.log(`[codeTransform] Running semantic logic check (ESLint)...`);
+            const lintCmd = `npx eslint@8 --no-eslintrc --env node --env es2024 --parser-options=ecmaVersion:latest --parser-options=sourceType:module --rule no-undef:error "${stagingPath}"`;
+            await execAsync(lintCmd);
+            console.log(`[codeTransform] 🟢 Semantic logic check passed!`);
+          } catch (lintErr) {
+            validationPassed = false;
+            const cleanError = (lintErr.stdout || lintErr.message || "").split('\n').filter(l => l.includes('error')).join(' | ');
+            lastError = `ESLint Error: ${cleanError}`;
+            console.error(`[codeTransform] 🔴 Semantic logic error detected! Retrying...`);
+            continue;
+          }
+        }
+
+        // 3. Logic Validation (Gemini Critic)
+        if (validationPassed) {
+          try {
+            console.log(`[codeTransform] 🤖 Calling Gemini Critic for logic validation...`);
+            const stagedContent = await fs.readFile(stagingPath, "utf8");
+            
+            const validation = await validateWithGemini({
+              filename: path.basename(normalizedPath),
+              originalCode: content,
+              proposedCode: stagedContent,
+              intent: text
+            });
+
+            if (!validation.valid) {
+              validationPassed = false;
+              lastError = `Gemini Critic Rejected Patch: ${validation.explanation}`;
+              console.error(`[codeTransform] 🔴 Gemini rejected the code: ${validation.explanation}`);
+              
+              if (validation.fixedCode) {
+                console.log(`[codeTransform] 🪄 Gemini provided a fix! Overwriting staging file for next pass.`);
+                await fs.writeFile(stagingPath, validation.fixedCode, "utf8");
+                lastError = "Applying Gemini's fixed code for safety verification.";
+              }
+              continue; // Run through the loop again to verify Gemini's fix
+            } else {
+              console.log(`[codeTransform] 🟢 Gemini Critic approved the patch!`);
+            }
+          } catch (geminiErr) {
+            console.warn(`[codeTransform] ⚠️ Gemini validation skipped/failed (Check API key): ${geminiErr.message}`);
+          }
+        }
+
+        // If we made it here, all validations passed!
+        if (validationPassed) {
+          appliedSuccessfully = true;
+          break; 
+        }
+      } // End of Retry Loop
+
+      // Cleanup staging file
+      await fs.unlink(stagingPath).catch(() => {});
+
+      if (!appliedSuccessfully) {
         return {
           tool: "codeTransform",
           success: false,
           final: true,
-          data: { message: transformation.error || "LLM could not generate transformation." }
+          data: { message: `Transformation failed after ${MAX_ATTEMPTS} attempts. Last error: ${lastError}` }
         };
       }
 
+      // Create backup and perform final write
       const backupPath = await createBackup(normalizedPath);
-      
-      // ── STAGING FIX: Respect outputPath if provided ──
       const outPath = context.outputPath || normalizedPath;
-      await fs.writeFile(outPath, transformation.newContent, "utf8");
+      await fs.writeFile(outPath, finalNewContent, "utf8");
       
-      const diff = generateDiffSummary(content, transformation.newContent);
+      const diff = generateDiffSummary(content, finalNewContent);
 
       return {
         tool: "codeTransform",
@@ -858,7 +974,7 @@ export async function codeTransform(request) {
           preformatted: true,
           text: `✅ **${intent.charAt(0).toUpperCase() + intent.slice(1)}: ${path.basename(
             outPath
-          )}**\n\n${transformation.summary}\n\n📊 Changes: +${
+          )}**\n\n${finalSummary}\n\n📊 Changes: +${
             diff.linesAdded
           } -${diff.linesRemoved} (~${diff.linesChanged} lines affected)\n💾 Backup: ${
             backupPath || "none"
