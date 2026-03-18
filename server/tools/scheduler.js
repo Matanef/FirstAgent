@@ -232,24 +232,26 @@ async function executeScheduledTask(schedule) {
 
         // Extract meaningful result text from the agent pipeline output
         let resultSummary = "";
+        // Helper: prefer .plain (WhatsApp-friendly, raw URLs) over .text (HTML)
+        // Only strip HTML as last resort when no plain version exists
+        const pickPlain = (r) => {
+          if (r?.data?.plain) return r.data.plain;
+          if (r?.output?.data?.plain) return r.output.data.plain;
+          if (r?.reply) return r.reply.replace(/<[^>]+>/g, "");
+          if (r?.data?.text) return r.data.text.replace(/<[^>]+>/g, "");
+          if (r?.output?.data?.text) return r.output.data.text.replace(/<[^>]+>/g, "");
+          return "";
+        };
         try {
           if (Array.isArray(results)) {
             // Multi-step results — collect text from each step
             resultSummary = results
-              .filter(r => r && (r.data?.text || r.output?.data?.text || r.reply))
-              .map(r => {
-                const text = r.reply || r.data?.text || r.output?.data?.text || "";
-                // Strip HTML tags for WhatsApp plaintext
-                return text.replace(/<[^>]+>/g, "").substring(0, 300);
-              })
+              .filter(r => r && (r.data?.plain || r.data?.text || r.output?.data?.plain || r.output?.data?.text || r.reply))
+              .map(r => pickPlain(r).substring(0, 500))
               .join("\n\n")
-              .substring(0, 1200);
-          } else if (results?.reply) {
-            resultSummary = results.reply.replace(/<[^>]+>/g, "").substring(0, 1200);
-          } else if (results?.data?.text) {
-            resultSummary = results.data.text.replace(/<[^>]+>/g, "").substring(0, 1200);
-          } else if (results?.output?.data?.text) {
-            resultSummary = results.output.data.text.replace(/<[^>]+>/g, "").substring(0, 1200);
+              .substring(0, 1500);
+          } else {
+            resultSummary = pickPlain(results).substring(0, 1500);
           }
         } catch (extractErr) {
           console.warn("[scheduler] Result extraction failed:", extractErr.message);
