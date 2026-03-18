@@ -1436,8 +1436,8 @@ if (
     else if (/\b(stock|finance|price)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sports?|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
     else if (/\b(youtube|video)\b/i.test(lower)) contentTool = "youtube";
+    else if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?)\b/i.test(lower)) contentTool = "x";
     else if (/\b(github|repo|trending)\b/i.test(lower)) contentTool = "github";
-    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(lower)) contentTool = "x";
     console.log(`[planner] Compound (whatsapp): ${contentTool} → whatsapp to ${phoneNum}`);
     return [
       { tool: contentTool, input: contentInput, context: {}, reasoning: "compound_whatsapp_step1" },
@@ -1462,10 +1462,10 @@ if (
     if (/\b(news|headlines?|articles?)\b/i.test(firstPart)) firstTool = "news";
     else if (/\b(weather|forecast|temperature)\b/i.test(firstPart)) firstTool = "weather";
     else if (/\b(stock|finance|price)\b/i.test(firstPart)) firstTool = "finance";
-    else if (/\b(github|repo|trending)\b/i.test(firstPart)) firstTool = "github";
     else if (/\b(youtube|video)\b/i.test(firstPart)) firstTool = "youtube";
     else if (/\b(sports?|score|match|game|league)\b/i.test(firstPart)) firstTool = "sports";
-    else if (/\b(tweet|twitter|x\s+trends?)\b/i.test(firstPart)) firstTool = "x";
+    else if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?)\b/i.test(firstPart)) firstTool = "x";
+    else if (/\b(github|repo|trending)\b/i.test(firstPart)) firstTool = "github";
     else if (/\b(refactor|rewrite|transform|optimize|improve|modify|codetransform)\b/i.test(firstPart)) firstTool = "codeTransform";
     else if (/\b(code\s+review|security|performance|quality|audit|smell)\b/i.test(firstPart)) firstTool = "codeReview";
     else if (/\b(review|analyze|inspect)\b/i.test(firstPart)) firstTool = "review"; // Fallback generic review
