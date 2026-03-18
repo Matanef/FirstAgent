@@ -39,6 +39,71 @@ async function ensureClient() {
 }
 
 // ============================================================
+// WOEID (Where On Earth ID) MAPPING FOR REGIONAL TRENDS
+// ============================================================
+
+const WOEID_MAP = {
+  // Global
+  global: 1, worldwide: 1, world: 1,
+  // Middle East
+  israel: 23424852, jerusalem: 1430027, "tel aviv": 1430024,
+  // Americas
+  us: 23424977, usa: 23424977, "united states": 23424977, america: 23424977,
+  canada: 23424775, brazil: 23424768, mexico: 23424900,
+  // Europe
+  uk: 23424975, "united kingdom": 23424975, britain: 23424975, england: 23424975,
+  france: 23424819, germany: 23424829, spain: 23424950, italy: 23424853,
+  netherlands: 23424909, sweden: 23424954, turkey: 23424969, russia: 23424936,
+  // Asia & Pacific
+  japan: 23424856, india: 23424848, australia: 23424748,
+  "south korea": 23424868, korea: 23424868, singapore: 23424948,
+  indonesia: 23424846, philippines: 23424934, thailand: 23424960,
+  // Africa
+  "south africa": 23424942, nigeria: 23424908, egypt: 23424802, kenya: 23424863,
+};
+
+const WOEID_DISPLAY = {
+  1: "Worldwide", 23424852: "Israel", 1430027: "Jerusalem", 1430024: "Tel Aviv",
+  23424977: "United States", 23424775: "Canada", 23424768: "Brazil", 23424900: "Mexico",
+  23424975: "United Kingdom", 23424819: "France", 23424829: "Germany",
+  23424950: "Spain", 23424853: "Italy", 23424909: "Netherlands",
+  23424954: "Sweden", 23424969: "Turkey", 23424936: "Russia",
+  23424856: "Japan", 23424848: "India", 23424748: "Australia",
+  23424868: "South Korea", 23424948: "Singapore", 23424846: "Indonesia",
+  23424934: "Philippines", 23424960: "Thailand",
+  23424942: "South Africa", 23424908: "Nigeria", 23424802: "Egypt", 23424863: "Kenya",
+};
+
+/**
+ * Extract region from text or context → { woeid, locationName }
+ */
+function extractRegion(text, contextCountry) {
+  const lower = (text || "").toLowerCase();
+
+  // Priority 1: context.country passed by planner
+  if (contextCountry) {
+    const key = contextCountry.toLowerCase();
+    if (WOEID_MAP[key]) return { woeid: WOEID_MAP[key], locationName: WOEID_DISPLAY[WOEID_MAP[key]] || contextCountry };
+  }
+
+  // Priority 2: "in <country>" pattern (most natural phrasing)
+  const inMatch = lower.match(/\bin\s+(?:the\s+)?([\w\s]+?)(?:\s*$|\s*[,.]|\s+and\b|\s+then\b)/);
+  if (inMatch) {
+    const place = inMatch[1].trim();
+    if (WOEID_MAP[place]) return { woeid: WOEID_MAP[place], locationName: WOEID_DISPLAY[WOEID_MAP[place]] || place };
+  }
+
+  // Priority 3: scan for any known country/city name in the text
+  for (const [key, woeid] of Object.entries(WOEID_MAP)) {
+    if (key.length > 2 && lower.includes(key)) {
+      return { woeid, locationName: WOEID_DISPLAY[woeid] || key };
+    }
+  }
+
+  return { woeid: 1, locationName: "Worldwide" };
+}
+
+// ============================================================
 // INTENT DETECTION
 // ============================================================
 
@@ -64,23 +129,28 @@ function extractSearchQuery(text) {
 // ============================================================
 
 /**
- * Get trending topics from X
+ * Get trending topics from X for a specific region
+ * @param {number} woeid - Where On Earth ID (default: 1 = Worldwide)
+ * @param {string} locationName - Display name for the location
  */
-async function getTrends() {
+async function getTrends(woeid = 1, locationName = "Worldwide") {
   try {
     const tc = await ensureClient();
-    const trendsRaw = await tc.getTrends();
+    const trendsRaw = await tc.getTrends(woeid);
 
     const top10 = trendsRaw.slice(0, 10).map((t, i) => ({
       rank: i + 1,
       name: t.name,
       tweet_volume: t.tweetVolume || null,
+      // Build X search URL for each trend
+      searchUrl: `https://x.com/search?q=${encodeURIComponent(t.name)}`,
     }));
 
     return {
       success: true,
       trends: top10,
-      location: "Worldwide",
+      location: locationName,
+      woeid,
     };
   } catch (err) {
     console.error("[x] getTrends error:", err.message);
@@ -177,9 +247,10 @@ function formatTrendsHTML(trends, location) {
 
   const rows = trends.map((t) => {
     const vol = t.tweet_volume ? `(${Number(t.tweet_volume).toLocaleString()} tweets)` : "";
+    const url = t.searchUrl || `https://x.com/search?q=${encodeURIComponent(t.name)}`;
     return `<div class="x-trend-item" style="margin-bottom: 8px;">
       <span class="x-rank" style="color: var(--accent); font-weight: bold;">#${t.rank}</span>
-      <span class="x-trend-name"><strong>${t.name}</strong></span>
+      <a href="${url}" target="_blank" class="x-trend-name" style="text-decoration: none;"><strong>${t.name}</strong></a>
       <span class="x-tweet-volume" style="font-size: 0.8em; color: gray;">${vol}</span>
     </div>`;
   });
@@ -225,13 +296,18 @@ function formatSentimentHTML(sentiment) {
   </div>`;
 }
 
+/**
+ * Plain text formatter — outputs raw URLs (WhatsApp-friendly, no markdown links)
+ * Each trend gets a clickable X search URL that opens the X app on mobile
+ */
 function formatTrendsPlain(trends, location) {
   if (!trends || trends.length === 0) return `No trending topics found.`;
   const lines = trends.map((t) => {
     const vol = t.tweet_volume ? ` (${Number(t.tweet_volume).toLocaleString()} tweets)` : "";
-    return `${t.rank}. ${t.name}${vol}`;
+    const url = t.searchUrl || `https://x.com/search?q=${encodeURIComponent(t.name)}`;
+    return `${t.rank}. ${t.name}${vol}\n🔗 ${url}`;
   });
-  return `🔥 Trending on X (${location})\n\n${lines.join("\n")}`;
+  return `🔥 Trending on X (${location})\n\n${lines.join("\n\n")}`;
 }
 
 // ============================================================
@@ -260,11 +336,13 @@ export async function x(request) {
   console.log(`🐦 [x] Intent: ${intent} | Text: "${text.slice(0, 80)}"`);
 
   try {
-    // ── TRENDS ──
+    // ── TRENDS (with regional support) ──
     if (intent === "trends") {
-      const result = await getTrends();
+      const { woeid, locationName } = extractRegion(text, context.country);
+      console.log(`🐦 [x] Fetching trends for ${locationName} (WOEID: ${woeid})`);
+      const result = await getTrends(woeid, locationName);
       if (!result.success) {
-        return { tool: "x", success: false, final: true, data: { text: `❌ Failed to fetch X trends: ${result.error}` } };
+        return { tool: "x", success: false, final: true, data: { text: `❌ Failed to fetch X trends for ${locationName}: ${result.error}` } };
       }
       return {
         tool: "x", success: true, final: true,

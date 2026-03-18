@@ -1038,18 +1038,22 @@ if (
   }
 
   // X (Twitter) — trends, tweet search, tweet sentiment analysis
-  // Guard: skip if compound intent detected (e.g. "get X trends and email me")
-  if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
+  // Guard: skip if scheduling intent or compound intent detected
+  if (!isSchedulingIntent &&
+      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: x");
     const xContext = {};
     if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
     else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) xContext.action = "analyze";
     else xContext.action = "search";
-    // Detect country for trends
-    if (/\b(israel|jerusalem|tel\s*aviv|ישראל)\b/i.test(lower)) xContext.country = "israel";
-    else if (/\b(us|usa|united\s+states|america)\b/i.test(lower)) xContext.country = "us";
-    else if (/\b(uk|united\s+kingdom|britain|london)\b/i.test(lower)) xContext.country = "uk";
+    // Detect country/region for trends (x.js has full WOEID map, just pass the key)
+    const countryMatch = lower.match(/\bin\s+(?:the\s+)?(israel|uk|united\s+kingdom|britain|us|usa|united\s+states|america|canada|brazil|mexico|france|germany|spain|italy|netherlands|sweden|turkey|russia|japan|india|australia|south\s+korea|korea|singapore|indonesia|philippines|thailand|south\s+africa|nigeria|egypt|kenya|jerusalem|tel\s*aviv)\b/i);
+    if (countryMatch) {
+      xContext.country = countryMatch[1].toLowerCase().replace(/\s+/g, " ");
+    } else if (/\b(israel|jerusalem|tel\s*aviv|ישראל)\b/i.test(lower)) {
+      xContext.country = "israel";
+    }
     return [{ tool: "x", input: trimmed, context: xContext, reasoning: "certainty_x" }];
   }
 

@@ -374,8 +374,8 @@ export class TwitterClient {
    * Get trending topics (worldwide).
    * @returns {Promise<Array<{name: string, tweetVolume: number|null, url: string}>>}
    */
-  async getTrends() {
-    const data = await this.apiGet("/1.1/trends/place.json?id=1");
+  async getTrends(woeid = 1) {
+    const data = await this.apiGet(`/1.1/trends/place.json?id=${woeid}`);
     return (data[0]?.trends || []).map((t) => ({
       name: t.name,
       tweetVolume: t.tweet_volume || null,
