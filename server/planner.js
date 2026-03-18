@@ -192,8 +192,17 @@ function hasCompoundIntent(text) {
   if (/\b(?:create|write|generate)\b/.test(lower) &&
       /\band\s+(?:then\s+)?(?:review|analyze|send|email|inspect)\b/i.test(lower)) return true;
 
-  // Pattern 5: explicit "then" chaining (with or without commas)
+  // Pattern 5: explicit chaining words ("then", "finally", "after that", "next", "lastly")
   if (/\b(?:and\s+)?then\s+/i.test(lower) || /;\s*then\s+/i.test(lower)) return true;
+  if (/\b(?:finally|lastly|after\s+that|next|afterwards)\s*[,.]?\s+/i.test(lower)) return true;
+
+  // Pattern 5b: multi-step with "Use the LLM/agent to..." mid-sentence
+  if (/\buse\s+(?:the\s+)?(?:llm|agent|ai)\s+to\b/i.test(lower)) return true;
+
+  // Pattern 5c: multi-tool pipeline keywords (search + categorize/summarize + save/append/sheet)
+  if (/\b(?:search|find|get)\b/i.test(lower) &&
+      /\b(?:categorize|classify|summarize|analyze)\b/i.test(lower) &&
+      /\b(?:append|save|write|sheet|spreadsheet|google)\b/i.test(lower)) return true;
 
   // Pattern 6: "X and also Y"
   if (/\band\s+also\b/i.test(lower)) return true;
