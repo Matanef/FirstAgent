@@ -1571,6 +1571,29 @@ if (
     ];
   }
 
+  // Pattern: X search/leadgen → LLM categorize → Sheets append (lead gen pipeline)
+  // "Search X for complaints about Netflix, categorize them, save to sheet 1BxiMVs..."
+  if (/\b(?:search\s+(?:x|twitter)|tweet|complaint|pain\s*point)\b/i.test(lower) &&
+      /\b(?:categorize|classify|summarize|analyze)\b/i.test(lower) &&
+      /\b(?:sheet|spreadsheet|google)\b/i.test(lower)) {
+    // Extract the search topic
+    const topicMatch = trimmed.match(/(?:complaints?\s+about|search\s+(?:x|twitter)\s+for)\s+['"]?(.+?)['"]?\s*(?:and|\.|\s+Use\b|\s+exclude)/i);
+    const topic = topicMatch ? topicMatch[1].trim() : trimmed.split(/\.\s+/)[0];
+    // Extract sheet ID
+    const sheetIdMatch = trimmed.match(/(?:Sheet\s*ID\s*\[?|spreadsheets\/d\/)([a-zA-Z0-9_-]{20,60})\]?/i) || trimmed.match(/\[([a-zA-Z0-9_-]{25,60})\]/);
+    const sheetId = sheetIdMatch ? sheetIdMatch[1] : null;
+    // Extract categories
+    const catMatch = trimmed.match(/(?:categorize|classify)\s+(?:each\s+)?(?:complaint|tweet|result)?\s*(?:into|as|by)\s+['"]?(.+?)['"]?\s*(?:,\s*and\s+write|,\s*and\s+append|\.\s*Finally)/i);
+    const categories = catMatch ? catMatch[1].trim() : "relevant categories";
+
+    console.log(`[planner] Compound (lead-gen pipeline): x → llm → sheets | topic="${topic}" sheet=${sheetId || "none"}`);
+    return [
+      { tool: "x", input: `search X for complaints about ${topic} exclude retweets`, context: { action: "leadgen" }, reasoning: "leadgen_pipeline_search" },
+      { tool: "llm", input: `Categorize each tweet into ${categories}. For each tweet, write a 1-sentence summary. Return ONLY a JSON array of arrays: [["@username", "summary sentence", "Category"], ...]. No markdown, no explanation — just the JSON array.`, context: { useChainContext: true }, reasoning: "leadgen_pipeline_categorize" },
+      { tool: "sheets", input: `batch append categorized results to sheet ${sheetId || "SHEET_ID_NEEDED"}`, context: { useChainContext: true, action: "append", spreadsheetId: sheetId, range: "Sheet1!A:C" }, reasoning: "leadgen_pipeline_append" }
+    ];
+  }
+
   // ──────────────────────────────────────────────────────────
   // MULTI-STEP: LLM Intent Decomposer (fallback — reached for ambiguous queries)
   // Uses Sequential Logic Engine to decompose into 1+ tool steps

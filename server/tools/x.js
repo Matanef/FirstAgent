@@ -417,6 +417,11 @@ export async function x(request) {
       query = query
         .replace(/\b(advanced\s+search|complaints?\s+(about|regarding|for)|pain\s*points?\s+(about|for|with)|frustrat\w*\s+(with|about)|looking\s+for\s+(a\s+)?better|issues?\s+with|problems?\s+with)\b/gi, "")
         .replace(/\b(exclude|filter|no)\s+retweets?\b/gi, "")
+        .replace(/\b(search\s+(?:x|twitter)\s+for)\b/gi, "")
+        .replace(/\b\d+\s+recent\b/gi, "")     // "5 recent" → ""
+        .replace(/\brecent\b/gi, "")
+        .replace(/\s+and\s*$/i, "")             // trailing "and"
+        .replace(/^\s*and\s+/i, "")             // leading "and"
         .replace(/\s+/g, " ").trim();
       // Append retweet filter for cleaner results
       if (!query.includes("-is:retweet")) query += " -is:retweet";
