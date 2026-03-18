@@ -678,11 +678,16 @@ export async function plan({ message, chatContext = {} }) {
 
   console.log("🧠 Planning steps for:", trimmed);
 
+  // ── NEW GUARD: Detect Scheduling Intents First ──
+  // Prevents "schedule self evolve" from triggering an immediate cycle
+  const isSchedulingIntent = /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower);
+
 // ── REFINED TECHNICAL OVERRIDE ──
   // 1. SELF-EVOLVE: Active code modification / Autonomous growth
   // Triggers ONLY on explicit "evolve" commands or "force run" on a file.
   // GUARD: Do NOT trigger if the user explicitly asks for codeTransform or fileWrite
 if (
+    !isSchedulingIntent &&
     !/\b(codetransform|filewrite|filereview)\b/i.test(lower) && (
       /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) || 
       (/\.js\b/.test(lower) && /\b(specifically|force\s+run|evolve)\b/i.test(lower))
@@ -1072,8 +1077,8 @@ if (
   // CODE GURU TOOLS — must come BEFORE general review to prevent collision
   // ──────────────────────────────────────────────────────────
 
-  // Self-Evolution — active code modification (NOT diagnostics)
-  if (/\b(self[- ]?evolv|evolve\s+(yourself|your|my)|improve\s+(yourself|your\s+code|my\s+code)|scan\s+github\s+and\s+(improve|evolve|upgrade)|upgrade\s+(yourself|your\s+tools)|autonomous\s+improv|make\s+yourself\s+better|evolution\s+cycle)\b/i.test(lower)) {
+// Self-Evolution — active code modification (NOT diagnostics)
+  if (!isSchedulingIntent && /\b(self[- ]?evolv|evolve\s+(yourself|your|my)|improve\s+(yourself|your\s+code|my\s+code)|scan\s+github\s+and\s+(improve|evolve|upgrade)|upgrade\s+(yourself|your\s+tools)|autonomous\s+improv|make\s+yourself\s+better|evolution\s+cycle)\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfEvolve");
     const evolveContext = {};
     if (/\b(dry.?run|preview|plan)\b/i.test(lower)) evolveContext.action = "dryrun";

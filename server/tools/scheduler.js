@@ -137,26 +137,33 @@ function parseSchedule(text) {
 /**
  * Extract the task/action from the scheduling request
  */
+/**
+ * Extract the task/action from the scheduling request
+ */
 function extractTask(text) {
-  const lower = text.toLowerCase();
+  // 1. Remove introductory command words at the very beginning
+  let task = text.replace(/^(please\s+)?(schedule|set up|create|remind me to|remind me about)\s+/i, "");
 
-  // "schedule X every Y" / "remind me to X every Y"
-  let match = text.match(/(?:schedule|set up|create)\s+(?:a\s+)?(.+?)\s+(?:every|at|in\s+\d|daily|hourly|weekly)/i);
-  if (match) return match[1].trim();
+  // 2. Remove "every X do/run..." prefixes (e.g., "every morning check the weather" -> "check the weather")
+  task = task.replace(/^(every\s+\w+(?:\s+\w+)?)\s+(do|run|execute|check|get|show|fetch)\s+/i, "");
 
-  match = text.match(/(?:remind\s+me\s+to|remind\s+me\s+about)\s+(.+?)\s+(?:every|at|in\s+\d|daily|hourly|weekly)/i);
-  if (match) return match[1].trim();
+  // 3. Remove all timing/frequency keywords anywhere in the sentence
+  const timingPatterns = [
+    /\bevery\s+\d+\s*(minute|min|hour|hr|day|second|sec)s?\b/gi,
+    /\bat\s+\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi,
+    /\bin\s+\d+\s*(minute|min|hour|hr|second|sec|day)s?\b/gi,
+    /\bevery\s+(morning|evening|night)\b/gi,
+    /\b(daily|hourly|weekly)\b/gi
+  ];
 
-  // "every X do Y"
-  match = text.match(/(?:every\s+\w+(?:\s+\w+)?)\s+(?:do|run|execute|check|get|show|fetch)\s+(.+)/i);
-  if (match) return match[1].trim();
+  for (const pattern of timingPatterns) {
+    task = task.replace(pattern, " ");
+  }
 
-  // Fallback: remove schedule-related words
-  let task = text
-    .replace(/^(schedule|set up|create|remind me to|remind me about)\s*/i, "")
-    .replace(/\s*(every\s+\d+\s*\w+|at\s+\d+[:\d]*\s*(am|pm)?|in\s+\d+\s*\w+|daily|hourly|weekly)\s*/gi, "")
-    .trim();
+  // 4. Clean up any double spaces left behind by the removals
+  task = task.replace(/\s+/g, " ").trim();
 
+  // If we accidentally stripped everything, fall back to the original text
   return task || text;
 }
 
@@ -212,13 +219,41 @@ async function executeScheduledTask(schedule) {
     };
     addNotification(notif);
 
-    // Send WhatsApp notification if configured
+    // Send WhatsApp notification with actual results (not just "Success")
     try {
       const { CONFIG } = await import("../utils/config.js");
       const recipient = CONFIG.WHATSAPP_DEFAULT_RECIPIENT;
       if (recipient && process.env.WHATSAPP_TOKEN) {
         const { sendWhatsAppMessage } = await import("./whatsapp.js");
-        const summary = `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}`;
+
+        // Extract meaningful result text from the agent pipeline output
+        let resultSummary = "";
+        try {
+          if (Array.isArray(results)) {
+            // Multi-step results — collect text from each step
+            resultSummary = results
+              .filter(r => r && (r.data?.text || r.output?.data?.text || r.reply))
+              .map(r => {
+                const text = r.reply || r.data?.text || r.output?.data?.text || "";
+                // Strip HTML tags for WhatsApp plaintext
+                return text.replace(/<[^>]+>/g, "").substring(0, 300);
+              })
+              .join("\n\n")
+              .substring(0, 1200);
+          } else if (results?.reply) {
+            resultSummary = results.reply.replace(/<[^>]+>/g, "").substring(0, 1200);
+          } else if (results?.data?.text) {
+            resultSummary = results.data.text.replace(/<[^>]+>/g, "").substring(0, 1200);
+          } else if (results?.output?.data?.text) {
+            resultSummary = results.output.data.text.replace(/<[^>]+>/g, "").substring(0, 1200);
+          }
+        } catch (extractErr) {
+          console.warn("[scheduler] Result extraction failed:", extractErr.message);
+        }
+
+        const summary = resultSummary
+          ? `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}\n\n📊 *Results:*\n${resultSummary}`
+          : `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}`;
         await sendWhatsAppMessage(recipient, summary);
       }
     } catch (waErr) {

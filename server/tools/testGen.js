@@ -39,7 +39,12 @@ RULES:
 The test file should be named: ${targetFile.replace(".js", ".test.js")}`;
 
     console.log(`🧠 [testGen] Generating tests for: ${targetFile}`);
-    const response = await llm(prompt);
+    let response;
+    try {
+      response = await llm(prompt);
+    } catch (err) {
+      return { success: false, error: `Error from LLM call: ${err.message}` };
+    }
     const testCode = response?.data?.text || "";
 
     if (!testCode.includes("import") && !testCode.includes("describe")) {

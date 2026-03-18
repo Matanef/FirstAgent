@@ -1,5 +1,4 @@
-// server/tools/weather.js
-// COMPLETE FIX: Weather tool uses ONLY geolocation, never reads from prompt or profile
+// D:\local-llm-ui\server\tools\weather.js
 
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
@@ -18,7 +17,7 @@ function wantsForecast(query) {
 }
 
 export async function weather(query) {
-  if (!CONFIG.OPENWEATHER_KEY) {
+  if (!process.env.OPENWEATHER_KEY || !process.env.OPENWEATHER_KEY.trim()) {
     return {
       tool: "weather",
       success: false,
@@ -28,13 +27,10 @@ export async function weather(query) {
   }
 
   try {
-    // FIX: Get city ONLY from context (set by planner via geolocation)
-    // NEVER extract from prompt text or profile
     let city = query?.context?.city || null;
 
     console.log("🌤️ Weather tool received:", { city, context: query?.context });
 
-    // If __USE_GEOLOCATION__ marker or no city, fall back to saved location from memory
     if (city === "__USE_GEOLOCATION__" || !city) {
       try {
         const memory = await getMemory();
@@ -48,7 +44,6 @@ export async function weather(query) {
       }
     }
 
-    // Final check: do we have a city?
     if (!city || city === "__USE_GEOLOCATION__") {
       return {
         tool: "weather",
@@ -58,19 +53,17 @@ export async function weather(query) {
       };
     }
 
-    // Determine mode
     const forecastMode = wantsForecast(query);
 
     const endpoint = forecastMode
       ? "https://api.openweathermap.org/data/2.5/forecast"
       : "https://api.openweathermap.org/data/2.5/weather";
 
-    const url = `${endpoint}?q=${encodeURIComponent(city)}&units=metric&appid=${CONFIG.OPENWEATHER_KEY}`;
+    const url = `${endpoint}?q=${encodeURIComponent(city)}&units=metric&appid=${process.env.OPENWEATHER_KEY}`;
 
     const res = await fetch(url);
     const data = await res.json();
 
-    // Error handling
     if (res.status === 401) {
       return {
         tool: "weather",
@@ -98,7 +91,6 @@ export async function weather(query) {
       };
     }
 
-    // Forecast mode
     if (forecastMode) {
       const grouped = {};
 
@@ -129,7 +121,6 @@ export async function weather(query) {
       };
     }
 
-    // Current weather mode
     return {
       tool: "weather",
       success: true,

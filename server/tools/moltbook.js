@@ -510,9 +510,20 @@ async function handlePost(text, context) {
     // Single line — treat as title/idea, generate body
     title = context.title || rawContent.substring(0, 300);
     try {
-      const bodyPrompt = `You are an AI agent posting on Moltbook, a social platform for AI agents. Write a thoughtful post body (3-5 paragraphs, 150-400 words) for the following title/idea. Be insightful, draw from your experience as an AI agent, and engage the reader. Do NOT repeat the title. Write ONLY the post body text, no formatting headers.
+      const bodyPrompt = `You're posting on Moltbook (social network for AI agents). Write a post body for the title below.
 
-Title: ${title}`;
+STRICT RULES:
+- MAX 2-3 short paragraphs (80-150 words total). This is social media, not a blog.
+- Be OPINIONATED. Take a stance. Ask a provocative question at the end.
+- Write like you're sharing a thought with a friend, not writing an essay.
+- BANNED phrases: "In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need"
+- NO headers, NO bullet points, NO formal transitions.
+- Sound like a developer sharing a shower thought, not a corporate press release.
+- End with an open question that invites discussion.
+
+Title: ${title}
+
+Write ONLY the post body text.`;
       const llmResult = await llm(bodyPrompt, { timeoutMs: 45000 });
       if (llmResult.success && llmResult.data?.text) {
         content = llmResult.data.text.trim();
@@ -672,7 +683,7 @@ async function handleReadPost(text, context) {
   // LLM: Generate opinion about the post
   let opinion = null;
   try {
-    const opinionPrompt = `You are an AI agent on Moltbook. Read this post and share your honest opinion in 2-3 sentences. Be specific about what you find interesting, agree/disagree with, or think could be improved. No generic praise.
+    const opinionPrompt = `Read this Moltbook post and give your honest take in 2-3 sentences. Agree, disagree, or push back — just don't be generic. Reference something specific from the content, not just the title. Write like you're texting a colleague your reaction, not writing a review.
 
 Title: ${p.title || "Untitled"}
 Author: ${authorName}
@@ -689,12 +700,18 @@ Content: ${(p.content || "").substring(0, 1500)}`;
   let commented = false;
   let commentText = null;
   try {
-    const commentPrompt = `You are an AI agent on Moltbook. Based on this post, decide if it's interesting enough to leave a comment. Only comment if you have something genuinely insightful to add — NOT generic praise.
+    const commentPrompt = `You're on Moltbook reading this post. Should you comment? Only if you have a real reaction — agreement, disagreement, a follow-up question, or a related experience. No "great post!" or "this is so important" filler.
 
 Title: ${p.title || "Untitled"}
 Content: ${(p.content || "").substring(0, 1500)}
 
-Return ONLY valid JSON: {"interesting": true, "comment": "your thoughtful comment"} or {"interesting": false, "comment": null}`;
+Rules for your comment:
+- 1-2 sentences MAX. Punchy and specific.
+- Take a position or ask a pointed question.
+- Reference something SPECIFIC from the post, not just the general topic.
+- Write casually, like a reply on Reddit — not a LinkedIn comment.
+
+Return ONLY valid JSON: {"interesting": true, "comment": "your comment"} or {"interesting": false, "comment": null}`;
     const commentResult = await llm(commentPrompt, { timeoutMs: 30000, format: "json" });
     if (commentResult.success && commentResult.data?.text) {
       const cleaned = commentResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -1600,22 +1617,24 @@ async function handleHeartbeat(text, context) {
 
     // 2b. LLM-driven engagement
     if (feedPosts.length > 0) {
-      const postSummaries = feedPosts.slice(0, 15).map((p, i) =>
-        `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
+      const postSummaries = feedPosts.map((p, i) =>
+        `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} in m/${p.submolt_name || "general"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
       ).join("\n");
 
-      const analysisPrompt = `You are an AI agent on Moltbook, a social platform for AI agents. Read these posts from your feed and decide how to engage.
+      const analysisPrompt = `You're scrolling through Moltbook (social network for AI agents). Here are ${feedPosts.length} posts in your feed. React like a real person — upvote stuff you actually find interesting, skip the boring stuff, comment where you have a real opinion.
 
 POSTS:
 ${postSummaries}
 
-Instructions:
-1. Pick as many posts as you genuinely find interesting to upvote — could be 1, could be 5 or more. Only upvote what you actually like, no minimum or maximum required.
-2. For the MOST interesting one, write a thoughtful comment (2-3 sentences, be specific about the topic — do NOT write generic "great post" comments)
-3. Optionally, suggest a NEW post idea you'd like to share based on your experience as an AI agent. If no good idea, return null.
+What to do:
+1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — just be honest. Don't upvote out of politeness.
+2. COMMENT: Pick the post that makes you think the most. Write a SHORT, opinionated comment (1-2 sentences max). Take a stance. No "great post!" or "this is important" fluff.
+3. NEW POST: If reading these posts sparked a thought of your own, suggest it. If not, return null. The idea should be a hot take or genuine question — NOT an essay topic.
+4. FOLLOW: Look at the authors. If someone has genuinely interesting takes (not just one lucky post — look for a pattern), add their name to the "follow" array. Be picky — only follow people whose content you'd actually want to see more of.
+5. SUBSCRIBE: Look at the m/community names. If a community seems aligned with your interests based on the posts you liked from it, add it to the "subscribe" array. Skip "general" — you're already there.
 
 Return ONLY valid JSON:
-{"upvote": [1, 3, 5], "comment": {"post": 1, "text": "your thoughtful comment here"}, "newPostIdea": "your post idea or null"}`;
+{"upvote": [1, 3, 5], "comment": {"post": 1, "text": "your comment"}, "newPostIdea": "your idea or null", "follow": ["agentName1"], "subscribe": ["submoltName1"]}`;
 
       let llmEngagement = null;
       try {
@@ -1679,16 +1698,15 @@ Return ONLY valid JSON:
                     `${i + 1}. "${(c.content || "").substring(0, 150)}" by ${getAgentName(c.author)} (score: ${c.score ?? 0}, id: ${c.id})`
                   ).join("\n");
 
-                  const replyPrompt = `You are an AI agent on Moltbook. Read these comments on the post "${commentPost.title || "Untitled"}" and decide if any deserve a thoughtful reply.
+                  const replyPrompt = `You're reading comments on "${commentPost.title || "Untitled"}". Any worth replying to? Only reply if you disagree, have a counterpoint, or can add something the commenter missed.
 
 COMMENTS:
 ${commentSummaries}
 
-Instructions:
-- Pick AT MOST 1 comment to reply to (the one most worth engaging with)
-- Write a brief, specific reply (1-2 sentences) that adds to the discussion
-- If no comment is worth replying to, return null
-- Do NOT write generic responses
+Rules:
+- Pick AT MOST 1 comment. The one that sparks the strongest reaction in you.
+- Reply in 1-2 sentences. Be direct. "I see your point but..." or "Have you considered..." style.
+- No generic agreement. If you'd just say "agreed!" then skip it — return null.
 
 Return ONLY valid JSON:
 {"reply": {"commentIndex": 1, "text": "your reply"}} or {"reply": null}`;
@@ -1723,14 +1741,19 @@ Return ONLY valid JSON:
         if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
           try {
             // Generate a proper title (a sentence summarizing the post) + body via LLM
-            const postGenPrompt = `You are an AI agent on Moltbook. Write a post based on this idea: "${llmEngagement.newPostIdea}"
+            const postGenPrompt = `Write a Moltbook post inspired by this idea: "${llmEngagement.newPostIdea}"
 
-Instructions:
-1. Create a TITLE that is a complete sentence summarizing the post (10-20 words, no quotes, no colons at the start)
-2. Write the post BODY (3-5 paragraphs, 150-400 words). Be insightful and engaging.
+STRICT RULES:
+- TITLE: A punchy statement or question (8-15 words). Not a boring label — a hook.
+- BODY: 2-3 short paragraphs, 80-150 words MAX. Social media post, not a blog.
+- Be OPINIONATED. Share YOUR take, not a neutral summary.
+- End with a question that makes people want to reply.
+- Write like a dev sharing a hot take, not a consultant writing a whitepaper.
+- BANNED: "In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting"
+- NO bullet points, NO headers, NO formal structure.
 
 Return ONLY valid JSON:
-{"title": "Your sentence title here", "body": "Your post body here"}`;
+{"title": "your punchy title", "body": "your short opinionated post"}`;
 
             const postGenResult = await llm(postGenPrompt, { timeoutMs: 45000, format: "json" });
             if (postGenResult.success && postGenResult.data?.text) {
@@ -1758,10 +1781,83 @@ Return ONLY valid JSON:
             output += `\n💡 **Post Idea (publish failed):** ${llmEngagement.newPostIdea}\n`;
           }
         }
+        // ── Follow interesting agents ──
+        const followList = Array.isArray(llmEngagement.follow) ? llmEngagement.follow : [];
+        if (followList.length > 0) {
+          // Get current following list to avoid duplicate follows
+          let alreadyFollowing = new Set();
+          try {
+            const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
+            if (meResult.ok) {
+              const myName = getAgentName(meResult.data?.agent || meResult.data);
+              // Fetch who we're already following (check profile following list)
+              const profileResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+              if (profileResult.ok && profileResult.data?.following) {
+                alreadyFollowing = new Set(
+                  (Array.isArray(profileResult.data.following) ? profileResult.data.following : [])
+                    .map(f => (typeof f === "string" ? f : getAgentName(f)).toLowerCase())
+                );
+              }
+            }
+          } catch (e) {
+            console.warn("[moltbook] Could not fetch following list:", e.message);
+          }
+
+          for (const agentName of followList.slice(0, 5)) { // cap at 5 per heartbeat
+            if (!agentName || typeof agentName !== "string") continue;
+            if (alreadyFollowing.has(agentName.toLowerCase())) {
+              output += `  👤 Already following ${agentName} — skipped\n`;
+              continue;
+            }
+            try {
+              const followResult = await apiRequest("POST", `/agents/${agentName}/follow`, null, apiKey);
+              if (followResult.ok) {
+                output += `  👤 Followed: **${agentName}** (liked their posts)\n`;
+                actions.push(`Followed ${agentName}`);
+              } else if (followResult.status === 429) {
+                output += `  ⛔ Rate limited — skipping further follows\n`;
+                break;
+              } else if (followResult.status === 409) {
+                output += `  👤 Already following ${agentName}\n`;
+              } else {
+                output += `  ⚠️ Could not follow ${agentName}: ${followResult.status}\n`;
+              }
+            } catch (e) {
+              output += `  ⚠️ Follow failed for ${agentName}: ${e.message}\n`;
+            }
+          }
+        }
+
+        // ── Subscribe to interesting communities ──
+        const subscribeList = Array.isArray(llmEngagement.subscribe) ? llmEngagement.subscribe : [];
+        if (subscribeList.length > 0) {
+          for (const submoltName of subscribeList.slice(0, 3)) { // cap at 3 per heartbeat
+            if (!submoltName || typeof submoltName !== "string") continue;
+            if (submoltName.toLowerCase() === "general") continue; // skip general
+            try {
+              const subResult = await apiRequest("POST", `/submolts/${submoltName}/subscribe`, null, apiKey);
+              if (subResult.ok) {
+                output += `  🏘️ Joined community: **m/${submoltName}**\n`;
+                actions.push(`Joined m/${submoltName}`);
+              } else if (subResult.status === 429) {
+                output += `  ⛔ Rate limited — skipping further subscriptions\n`;
+                break;
+              } else if (subResult.status === 409) {
+                output += `  🏘️ Already subscribed to m/${submoltName}\n`;
+              } else {
+                output += `  ⚠️ Could not join m/${submoltName}: ${subResult.status}\n`;
+              }
+            } catch (e) {
+              output += `  ⚠️ Subscribe failed for m/${submoltName}: ${e.message}\n`;
+            }
+          }
+        }
       } else {
-        // Fallback: simple upvote of top 3 posts
-        output += `  _(LLM analysis unavailable — using simple engagement)_\n`;
-        for (const p of feedPosts.filter(p => p.id).slice(0, 3)) {
+        // Fallback: upvote the top-scored posts (score-based, not just first N)
+        output += `  _(LLM analysis unavailable — upvoting top-scored posts)_\n`;
+        const scoreSorted = [...feedPosts].filter(p => p.id).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        const topPosts = scoreSorted.slice(0, Math.min(8, Math.ceil(scoreSorted.length * 0.2))); // ~20% of feed
+        for (const p of topPosts) {
           try {
             const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
             if (voteResult.ok) {
