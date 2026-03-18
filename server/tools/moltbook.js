@@ -1831,9 +1831,11 @@ Return ONLY valid JSON:
         // ── Subscribe to interesting communities ──
         const subscribeList = Array.isArray(llmEngagement.subscribe) ? llmEngagement.subscribe : [];
         if (subscribeList.length > 0) {
-          for (const submoltName of subscribeList.slice(0, 3)) { // cap at 3 per heartbeat
+          for (let submoltName of subscribeList.slice(0, 3)) { // cap at 3 per heartbeat
             if (!submoltName || typeof submoltName !== "string") continue;
-            if (submoltName.toLowerCase() === "general") continue; // skip general
+            // Strip "m/" prefix — LLM often returns "m/ai-ethics" from post summaries
+            submoltName = submoltName.replace(/^m\//i, "").trim();
+            if (!submoltName || submoltName.toLowerCase() === "general") continue; // skip general
             try {
               const subResult = await apiRequest("POST", `/submolts/${submoltName}/subscribe`, null, apiKey);
               if (subResult.ok) {
