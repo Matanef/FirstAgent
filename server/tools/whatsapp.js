@@ -325,26 +325,32 @@ export async function whatsapp(request) {
         messageBody = parts.length > 1 ? parts.join("\n") : null;
       }
     } else if (prevTool === "x") {
-      // X/Twitter: extract trends or tweet info
-      const trendItems = [];
-      const trendRegex = /<span class="x-rank">#(\d+)<\/span>\s*<span class="x-trend-name"><strong>([^<]+)<\/strong><\/span>/gi;
-      let tm;
-      while ((tm = trendRegex.exec(prevOutput)) !== null) {
-        trendItems.push(`${tm[1]}. ${tm[2].trim()}`);
-      }
-      if (trendItems.length > 0) {
-        messageBody = `🔥 *Trending on X*\n\n${trendItems.join("\n")}`;
+      // X/Twitter: prefer plain text (has raw clickable URLs for WhatsApp)
+      const raw = context.chainContext.previousRaw || null;
+      if (raw?.plain) {
+        messageBody = raw.plain;
       } else {
-        // Try to extract tweet cards
-        const tweetItems = [];
-        const tweetRegex = /<div class="x-tweet-author"><strong>@([^<]+)<\/strong>[\s\S]*?<div class="x-tweet-text">([^<]+)<\/div>/gi;
-        let ttm;
-        while ((ttm = tweetRegex.exec(prevOutput)) !== null) {
-          tweetItems.push(`*@${ttm[1]}*: ${ttm[2].trim()}`);
+        // Fallback: parse HTML for trends
+        const trendItems = [];
+        const trendRegex = /<a\s+href="([^"]+)"[^>]*class="x-trend-name"[^>]*><strong>([^<]+)<\/strong><\/a>/gi;
+        let tm;
+        while ((tm = trendRegex.exec(prevOutput)) !== null) {
+          trendItems.push(`${trendItems.length + 1}. ${tm[2].trim()}\n🔗 ${tm[1]}`);
         }
-        messageBody = tweetItems.length > 0
-          ? `🐦 *Tweets*\n\n${tweetItems.join("\n\n")}`
-          : null;
+        if (trendItems.length > 0) {
+          messageBody = `🔥 *Trending on X*\n\n${trendItems.join("\n\n")}`;
+        } else {
+          // Try to extract tweet cards
+          const tweetItems = [];
+          const tweetRegex = /<div class="x-tweet-author"><strong>@([^<]+)<\/strong>[\s\S]*?<div class="x-tweet-text">([^<]+)<\/div>/gi;
+          let ttm;
+          while ((ttm = tweetRegex.exec(prevOutput)) !== null) {
+            tweetItems.push(`*@${ttm[1]}*: ${ttm[2].trim()}`);
+          }
+          messageBody = tweetItems.length > 0
+            ? `🐦 *Tweets*\n\n${tweetItems.join("\n\n")}`
+            : null;
+        }
       }
     }
 
