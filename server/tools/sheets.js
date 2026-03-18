@@ -195,15 +195,34 @@ export async function sheets(request) {
     if (intent === "append") {
       let rows = context.rows || null;
 
-      // Try to parse rows from text if not in context (e.g., from LLM chain)
+      // Try chain context first (from previous tool in pipeline, e.g., LLM categorization)
+      if (!rows && context.chainContext?.previousOutput) {
+        const prevOutput = String(context.chainContext.previousOutput);
+        console.log(`📊 [sheets] Extracting rows from chain context (${prevOutput.length} chars)`);
+        try {
+          // Strip markdown code fences if present
+          const cleaned = prevOutput.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+          const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(parsed)) {
+              rows = parsed.map(r => Array.isArray(r) ? r.map(String) : Object.values(r).map(String));
+              console.log(`📊 [sheets] Extracted ${rows.length} rows from chain context`);
+            }
+          }
+        } catch (e) {
+          console.warn(`📊 [sheets] Failed to parse chain context as JSON: ${e.message}`);
+        }
+      }
+
+      // Fallback: try to parse rows from text input
       if (!rows) {
         try {
-          // Try parsing entire text as JSON rows
           const jsonMatch = text.match(/\[[\s\S]*\]/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
             if (Array.isArray(parsed)) {
-              rows = parsed.map(r => Array.isArray(r) ? r : Object.values(r).map(String));
+              rows = parsed.map(r => Array.isArray(r) ? r.map(String) : Object.values(r).map(String));
             }
           }
         } catch { /* not JSON, that's fine */ }
