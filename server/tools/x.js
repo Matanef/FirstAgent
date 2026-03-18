@@ -111,6 +111,9 @@ function detectXIntent(text) {
   const lower = (text || "").toLowerCase();
   if (/\b(trends?|trending|popular|hot\s+topic|top\s+topic)\b/i.test(lower)) return "trends";
   if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) return "analyze";
+  if (/\b(post|tweet|publish|send\s+tweet|compose)\b/i.test(lower) && !/\b(search|find|get|show)\b/i.test(lower)) return "post";
+  if (/\b(complaint|pain\s*point|frustrat|looking\s+for\s+(a\s+)?better|hate|alternative|issue|problem)\b/i.test(lower)) return "leadgen";
+  if (/\b(advanced\s+search|filter|exclude|no\s+retweet|-is:retweet)\b/i.test(lower)) return "leadgen";
   return "search"; // default: search tweets
 }
 
@@ -167,6 +170,7 @@ async function searchTweets(query, count = 10) {
     const rawTweets = await tc.search(query, count, "Latest");
 
     const tweets = rawTweets.map((t) => ({
+      id: t.id || null,
       text: t.text || "",
       author: t.user?.username || t.user?.id || "unknown",
       author_name: t.user?.name || "",
@@ -174,6 +178,8 @@ async function searchTweets(query, count = 10) {
       retweets: t.retweets || 0,
       likes: t.likes || 0,
       replies: t.replies || 0,
+      isRetweet: t.isRetweet || false,
+      url: t.id ? `https://x.com/${t.user?.username || "i"}/status/${t.id}` : null,
     }));
 
     return {
@@ -377,6 +383,77 @@ export async function x(request) {
       };
     }
 
+    // ── POST (tweet from the account) ──
+    if (intent === "post") {
+      const tweetText = text
+        .replace(/\b(post|tweet|publish|send|compose)\s*(a\s+)?(tweet|post|on\s+x|to\s+x|on\s+twitter)?\s*:?\s*/i, "")
+        .replace(/^["']|["']$/g, "")
+        .trim();
+
+      if (!tweetText || tweetText.length < 2) {
+        return { tool: "x", success: false, final: true, data: { text: "❌ No tweet content provided. Usage: \"tweet: your message here\"" } };
+      }
+      if (tweetText.length > 280) {
+        return { tool: "x", success: false, final: true, data: { text: `❌ Tweet too long (${tweetText.length}/280 chars). Please shorten it.` } };
+      }
+
+      console.log(`🐦 [x] Posting tweet: "${tweetText.slice(0, 60)}..."`);
+      const tc = await ensureClient();
+      const posted = await tc.createTweet(tweetText);
+      return {
+        tool: "x", success: true, final: true,
+        data: {
+          text: `<div class="x-posted"><h3>✅ Tweet Posted</h3><p>${tweetText}</p><p><a href="${posted.url}" target="_blank">View tweet →</a></p></div>`,
+          plain: `✅ Tweet posted: "${tweetText}"\n🔗 ${posted.url}`,
+          raw: posted,
+        },
+      };
+    }
+
+    // ── LEAD GEN / ADVANCED SEARCH (excludes retweets, includes URLs) ──
+    if (intent === "leadgen") {
+      let query = extractSearchQuery(text);
+      // Strip lead-gen intent words to get the clean topic
+      query = query
+        .replace(/\b(advanced\s+search|complaints?\s+(about|regarding|for)|pain\s*points?\s+(about|for|with)|frustrat\w*\s+(with|about)|looking\s+for\s+(a\s+)?better|issues?\s+with|problems?\s+with)\b/gi, "")
+        .replace(/\b(exclude|filter|no)\s+retweets?\b/gi, "")
+        .replace(/\s+/g, " ").trim();
+      // Append retweet filter for cleaner results
+      if (!query.includes("-is:retweet")) query += " -is:retweet";
+      console.log(`🐦 [x] Lead Gen search: "${query}"`);
+
+      const result = await searchTweets(query, 20);
+      if (!result.success) {
+        return { tool: "x", success: false, final: true, data: { text: `❌ Lead gen search failed: ${result.error}` } };
+      }
+
+      // Filter out retweets that slipped through
+      const filtered = result.tweets.filter(t => !t.isRetweet);
+
+      // Format with full details for LLM chaining
+      const plainLines = filtered.map((t, i) =>
+        `${i + 1}. @${t.author}: "${t.text.substring(0, 200)}"\n   ❤️${t.likes} 🔁${t.retweets} 💬${t.replies}${t.url ? `\n   🔗 ${t.url}` : ""}`
+      );
+
+      const html = filtered.map((t, i) => {
+        const tweetUrl = t.url || "#";
+        return `<div class="x-tweet-card" style="border: 1px solid var(--border); padding: 10px; margin-bottom: 10px; border-radius: 8px;">
+          <div><strong>${i + 1}.</strong> <a href="https://x.com/${t.author}" target="_blank">@${t.author}</a></div>
+          <div style="margin: 6px 0;">${t.text}</div>
+          <div style="font-size: 0.8em; color: gray;">❤️ ${t.likes} · 🔁 ${t.retweets} · 💬 ${t.replies} · <a href="${tweetUrl}" target="_blank">view</a></div>
+        </div>`;
+      }).join("\n");
+
+      return {
+        tool: "x", success: true, final: true,
+        data: {
+          text: `<div class="x-leadgen"><h3>🎯 Lead Gen Results for "${query.replace(" -is:retweet", "")}" (${filtered.length} tweets)</h3>${html}</div>`,
+          plain: `🎯 Lead Gen: "${query.replace(" -is:retweet", "")}" — ${filtered.length} results\n\n${plainLines.join("\n\n")}`,
+          raw: { ...result, tweets: filtered, intent: "leadgen" },
+        },
+      };
+    }
+
     // ── SEARCH (default) ──
     const query = extractSearchQuery(text);
     console.log(`🐦 [x] Searching for: ${query}`);
@@ -390,7 +467,7 @@ export async function x(request) {
       tool: "x", success: true, final: true,
       data: {
         text: formatTweetsHTML(result.tweets, query),
-        plain: result.tweets.map((t) => `@${t.author}: ${t.text} (❤️${t.likes})`).join("\n\n"),
+        plain: result.tweets.map((t) => `@${t.author}: ${t.text.substring(0, 200)} (❤️${t.likes})${t.url ? ` 🔗 ${t.url}` : ""}`).join("\n\n"),
         raw: result,
       },
     };

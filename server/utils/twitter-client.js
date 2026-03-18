@@ -614,6 +614,65 @@ export class TwitterClient {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // WRITE OPERATIONS
+  // ─────────────────────────────────────────────────────────────
+
+  /**
+   * Post a new tweet.
+   * @param {string} text - Tweet text (max 280 chars)
+   * @returns {Promise<Object>} Created tweet object
+   */
+  async createTweet(text) {
+    const hash = this.hashes["CreateTweet"];
+    if (!hash) {
+      throw new Error("CreateTweet GraphQL hash not available. Try refreshing hashes.");
+    }
+
+    const endpoint = `${API_BASE}/graphql/${hash}/CreateTweet`;
+    const variables = {
+      tweet_text: text,
+      dark_request: false,
+      media: { media_entities: [], possibly_sensitive: false },
+      semantic_annotation_ids: [],
+    };
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        ...this._headers(),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        variables,
+        features: DEFAULT_FEATURES,
+        queryId: hash,
+      }),
+    });
+
+    if (res.status === 429) {
+      throw new Error("Rate limited by Twitter. Try again later.");
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`CreateTweet ${res.status}: ${errText.substring(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const result = data?.data?.create_tweet?.tweet_results?.result;
+    if (!result) {
+      throw new Error("CreateTweet response missing tweet data");
+    }
+
+    const legacy = result.legacy || {};
+    return {
+      id: result.rest_id || legacy.id_str,
+      text: legacy.full_text || text,
+      url: `https://x.com/i/status/${result.rest_id || legacy.id_str}`,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // UTILITY
   // ─────────────────────────────────────────────────────────────
 

@@ -427,6 +427,10 @@ EXAMPLES (correct routing):
 - "search tweets about AI" → x
 - "twitter trends in Israel" → x
 - "send a whatsapp to 0587426393 saying hello" → whatsapp
+- "search X for complaints about Shopify" → x (leadgen search)
+- "post on X: my hot take about AI" → x (tweet posting)
+- "append data to my google sheet" → sheets
+- "read from spreadsheet 1BxiMVs0XRA5" → sheets
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
 - "how are you" → llm (NOT selfImprovement, NOT weather)
@@ -557,9 +561,10 @@ CRITICAL RULES:
 2. Do NOT invent tools.
 3. If multiple actions are requested, order them logically (e.g., read first, then write).
 4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
-5. Use "x" for Twitter/X trends, tweet search, and tweet sentiment analysis. Do NOT use "twitter" — the tool name is "x".
+5. Use "x" for Twitter/X trends, tweet search, tweet sentiment analysis, lead generation search, and posting tweets. Do NOT use "twitter" — the tool name is "x". For lead-gen/complaint searches, pass action "leadgen" in context.
 6. APPLYATCH BIAS: If the request contains a comprehensive list of suggestions, review findings, or 3+ structural changes targeting a single file, route to "applyPatch" (full rewrite) — NOT "codeTransform" (surgical patch). codeTransform is for single targeted edits only.
 7. SELFEVOLVE RESTRAINT: The "selfEvolve" tool must NOT be used for cosmetic changes or quota-driven busywork. Only route to selfEvolve when the user explicitly asks for autonomous evolution or self-improvement cycles.
+8. Use "sheets" for Google Sheets operations (read, append, clear). Pass spreadsheetId and action in context. When chaining X search → LLM → sheets, the LLM step should categorize/summarize and the sheets step should receive the categorized data as rows.
 
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
@@ -567,6 +572,22 @@ EXAMPLE OUTPUT:
 [
   {"tool": "codeReview", "input": "review D:/project/news.js", "reasoning": "Analyze the source file for improvements"},
   {"tool": "fileWrite", "input": "create fixed news.js at E:/testFolder/", "reasoning": "Save the generated code to the new location"}
+]
+
+EXAMPLE INPUT:
+"Search X for complaints about Shopify, categorize them, and save to my sheet 1BxiMVs0XRA5"
+EXAMPLE OUTPUT:
+[
+  {"tool": "x", "input": "search X for complaints about Shopify", "reasoning": "Find complaint tweets using lead-gen search"},
+  {"tool": "llm", "input": "Categorize each complaint into Pricing, Support, or Downtime. Return JSON array of [username, summary, category] rows", "reasoning": "LLM categorizes the raw tweet data"},
+  {"tool": "sheets", "input": "batch append categorized complaints to sheet 1BxiMVs0XRA5", "reasoning": "Write categorized data to Google Sheets"}
+]
+
+EXAMPLE INPUT:
+"post on X: Just launched my new project, check it out!"
+EXAMPLE OUTPUT:
+[
+  {"tool": "x", "input": "post on X: Just launched my new project, check it out!", "reasoning": "Post a tweet to the user's X account"}
 ]
 
 USER MESSAGE:
@@ -645,6 +666,10 @@ function resolveToolName(rawIntent, availableTools) {
     'tweets': 'x',
     'xtrends': 'x',
     'xtwitter': 'x',
+    'googlesheets': 'sheets',
+    'google_sheets': 'sheets',
+    'spreadsheet': 'sheets',
+    'gsheets': 'sheets',
   };
 
   let cleaned = (rawIntent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
@@ -1037,15 +1062,18 @@ if (
     return [{ tool: "email", input: trimmed, context: emailContext, reasoning: "certainty_email" }];
   }
 
-  // X (Twitter) — trends, tweet search, tweet sentiment analysis
-  // Guard: skip if scheduling intent or compound intent detected
-  if (!isSchedulingIntent &&
-      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?)\b/i.test(lower) &&
+  // X (Twitter) — trends, tweet search, tweet sentiment analysis, lead gen, post
+  // Guard: skip if scheduling intent, compound intent, or multi-tool chain (sheets, summarize, aggregate)
+  const isMultiToolChain = /\b(google\s*sheet|spreadsheet|append|aggregate|categorize\s+.*(save|write|sheet)|save\s+to\s+(sheet|sheets))\b/i.test(lower);
+  if (!isSchedulingIntent && !isMultiToolChain &&
+      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower) &&
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: x");
     const xContext = {};
     if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
     else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) xContext.action = "analyze";
+    else if (/\b(post|publish|compose)\s+(on|to)\s+(x|twitter)\b/i.test(lower)) xContext.action = "post";
+    else if (/\b(complaint|pain\s*point|frustrat|looking\s+for\s+(a\s+)?better|advanced\s+search)\b/i.test(lower)) xContext.action = "leadgen";
     else xContext.action = "search";
     // Detect country/region for trends (x.js has full WOEID map, just pass the key)
     const countryMatch = lower.match(/\bin\s+(?:the\s+)?(israel|uk|united\s+kingdom|britain|us|usa|united\s+states|america|canada|brazil|mexico|france|germany|spain|italy|netherlands|sweden|turkey|russia|japan|india|australia|south\s+korea|korea|singapore|indonesia|philippines|thailand|south\s+africa|nigeria|egypt|kenya|jerusalem|tel\s*aviv)\b/i);
@@ -1055,6 +1083,19 @@ if (
       xContext.country = "israel";
     }
     return [{ tool: "x", input: trimmed, context: xContext, reasoning: "certainty_x" }];
+  }
+
+  // Google Sheets — read, append, clear
+  if (/\b(google\s*sheet|spreadsheet|sheet\s*id|batch\s*append)\b/i.test(lower) && !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: sheets");
+    const sheetsContext = {};
+    if (/\b(read|get|fetch|show|view)\b/i.test(lower)) sheetsContext.action = "read";
+    else if (/\b(clear|wipe|empty)\b/i.test(lower)) sheetsContext.action = "clear";
+    else sheetsContext.action = "append";
+    // Extract sheet ID
+    const sheetIdMatch = lower.match(/(?:sheet\s*id\s*|spreadsheets\/d\/)([a-zA-Z0-9_-]{20,60})/i) || trimmed.match(/\b([a-zA-Z0-9_-]{25,60})\b/);
+    if (sheetIdMatch) sheetsContext.spreadsheetId = sheetIdMatch[1];
+    return [{ tool: "sheets", input: trimmed, context: sheetsContext, reasoning: "certainty_sheets" }];
   }
 
   // WhatsApp — send single or bulk messages
