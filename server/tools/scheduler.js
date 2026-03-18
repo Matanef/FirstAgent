@@ -67,17 +67,20 @@ async function saveSchedules(schedules) {
 function parseSchedule(text) {
   const lower = text.toLowerCase();
 
-  // "every X minutes/hours/days"
-  const everyMatch = lower.match(/every\s+(\d+)\s*(minute|min|hour|hr|day|second|sec)s?/);
+  // "every X minutes/hours/days" (with digit) OR "every hour/minute/day" (no digit = 1)
+  const everyMatch = lower.match(/every\s+(\d+)\s*(minute|min|hour|hr|day|second|sec)s?/)
+    || lower.match(/every\s+(minute|min|hour|hr|day|second|sec)s?\b/);
   if (everyMatch) {
-    const amount = parseInt(everyMatch[1]);
-    const unit = everyMatch[2];
+    // If first capture is a digit → amount + unit; otherwise unit only (amount = 1)
+    const isUnitOnly = isNaN(parseInt(everyMatch[1]));
+    const amount = isUnitOnly ? 1 : parseInt(everyMatch[1]);
+    const unit = isUnitOnly ? everyMatch[1] : everyMatch[2];
     let intervalMs;
     if (unit.startsWith("sec")) intervalMs = amount * 1000;
     else if (unit.startsWith("min")) intervalMs = amount * 60 * 1000;
     else if (unit.startsWith("hour") || unit.startsWith("hr")) intervalMs = amount * 3600 * 1000;
     else if (unit.startsWith("day")) intervalMs = amount * 86400 * 1000;
-    return { type: "interval", intervalMs, description: `every ${amount} ${unit}(s)` };
+    return { type: "interval", intervalMs, description: `every ${amount === 1 ? "" : amount + " "}${unit}${amount > 1 ? "(s)" : ""}` };
   }
 
 // 1. SPECIFIC TIME (The highest priority)
@@ -150,6 +153,7 @@ function extractTask(text) {
   // 3. Remove all timing/frequency keywords anywhere in the sentence
   const timingPatterns = [
     /\bevery\s+\d+\s*(minute|min|hour|hr|day|second|sec)s?\b/gi,
+    /\bevery\s+(minute|min|hour|hr|day|second|sec)s?\b/gi,   // "every hour" (no digit)
     /\bat\s+\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi,
     /\bin\s+\d+\s*(minute|min|hour|hr|second|sec|day)s?\b/gi,
     /\bevery\s+(morning|evening|night)\b/gi,
