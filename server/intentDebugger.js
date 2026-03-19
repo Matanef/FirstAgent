@@ -7,6 +7,7 @@ import { appendLog, readLog } from "./utils/jsonlLogger.js";
 
 const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
 const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");
+const CORRECTIONS_LOG = path.join(LOGS_DIR, "routing-corrections.jsonl");
 
 /**
  * Log intent routing decision
@@ -216,4 +217,107 @@ export async function getRoutingRecommendations() {
   }
 
   return recommendations;
+}
+
+// ============================================================
+// USER CORRECTION FEEDBACK — "you chose the wrong tool" mechanism
+// ============================================================
+
+/**
+ * Detect if user message is a routing correction/feedback
+ * @param {string} message - User's message
+ * @returns {Object|null} Correction details or null
+ */
+export function detectCorrection(message) {
+  if (!message) return null;
+  const lower = message.toLowerCase().trim();
+
+  // Pattern 1: "you chose/picked/used the wrong tool"
+  if (/\b(you|that|it)\s+(chose|picked|used|selected|routed\s+to)\s+(the\s+)?wrong\s+(tool|one)\b/i.test(lower)) {
+    return { type: "wrong_tool", message };
+  }
+
+  // Pattern 2: "that should have been/used X" or "you should have used X"
+  const shouldMatch = lower.match(/\bshould\s+(?:have\s+)?(?:been|used|gone\s+to|routed\s+to)\s+(?:the\s+)?(\w+)/i);
+  if (shouldMatch) {
+    return { type: "should_have_been", correctTool: shouldMatch[1], message };
+  }
+
+  // Pattern 3: "why did you choose/use X" — inquiry, not necessarily correction
+  if (/\bwhy\s+did\s+you\s+(choose|use|pick|select|route\s+to)\b/i.test(lower)) {
+    return { type: "inquiry", message };
+  }
+
+  // Pattern 4: "wrong tool" / "not what I meant" / "that's not right"
+  if (/\b(wrong\s+tool|not\s+what\s+I\s+(meant|wanted|asked)|that'?s\s+not\s+(right|correct|what))\b/i.test(lower)) {
+    return { type: "wrong_tool", message };
+  }
+
+  // Pattern 5: "use X instead" / "try X tool" / "I meant X"
+  const useInsteadMatch = lower.match(/\b(?:use|try|I\s+meant)\s+(?:the\s+)?(\w+)\s+(?:tool\s+)?(?:instead|next\s+time)\b/i);
+  if (useInsteadMatch) {
+    return { type: "use_instead", correctTool: useInsteadMatch[1], message };
+  }
+
+  // Pattern 6: "next time use X" / "in the future, route to X"
+  const nextTimeMatch = lower.match(/\b(?:next\s+time|in\s+the\s+future|from\s+now\s+on)\s*,?\s*(?:use|route\s+to|pick)\s+(?:the\s+)?(\w+)/i);
+  if (nextTimeMatch) {
+    return { type: "future_correction", correctTool: nextTimeMatch[1], message };
+  }
+
+  return null;
+}
+
+/**
+ * Log a user correction about routing
+ * @param {Object} correction - Correction data from detectCorrection()
+ * @param {Object} context - Previous message context
+ * @returns {Object} The logged entry
+ */
+export async function logCorrection(correction, context = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    type: correction.type,
+    userMessage: correction.message,
+    correctTool: correction.correctTool || null,
+    previousUserMessage: context.previousUserMessage || null,
+    previousToolUsed: context.previousToolUsed || null,
+    previousReasoning: context.previousReasoning || null,
+  };
+
+  await appendLog(CORRECTIONS_LOG, entry, LOGS_DIR);
+  console.log(`📝 Routing correction logged: ${entry.type}${entry.correctTool ? ` → ${entry.correctTool}` : ""} (was: ${entry.previousToolUsed || "unknown"})`);
+  return entry;
+}
+
+/**
+ * Get recent corrections for use as routing context
+ * @param {number} limit - Number of corrections to return
+ * @returns {Array} Recent corrections
+ */
+export async function getRecentCorrections(limit = 20) {
+  return await readLog(CORRECTIONS_LOG, limit);
+}
+
+/**
+ * Build a correction summary string for the LLM decomposer prompt
+ * Tells the LLM about past mistakes so it can avoid them
+ * @returns {string} Summary text or empty string
+ */
+export async function buildCorrectionContext() {
+  const corrections = await getRecentCorrections(10);
+  if (corrections.length === 0) return "";
+
+  const lines = corrections
+    .filter(c => c.previousUserMessage && (c.correctTool || c.previousToolUsed))
+    .slice(-5)
+    .map(c => {
+      if (c.correctTool) {
+        return `- For "${c.previousUserMessage?.substring(0, 80)}", the user said to use "${c.correctTool}" instead of "${c.previousToolUsed || "unknown"}"`;
+      }
+      return `- The user said "${c.previousToolUsed || "unknown"}" was the wrong tool for "${c.previousUserMessage?.substring(0, 80)}"`;
+    });
+
+  if (lines.length === 0) return "";
+  return `\n\nPAST ROUTING CORRECTIONS (learn from these mistakes):\n${lines.join("\n")}`;
 }

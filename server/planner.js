@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { llm } from "./tools/llm.js";
 import { getMemory } from "./memory.js";
 import { CONFIG } from "./utils/config.js";
+import { detectCorrection, logCorrection, buildCorrectionContext } from "./intentDebugger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,9 @@ const __dirname = path.dirname(__filename);
 // ── Module-level constants (avoid re-creating on every plan() call) ──
 const FINANCE_COMPANIES = /\b(tesla|apple|google|alphabet|amazon|microsoft|meta|nvidia|amd|intel|netflix|disney|boeing|ford|paypal|uber|spotify|shopify)\b/i;
 const FINANCE_INTENT = /\b(doing|price|worth|trading|performance|value|stock|share|market|up|down|earnings|revenue)\b/i;
+
+// Track last routing decision for user correction feedback
+let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null };
 
 // ============================================================
 // UTIL: list available tools (reads server/tools/*.js)
@@ -663,7 +667,7 @@ EXAMPLE OUTPUT:
 
 USER MESSAGE:
 "${safeMessage}"
-
+${await buildCorrectionContext()}
 OUTPUT ONLY THE JSON ARRAY:`;
 
   try {
@@ -769,10 +773,53 @@ function resolveToolName(rawIntent, availableTools) {
 // ============================================================
 
 export async function plan({ message, chatContext = {} }) {
+  const result = await _planInternal({ message, chatContext });
+
+  // Track the routing decision for user correction feedback
+  if (result && result.length > 0 && !result[0]?.context?.correctionLogged) {
+    _lastRoutingDecision = {
+      userMessage: (message || "").trim().substring(0, 200),
+      tool: result.map(s => s.tool).join(" → "),
+      reasoning: result[0]?.reasoning || "unknown",
+    };
+  }
+
+  return result;
+}
+
+async function _planInternal({ message, chatContext = {} }) {
   const trimmed = (message || "").trim();
   const lower = trimmed.toLowerCase();
 
   console.log("🧠 Planning steps for:", trimmed);
+
+  // ── USER CORRECTION DETECTION ──
+  // If user says "you chose the wrong tool" or "use X instead", log it and respond
+  const correction = detectCorrection(trimmed);
+  if (correction) {
+    console.log(`[planner] 📝 User correction detected: ${correction.type}`);
+    const loggedEntry = await logCorrection(correction, {
+      previousUserMessage: _lastRoutingDecision.userMessage,
+      previousToolUsed: _lastRoutingDecision.tool,
+      previousReasoning: _lastRoutingDecision.reasoning,
+    });
+
+    // If user specified the correct tool ("use X instead", "should have been X")
+    if (correction.correctTool) {
+      const resolved = resolveToolName(correction.correctTool, listAvailableTools());
+      if (resolved) {
+        console.log(`[planner] 📝 User correction: re-routing to "${resolved}" for previous message`);
+        return [{ tool: "llm", input: `The user corrected my routing. They said I should have used the "${resolved}" tool instead of "${_lastRoutingDecision.tool || "unknown"}" for their previous request: "${_lastRoutingDecision.userMessage || "unknown"}". Acknowledge the correction, explain that I've logged this feedback and will route to "${resolved}" next time for similar requests. Be brief and friendly.`, context: { correctionLogged: true, correctTool: resolved, previousTool: _lastRoutingDecision.tool }, reasoning: "user_correction_acknowledged" }];
+      }
+    }
+
+    // If just a "wrong tool" without specifying the right one, or an inquiry
+    if (correction.type === "inquiry") {
+      return [{ tool: "llm", input: `The user asked why I chose the "${_lastRoutingDecision.tool || "unknown"}" tool for their message: "${_lastRoutingDecision.userMessage || "unknown"}". My reasoning was: "${_lastRoutingDecision.reasoning || "not recorded"}". Explain in a helpful way why this tool was selected, and if they think it was wrong, they can say "use X instead" or "that should have been X" and I'll log the correction for future improvement.`, context: {}, reasoning: "user_routing_inquiry" }];
+    }
+
+    return [{ tool: "llm", input: `The user said I chose the wrong tool. Previous message: "${_lastRoutingDecision.userMessage || "unknown"}", tool used: "${_lastRoutingDecision.tool || "unknown"}". Acknowledge the mistake, apologize briefly, and ask which tool they would have preferred. Mention they can say "use X instead" or "should have been X" and I'll remember for next time. Be concise.`, context: { correctionLogged: true }, reasoning: "user_correction_wrong_tool" }];
+  }
 
   // ── NEW GUARD: Detect Scheduling Intents First ──
   // Prevents "schedule self evolve" from triggering an immediate cycle
@@ -1569,12 +1616,17 @@ if (
       sourceInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "get the news";
     }
 
+    // Extract the user's analysis focus topic (e.g., "the new Spiderman movie" from "analyze sentiment on the new Spiderman movie")
+    const focusMatch = trimmed.match(/(?:analy[sz]e|sentiment|summarize|classify)\s+(?:sentiment\s+)?(?:on|about|of|for|regarding)\s+(?:the\s+)?(.+?)(?:\s*,|\s+and\s+|\s+send\s+|\s+then\s+|$)/i);
+    const focusTopic = focusMatch ? focusMatch[1].replace(/\s+(?:and|then)\s*$/i, "").trim() : "";
+
     // Detect analysis tool
     const useNlp = /\b(nlp\s+tool|nlp|extract\s+entities|NER)\b/i.test(lower);
     const analysisTool = useNlp ? "nlp_tool" : "llm";
+    const topicInstruction = focusTopic ? `Focus specifically on content related to "${focusTopic}". Ignore tweets that are clearly about other topics.` : "";
     const analysisPrompt = useNlp
-      ? `analyze sentiment of the data`
-      : `Analyze the sentiment and key themes. Provide: 1) Overall sentiment (positive/negative/neutral), 2) Key themes, 3) Notable highlights. Format as a clear, readable summary.`;
+      ? `analyze sentiment of the data${focusTopic ? ` about ${focusTopic}` : ""}`
+      : `Analyze the sentiment and key themes of the following tweets.${topicInstruction ? " " + topicInstruction : ""} Provide: 1) Overall sentiment (positive/negative/neutral/mixed) with your own assessment — do NOT use scores from any previous analysis, judge the actual tweet content yourself, 2) Key themes discussed, 3) 2-3 notable tweet quotes WITH their tweet URLs (use the URLs from the data). Format as a clear, readable summary suitable for a WhatsApp message. Do NOT ask follow-up questions — just deliver the analysis.`;
 
     // Detect destination
     let destTool = "whatsapp";
