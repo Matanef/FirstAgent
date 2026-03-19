@@ -1576,11 +1576,13 @@ if (
   if (/\b(?:search\s+(?:x|twitter)|tweet|complaint|pain\s*point)\b/i.test(lower) &&
       /\b(?:categorize|classify|summarize|analyze)\b/i.test(lower) &&
       /\b(?:sheet|spreadsheet|google)\b/i.test(lower)) {
-    // Extract the search topic
-    const topicMatch = trimmed.match(/(?:complaints?\s+about|search\s+(?:x|twitter)\s+for)\s+['"]?(.+?)['"]?\s*(?:and|\.|\s+Use\b|\s+exclude)/i);
-    const topic = topicMatch ? topicMatch[1].trim() : trimmed.split(/\.\s+/)[0];
-    // Extract sheet ID
-    const sheetIdMatch = trimmed.match(/(?:Sheet\s*ID\s*\[?|spreadsheets\/d\/)([a-zA-Z0-9_-]{20,60})\]?/i) || trimmed.match(/\[([a-zA-Z0-9_-]{25,60})\]/);
+    // Extract the search topic (strip "complaints about" prefix — we re-add it in the step input)
+    const topicMatch = trimmed.match(/(?:complaints?\s+about|search\s+(?:x|twitter)\s+for)\s+['"]?(.+?)['"]?\s*(?:,\s*(?:and\s+)?use|,\s*categorize|and\s+(?:use|categorize|save)|\.|\s+exclude)/i);
+    let topic = topicMatch ? topicMatch[1].trim() : trimmed.split(/[.,]/)[0];
+    // If topic already starts with "complaints about", strip it to avoid doubling
+    topic = topic.replace(/^complaints?\s+about\s+/i, "").replace(/,\s*$/, "").trim();
+    // Extract sheet ID — support "Google Sheets <ID>", "sheet <ID>", URL, or bare long alphanumeric
+    const sheetIdMatch = trimmed.match(/(?:sheets?|spreadsheets?|spreadsheets\/d\/)\s*([a-zA-Z0-9_-]{20,60})/i) || trimmed.match(/\b([a-zA-Z0-9_-]{25,60})\b/);
     const sheetId = sheetIdMatch ? sheetIdMatch[1] : null;
     // Extract categories
     const catMatch = trimmed.match(/(?:categorize|classify)\s+(?:each\s+)?(?:complaint|tweet|result)?\s*(?:into|as|by)\s+['"]?(.+?)['"]?\s*(?:,\s*and\s+write|,\s*and\s+append|\.\s*Finally)/i);
@@ -1588,9 +1590,9 @@ if (
 
     console.log(`[planner] Compound (lead-gen pipeline): x → llm → sheets | topic="${topic}" sheet=${sheetId || "none"}`);
     return [
-      { tool: "x", input: `search X for complaints about ${topic} exclude retweets`, context: { action: "leadgen" }, reasoning: "leadgen_pipeline_search" },
-      { tool: "llm", input: `Categorize each tweet into ${categories}. For each tweet, write a 1-sentence summary. Return ONLY a JSON array of arrays: [["@username", "summary sentence", "Category"], ...]. No markdown, no explanation — just the JSON array.`, context: { useChainContext: true }, reasoning: "leadgen_pipeline_categorize" },
-      { tool: "sheets", input: `batch append categorized results to sheet ${sheetId || "SHEET_ID_NEEDED"}`, context: { useChainContext: true, action: "append", spreadsheetId: sheetId, range: "Sheet1!A:C" }, reasoning: "leadgen_pipeline_append" }
+      { tool: "x", input: `search X for complaints about ${topic}, exclude retweets`, context: { action: "leadgen" }, reasoning: "leadgen_pipeline_search" },
+      { tool: "llm", input: `Categorize each tweet into ${categories}. For each tweet, include the poster's display name (NOT their @handle), a 1-sentence summary, the category, and the tweet URL. Return ONLY a JSON array of arrays where the FIRST row is the header: [["Name", "Summary", "Category", "Tweet URL"], ["Display Name", "summary sentence", "Category", "https://x.com/..."], ...]. No markdown, no explanation — just the JSON array.`, context: { useChainContext: true }, reasoning: "leadgen_pipeline_categorize" },
+      { tool: "sheets", input: `batch append categorized results to sheet ${sheetId || "SHEET_ID_NEEDED"}`, context: { useChainContext: true, action: "append", spreadsheetId: sheetId, range: "Sheet1!A:D" }, reasoning: "leadgen_pipeline_append" }
     ];
   }
 

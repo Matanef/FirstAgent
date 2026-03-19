@@ -348,8 +348,23 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
     const msgContext = typeof message === "object" ? (message.context || {}) : {};
     const isConversational = msgContext.conversational === true;
 
+    // CHAIN CONTEXT: if previous tool output is available, prepend it to the prompt
+    // so the LLM can actually see the data it needs to process
+    let llmPrompt = getMessageText(message);
+    if (msgContext.chainContext?.previousOutput) {
+      // Prefer plain text (shorter, cleaner) over HTML
+      const prevRaw = msgContext.chainContext.previousRaw;
+      const prevData = prevRaw?.plain || prevRaw?.text ||
+        (typeof msgContext.chainContext.previousOutput === "string"
+          ? msgContext.chainContext.previousOutput
+          : JSON.stringify(msgContext.chainContext.previousOutput));
+      const prevTool = msgContext.chainContext.previousTool || "previous step";
+      console.log(`🧠 [llm] Injecting chain context from "${prevTool}" (${prevData.length} chars)`);
+      llmPrompt = `Here is the data from the ${prevTool} tool that you need to process:\n\n---\n${prevData}\n---\n\nNow, based on the above data:\n${llmPrompt}`;
+    }
+
     const reply = await runLLMWithFullMemory({
-      userMessage: getMessageText(message),
+      userMessage: llmPrompt,
       conversationId,
       sentiment,
       entities,
@@ -386,7 +401,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   tool = actualToolKey;
 
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
       // Pass the full message object so email() can extract both text AND context
       // (email tool reads query.text and query.context internally)
