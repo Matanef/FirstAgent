@@ -1556,8 +1556,10 @@ if (
     let sourceInput = trimmed;
     if (/\b(?:search\s+(?:x|twitter)|tweets?\s+about|on\s+(?:x|twitter))\b/i.test(lower)) {
       sourceTool = "x";
-      const topicMatch = trimmed.match(/(?:search\s+(?:x|twitter)\s+for|tweets?\s+about)\s+['"]?(.+?)['"]?\s*(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize|and\s+(?:use|analy|send|summarize)|\.)/i);
-      const topic = topicMatch ? topicMatch[1].replace(/,\s*$/, "").trim() : "topic";
+      const topicMatch = trimmed.match(/(?:search\s+(?:x|twitter)\s+for|tweets?\s+about)\s+['"]?(.+?)['"]?\s*(?:,\s*(?:and\s+)?(?:use|read|get|then)|,\s*(?:analy|summarize|classify|send)|and\s+(?:use|analy|send|summarize)|\.)/i);
+      let topic = topicMatch ? topicMatch[1].replace(/,\s*$/, "").trim() : "topic";
+      // Strip trailing instructions that leaked into the topic (e.g., "read the first 10 tweets")
+      topic = topic.replace(/,?\s*(?:read|get|show|fetch)\s+(?:the\s+)?(?:first|last|top|latest)?\s*\d*\s*(?:tweets?|posts?|results?)?\s*$/i, "").trim() || topic;
       sourceInput = `search X for ${topic}`;
     } else if (/\b(?:moltbook)\b/i.test(lower)) {
       sourceTool = "moltbook";

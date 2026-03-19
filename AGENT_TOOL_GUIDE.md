@@ -1026,13 +1026,28 @@ The `hasCompoundIntent()` function uses 8 patterns to detect multi-intent querie
 The agent routes complex queries through a 3-layer decomposition pipeline, producing multi-step plans with context piping between steps:
 
 ### Hardcoded Compound Patterns (2-3 steps, instant)
+
+**2-Step Patterns:**
 - **Search + Email**: `"Search for X and email me the results"` → [search → email]
 - **Review + FileWrite**: `"Review planner.js and create an improved version"` → [review → fileWrite]
 - **Content + Email**: `"Send an email with the summary of the news"` → [news → email]
 - **Email-me-the-X**: `"Email me the weather"` → [weather → email]
 - **Email-me-the-X (with recipient)**: `"Send john@example.com an email with the latest news"` → [news → email(to: john@example.com)]
+- **Content + WhatsApp**: `"Check the weather and whatsapp it to 0587426393"` → [weather → whatsapp]
+- **X + WhatsApp**: `"Get X trends and send to whatsapp 0587426393"` → [x → whatsapp]
+
+**3-Step Analyze Pipelines (source → analysis → destination):**
+- **X → LLM → WhatsApp**: `"search X for @DiscussingFilm, use llm to analyze sentiment on the new Spiderman movie and send a summary to whatsapp 0587426393"` → [x → llm → whatsapp]
+- **X → NLP → WhatsApp**: `"search X for Bitcoin, analyze sentiment with nlp, send to whatsapp 0587426393"` → [x → nlp_tool → whatsapp]
+- **X → LLM → Email**: `"search X for Tesla, analyze the sentiment, email me the results"` → [x → llm → email]
+- **Moltbook → LLM → WhatsApp**: `"get the moltbook feed, summarize it, and send to whatsapp 0587426393"` → [moltbook → llm → whatsapp]
+- **News → LLM → Email**: `"get the latest news, summarize the highlights, email me"` → [news → llm → email]
+
+**Lead-Gen Pipeline (X → LLM → Sheets):**
+- `"search X for complaints about Netflix, categorize them into billing/content/streaming and save to Google Sheets 1BxiMVs..."` → [x(leadgen) → llm → sheets]
 
 ### LLM Decomposer (1-5 steps, flexible)
+For queries that don't match hardcoded patterns, the LLM decomposes into steps:
 - **News + Summarize + Email**: `"Get the latest tech news, summarize it, and email me the summary"` → [news → llm → email]
 - **Search + FileWrite + Email**: `"Search for AI breakthroughs, save a summary to a file, and email it to me"` → [search → fileWrite → email]
 - **Finance + WhatsApp**: `"Check Tesla stock price and send it to 0541234567 via WhatsApp"` → [finance → whatsapp]
@@ -1049,6 +1064,28 @@ Each step in a multi-step plan receives the output of the previous step via `use
 - Step 2 can use Step 1's results (e.g., email sends the search results)
 - Step 3 can use Step 2's results (e.g., file write uses the LLM summary)
 - The coordinator automatically pipes data between steps
+
+### Writing Good Compound Prompts
+
+The agent parses your natural language into tool steps. Here's how to get the best results:
+
+**Structure:** `[source action] + [what to do with it] + [where to send it]`
+
+**Good prompts** — clear separation between steps:
+- `"search X for @DiscussingFilm, analyze sentiment on the new Spiderman movie, send summary to whatsapp 0587426393"`
+- `"get moltbook feed, summarize the top posts, email me"`
+- `"search X for Tesla complaints, categorize them, save to Google Sheets 1BxiMVs..."`
+
+**Avoid** — instructions that blend into the search topic:
+- ~~`"search X for @DiscussingFilm, read the first 10 tweets, use llm to analyze..."`~~ — "read the first 10 tweets" leaks into the search query
+- ~~`"search X for Bitcoin and also check Ethereum then analyze both"`~~ — multiple search targets in one step
+
+**Tips:**
+1. **Separate steps with commas or "and"** — `"search X for topic, analyze sentiment, send to whatsapp"`
+2. **Put the topic right after "search X for"** — don't add filtering instructions between the topic and the next step
+3. **Use explicit tool names when you care** — `"use llm to analyze"` vs `"use nlp to analyze"` (NLP gives a score, LLM gives a readable summary)
+4. **Include phone number right after "whatsapp"** — `"send to whatsapp 0587426393"`
+5. **For X searches, use `@handle` for user tweets or plain keywords for topic search** — `"search X for @elonmusk"` or `"search X for AI regulation"`
 
 ---
 
@@ -1433,57 +1470,75 @@ These are caught by the fast regex-based compound detection:
 8. `"Check the weather and send it a whatsapp message to 0587426393"`
    → [weather → whatsapp]
 
-### 3-Step Prompts (LLM Sequential Logic Engine)
+### 3-Step Prompts (Hardcoded Analyze Pipelines)
+These are caught by the 3-step compound pattern (source → analysis → destination):
+
+6. `"search X for @DiscussingFilm, use llm to analyze sentiment on the new Spiderman movie and send a summary to whatsapp 0587426393"`
+   → [x → llm → whatsapp]
+
+7. `"search X for Bitcoin, analyze sentiment with nlp, and send to whatsapp 0587426393"`
+   → [x → nlp_tool → whatsapp]
+
+8. `"search X for Tesla complaints, analyze the sentiment, and email me the results"`
+   → [x → llm → email]
+
+9. `"get the moltbook feed, summarize the key themes, and send to whatsapp 0587426393"`
+   → [moltbook → llm → whatsapp]
+
+10. `"get the news, summarize the top stories, and email me"`
+    → [news → llm → email]
+
+### 3-4 Step Prompts (LLM Sequential Logic Engine)
 These reach the LLM decomposer for flexible multi-step planning:
 
-6. `"Get the latest tech news, summarize the top 3 articles, and email me the summary"`
-   → [news → llm (summarize) → email]
+11. `"Get the latest tech news, summarize the top 3 articles, and email me the summary"`
+    → [news → llm (summarize) → email]
 
-7. `"Search for Node.js best practices, save a summary to E:/testFolder/nodejs-guide.md, and email me the file"`
-   → [search → fileWrite → email]
+12. `"Search for Node.js best practices, save a summary to E:/testFolder/nodejs-guide.md, and email me the file"`
+    → [search → fileWrite → email]
 
-8. `"Check Tesla stock price, get the latest financial news, and send both via WhatsApp to 0541234567"`
-   → [finance → news → whatsapp]
+13. `"Check Tesla stock price, get the latest financial news, and send both via WhatsApp to 0541234567"`
+    → [finance → news → whatsapp]
 
-9. `"Get the weather in Tel Aviv, check Premier League scores, and create a daily briefing file at E:/testFolder/briefing.md"`
-   → [weather → sports → fileWrite]
+14. `"Get the weather in Tel Aviv, check Premier League scores, and create a daily briefing file at E:/testFolder/briefing.md"`
+    → [weather → sports → fileWrite]
 
 ### 4-Step Prompts (LLM Sequential Logic Engine — Complex)
 These test the agent's ability to decompose longer sequences:
 
-10. `"Search for AI breakthroughs, get the latest tech news, summarize everything into key points, and email the summary to efratimatan@gmail.com"`
+15. `"Search for AI breakthroughs, get the latest tech news, summarize everything into key points, and email the summary to efratimatan@gmail.com"`
     → [search → news → llm (summarize) → email]
 
-11. `"Check the weather in Tel Aviv, get today's Premier League scores, search for trending GitHub repos, and save a daily report to E:/testFolder/daily-report.md"`
+16. `"Check the weather in Tel Aviv, get today's Premier League scores, search for trending GitHub repos, and save a daily report to E:/testFolder/daily-report.md"`
     → [weather → sports → githubTrending → fileWrite]
 
-12. `"Get the latest news about AI, review server/planner.js for improvement opportunities, create a summary of both, and email it to me"`
+17. `"Get the latest news about AI, review server/planner.js for improvement opportunities, create a summary of both, and email it to me"`
     → [news → review → llm (summarize) → email]
 
-13. `"Check Tesla and Apple stock prices, get financial news, summarize the market outlook, and send it via WhatsApp to 0541234567"`
+18. `"Check Tesla and Apple stock prices, get financial news, summarize the market outlook, and send it via WhatsApp to 0541234567"`
     → [finance → news → llm (summarize) → whatsapp]
 
 ### Single-Step Prompts (Should NOT Decompose)
 These should be caught by certainty branches and stay as single steps:
 
-14. `"What's the weather in Paris?"` → [weather] (certainty branch)
-15. `"Hello, how are you?"` → [llm] (conversational/greeting)
-16. `"What is 5 * 3?"` → [calculator] (certainty branch)
-17. `"Search for JavaScript tutorials"` → [search] (certainty branch)
-18. `"When does Arsenal play next?"` → [sports] (certainty branch)
+19. `"What's the weather in Paris?"` → [weather] (certainty branch)
+20. `"Hello, how are you?"` → [llm] (conversational/greeting)
+21. `"What is 5 * 3?"` → [calculator] (certainty branch)
+22. `"Search for JavaScript tutorials"` → [search] (certainty branch)
+23. `"When does Arsenal play next?"` → [sports] (certainty branch)
 
 ### Conversational Partner Mode Prompts (Should Route to LLM with Enriched Context)
 These should activate personal conversation detection and NOT trigger any tools:
 
-19. `"I've been thinking about switching from React to Svelte, what's your opinion?"` → [llm] (personal_conversation)
-20. `"I'm feeling overwhelmed with all the new AI tools coming out, how do you keep up?"` → [llm] (personal_conversation)
-21. `"Based on what we've talked about, what do you think would be a good side project for me?"` → [llm] (personal_conversation, uses full profile + conversation history)
-22. `"What do you think about the current state of open source?"` → [llm] (opinion-seeking, NOT search)
+24. `"I've been thinking about switching from React to Svelte, what's your opinion?"` → [llm] (personal_conversation)
+25. `"I'm feeling overwhelmed with all the new AI tools coming out, how do you keep up?"` → [llm] (personal_conversation)
+26. `"Based on what we've talked about, what do you think would be a good side project for me?"` → [llm] (personal_conversation, uses full profile + conversation history)
+27. `"What do you think about the current state of open source?"` → [llm] (opinion-seeking, NOT search)
 
 ### False-Positive Guard Tests (Should NOT Trigger Conversational Mode)
 These contain first-person pronouns but are tool requests:
 
-23. `"I want to search for the latest news about AI"` → [search] (tool intent overrides personal detection)
-24. `"I think the stock price of Tesla is interesting, show me"` → [finance] (tool intent)
-25. `"I feel like checking my emails"` → [email] (tool intent)
-26. `"Show me what I have on my calendar tomorrow"` → [calendar] (tool intent)
+28. `"I want to search for the latest news about AI"` → [search] (tool intent overrides personal detection)
+29. `"I think the stock price of Tesla is interesting, show me"` → [finance] (tool intent)
+30. `"I feel like checking my emails"` → [email] (tool intent)
+31. `"Show me what I have on my calendar tomorrow"` → [calendar] (tool intent)
