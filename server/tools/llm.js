@@ -3,6 +3,7 @@
 
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
+import { getKnowledgeContext } from "../knowledge.js";
 
 /**
  * Internal helper: perform a POST to Ollama with timeout + abort
@@ -51,9 +52,23 @@ export async function llm(prompt, configOptions = {}) {
   const url = CONFIG.LLM_API_URL + "api/generate";
 
   try {
+    // Inject passive knowledge for user-facing prompts (not internal tool calls)
+    let finalPrompt = prompt;
+    if (!configOptions.skipKnowledge && !configOptions.format) {
+      try {
+        const knowledgeCtx = await getKnowledgeContext();
+        if (knowledgeCtx) {
+          finalPrompt = `${knowledgeCtx}\n\n---\n\n${prompt}`;
+        }
+      } catch (e) {
+        // Non-blocking — don't fail the LLM call if knowledge is unavailable
+        console.warn("[llm] Knowledge injection failed:", e.message);
+      }
+    }
+
     const body = {
       model,
-      prompt,
+      prompt: finalPrompt,
       stream: false,
       ...(format ? { format } : {}),
       options: {

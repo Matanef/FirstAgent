@@ -87,7 +87,7 @@ const FIRST_PERSON = /\b(i|i'm|i've|i'll|i'd|my|me|myself)\b/i;
 const EMOTIONAL_REFLECTIVE = /\b(feel|feeling|felt|think|thinking|thought|believe|wonder|wondering|worried|worry|anxious|stressed|burned?\s*out|overwhelm|happy|sad|angry|frustrated|confused|excited|proud|afraid|scared|lonely|grateful|thankful|tired|exhausted|motivated|unmotivated|struggle|struggling|cope|coping|dealing\s+with|going\s+through|miss|missed|love|hate|enjoy|bored|curious|conflicted|uncertain|hopeful|hopeless|depressed|inspired|disappointed|nervous|nostalgic|regret|appreciate|vent|venting|opinion|advice|perspective|honest|honestly|what\s+do\s+you\s+think|should\s+i|do\s+you\s+think|how\s+do\s+you\s+feel|what\s+would\s+you|can\s+we\s+talk|let'?s\s+talk|chat\s+about|between\s+us)\b/i;
 
 // Short conversational messages that are inherently personal (no tool intent)
-const PURE_CONVERSATIONAL = /^(hey|hi|hello|good\s+morning|good\s+evening|good\s+night|how\s+are\s+you|what'?s\s+up|sup|yo|thanks?|thank\s+you|you'?re?\s+(?:the\s+best|awesome|great|amazing)|nice|cool|lol|haha|wow|oh\s+really|that'?s\s+(?:interesting|cool|great|nice|funny|sad|crazy)|never\s+mind|forget\s+it|ok(?:ay)?|got\s+it|i\s+see|makes?\s+sense|fair\s+enough|good\s+point|true|right)\s*[.!?]*$/i;
+const PURE_CONVERSATIONAL = /^(hey|hi|hello|good\s+morning|good\s+evening|good\s+night|how\s+are\s+you|what'?s\s+up|sup|yo|thanks?|thank\s+you|you'?re?\s+(?:the\s+best|awesome|great|amazing)|nice|cool|lol|haha|wow|oh\s+really|that'?s\s+(?:interesting|cool|great|nice|funny|sad|crazy)|never\s+mind|forget\s+it|ok(?:ay)?|got\s+it|i\s+see|makes?\s+sense|fair\s+enough|good\s+point|true|right|bye|goodbye|see\s+you|brb|be\s+right\s+back|i'?ll?\s+be\s+(?:right\s+)?back|ttyl|talk\s+(?:to\s+you\s+)?later|gotta\s+go|i\s+need\s+to\s+restart\s+you.*|i'?m\s+(?:going\s+to\s+)?restart.*)\s*[.!?]*$/i;
 
 function isPersonalConversation(lower, original) {
   // Pure short greetings/acknowledgments → always personal
@@ -1454,8 +1454,11 @@ if (
   }
 
   // GitHub keywords
+  // Guard: "issue" alone is too generic — require GitHub context or plural "issues"
   // Guard: skip if compound intent detected (e.g. "check github issues and email me")
-  if (/\b(github|repo|repository|pull\s+request|issue|commit|branch|merge|fork)\b/i.test(lower) &&
+  const isGithubIntent = /\b(github|repo|repository|pull\s+requests?|PR|commit|merge|fork)\b/i.test(lower) ||
+    /\b(issues?|branch)\b/i.test(lower) && /\b(github|repo|pr|open|close|assign|label|milestone|merge|checkout)\b/i.test(lower);
+  if (isGithubIntent &&
       !hasExplicitFilePath(trimmed) &&
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: github");

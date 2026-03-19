@@ -3,6 +3,7 @@ import { safeFetch } from "../utils/fetch.js";
 import { CONFIG } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
 import { llm } from "./llm.js";
+import { extractFromSearch } from "../knowledge.js";
 
 const CACHE_FILE = "./search_cache.json";
 const CACHE_TTL = 3600000; // 1 hour
@@ -335,6 +336,9 @@ export async function search(query) {
   saveJSON(CACHE_FILE, cache);
 
   console.log(`✅ Returning ${topResults.length} deduplicated results from ${data.totalSources} sources`);
+
+  // Store facts in passive knowledge system (non-blocking)
+  extractFromSearch(topResults, synthesis, normalizedQuery).catch(e => console.warn("[search] Knowledge extraction failed:", e.message));
 
   return {
     tool: "search",

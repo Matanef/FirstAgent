@@ -4,6 +4,7 @@
 import Parser from "rss-parser";
 import { safeFetch } from "../utils/fetch.js";
 import { llm } from "./llm.js";
+import { extractFromNews } from "../knowledge.js";
 
 const parser = new Parser();
 
@@ -395,6 +396,9 @@ export async function news(request) {
         }
       </style>
     `;
+
+    // Store facts in passive knowledge system (non-blocking)
+    extractFromNews(summaries, topic).catch(e => console.warn("[news] Knowledge extraction failed:", e.message));
 
     return {
       tool: "news",
