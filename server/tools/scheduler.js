@@ -176,10 +176,13 @@ function extractTask(text) {
  */
 function detectSchedulerIntent(text) {
   const lower = text.toLowerCase();
-  if (/\b(list|show|view|my)\s*(schedule|scheduled|recurring|timer)/i.test(lower)) return "list";
-  if (/\b(cancel|stop|remove|delete|clear)\s*(schedule|timer|recurring|all)/i.test(lower)) return "cancel";
-  if (/\b(pause|disable)\s*(schedule|timer)/i.test(lower)) return "pause";
-  if (/\b(resume|enable|unpause)\s*(schedule|timer)/i.test(lower)) return "resume";
+  if (/\b(list|show|view|display|my)\s*(schedules?|scheduled|recurring|timer|tasks?)/i.test(lower)) return "list";
+  if (/\b(retrieve|get)\s*(all\s+)?(schedules?|scheduled|recurring)/i.test(lower)) return "list";
+  // Catch LLM-generated descriptions like "Retrieve and display the user's scheduled events"
+  if (/\b(retrieve|display|show|list)\b/i.test(lower) && /\bschedul/i.test(lower)) return "list";
+  if (/\b(cancel|stop|remove|delete|clear)\s*(schedules?|timer|recurring|all)/i.test(lower)) return "cancel";
+  if (/\b(pause|disable)\s*(schedules?|timer)/i.test(lower)) return "pause";
+  if (/\b(resume|enable|unpause)\s*(schedules?|timer)/i.test(lower)) return "resume";
   return "create";
 }
 

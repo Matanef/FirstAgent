@@ -1486,13 +1486,13 @@ if (
   // Must come BEFORE task management to prevent "schedule X every Y" → tasks
   // Removed "workflow" keyword — that now routes to the workflow tool above
   // Guard: "weekly report" / "generate a weekly performance report" → selfImprovement, not scheduler
-  if (/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
+  if (/\b(schedules?|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
       !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower) &&
       !/\b(performance\s+report|weekly\s+report|generate\s+.*report|summary\s+report|diagnostic\s+report)\b/i.test(lower)) {
     console.log("[planner] certainty branch: scheduler");
     const schedContext = {};
-    if (/\b(list|show|view|my)\s*(schedule|recurring)/i.test(lower)) schedContext.action = "list";
-    else if (/\b(cancel|stop|remove|delete)\s*(schedule|timer|recurring)/i.test(lower)) schedContext.action = "cancel";
+    if (/\b(list|show|view|my)\s*(schedules?|recurring)/i.test(lower)) schedContext.action = "list";
+    else if (/\b(cancel|stop|remove|delete)\s*(schedules?|timer|recurring)/i.test(lower)) schedContext.action = "cancel";
     else if (/\b(pause|disable)\b/i.test(lower)) schedContext.action = "pause";
     else if (/\b(resume|enable)\b/i.test(lower)) schedContext.action = "resume";
     return [{ tool: "scheduler", input: trimmed, context: schedContext, reasoning: "certainty_scheduler" }];
