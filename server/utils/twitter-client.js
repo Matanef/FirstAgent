@@ -659,9 +659,33 @@ export class TwitterClient {
     }
 
     const data = await res.json();
-    const result = data?.data?.create_tweet?.tweet_results?.result;
+
+    // Check for GraphQL-level errors (Twitter returns 200 OK but with errors array)
+    if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
+      const err = data.errors[0];
+      const code = err.code || err.extensions?.code || "unknown";
+      const msg = err.message || "Unknown Twitter error";
+      console.error(`[twitter-client] CreateTweet error ${code}: ${msg}`);
+
+      if (code === 226) {
+        throw new Error(`Twitter anti-automation block (226): ${msg}. Try posting manually from the browser first to verify the account, then wait a few hours before retrying.`);
+      }
+      if (code === 187) {
+        throw new Error(`Duplicate tweet (187): ${msg}`);
+      }
+      throw new Error(`CreateTweet error ${code}: ${msg}`);
+    }
+
+    // Twitter's response structure varies — try multiple paths
+    const result = data?.data?.create_tweet?.tweet_results?.result
+      || data?.data?.create_tweet?.tweet_result?.result
+      || data?.data?.create_tweet?.tweet_results?.tweet
+      || data?.data?.create_tweet;
+
     if (!result) {
-      throw new Error("CreateTweet response missing tweet data");
+      // Log the actual response shape for debugging
+      console.warn("[twitter-client] CreateTweet unexpected response:", JSON.stringify(data).substring(0, 500));
+      throw new Error("CreateTweet response missing tweet data — check logs for response shape");
     }
 
     const legacy = result.legacy || {};

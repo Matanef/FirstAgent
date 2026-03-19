@@ -76,11 +76,25 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
   await _acquireLock();
   try {
     ensureMemoryDirAndFileSync();
-    const tmp = `${file}.tmp`;
+    const tmp = `${file}.tmp.${Date.now()}`;
     const safeData = validateMemoryShape(obj);
     const data = JSON.stringify(safeData, null, 2);
     await fs.writeFile(tmp, data, "utf8");
-    await fs.rename(tmp, file);
+    // Windows EPERM workaround: retry rename up to 3 times with small delay
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await fs.rename(tmp, file);
+        break;
+      } catch (renameErr) {
+        if (renameErr.code === "EPERM" && attempt < 2) {
+          await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+          continue;
+        }
+        // Clean up tmp file on final failure
+        try { await fs.unlink(tmp); } catch { /* ignore */ }
+        throw renameErr;
+      }
+    }
     _cache = safeData;
     _cacheMtime = Date.now();
     console.log(`[memory] saveJSON succeeded: ${file} (${new Date().toISOString()})`);

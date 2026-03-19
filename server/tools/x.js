@@ -372,18 +372,52 @@ export async function x(request) {
       const searchResult = await searchTweets(query, 10);
 
       if (!searchResult.success || searchResult.tweets.length === 0) {
-        return { tool: "x", success: false, final: true, data: { text: `❌ No tweets found to analyze for "${query}"` } };
+        // Return a clear, structured failure — do NOT let downstream LLM hallucinate data
+        const errorMsg = searchResult.error
+          ? `❌ Search failed for "${query}": ${searchResult.error}`
+          : `❌ No tweets found to analyze for "${query}". Try a different search term or check if the topic is currently being discussed.`;
+        console.warn(`🐦 [x] Analyze mode failed — no tweets found for "${query}"`);
+        return {
+          tool: "x", success: false, final: true,
+          data: {
+            text: errorMsg,
+            noHallucinate: true, // Signal to ToT/executor: do NOT generate synthetic results
+          },
+        };
+      }
+
+      // Require at least 3 tweets for meaningful sentiment analysis
+      if (searchResult.tweets.length < 3) {
+        console.warn(`🐦 [x] Only ${searchResult.tweets.length} tweets found — too few for sentiment analysis`);
+        return {
+          tool: "x", success: true, final: true,
+          data: {
+            text: formatTweetsHTML(searchResult.tweets, query) + `\n<p>⚠️ Only ${searchResult.tweets.length} tweet(s) found — not enough for reliable sentiment analysis. Showing raw tweets instead.</p>`,
+            plain: `Tweets about "${query}": ${searchResult.tweets.length} results (too few for sentiment analysis)`,
+            raw: { tweets: searchResult },
+          },
+        };
       }
 
       console.log(`🐦 [x] Found ${searchResult.tweets.length} tweets. Analyzing sentiment...`);
       const sentiment = await analyzeSentiment(searchResult.tweets);
 
+      // Include tweet URLs in the output for verification
+      const tweetUrls = searchResult.tweets
+        .filter(t => t.url)
+        .slice(0, 3)
+        .map(t => t.url);
+      const urlSection = tweetUrls.length > 0
+        ? `\n<div class="x-sources"><strong>📎 Sources:</strong> ${tweetUrls.map(u => `<a href="${u}" target="_blank">${u}</a>`).join(" | ")}</div>`
+        : "";
+
       return {
         tool: "x", success: true, final: true,
         data: {
-          text: formatTweetsHTML(searchResult.tweets, query) + "\n" + formatSentimentHTML(sentiment),
-          plain: `Tweets about "${query}": ${searchResult.tweets.length} results\n\nSentiment: ${sentiment.overall_sentiment}\nThemes: ${sentiment.themes.join(", ")}\n${sentiment.summary}`,
+          text: formatTweetsHTML(searchResult.tweets, query) + "\n" + formatSentimentHTML(sentiment) + urlSection,
+          plain: `Tweets about "${query}": ${searchResult.tweets.length} results\n\nSentiment: ${sentiment.overall_sentiment}\nThemes: ${sentiment.themes.join(", ")}\n${sentiment.summary}${tweetUrls.length > 0 ? "\n\nSources:\n" + tweetUrls.join("\n") : ""}`,
           raw: { tweets: searchResult, sentiment },
+          tweetUrls, // Available for chain context (e.g., WhatsApp forwarding)
         },
       };
     }

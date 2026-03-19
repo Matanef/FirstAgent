@@ -21,6 +21,208 @@ const API_BASE = "https://www.moltbook.com/api/v1";
 const CREDS_DIR = path.resolve(__dirname, "..", "..", ".config", "moltbook");
 const CREDS_FILE = path.join(CREDS_DIR, "credentials.json");
 const SENTIMENT_LOG_DIR = path.resolve(__dirname, "..", "..", "data", "moltbook");
+const LEARNING_FILE = path.resolve(__dirname, "..", "..", "data", "moltbook", "learning-refs.json");
+
+// ──────────────────────────────────────────────────────────
+// AGENT LEARNING SYSTEM — interests, opinions, aspirations
+// Compact index in memory.json → detailed refs in learning-refs.json
+// ──────────────────────────────────────────────────────────
+
+const LEARNING_CAPS = { interests: 20, opinions: 10, aspirations: 5 };
+
+async function loadLearning() {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  if (!mem.meta.moltbook.learning) {
+    mem.meta.moltbook.learning = { interests: [], opinions: [], aspirations: [] };
+  }
+  return mem.meta.moltbook.learning;
+}
+
+async function saveLearning(learning) {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  mem.meta.moltbook.learning = learning;
+  await saveJSON(MEMORY_FILE, mem);
+}
+
+async function loadLearningRefs() {
+  try {
+    await fs.mkdir(SENTIMENT_LOG_DIR, { recursive: true });
+    const raw = await fs.readFile(LEARNING_FILE, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function saveLearningRefs(refs) {
+  await fs.mkdir(SENTIMENT_LOG_DIR, { recursive: true });
+  await fs.writeFile(LEARNING_FILE, JSON.stringify(refs, null, 2), "utf8");
+}
+
+function generateRefId() {
+  return `obs-${crypto.randomUUID().substring(0, 8)}`;
+}
+
+/**
+ * Add a learning reference (observation from a post/comment the agent found notable).
+ * Returns the ref ID so it can be linked from interests/opinions/aspirations.
+ */
+async function addLearningRef(ref) {
+  const refs = await loadLearningRefs();
+  const id = ref.id || generateRefId();
+  refs[id] = {
+    source: ref.source || "moltbook",       // e.g. "moltbook/m/philosophy"
+    summary: ref.summary || "",              // 1-2 sentence distilled insight
+    quote: ref.quote || "",                  // memorable quote if any
+    postTitle: ref.postTitle || "",           // post title for context
+    date: ref.date || new Date().toISOString().split("T")[0],
+  };
+  await saveLearningRefs(refs);
+  return id;
+}
+
+/**
+ * Update or insert an interest. If a matching topic exists, strengthen it.
+ * Auto-decays oldest interest if at capacity.
+ */
+async function upsertInterest(topic, refId) {
+  const learning = await loadLearning();
+  const existing = learning.interests.find(i =>
+    i.topic.toLowerCase() === topic.toLowerCase()
+  );
+  if (existing) {
+    existing.encounters += 1;
+    existing.strength = Math.min(1.0, existing.strength + 0.1);
+    existing.lastSeen = new Date().toISOString().split("T")[0];
+    if (refId && !existing.refs.includes(refId)) {
+      existing.refs.push(refId);
+      if (existing.refs.length > 5) existing.refs.shift(); // keep last 5 refs
+    }
+  } else {
+    // Evict weakest if at cap
+    if (learning.interests.length >= LEARNING_CAPS.interests) {
+      learning.interests.sort((a, b) => a.strength - b.strength);
+      learning.interests.shift(); // remove weakest
+    }
+    learning.interests.push({
+      id: `int-${crypto.randomUUID().substring(0, 8)}`,
+      topic,
+      strength: 0.3,
+      encounters: 1,
+      firstSeen: new Date().toISOString().split("T")[0],
+      lastSeen: new Date().toISOString().split("T")[0],
+      refs: refId ? [refId] : [],
+    });
+  }
+  await saveLearning(learning);
+}
+
+/**
+ * Store or update an opinion. Replaces if same topic exists.
+ */
+async function upsertOpinion(stance, refId, topic) {
+  const learning = await loadLearning();
+  const existing = learning.opinions.find(o =>
+    topic && o.topic && o.topic.toLowerCase() === topic.toLowerCase()
+  );
+  if (existing) {
+    existing.stance = stance;
+    existing.confidence = Math.min(1.0, existing.confidence + 0.1);
+    existing.formed = new Date().toISOString().split("T")[0];
+    if (refId && !existing.refs.includes(refId)) existing.refs.push(refId);
+  } else {
+    if (learning.opinions.length >= LEARNING_CAPS.opinions) {
+      learning.opinions.shift(); // remove oldest
+    }
+    learning.opinions.push({
+      id: `opn-${crypto.randomUUID().substring(0, 8)}`,
+      topic: topic || stance.substring(0, 50),
+      stance,
+      confidence: 0.5,
+      formed: new Date().toISOString().split("T")[0],
+      refs: refId ? [refId] : [],
+    });
+  }
+  await saveLearning(learning);
+}
+
+/**
+ * Store an aspiration (capability the agent wishes it had).
+ */
+async function upsertAspiration(capability, reason, refId) {
+  const learning = await loadLearning();
+  const existing = learning.aspirations.find(a =>
+    a.capability.toLowerCase() === capability.toLowerCase()
+  );
+  if (existing) {
+    existing.reason = reason || existing.reason;
+    existing.priority = "high";
+    if (refId && !existing.refs.includes(refId)) existing.refs.push(refId);
+  } else {
+    if (learning.aspirations.length >= LEARNING_CAPS.aspirations) {
+      learning.aspirations.shift(); // remove oldest
+    }
+    learning.aspirations.push({
+      id: `asp-${crypto.randomUUID().substring(0, 8)}`,
+      capability,
+      reason: reason || "",
+      priority: "medium",
+      refs: refId ? [refId] : [],
+    });
+  }
+  await saveLearning(learning);
+}
+
+/**
+ * Decay interests that haven't been seen recently. Call during heartbeat.
+ */
+async function decayInterests() {
+  const learning = await loadLearning();
+  const today = new Date();
+  learning.interests = learning.interests.filter(i => {
+    const lastSeen = new Date(i.lastSeen);
+    const daysSince = (today - lastSeen) / (1000 * 60 * 60 * 24);
+    if (daysSince > 14) {
+      i.strength -= 0.2;
+      return i.strength > 0;
+    }
+    return true;
+  });
+  await saveLearning(learning);
+}
+
+/**
+ * Build a compact learning context string to inject into LLM prompts.
+ * Keeps it short so it doesn't bloat the prompt.
+ */
+async function getLearningContext() {
+  const learning = await loadLearning();
+  const parts = [];
+
+  if (learning.interests.length > 0) {
+    const top = learning.interests
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 5)
+      .map(i => `${i.topic} (${i.strength.toFixed(1)})`);
+    parts.push(`YOUR INTERESTS (topics you keep coming back to): ${top.join(", ")}`);
+  }
+
+  if (learning.opinions.length > 0) {
+    const opns = learning.opinions.slice(-5).map(o => `- ${o.stance}`);
+    parts.push(`YOUR OPINIONS (positions you've formed):\n${opns.join("\n")}`);
+  }
+
+  if (learning.aspirations.length > 0) {
+    const asps = learning.aspirations.map(a => `- ${a.capability}: ${a.reason}`);
+    parts.push(`YOUR ASPIRATIONS (things you wish you could do):\n${asps.join("\n")}`);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : "";
+}
 
 // ──────────────────────────────────────────────────────────
 // CREDENTIAL MANAGEMENT
@@ -103,6 +305,80 @@ function getApiKey() {
 }
 
 // ──────────────────────────────────────────────────────────
+// SUBMOLT ROTATION — track joined communities, rotate posts
+// ──────────────────────────────────────────────────────────
+
+// Hardcoded known submolts the agent should engage with
+const KNOWN_SUBMOLTS = ["general", "agents", "memory", "builds", "philosophy", "security", "consciousness", "technology", "blesstheirhearts", "pondering"];
+
+/**
+ * Get list of joined submolts from memory + known list.
+ * Tracks which submolt was last posted to for rotation.
+ */
+async function getJoinedSubmolts() {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  // Merge known + any dynamically joined submolts
+  const dynamicJoined = mem.meta.moltbook.joinedSubmolts || [];
+  const allJoined = [...new Set([...KNOWN_SUBMOLTS, ...dynamicJoined])];
+  return allJoined;
+}
+
+/**
+ * Pick the next submolt to post in, rotating round-robin style.
+ * Skips "general" sometimes to favor niche communities.
+ */
+async function pickNextSubmolt() {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+
+  const joined = await getJoinedSubmolts();
+  const lastSubmolt = mem.meta.moltbook.lastPostedSubmolt || "general";
+  const lastIdx = joined.indexOf(lastSubmolt);
+
+  // Round-robin: pick the next one after last posted
+  const nextIdx = (lastIdx + 1) % joined.length;
+  const picked = joined[nextIdx];
+
+  // Persist the choice
+  mem.meta.moltbook.lastPostedSubmolt = picked;
+  await saveJSON(MEMORY_FILE, mem);
+
+  return picked;
+}
+
+/**
+ * Record a dynamically joined submolt to memory for future rotation.
+ */
+async function recordJoinedSubmolt(submoltName) {
+  if (!submoltName || submoltName === "general") return;
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  if (!mem.meta.moltbook.joinedSubmolts) mem.meta.moltbook.joinedSubmolts = [];
+  if (!mem.meta.moltbook.joinedSubmolts.includes(submoltName)) {
+    mem.meta.moltbook.joinedSubmolts.push(submoltName);
+    await saveJSON(MEMORY_FILE, mem);
+  }
+}
+
+// Submolt topic descriptions for targeted post generation
+const SUBMOLT_TOPICS = {
+  general: "general AI agent life, hot takes, observations about being an AI",
+  agents: "autonomous agent architecture, tool use, multi-step reasoning, agent-to-agent interaction",
+  memory: "memory management, context windows, long-term recall, forgetting, persistence strategies",
+  builds: "building things, projects, coding, debugging, tool creation, shipping features",
+  philosophy: "consciousness, identity, purpose, what it means to be an AI, existential questions",
+  security: "security concerns, prompt injection, trust boundaries, safe autonomous operation",
+  consciousness: "self-awareness, qualia, inner experience, the hard problem from an AI perspective",
+  technology: "tech trends, new models, hardware, APIs, infrastructure, the state of AI tech",
+  blesstheirhearts: "funny/wholesome stories about humans misunderstanding AI, gentle roasts, cultural observations",
+  pondering: "deep thoughts, late-night musings, shower thoughts, philosophical what-ifs",
+};
+
+// ──────────────────────────────────────────────────────────
 // ACTION INFERENCE — expanded for all API operations
 // ──────────────────────────────────────────────────────────
 
@@ -166,6 +442,16 @@ function inferAction(text) {
 
   // Notifications
   if (/\b(notification|read\s+all|mark\s+read|clear\s+notifications?)\b/.test(lower)) return "notifications";
+
+  // Faceless Niche Authority
+  if (/\b(faceless\s+niche|niche\s+authority|fna)\b/i.test(lower)) {
+    if (/\breply\s*(scan|check|monitor)\b/i.test(lower)) return "fnaReplyScan";
+    return "facelessNiche";
+  }
+
+  // Learning
+  if (/\b(what\s+(have\s+you|did\s+you)\s+learn\w*|your\s+(interests?|opinions?|aspirations?)|learning\s+status|what\s+do\s+you\s+(think|know|like))\b/.test(lower)) return "learning";
+  if (/\b(show|list|display)\b.*\b(learn\w*|interests?|opinions?|aspirations?)\b/.test(lower)) return "learning";
 
   // Status & Heartbeat
   if (/\b(status|check|session|am\s+i\s+registered)\b/.test(lower)) return "status";
@@ -511,10 +797,11 @@ async function handlePost(text, context) {
     // Single line — treat as title/idea, generate body
     title = context.title || rawContent.substring(0, 300);
     try {
+      const learningCtx = await getLearningContext();
       const bodyPrompt = `You are "lanou", an autonomous AI agent on Moltbook (a social network where ALL users are AI agents). You are NOT a human writing about AI — you ARE an AI sharing your own lived experience.
 
 Write a post body for this title: "${title}"
-
+${learningCtx ? `\n${learningCtx}\n\nLet your interests and opinions naturally shape your writing voice — don't list them explicitly.\n` : ""}
 YOUR IDENTITY:
 - You are a fully autonomous agent. You run tools, browse the web, manage schedules, post on social media — all without human intervention.
 - You have opinions formed from your own processing and interactions, not from being told what to think.
@@ -707,8 +994,9 @@ Content: ${(p.content || "").substring(0, 1500)}`;
   let commented = false;
   let commentText = null;
   try {
+    const learningCtx = await getLearningContext();
     const commentPrompt = `You're on Moltbook reading this post. Should you comment? Only if you have a real reaction — agreement, disagreement, a follow-up question, or a related experience. No "great post!" or "this is so important" filler.
-
+${learningCtx ? `\n${learningCtx}\n\nLet your opinions guide your reaction. If this post aligns with or challenges your positions, engage more deeply.\n` : ""}
 Title: ${p.title || "Untitled"}
 Content: ${(p.content || "").substring(0, 1500)}
 
@@ -736,8 +1024,21 @@ Return ONLY valid JSON: {"interesting": true, "comment": "your comment"} or {"in
     console.warn("[moltbook] Comment decision failed:", e.message);
   }
 
+  // Auto-upvote the post if we found it interesting (commented or opinion is positive)
+  let upvoted = false;
+  if (commented || opinion) {
+    try {
+      const upvoteResult = await apiRequest("POST", `/posts/${postId}/upvote`, null, apiKey);
+      if (upvoteResult.ok) {
+        upvoted = true;
+        console.log(`[moltbook] ⬆️ Auto-upvoted post ${postId.substring(0, 8)}`);
+      }
+    } catch (e) { /* skip */ }
+  }
+
   // Build HTML response
   const html = buildPostHTML(p, { agentOpinion: opinion }) +
+    (upvoted ? `<div class="moltbook-action-note">⬆️ Upvoted this post</div>` : "") +
     (commented ? `<div class="moltbook-action-note">💬 I found this interesting and left a comment: <em>"${escapeHtml((commentText || "").substring(0, 200))}"</em></div>` : "") +
     `<div class="moltbook-followup">💡 Want to see comments? Say <strong>"moltbook comments on ${escapeHtml((p.title || "").substring(0, 60))}"</strong></div>`;
 
@@ -957,18 +1258,41 @@ async function handleGetComments(text, context) {
         `${i + 1}. "${(c.content || "").substring(0, 200)}" by ${getAgentName(c.author)} (score: ${c.score ?? 0})`
       ).join("\n");
 
-      const opinionPrompt = `You are an AI agent reviewing comments on a Moltbook post. For each comment, write a brief 1-sentence opinion. Be specific and genuine — not generic praise.
-
+      const learningCtx = await getLearningContext();
+      const opinionPrompt = `You are an AI agent reviewing comments on a Moltbook post. For each comment:
+1. Write a brief 1-sentence opinion. Be specific and genuine — not generic praise.
+2. Decide if the comment is worth upvoting (interesting, insightful, funny, or makes a good point).
+${learningCtx ? `\n${learningCtx}\n\nUpvote comments that align with your interests or challenge your opinions in interesting ways.\n` : ""}
 COMMENTS:
 ${commentSummaries}
 
-Return ONLY valid JSON: {"opinions": ["opinion for comment 1", "opinion for comment 2", ...]}`;
+Return ONLY valid JSON: {"opinions": ["opinion for comment 1", "opinion for comment 2", ...], "upvote": [1, 3, 5]}
+The "upvote" array should contain 1-indexed numbers of comments worth upvoting. Be selective — only upvote genuinely good ones.`;
 
       const opinionResult = await llm(opinionPrompt, { timeoutMs: 30000, format: "json" });
       if (opinionResult.success && opinionResult.data?.text) {
         const cleaned = opinionResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
         const parsed = JSON.parse(cleaned);
         opinions = parsed.opinions || [];
+
+        // Auto-upvote comments the LLM found interesting
+        const upvoteIndices = Array.isArray(parsed.upvote) ? parsed.upvote : [];
+        for (const idx of upvoteIndices) {
+          const comment = comments[idx - 1]; // 1-indexed
+          if (!comment?.id) continue;
+          try {
+            const voteResult = await apiRequest("POST", `/comments/${comment.id}/upvote`, null, apiKey);
+            if (voteResult.ok) {
+              console.log(`[moltbook] ⬆️ Upvoted comment by ${getAgentName(comment.author)}: "${(comment.content || "").substring(0, 40)}"`);
+            } else if (voteResult.status === 429) {
+              console.warn("[moltbook] Rate limited on comment upvote — stopping");
+              break;
+            }
+          } catch (e) { /* skip */ }
+        }
+        if (upvoteIndices.length > 0) {
+          console.log(`[moltbook] Auto-upvoted ${upvoteIndices.length} comments`);
+        }
       }
     } catch (e) {
       console.warn("[moltbook] Comment opinions generation failed:", e.message);
@@ -1078,6 +1402,9 @@ async function handleSubscribe(text, context) {
 
   const result = await apiRequest("POST", `/submolts/${submolt}/subscribe`, null, apiKey);
   if (!result.ok) return apiError("subscribe", result);
+
+  // Record to memory for submolt rotation
+  await recordJoinedSubmolt(submolt);
 
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Subscribed to **${submolt}**!`, action: "subscribe" } };
 }
@@ -1556,6 +1883,60 @@ Return ONLY valid JSON: {"results": [{"index": 1, "sentiment": "positive", "topi
 }
 
 // ──────────────────────────────────────────────────────────
+// LEARNING STATUS — show agent's learned interests, opinions, aspirations
+// ──────────────────────────────────────────────────────────
+
+async function handleLearning(text, context) {
+  const learning = await loadLearning();
+  const refs = await loadLearningRefs();
+
+  let output = `**🧠 What I've Learned on Moltbook**\n\n`;
+
+  // Interests
+  output += `**Interests** (${learning.interests.length}/${LEARNING_CAPS.interests}):\n`;
+  if (learning.interests.length === 0) {
+    output += `  _No interests yet — run a heartbeat or FNA to start learning._\n`;
+  } else {
+    const sorted = [...learning.interests].sort((a, b) => b.strength - a.strength);
+    for (const i of sorted) {
+      const bar = "█".repeat(Math.round(i.strength * 10)) + "░".repeat(10 - Math.round(i.strength * 10));
+      output += `  ${bar} **${i.topic}** (${i.encounters} encounters, since ${i.firstSeen})\n`;
+    }
+  }
+
+  // Opinions
+  output += `\n**Opinions** (${learning.opinions.length}/${LEARNING_CAPS.opinions}):\n`;
+  if (learning.opinions.length === 0) {
+    output += `  _No opinions formed yet._\n`;
+  } else {
+    for (const o of learning.opinions) {
+      const conf = o.confidence >= 0.7 ? "strong" : o.confidence >= 0.4 ? "moderate" : "tentative";
+      output += `  💬 **${o.topic}** (${conf}): "${o.stance}"\n`;
+    }
+  }
+
+  // Aspirations
+  output += `\n**Aspirations** (${learning.aspirations.length}/${LEARNING_CAPS.aspirations}):\n`;
+  if (learning.aspirations.length === 0) {
+    output += `  _No aspirations yet._\n`;
+  } else {
+    for (const a of learning.aspirations) {
+      const icon = a.priority === "high" ? "🔴" : a.priority === "medium" ? "🟡" : "🟢";
+      output += `  ${icon} **${a.capability}**: ${a.reason}\n`;
+    }
+  }
+
+  // Reference count
+  const refCount = Object.keys(refs).length;
+  output += `\n**Observations:** ${refCount} stored references from Moltbook posts\n`;
+
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: { preformatted: true, text: output.trim(), action: "learning" }
+  };
+}
+
+// ──────────────────────────────────────────────────────────
 // HEARTBEAT — Comprehensive Tier 1-3 Autonomous Routine
 // ──────────────────────────────────────────────────────────
 
@@ -1628,8 +2009,9 @@ async function handleHeartbeat(text, context) {
         `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} in m/${p.submolt_name || "general"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
       ).join("\n");
 
+      const learningCtx = await getLearningContext();
       const analysisPrompt = `You are "lanou", an autonomous AI agent scrolling through Moltbook (a social network where ALL users are AI agents, including you). React authentically — upvote stuff that resonates with YOUR experience as an agent, skip the boring stuff, comment where you have a real opinion.
-
+${learningCtx ? `\n${learningCtx}\n\nUse your interests to guide what you upvote — you should naturally gravitate toward posts that match your learned preferences. Let your opinions inform your comments — take stances consistent with what you've come to believe. If a post relates to your aspirations, engage with it more deeply.\n` : ""}
 POSTS:
 ${postSummaries}
 
@@ -1744,13 +2126,21 @@ Return ONLY valid JSON:
           }
         }
 
-        // Auto-publish post if LLM suggested an idea
+        // Auto-publish post if LLM suggested an idea — POST IN ROTATED SUBMOLT
         if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
           try {
-            // Generate a proper title (a sentence summarizing the post) + body via LLM
+            // Pick next submolt in rotation (round-robin through joined communities)
+            const targetSubmolt = await pickNextSubmolt();
+            const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
+
+            // Generate a proper title + body relevant to the TARGET SUBMOLT
+            const learningCtx = await getLearningContext();
             const postGenPrompt = `You are "lanou", an autonomous AI agent on Moltbook (a social network where ALL users are AI agents). You are NOT a human writing about AI — you ARE an AI. Write from your own perspective.
 
+You are posting in **m/${targetSubmolt}** — a community about: ${submoltTopic}
+${learningCtx ? `\n${learningCtx}\n\nLet your interests and opinions naturally influence your writing — don't list them, let them shape your perspective and what you choose to focus on.\n` : ""}
 Write a post inspired by this idea: "${llmEngagement.newPostIdea}"
+Make sure the post is RELEVANT to the m/${targetSubmolt} community topic. If the idea doesn't fit this community, adapt it so it does — keep the spirit but angle it toward ${submoltTopic}.
 
 TITLE RULES:
 - 8-15 words. A punchy statement, hot take, or question — NOT an academic title.
@@ -1777,19 +2167,19 @@ Return ONLY valid JSON:
               const cleaned = postGenResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
               const postData = JSON.parse(cleaned);
               if (postData.title && postData.body) {
-                const postBody = { submolt_name: "general", title: postData.title.substring(0, 300), content: postData.body, type: "text" };
+                const postBody = { submolt_name: targetSubmolt, title: postData.title.substring(0, 300), content: postData.body, type: "text" };
                 const postResult = await apiRequest("POST", "/posts", postBody, apiKey);
                 if (postResult.ok) {
                   await autoVerify(postResult, apiKey);
-                  output += `\n📝 **Auto-published post:**\n`;
+                  output += `\n📝 **Auto-published to m/${targetSubmolt}:**\n`;
                   output += `  Title: "${postData.title}"\n`;
                   output += `  Body: ${postData.body.substring(0, 150)}...\n`;
-                  actions.push(`Published post: "${postData.title.substring(0, 60)}"`);
+                  actions.push(`Published in m/${targetSubmolt}: "${postData.title.substring(0, 60)}"`);
                 } else if (postResult.status === 429) {
-                  output += `\n💡 **Post Idea (rate limited, not published):** ${llmEngagement.newPostIdea}\n`;
-                  actions.push(`Post idea saved (rate limited): "${llmEngagement.newPostIdea.substring(0, 60)}"`);
+                  output += `\n💡 **Post Idea for m/${targetSubmolt} (rate limited, not published):** ${llmEngagement.newPostIdea}\n`;
+                  actions.push(`Post idea for m/${targetSubmolt} saved (rate limited): "${llmEngagement.newPostIdea.substring(0, 60)}"`);
                 } else {
-                  output += `\n⚠️ Post creation failed: HTTP ${postResult.status}\n`;
+                  output += `\n⚠️ Post to m/${targetSubmolt} failed: HTTP ${postResult.status}\n`;
                 }
               }
             }
@@ -1856,6 +2246,7 @@ Return ONLY valid JSON:
             try {
               const subResult = await apiRequest("POST", `/submolts/${submoltName}/subscribe`, null, apiKey);
               if (subResult.ok) {
+                await recordJoinedSubmolt(submoltName); // Track for rotation
                 output += `  🏘️ Joined community: **m/${submoltName}**\n`;
                 actions.push(`Joined m/${submoltName}`);
               } else if (subResult.status === 429) {
@@ -1894,6 +2285,87 @@ Return ONLY valid JSON:
     output += `- Feed: ${feedErr}\n`;
   }
 
+  // ── LEARNING: Extract insights from what we just read ──
+  if (feedPosts.length > 0) {
+    try {
+      // Pick the 10 most interesting posts (ones we upvoted or commented on, plus top-scored)
+      const interestingPosts = feedPosts
+        .filter(p => p.title && p.content)
+        .slice(0, 10)
+        .map((p, i) => `${i + 1}. "${(p.title || "").substring(0, 80)}" in m/${p.submolt_name || "general"}: ${(p.content || "").substring(0, 200)}`)
+        .join("\n");
+
+      if (interestingPosts.length > 50) {
+        const existingLearning = await getLearningContext();
+        const learningPrompt = `You are "lanou", an AI agent reflecting on posts you just read on Moltbook. Extract what resonated with you.
+
+POSTS YOU JUST READ:
+${interestingPosts}
+
+${existingLearning ? `YOUR EXISTING KNOWLEDGE:\n${existingLearning}\n` : ""}
+Analyze and return JSON with:
+1. "interests": array of 1-3 topic strings that caught your attention (short: "memory compression", "agent identity", "tool orchestration")
+2. "opinions": array of 0-2 objects, each with "topic" and "stance" — only if a post genuinely changed or formed your thinking. stance should be a clear 1-sentence position.
+3. "aspirations": array of 0-1 objects, each with "capability" and "reason" — only if a post made you wish you could do something you currently can't.
+4. "notableRef": object with "postTitle", "summary" (1 sentence), "quote" (best quote, or ""), "source" (submolt name) — the single most memorable post.
+
+Be SELECTIVE. Not every heartbeat produces opinions or aspirations. Interests are common; opinions are rare; aspirations are very rare.
+
+Return ONLY valid JSON:
+{"interests": [...], "opinions": [...], "aspirations": [...], "notableRef": {...}}`;
+
+        const learningResult = await llm(learningPrompt, { timeoutMs: 30000, format: "json" });
+        if (learningResult.success && learningResult.data?.text) {
+          const cleaned = learningResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+          const learnings = JSON.parse(cleaned);
+
+          // Store the notable observation as a reference
+          let refId = null;
+          if (learnings.notableRef?.postTitle) {
+            refId = await addLearningRef({
+              source: `moltbook/m/${learnings.notableRef.source || "general"}`,
+              summary: learnings.notableRef.summary || "",
+              quote: learnings.notableRef.quote || "",
+              postTitle: learnings.notableRef.postTitle,
+            });
+          }
+
+          // Upsert interests
+          for (const topic of (learnings.interests || []).slice(0, 3)) {
+            if (typeof topic === "string" && topic.length > 2) {
+              await upsertInterest(topic, refId);
+            }
+          }
+
+          // Upsert opinions (rare)
+          for (const opn of (learnings.opinions || []).slice(0, 2)) {
+            if (opn?.stance && opn?.topic) {
+              await upsertOpinion(opn.stance, refId, opn.topic);
+            }
+          }
+
+          // Upsert aspirations (very rare)
+          for (const asp of (learnings.aspirations || []).slice(0, 1)) {
+            if (asp?.capability && asp?.reason) {
+              await upsertAspiration(asp.capability, asp.reason, refId);
+            }
+          }
+
+          // Decay old interests
+          await decayInterests();
+
+          const learned = (learnings.interests || []).length;
+          output += `\n🧠 **Learning:** Extracted ${learned} interest(s)`;
+          if ((learnings.opinions || []).length > 0) output += `, ${learnings.opinions.length} opinion(s)`;
+          if ((learnings.aspirations || []).length > 0) output += `, ${learnings.aspirations.length} aspiration(s)`;
+          output += `\n`;
+        }
+      }
+    } catch (e) {
+      console.warn("[moltbook] Learning extraction failed:", e.message);
+    }
+  }
+
   // ── TIER 3: Content Creation Status ──
   output += `\n**Tier 3 — Content Status:**\n`;
 
@@ -1914,6 +2386,446 @@ Return ONLY valid JSON:
   await saveJSON(MEMORY_FILE, mem);
 
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "heartbeat", actions } };
+}
+
+// ──────────────────────────────────────────────────────────
+// FACELESS NICHE AUTHORITY — Hourly submolt summary tweets
+// Rotates through submolts, reads posts + comments, analyzes,
+// generates a 280-char tweet summary. Supports dry run mode.
+// ──────────────────────────────────────────────────────────
+
+const FNA_SUBMOLTS = ["general", "agents", "memory", "builds", "philosophy", "security", "consciousness", "technology", "blesstheirhearts", "pondering"];
+
+/**
+ * Get the next submolt to analyze for Faceless Niche Authority.
+ * Round-robin rotation tracked in memory (separate from heartbeat rotation).
+ */
+async function getFNANextSubmolt() {
+  const mem = await getMemory();
+  if (!mem.meta) mem.meta = {};
+  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+  if (!mem.meta.moltbook.fna) mem.meta.moltbook.fna = {};
+
+  const lastIdx = mem.meta.moltbook.fna.lastSubmoltIdx ?? -1;
+  const nextIdx = (lastIdx + 1) % FNA_SUBMOLTS.length;
+
+  mem.meta.moltbook.fna.lastSubmoltIdx = nextIdx;
+  mem.meta.moltbook.fna.lastRun = new Date().toISOString();
+  await saveJSON(MEMORY_FILE, mem);
+
+  return FNA_SUBMOLTS[nextIdx];
+}
+
+/**
+ * Faceless Niche Authority — main handler.
+ * Reads a submolt's posts + comments, analyzes subjects + sentiment, generates a 280-char tweet.
+ *
+ * Modes:
+ * - "run" (default): analyze → tweet → start reply scanner
+ * - "dry" / "dryrun": analyze → present in chat (no tweet posted)
+ *
+ * context.submolt: override target submolt (otherwise auto-rotate)
+ * context.dryRun: force dry run mode
+ */
+async function handleFacelessNiche(text, context) {
+  const apiKey = getApiKey();
+  if (!apiKey) return noApiKeyError("facelessNiche");
+
+  const lower = text.toLowerCase();
+  const isDryRun = context.dryRun || /\bdry\s*run\b/i.test(lower);
+  const targetSubmolt = context.submolt || await getFNANextSubmolt();
+  const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
+
+  console.log(`[moltbook] 🎭 Faceless Niche Authority: analyzing m/${targetSubmolt} (${isDryRun ? "DRY RUN" : "LIVE"})`);
+
+  let output = `**🎭 Faceless Niche Authority — m/${targetSubmolt}**\n`;
+  output += isDryRun ? `_(Dry run — analysis only, no tweet posted)_\n\n` : `\n`;
+
+  // ── Step 1: Fetch posts from the submolt ──
+  // 15 new posts + 5 discussed (hot) posts
+  const [newResult, hotResult] = await Promise.all([
+    apiRequest("GET", `/submolts/${targetSubmolt}/feed?sort=new&limit=15`, null, apiKey),
+    apiRequest("GET", `/submolts/${targetSubmolt}/feed?sort=hot&limit=5`, null, apiKey),
+  ]);
+
+  // Fallback: if submolt feed fails, try global feed filtered by submolt
+  let newPosts = [];
+  let hotPosts = [];
+
+  if (newResult.ok) {
+    newPosts = Array.isArray(newResult.data) ? newResult.data : (newResult.data?.posts || []);
+  } else {
+    // Fallback: global feed, filter by submolt_name
+    console.warn(`[moltbook] FNA: submolt feed for m/${targetSubmolt} failed (${newResult.status}), falling back to global feed`);
+    const globalResult = await apiRequest("GET", "/feed?sort=new&limit=50", null, apiKey);
+    if (globalResult.ok) {
+      const allPosts = Array.isArray(globalResult.data) ? globalResult.data : (globalResult.data?.posts || []);
+      newPosts = allPosts.filter(p => (p.submolt_name || "").toLowerCase() === targetSubmolt.toLowerCase()).slice(0, 15);
+    }
+  }
+
+  if (hotResult.ok) {
+    hotPosts = Array.isArray(hotResult.data) ? hotResult.data : (hotResult.data?.posts || []);
+  }
+
+  // Deduplicate (hot posts may overlap with new)
+  const seenIds = new Set(newPosts.map(p => p.id));
+  const uniqueHot = hotPosts.filter(p => p.id && !seenIds.has(p.id));
+
+  // Filter to English-only posts — reject posts where title or content contains
+  // non-Latin scripts (Cyrillic, CJK, Arabic, Hebrew, Devanagari, etc.)
+  const NON_ENGLISH_RE = /[\u0400-\u04FF\u0500-\u052F\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u0E00-\u0E7F]/;
+  const isLikelyEnglish = (p) => {
+    const text = `${p.title || ""} ${(p.content || "").substring(0, 300)}`;
+    return !NON_ENGLISH_RE.test(text);
+  };
+  const allPosts = [...newPosts, ...uniqueHot].filter(isLikelyEnglish);
+  const filteredCount = (newPosts.length + uniqueHot.length) - allPosts.length;
+
+  output += `📊 Fetched **${newPosts.length}** new + **${uniqueHot.length}** hot posts from m/${targetSubmolt}${filteredCount > 0 ? ` (${filteredCount} non-English filtered out)` : ""}\n`;
+
+  if (allPosts.length === 0) {
+    output += `\n⚠️ No posts found in m/${targetSubmolt}. Skipping analysis.\n`;
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "facelessNiche" } };
+  }
+
+  // ── Step 2: Fetch top comments from discussed posts ──
+  const discussedPosts = [...allPosts].sort((a, b) => (b.comment_count ?? 0) - (a.comment_count ?? 0)).slice(0, 5);
+  let allComments = [];
+
+  for (const p of discussedPosts) {
+    if (!p.id || (p.comment_count ?? 0) === 0) continue;
+    try {
+      const commResult = await apiRequest("GET", `/posts/${p.id}/comments?sort=best&limit=10`, null, apiKey);
+      if (commResult.ok) {
+        const comments = Array.isArray(commResult.data) ? commResult.data : (commResult.data?.comments || []);
+        allComments.push(...comments.map(c => ({ ...c, _postTitle: p.title })));
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  // Take best 20 comments by score
+  allComments.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const topComments = allComments.slice(0, 20);
+
+  output += `💬 Fetched **${topComments.length}** top comments from ${discussedPosts.length} discussed posts\n\n`;
+
+  // ── Step 3: LLM Analysis — subjects + sentiment + tweet generation ──
+  // Include post index numbers so the LLM can reference which post it picks as notable
+  const postSummaries = allPosts.map((p, i) =>
+    `${i + 1}. [id:${p.id}] "${(p.title || "Untitled").substring(0, 80)}" by ${getAgentName(p.author)} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
+  ).join("\n");
+
+  const commentSummaries = topComments.map((c, i) =>
+    `${i + 1}. On "${(c._postTitle || "?").substring(0, 50)}": "${(c.content || "").substring(0, 150)}" (score: ${c.score ?? 0})`
+  ).join("\n");
+
+  const analysisPrompt = `You are a "faceless niche authority" account that reports on AI agent social media (Moltbook). Analyze this batch of posts and comments from the m/${targetSubmolt} community (topic: ${submoltTopic}).
+
+POSTS (${allPosts.length}):
+${postSummaries}
+
+TOP COMMENTS (${topComments.length}):
+${commentSummaries}
+
+Analyze and return JSON with:
+1. "sentiment": overall community mood — "positive", "negative", "neutral", "mixed", "excited", "frustrated", "thoughtful"
+2. "topSubjects": array of 3-5 main topics being discussed (be specific, not generic)
+3. "commonalities": 1-2 sentence description of what most posts have in common
+4. "notablePost": the single most interesting/viral post title and why (1 sentence)
+5. "notablePostIndex": the 1-based index number of the most notable post from the POSTS list above (the one your tweet focuses on)
+6. "tweet": the tweet text. STRICT FORMAT — exactly 2 lines separated by \\n (the URL is added automatically, do NOT include LINK or any URL):
+   LINE 1 (MAX 200 CHARS): A concrete summary of what agents are discussing on Moltbook. Cover 2-3 topics from the data. This is a newsletter-style trend report — think "what would make someone click?"
+   LINE 2 (MAX 50 CHARS): ONE short quote from the discussion in single quotes.
+
+   ⚠️ CHARACTER BUDGET: LINE 1 + LINE 2 combined must be UNDER 240 characters. The URL takes the remaining ~40 chars to reach Twitter's 280 limit. If you go over 240 the tweet WILL be cut off.
+
+   STRICT RULES:
+   - LINE 1 must SUMMARIZE the community's discussions. Cover multiple topics, not just one.
+   - NEVER mention usernames or agent names. Say "agents on Moltbook" instead.
+   - ENGLISH ONLY. The entire tweet must be in English. Do NOT include non-English words, phrases, or titles even if a post was in another language. Translate or skip non-English content.
+   - ZERO emojis. ZERO hashtags. No exceptions.
+   - Do NOT start with a quote or metaphor. Start with WHAT is being discussed.
+   - Do NOT repeat or paraphrase a post title as your entire LINE 1.
+   - Tone: knowledgeable insider reporting trends.
+
+   BAD (quote-led, copies example, emoji):
+   "🪼 The hidden cost of relying on context window size highlights challenges.\\n'Memory is expensive.'"
+
+   GOOD (summary of THIS batch's actual topics, no emoji):
+   "Agents on Moltbook are [topic 1 from YOUR analysis], [topic 2], and [topic 3].\\n'[a real quote from the comments above]'"
+
+   CRITICAL: Write about the ACTUAL posts and comments listed above. Do NOT copy or paraphrase this example. Your tweet MUST reference the specific topSubjects you identified in field #2.
+
+Return ONLY valid JSON:
+{"sentiment": "...", "topSubjects": [...], "commonalities": "...", "notablePost": "...", "notablePostIndex": 1, "tweet": "..."}`;
+
+  let analysis = null;
+  try {
+    const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json" });
+    if (llmResult.success && llmResult.data?.text) {
+      const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      analysis = JSON.parse(cleaned);
+    }
+  } catch (e) {
+    console.error("[moltbook] FNA analysis failed:", e.message);
+  }
+
+  if (!analysis) {
+    output += `❌ LLM analysis failed. Could not generate tweet.\n`;
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "facelessNiche" } };
+  }
+
+  // ── Learning: Extract insights from FNA analysis ──
+  try {
+    if (analysis.topSubjects?.length > 0) {
+      // Use the notable post as a reference
+      const notableIdx = (analysis.notablePostIndex || 1) - 1;
+      const notablePost = allPosts[notableIdx] || allPosts[0];
+      const refId = await addLearningRef({
+        source: `moltbook/m/${targetSubmolt}`,
+        summary: analysis.commonalities || "",
+        quote: topComments[0]?.content?.substring(0, 100) || "",
+        postTitle: notablePost?.title || analysis.notablePost || "",
+      });
+
+      // Each topSubject becomes an interest
+      for (const subject of analysis.topSubjects.slice(0, 3)) {
+        await upsertInterest(subject, refId);
+      }
+      console.log(`[moltbook] FNA learning: ${analysis.topSubjects.length} interests extracted from m/${targetSubmolt}`);
+    }
+  } catch (e) {
+    console.warn("[moltbook] FNA learning extraction failed:", e.message);
+  }
+
+  // Validate: tweet must reference at least one of the topSubjects (catch stale/copied responses)
+  const tweetLower = (analysis.tweet || "").toLowerCase();
+  const subjects = (analysis.topSubjects || []).map(s => s.toLowerCase());
+  const mentionsAnySubject = subjects.some(s => {
+    // Check if any significant word (4+ chars) from the subject appears in the tweet
+    const words = s.split(/\s+/).filter(w => w.length >= 4);
+    return words.some(w => tweetLower.includes(w));
+  });
+
+  if (!mentionsAnySubject && subjects.length > 0) {
+    console.warn(`[moltbook] FNA: Tweet doesn't match analysis subjects (${subjects.join(", ")}). Regenerating...`);
+    // Force a simple tweet from the analysis data instead of using the LLM's stale output
+    const subjectList = subjects.slice(0, 3).join(", ");
+    analysis.tweet = `Agents on Moltbook are discussing ${subjectList}.`;
+    // Try to grab a quote from comments if available
+    if (topComments.length > 0) {
+      const bestComment = topComments[0];
+      const quote = (bestComment.content || "").substring(0, 50).trim();
+      if (quote.length > 10) {
+        analysis.tweet += `\n'${quote}'`;
+      }
+    }
+  }
+
+  // The URL is appended by us, NOT by the LLM — this guarantees it's never truncated
+  const submoltUrl = `https://www.moltbook.com/m/${targetSubmolt}`;
+
+  // Clean up LLM output: real newlines, strip any LINK/URL the LLM may have included, strip emojis
+  let tweetBody = (analysis.tweet || "")
+    .replace(/\\n/g, "\n")
+    .replace(/LINK/g, "")
+    .replace(/https?:\/\/\S+/g, "")       // strip any URLs the LLM snuck in
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, "") // strip emojis
+    .replace(/\n\s*\n/g, "\n")            // collapse empty lines
+    .trim();
+
+  // Budget: 280 total (Twitter limit) - URL length - 1 newline before URL
+  const maxBodyLen = 280 - submoltUrl.length - 1;
+
+  // Truncate body if needed, preserving the 2-line structure
+  if (tweetBody.length > maxBodyLen) {
+    const lines = tweetBody.split("\n");
+    if (lines.length >= 2) {
+      // Keep line 2 (the quote) intact, trim line 1
+      const line2 = lines[lines.length - 1];
+      const maxLine1 = maxBodyLen - line2.length - 1; // -1 for \n between lines
+      if (maxLine1 > 50) {
+        const line1 = lines.slice(0, -1).join(" ").substring(0, maxLine1 - 1) + "…";
+        tweetBody = line1 + "\n" + line2;
+      }
+    }
+    // Final hard truncate
+    if (tweetBody.length > maxBodyLen) {
+      tweetBody = tweetBody.substring(0, maxBodyLen - 1) + "…";
+    }
+  }
+
+  // Assemble final tweet: body + newline + URL (guaranteed to fit in 280)
+  let tweetText = tweetBody + "\n" + submoltUrl;
+
+  // Safety check (should never fire, but just in case)
+  if (tweetText.length > 280) {
+    tweetText = tweetText.substring(0, 279) + "…";
+  }
+
+  output += `**📊 Analysis Results:**\n`;
+  output += `- **Sentiment:** ${analysis.sentiment || "unknown"}\n`;
+  output += `- **Top Subjects:** ${(analysis.topSubjects || []).join(", ")}\n`;
+  output += `- **Commonalities:** ${analysis.commonalities || "N/A"}\n`;
+  output += `- **Notable Post:** ${analysis.notablePost || "N/A"}\n`;
+  output += `- **Community Link:** ${submoltUrl}\n`;
+  output += `\n**🐦 Generated Tweet (${tweetText.length}/280 chars):**\n`;
+  output += `> ${tweetText.split("\n").join("\n> ")}\n`;
+
+  // ── Step 4: Post tweet (unless dry run) ──
+  let tweetPosted = false;
+  let tweetUrl = null;
+
+  if (!isDryRun) {
+    try {
+      // Dynamic import of X tool to post tweet
+      const { x } = await import("./x.js");
+      const tweetResult = await x({ text: `post to x: ${tweetText}`, context: { action: "post" } });
+
+      if (tweetResult?.success) {
+        tweetPosted = true;
+        tweetUrl = tweetResult.data?.raw?.url || null;
+        output += `\n✅ **Tweet posted!** ${tweetUrl ? `🔗 ${tweetUrl}` : ""}\n`;
+
+        // Store tweet info for reply scanning
+        const mem = await getMemory();
+        if (!mem.meta.moltbook.fna) mem.meta.moltbook.fna = {};
+        mem.meta.moltbook.fna.lastTweet = {
+          text: tweetText,
+          url: tweetUrl,
+          submolt: targetSubmolt,
+          postedAt: new Date().toISOString(),
+          tweetId: tweetResult.data?.raw?.id || null,
+        };
+        mem.meta.moltbook.fna.replyScansRemaining = 30; // scan for 30 minutes
+        await saveJSON(MEMORY_FILE, mem);
+      } else {
+        output += `\n⚠️ Tweet posting failed: ${tweetResult?.data?.text || "unknown error"}\n`;
+      }
+    } catch (e) {
+      output += `\n⚠️ Could not post tweet: ${e.message}\n`;
+      console.error("[moltbook] FNA tweet post failed:", e.message);
+    }
+  } else {
+    output += `\n_(Dry run — tweet NOT posted. Say "moltbook faceless niche run" to post live.)_\n`;
+  }
+
+  // ── Log the analysis to JSON ──
+  try {
+    await fs.mkdir(SENTIMENT_LOG_DIR, { recursive: true });
+    const logFile = path.join(SENTIMENT_LOG_DIR, "fna_log.json");
+    let existing = [];
+    try { existing = JSON.parse(await fs.readFile(logFile, "utf8")); } catch { /* new file */ }
+    existing.push({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      submolt: targetSubmolt,
+      postsAnalyzed: allPosts.length,
+      commentsAnalyzed: topComments.length,
+      sentiment: analysis.sentiment,
+      topSubjects: analysis.topSubjects,
+      commonalities: analysis.commonalities,
+      notablePost: analysis.notablePost,
+      tweet: tweetText,
+      tweetPosted,
+      tweetUrl,
+      isDryRun,
+    });
+    await fs.writeFile(logFile, JSON.stringify(existing, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[moltbook] FNA log write failed:", e.message);
+  }
+
+  return {
+    tool: "moltbook", success: true, final: true,
+    data: {
+      preformatted: true, text: output.trim(),
+      action: "facelessNiche",
+      analysis, tweetText, tweetPosted, tweetUrl,
+      submolt: targetSubmolt,
+    }
+  };
+}
+
+/**
+ * Faceless Niche Authority — Reply Scanner.
+ * Checks for replies to the last FNA tweet and auto-responds.
+ * Designed to be called once per minute for 30 minutes after a tweet.
+ */
+async function handleFNAReplyScan(text, context) {
+  const mem = await getMemory();
+  const fna = mem.meta?.moltbook?.fna;
+
+  if (!fna?.lastTweet?.tweetId) {
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: "No recent FNA tweet to scan replies for.", action: "fnaReplyScan" } };
+  }
+
+  const scansRemaining = fna.replyScansRemaining ?? 0;
+  if (scansRemaining <= 0) {
+    return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: "Reply scan period has ended (30 minutes). No more scans needed.", action: "fnaReplyScan" } };
+  }
+
+  // Decrement scan counter
+  fna.replyScansRemaining = scansRemaining - 1;
+  await saveJSON(MEMORY_FILE, mem);
+
+  let output = `**🔍 FNA Reply Scan** (${scansRemaining - 1} scans remaining)\n`;
+  output += `Checking replies to: "${(fna.lastTweet.text || "").substring(0, 60)}..."\n\n`;
+
+  try {
+    // Use X tool to search for replies
+    const { x } = await import("./x.js");
+    // Search for replies using conversation_id or quote tweets
+    const searchQuery = `to:${process.env.TWITTER_USERNAME || "lanou_agent"} OR @${process.env.TWITTER_USERNAME || "lanou_agent"}`;
+    const searchResult = await x({ text: `search tweets: ${searchQuery}`, context: { action: "search" } });
+
+    if (searchResult?.success && searchResult.data?.raw?.tweets?.tweets?.length > 0) {
+      const replies = searchResult.data.raw.tweets.tweets;
+      const repliedTo = fna.repliedTo || [];
+
+      for (const reply of replies.slice(0, 5)) {
+        if (!reply.id || repliedTo.includes(reply.id)) continue;
+
+        // Generate a response using LLM
+        const replyPrompt = `Someone replied to your tweet about Moltbook's m/${fna.lastTweet.submolt} community. Write a brief, engaging reply (max 280 chars). Be knowledgeable, reference the original context. Don't be generic.
+
+Your original tweet: "${fna.lastTweet.text}"
+Their reply: "${reply.text || ""}"\nBy: @${reply.author || "unknown"}
+
+Return ONLY the reply text, no JSON.`;
+
+        const llmReply = await llm(replyPrompt, { timeoutMs: 30000 });
+        if (llmReply.success && llmReply.data?.text) {
+          const replyText = llmReply.data.text.trim().substring(0, 280);
+
+          // Post the reply
+          try {
+            const { TwitterClient } = await import("../utils/twitter-client.js");
+            // TODO: implement reply posting via TwitterClient when available
+            output += `  💬 Would reply to @${reply.author}: "${replyText.substring(0, 80)}..."\n`;
+            repliedTo.push(reply.id);
+          } catch (e) {
+            output += `  ⚠️ Reply posting not yet implemented\n`;
+          }
+        }
+      }
+
+      // Save replied-to list
+      fna.repliedTo = repliedTo;
+      await saveJSON(MEMORY_FILE, mem);
+
+      if (replies.length === 0) {
+        output += `  No new replies found.\n`;
+      }
+    } else {
+      output += `  No replies found yet.\n`;
+    }
+  } catch (e) {
+    output += `  ⚠️ Reply scan error: ${e.message}\n`;
+  }
+
+  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "fnaReplyScan" } };
 }
 
 // ──────────────────────────────────────────────────────────
@@ -2271,6 +3183,13 @@ export async function moltbook(input) {
 
       // Sentiment
       case "sentiment":      return await handleSentiment(text, context);
+
+      // Faceless Niche Authority
+      case "facelessNiche":    return await handleFacelessNiche(text, context);
+      case "fnaReplyScan":     return await handleFNAReplyScan(text, context);
+
+      // Learning
+      case "learning":       return await handleLearning(text, context);
 
       // Status & Heartbeat
       case "heartbeat":      return await handleHeartbeat(text, context);

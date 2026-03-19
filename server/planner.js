@@ -1017,12 +1017,16 @@ if (
   }
 
   // News keywords (before file path and sports to avoid misroute)
-  // Guard: skip if this is a moltbook notification or a compound query (e.g. "get news and email me")
+  // Guard: skip if this is a moltbook notification, compound query, or conversational/meta message
+  // "try again with the news idea" or "give yourself a headlines reporter username" should NOT route here
+  const isNewsConversational = /\b(try\s+again|the\s+purpose|more\s+.{0,20}\s+like|give\s+(your\s*self|me)|as\s+a\s+.{0,30}\s+reporter|style|idea|concept|theme|approach|username|name\s+(your|the)|rename|rebrand)\b/i.test(lower);
   if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
        /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
       !hasExplicitFilePath(trimmed) &&
       !/\bmoltbook\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
+      !hasCompoundIntent(lower) &&
+      !isNewsConversational &&
+      !isPersonalConversation(lower, trimmed)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
   }
@@ -1097,6 +1101,14 @@ if (
     else if (/\b(communities?|submolts?)\b/i.test(lower)) context.action = "communities";
     // Sentiment
     else if (/\b(sentiment|mood|vibes?|pulse|atmosphere)\b/i.test(lower)) context.action = "sentiment";
+    // Faceless Niche Authority
+    else if (/\b(faceless\s+niche|niche\s+authority|fna)\b/i.test(lower)) {
+      if (/\breply\s*(scan|check|monitor)\b/i.test(lower)) context.action = "fnaReplyScan";
+      else {
+        context.action = "facelessNiche";
+        if (/\bdry\s*run\b/i.test(lower)) context.dryRun = true;
+      }
+    }
     // Search
     else if (/\b(search|find|look\s+for)\b/i.test(lower)) context.action = "search";
     // Notifications
@@ -1193,11 +1205,14 @@ if (
   }
 
   // X (Twitter) — trends, tweet search, tweet sentiment analysis, lead gen, post
-  // Guard: skip if scheduling intent, compound intent, or multi-tool chain (sheets, summarize, aggregate)
+  // Guard: skip if scheduling intent, compound intent, multi-tool chain, or conversational/meta question
   const isMultiToolChain = /\b(google\s*sheet|spreadsheet|append|aggregate|categorize\s+.*(save|write|sheet)|save\s+to\s+(sheet|sheets))\b/i.test(lower);
-  if (!isSchedulingIntent && !isMultiToolChain &&
+  // Meta-questions about the tool itself: "why did you use this tool?", "what tool is this?"
+  const isXMetaQuestion = /\b(why\s+did\s+you|what\s+tool|which\s+tool|how\s+does\s+(this|the)\s+tool|explain\s+(this|the)\s+tool|what\s+is\s+this\s+tool)\b/i.test(lower);
+  if (!isSchedulingIntent && !isMultiToolChain && !isXMetaQuestion &&
       /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
+      !hasCompoundIntent(lower) &&
+      !isPersonalConversation(lower, trimmed)) {
     console.log("[planner] certainty branch: x");
     const xContext = {};
     if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
