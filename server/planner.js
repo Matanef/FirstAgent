@@ -196,13 +196,13 @@ function hasCompoundIntent(text) {
   if (/\b(?:and\s+)?then\s+/i.test(lower) || /;\s*then\s+/i.test(lower)) return true;
   if (/\b(?:finally|lastly|after\s+that|next|afterwards)\s*[,.]?\s+/i.test(lower)) return true;
 
-  // Pattern 5b: multi-step with "Use the LLM/agent to..." mid-sentence
-  if (/\buse\s+(?:the\s+)?(?:llm|agent|ai)\s+to\b/i.test(lower)) return true;
+  // Pattern 5b: multi-step with "Use the LLM/agent/nlp/tool to..." mid-sentence
+  if (/\buse\s+(?:the\s+)?(?:llm|agent|ai|nlp)\s+(?:tool\s+)?to\b/i.test(lower)) return true;
 
-  // Pattern 5c: multi-tool pipeline keywords (search + categorize/summarize + save/append/sheet)
+  // Pattern 5c: multi-tool pipeline keywords (search + categorize/summarize/analyze + save/append/sheet/send/whatsapp)
   if (/\b(?:search|find|get)\b/i.test(lower) &&
-      /\b(?:categorize|classify|summarize|analyze)\b/i.test(lower) &&
-      /\b(?:append|save|write|sheet|spreadsheet|google)\b/i.test(lower)) return true;
+      /\b(?:categorize|classify|summarize|analyze|sentiment)\b/i.test(lower) &&
+      /\b(?:append|save|write|sheet|spreadsheet|google|send|whatsapp|wa|email)\b/i.test(lower)) return true;
 
   // Pattern 6: "X and also Y"
   if (/\band\s+also\b/i.test(lower)) return true;
@@ -538,6 +538,50 @@ function tryParseStepsJSON(text) {
 }
 
 /**
+ * Handle compound (multi-step) intents by running the LLM decomposer directly.
+ * This is called early in the plan() function when hasCompoundIntent() returns true,
+ * BEFORE certainty branches — so arbitrary tool combinations (X→NLP→WhatsApp,
+ * moltbook→LLM→email, etc.) work without hardcoding every permutation.
+ *
+ * Returns a resolved step array, or null if decomposition fails.
+ */
+async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
+  const availableTools = listAvailableTools();
+  const contextSignals = extractContextSignals(trimmed);
+  console.log("[planner] handleCompoundIntent: attempting LLM decomposition...");
+
+  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
+
+  if (decomposedSteps && decomposedSteps.length > 1) {
+    // Resolve and validate each step's tool name
+    const resolvedSteps = [];
+    for (const step of decomposedSteps) {
+      const resolvedTool = resolveToolName(step.tool, availableTools);
+      if (resolvedTool) {
+        resolvedSteps.push({
+          tool: resolvedTool,
+          input: step.input || trimmed,
+          context: resolvedSteps.length > 0 ? { useChainContext: true } : {},
+          reasoning: step.reasoning || "compound_llm_decomposed"
+        });
+      } else {
+        console.warn(`[planner] handleCompoundIntent: tool "${step.tool}" unresolved, skipping`);
+      }
+    }
+
+    if (resolvedSteps.length > 1) {
+      console.log(`[planner] handleCompoundIntent: ${resolvedSteps.map(s => s.tool).join(" → ")}`);
+      return resolvedSteps;
+    }
+  }
+
+  // LLM decomposer failed to produce multi-step plan — return null to fall through
+  // to hardcoded compound patterns and eventually the fallback decomposer
+  console.log("[planner] handleCompoundIntent: LLM decomposition didn't produce multi-step plan");
+  return null;
+}
+
+/**
  * Decompose a user message into one or more sequential tool steps.
  * Uses the LLM as a "Sequential Logic Engine" — returns a JSON array of steps.
  * Falls back to null on failure (caller should use single-tool classifier).
@@ -597,6 +641,24 @@ EXAMPLE INPUT:
 EXAMPLE OUTPUT:
 [
   {"tool": "x", "input": "post on X: Just launched my new project, check it out!", "reasoning": "Post a tweet to the user's X account"}
+]
+
+EXAMPLE INPUT:
+"search X for One Piece, use the nlp tool to analyze the sentiment and send it to whatsapp 0587426393"
+EXAMPLE OUTPUT:
+[
+  {"tool": "x", "input": "search X for One Piece", "reasoning": "Search tweets about One Piece"},
+  {"tool": "nlp_tool", "input": "analyze sentiment of these tweets about One Piece", "reasoning": "Run sentiment analysis on the search results"},
+  {"tool": "whatsapp", "input": "send the sentiment analysis to whatsapp 0587426393", "reasoning": "Send the analysis results via WhatsApp"}
+]
+
+EXAMPLE INPUT:
+"check moltbook feed, summarize the top posts and email it to me"
+EXAMPLE OUTPUT:
+[
+  {"tool": "moltbook", "input": "show moltbook feed", "reasoning": "Fetch the moltbook feed posts"},
+  {"tool": "llm", "input": "Summarize the top posts from this feed into a concise email-friendly format", "reasoning": "Summarize the feed data"},
+  {"tool": "email", "input": "email me the moltbook feed summary", "reasoning": "Send the summary via email"}
 ]
 
 USER MESSAGE:
@@ -715,6 +777,18 @@ export async function plan({ message, chatContext = {} }) {
   // ── NEW GUARD: Detect Scheduling Intents First ──
   // Prevents "schedule self evolve" from triggering an immediate cycle
   const isSchedulingIntent = /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower);
+
+  // ── GLOBAL COMPOUND INTENT EARLY-EXIT ──
+  // If this is clearly a multi-step request, skip ALL certainty branches and go
+  // straight to compound patterns + LLM decomposer. This prevents single-tool
+  // certainty branches from grabbing compound requests (e.g., NLP grabbing
+  // "search X for topic, analyze sentiment, send to whatsapp").
+  if (!isSchedulingIntent && hasCompoundIntent(lower)) {
+    console.log("[planner] ⚡ Global compound intent detected — routing to compound handler");
+    const compoundResult = await handleCompoundIntent(trimmed, lower, chatContext);
+    if (compoundResult) return compoundResult;
+    console.log("[planner] ⚡ Compound handler returned null, falling through to certainty branches");
+  }
 
 // ── REFINED TECHNICAL OVERRIDE ──
   // 1. SELF-EVOLVE: Active code modification / Autonomous growth
@@ -1116,7 +1190,8 @@ if (
   }
 
   // NLP / text analysis keywords
-  if (/\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower)) {
+  // Guard: skip if compound intent detected (e.g. "search X for topic, analyze sentiment, send to whatsapp")
+  if (/\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower) && !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: nlp_tool");
     return [{ tool: "nlp_tool", input: trimmed, context: {}, reasoning: "certainty_nlp" }];
   }
@@ -1468,8 +1543,63 @@ if (
     }
   }
 
+  // ── 3-step compound: source → analysis/nlp → destination (whatsapp/email) ──
+  // Must come BEFORE the generic 2-step whatsapp/email patterns
+  // Handles: "search X for topic, analyze sentiment, send to whatsapp 0587426393"
+  //          "search X for topic, use nlp to analyze, email me the results"
+  //          "get moltbook feed, summarize it, send to whatsapp 0587426393"
+  if (/\b(?:sentiment|analy[sz]e|nlp|classify|summarize)\b/i.test(lower) &&
+      /\b(?:whatsapp|wa|email|send\s+to)\b/i.test(lower) &&
+      /\b(?:search|find|get|check|show|read)\b/i.test(lower)) {
+    // Detect source tool
+    let sourceTool = "search";
+    let sourceInput = trimmed;
+    if (/\b(?:search\s+(?:x|twitter)|tweets?\s+about|on\s+(?:x|twitter))\b/i.test(lower)) {
+      sourceTool = "x";
+      const topicMatch = trimmed.match(/(?:search\s+(?:x|twitter)\s+for|tweets?\s+about)\s+['"]?(.+?)['"]?\s*(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize|and\s+(?:use|analy|send|summarize)|\.)/i);
+      const topic = topicMatch ? topicMatch[1].replace(/,\s*$/, "").trim() : "topic";
+      sourceInput = `search X for ${topic}`;
+    } else if (/\b(?:moltbook)\b/i.test(lower)) {
+      sourceTool = "moltbook";
+      sourceInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "show moltbook feed";
+    } else if (/\b(?:news|headlines?)\b/i.test(lower)) {
+      sourceTool = "news";
+      sourceInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "get the news";
+    }
+
+    // Detect analysis tool
+    const useNlp = /\b(nlp\s+tool|nlp|extract\s+entities|NER)\b/i.test(lower);
+    const analysisTool = useNlp ? "nlp_tool" : "llm";
+    const analysisPrompt = useNlp
+      ? `analyze sentiment of the data`
+      : `Analyze the sentiment and key themes. Provide: 1) Overall sentiment (positive/negative/neutral), 2) Key themes, 3) Notable highlights. Format as a clear, readable summary.`;
+
+    // Detect destination
+    let destTool = "whatsapp";
+    let destInput = "";
+    let destContext = { useChainContext: true };
+    if (/\b(?:whatsapp|wa)\b/i.test(lower)) {
+      const phoneMatch = trimmed.match(/(?:whatsapp|wa)\s+(\+?[\d\s-]{7,15})/i);
+      const phone = phoneMatch ? phoneMatch[1].replace(/[\s-]/g, "").trim() : "";
+      destInput = `send the analysis to whatsapp ${phone}`;
+      destContext.recipient = phone;
+      destContext.phone = phone;
+      destContext.useLastResult = true;
+    } else if (/\b(?:email|mail)\b/i.test(lower)) {
+      destTool = "email";
+      destInput = "email me the analysis results";
+    }
+
+    console.log(`[planner] Compound (3-step analyze): ${sourceTool} → ${analysisTool} → ${destTool}`);
+    return [
+      { tool: sourceTool, input: sourceInput, context: {}, reasoning: "analyze_pipeline_source" },
+      { tool: analysisTool, input: analysisPrompt, context: { useChainContext: true }, reasoning: "analyze_pipeline_analysis" },
+      { tool: destTool, input: destInput, context: destContext, reasoning: "analyze_pipeline_deliver" }
+    ];
+  }
+
   // ── WhatsApp compound: query mentions "whatsapp" + phone number + content keyword ──
-  // Must come BEFORE the email compound pattern which also matches "and send it..."
+  // Must come AFTER the 3-step analyze pattern above
   // Handles: "check the weather and send it a whatsapp message to 0587426393"
   //          "check the weather and send it to whatsapp 0587426393"
   //          "get the news and whatsapp it to 0587426393"
@@ -1486,7 +1616,7 @@ if (
     else if (/\b(stock|finance|price)\b/i.test(lower)) contentTool = "finance";
     else if (/\b(sports?|score|match|game|league)\b/i.test(lower)) contentTool = "sports";
     else if (/\b(youtube|video)\b/i.test(lower)) contentTool = "youtube";
-    else if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?)\b/i.test(lower)) contentTool = "x";
+    else if (/\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|search\s+x\b)\b/i.test(lower)) contentTool = "x";
     else if (/\b(github|repo|trending)\b/i.test(lower)) contentTool = "github";
     console.log(`[planner] Compound (whatsapp): ${contentTool} → whatsapp to ${phoneNum}`);
     return [
@@ -1595,6 +1725,8 @@ if (
       { tool: "sheets", input: `batch append categorized results to sheet ${sheetId || "SHEET_ID_NEEDED"}`, context: { useChainContext: true, action: "append", spreadsheetId: sheetId, range: "Sheet1!A:D" }, reasoning: "leadgen_pipeline_append" }
     ];
   }
+
+
 
   // ──────────────────────────────────────────────────────────
   // MULTI-STEP: LLM Intent Decomposer (fallback — reached for ambiguous queries)

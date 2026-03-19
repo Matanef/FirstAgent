@@ -120,9 +120,12 @@ function detectXIntent(text) {
 function extractSearchQuery(text) {
   let query = text
     .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(tweets?|posts?|x\s+posts?)\s*(about|on|for|regarding|related\s+to)?\s*/gi, "")
+    .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(x|twitter)\s+(for|about)\s*/gi, "")
+    .replace(/\b(search|find|get)\s+(for|about)\s*/gi, "")
     .replace(/\b(tweets?|posts?)\s+(about|on|for|regarding)\s*/gi, "")
     .replace(/\b(on\s+)?twitter\b/gi, "")
     .replace(/\b(on\s+)?x\b/gi, "")
+    .replace(/\s+/g, " ")
     .trim();
   return query || text;
 }

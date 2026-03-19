@@ -275,10 +275,10 @@ export async function whatsapp(request) {
   }
 
   // ── CHAIN CONTEXT: use previous step output as message body ──
-  if (context.useLastResult && context.chainContext?.previousOutput) {
+  if ((context.useLastResult || context.useChainContext) && context.chainContext?.previousOutput) {
     const prevTool = context.chainContext.previousTool || "previous step";
     const prevOutput = String(context.chainContext.previousOutput);
-    const recipient = context.recipient || null;
+    const recipient = context.recipient || context.phone || null;
     console.log(`📱 [whatsapp] Chain context from "${prevTool}" (${prevOutput.length} chars), recipient: ${recipient}`);
 
     if (!recipient) {

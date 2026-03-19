@@ -401,7 +401,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   tool = actualToolKey;
 
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
       // Pass the full message object so email() can extract both text AND context
       // (email tool reads query.text and query.context internally)
@@ -414,6 +414,23 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
         success: result.success,
         final: result?.final ?? true
       };
+    }
+    // CHAIN CONTEXT INJECTION for analysis tools (nlp_tool, etc.):
+    // If the tool analyzes text and chain context has previous output,
+    // inject that data into message.text so the tool has content to process
+    if (typeof message === "object" && message.context?.chainContext?.previousOutput) {
+      const prevRaw = message.context.chainContext.previousRaw;
+      const chainData = prevRaw?.plain || prevRaw?.text ||
+        (typeof message.context.chainContext.previousOutput === "string"
+          ? message.context.chainContext.previousOutput
+          : JSON.stringify(message.context.chainContext.previousOutput));
+      const prevTool = message.context.chainContext.previousTool || "previous step";
+
+      // For text-analysis tools, replace the instruction text with actual data
+      if (["nlp_tool"].includes(tool)) {
+        console.log(`🔗 [executor] Injecting chain context from "${prevTool}" into ${tool} (${chainData.length} chars)`);
+        message = { ...message, text: chainData };
+      }
     }
     toolInput = message;
   } else {
