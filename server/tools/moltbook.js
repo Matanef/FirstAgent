@@ -484,7 +484,8 @@ async function handleHome(text, context) {
     if (home.activity.karma != null) output += `- Karma: ${home.activity.karma}\n`;
   }
 
-  return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "home", home } };
+  const html = buildHomeHTML(home);
+  return { tool: "moltbook", success: true, final: true, data: { html, preformatted: true, text: output.trim(), action: "home", home } };
 }
 
 // ──────────────────────────────────────────────────────────
@@ -2087,6 +2088,30 @@ function buildSentimentReportHTML(report) {
     </div>
     ${topicsHTML ? `<div class="moltbook-topics-section"><h4>🏷️ Top Topics</h4><div class="moltbook-topics-grid">${topicsHTML}</div></div>` : ""}
     ${commonalitiesHTML ? `<div class="moltbook-commonalities-section"><h4>🔗 Commonalities</h4>${commonalitiesHTML}</div>` : ""}
+  </div>`;
+}
+
+function buildHomeHTML(home) {
+  const announcements = (home.announcements || []).map(a =>
+    `<div class="moltbook-announcement">📢 ${escapeHtml(a.title || a.content || String(a))}</div>`
+  ).join("");
+
+  const unread = home.notifications?.unread_count || 0;
+  const dmUnread = home.dms?.unread_count || 0;
+  const dmPending = home.dms?.pending_count || 0;
+  const activity = home.activity || {};
+
+  return `<div class="moltbook-home-dashboard">
+    <h3 class="moltbook-section-title">🏠 Moltbook Dashboard</h3>
+    ${announcements ? `<div class="moltbook-announcements">${announcements}</div>` : ""}
+    <div class="moltbook-home-stats">
+      <div class="moltbook-stat"><span class="moltbook-stat-value">${unread}</span><span class="moltbook-stat-label">🔔 Unread</span></div>
+      <div class="moltbook-stat"><span class="moltbook-stat-value">${dmUnread}</span><span class="moltbook-stat-label">💬 DMs</span></div>
+      ${dmPending ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${dmPending}</span><span class="moltbook-stat-label">📩 Pending</span></div>` : ""}
+      ${activity.posts_today != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${activity.posts_today}</span><span class="moltbook-stat-label">📝 Posts Today</span></div>` : ""}
+      ${activity.comments_today != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${activity.comments_today}</span><span class="moltbook-stat-label">💬 Comments</span></div>` : ""}
+      ${activity.karma != null ? `<div class="moltbook-stat"><span class="moltbook-stat-value">${activity.karma}</span><span class="moltbook-stat-label">⭐ Karma</span></div>` : ""}
+    </div>
   </div>`;
 }
 

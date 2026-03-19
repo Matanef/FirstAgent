@@ -1528,6 +1528,29 @@ body {
   color: var(--text-secondary);
 }
 
+/* Home Dashboard */
+.moltbook-home-dashboard {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+.moltbook-home-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.moltbook-announcement {
+  background: var(--bg-hover);
+  border-left: 3px solid var(--accent);
+  padding: 0.6rem 1rem;
+  margin-bottom: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
 /* Input Area */
 .input-area {
   padding: 1rem 1.5rem;
