@@ -7,6 +7,16 @@ import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 
+// Lazy import to avoid circular dependency (knowledge ↔ llm)
+let _llm = null;
+async function getLLM() {
+  if (!_llm) {
+    const mod = await import("./tools/llm.js");
+    _llm = mod.llm;
+  }
+  return _llm;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -55,6 +65,7 @@ export async function addFact({ topic, fact, source, ongoing = false, expiryDays
 
   const expiry = ongoing ? null : _expiryDate(expiryDays || DEFAULT_EXPIRY_DAYS);
 
+  let result;
   if (existing) {
     // Reinforce: update fact, extend expiry, bump lastSeen
     existing.fact = fact || existing.fact;
@@ -69,6 +80,7 @@ export async function addFact({ topic, fact, source, ongoing = false, expiryDays
       existing.expires = expiry;
     }
     console.log(`[knowledge] Reinforced: "${existing.topic}" (${existing.reinforced}x)`);
+    result = { action: "reinforced", topic: existing.topic, count: existing.reinforced };
   } else {
     // New fact — evict oldest expired or weakest if at cap
     if (facts.length >= KNOWLEDGE_CAP) {
@@ -86,9 +98,11 @@ export async function addFact({ topic, fact, source, ongoing = false, expiryDays
       reinforced: 0,
     });
     console.log(`[knowledge] Learned: "${topic}" (${ongoing ? "ongoing" : `expires ${expiry}`})`);
+    result = { action: "learned", topic, ongoing };
   }
 
   await saveKnowledge(facts);
+  return result;
 }
 
 /**
@@ -133,10 +147,11 @@ export async function getKnowledgeContext() {
  * No LLM call — just extracts key info from article summaries.
  */
 export async function extractFromNews(articles, topic) {
-  if (!articles || articles.length === 0) return;
+  if (!articles || articles.length === 0) return [];
 
   // Take top 3 most relevant articles
   const top = articles.slice(0, 3);
+  const learned = [];
 
   for (const article of top) {
     const title = article.title || "";
@@ -151,44 +166,124 @@ export async function extractFromNews(articles, topic) {
       ? `${title}. ${summary.substring(0, 200)}`
       : title;
 
-    await addFact({
+    const r = await addFact({
       topic: topic || title.substring(0, 60),
       fact: factText.substring(0, 300),
       source: `news${article.source ? `/${article.source}` : ""}`,
       ongoing,
     });
+    if (r) learned.push(r);
   }
+  return learned;
 }
 
 /**
  * Extract facts from search results.
  */
 export async function extractFromSearch(results, synthesis, query) {
-  if (!results || results.length === 0) return;
+  if (!results || results.length === 0) return [];
 
   // If we have an LLM synthesis, store that as a single comprehensive fact
   if (synthesis && synthesis.length > 20) {
     const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop)\b/i;
     const ongoing = ongoingKeywords.test(synthesis) || ongoingKeywords.test(query || "");
 
-    await addFact({
+    const r = await addFact({
       topic: (query || "search result").substring(0, 60),
       fact: synthesis.substring(0, 300),
       source: "search",
       ongoing,
     });
-    return;
+    return r ? [r] : [];
   }
 
   // Fallback: store top result
   const top = results[0];
   if (top?.title && top?.snippet) {
-    await addFact({
+    const r = await addFact({
       topic: (query || top.title).substring(0, 60),
       fact: `${top.title}. ${top.snippet}`.substring(0, 300),
       source: `search/${top.source || "web"}`,
     });
+    return r ? [r] : [];
   }
+  return [];
+}
+
+/**
+ * Extract facts from web content (webDownload / webBrowser).
+ * For long articles, uses LLM to extract multiple key facts.
+ * For short content, falls back to heuristic sentence extraction.
+ * Returns array of { action, topic } describing what was learned.
+ */
+export async function extractFromWebContent(pageTitle, plainText, url) {
+  if (!plainText || plainText.length < 50) return [];
+
+  const topic = pageTitle || (url ? new URL(url).pathname.replace(/[_\-\/]/g, " ").trim() : "web article");
+  const source = url ? `web/${new URL(url).hostname}` : "web";
+  const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop|massacre|protest|revolt|uprising)\b/i;
+  const ongoing = ongoingKeywords.test(topic) || ongoingKeywords.test(plainText.substring(0, 2000));
+
+  // For substantial articles (>500 chars), use LLM to extract multiple facts
+  if (plainText.length > 500) {
+    try {
+      // Trim content to a reasonable size for LLM extraction
+      const contentForLLM = plainText.substring(0, 6000);
+      const extractPrompt = `Extract 3-5 distinct, important facts from this article. Each fact should be a self-contained statement that someone could understand without reading the article.
+
+Article title: ${topic}
+Article content:
+${contentForLLM}
+
+Return ONLY valid JSON, no markdown:
+{"facts": [{"topic": "short topic label", "fact": "the key fact in 1-2 sentences (max 250 chars)"}]}`;
+
+      const llmFn = await getLLM();
+      const result = await llmFn(extractPrompt, { format: "json", skipKnowledge: true, timeoutMs: 30000 });
+      if (result.success && result.data?.text) {
+        const cleaned = result.data.text.replace(/```json\s*|```\s*/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        if (parsed.facts && Array.isArray(parsed.facts) && parsed.facts.length > 0) {
+          const learned = [];
+          for (const f of parsed.facts.slice(0, 5)) {
+            if (!f.topic || !f.fact) continue;
+            const r = await addFact({
+              topic: f.topic.substring(0, 60),
+              fact: f.fact.substring(0, 300),
+              source,
+              ongoing,
+            });
+            if (r) learned.push(r);
+          }
+          console.log(`[knowledge] Extracted ${learned.length} facts from web article: "${topic}"`);
+          return learned;
+        }
+      }
+    } catch (e) {
+      console.warn(`[knowledge] LLM extraction failed for "${topic}", falling back to heuristic:`, e.message);
+    }
+  }
+
+  // Fallback: heuristic extraction (first few sentences)
+  const sentences = plainText.match(/[A-Z][^.!?]*[.!?]/g);
+  let factText = "";
+  if (sentences && sentences.length > 0) {
+    for (const s of sentences) {
+      if (factText.length + s.length > 300) break;
+      factText += (factText ? " " : "") + s.trim();
+    }
+  }
+  if (!factText) {
+    factText = plainText.substring(0, 300).trim();
+  }
+
+  const r = await addFact({
+    topic: topic.substring(0, 60),
+    fact: factText.substring(0, 300),
+    source,
+    ongoing,
+  });
+  return r ? [r] : [];
 }
 
 // ──────────────────────────────────────────────────────────

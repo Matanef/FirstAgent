@@ -1132,8 +1132,21 @@ if (
   }
 
   // URL detection → webDownload (fetch and read/follow)
-  // Guard: if query also has conversational context ("and then", "after that"), preserve URL but don't lose intent
+  // If user also wants analysis/summary, create a 2-step plan: webDownload → llm
   if (/https?:\/\/\S+/i.test(trimmed)) {
+    const urlMatch = trimmed.match(/https?:\/\/\S+/);
+    const wantsAnalysis = /\b(analy[sz]e|summarize|explain|break\s*down|review|assess|critique|evaluate|what\s+do\s+you\s+think)\b/i.test(lower);
+
+    if (wantsAnalysis) {
+      console.log("[planner] certainty branch: url_detected + analysis → webDownload → llm");
+      // Extract the URL and build a focused analysis prompt
+      const topicHint = urlMatch[0].replace(/https?:\/\//, "").replace(/[_\-\/]/g, " ");
+      return [
+        { tool: "webDownload", input: trimmed, context: { action: "fetch_and_read" }, reasoning: "compound_url_fetch" },
+        { tool: "llm", input: `Read the article content carefully and provide a detailed analysis. Include: key facts and events, important context, and your own opinionated take on the situation. Be thorough — base your analysis on the ACTUAL CONTENT provided, not just the title.`, context: { useChainContext: true }, reasoning: "compound_url_analyze" }
+      ];
+    }
+
     console.log("[planner] certainty branch: url_detected");
     const context = {};
     // If the user says "read/follow/summarize URL", mark for content extraction
@@ -1606,6 +1619,56 @@ if (
         return { tool, input: stepText, context: i > 0 ? { useChainContext: true } : {}, reasoning: `chain_step_${i + 1}` };
       });
     }
+  }
+
+  // ── 2-step compound: source → llm summarize/analyze (no destination) ──
+  // Handles: "read the news about X, use llm to summarize them"
+  //          "get moltbook feed, summarize the top posts"
+  //          "search for X, use the llm tool to analyze the results"
+  if (/\b(?:summarize|analy[sz]e|use\s+(?:the\s+)?llm|explain|break\s*down)\b/i.test(lower) &&
+      !(/\b(?:whatsapp|wa|email|send\s+to)\b/i.test(lower)) &&
+      /\b(?:search|find|get|check|show|read|fetch|news|moltbook)\b/i.test(lower)) {
+    // Detect source tool
+    let sourceTool = "news";
+    let sourceInput = trimmed;
+    if (/\b(?:search\s+(?:x|twitter)|tweets?\s+about|on\s+(?:x|twitter))\b/i.test(lower)) {
+      sourceTool = "x";
+    } else if (/\b(?:moltbook)\b/i.test(lower)) {
+      sourceTool = "moltbook";
+    } else if (/\b(?:news|headlines?|articles?)\b/i.test(lower)) {
+      sourceTool = "news";
+    } else if (/\b(?:search|google|look\s+up)\b/i.test(lower)) {
+      sourceTool = "search";
+    }
+
+    // Extract article/result count from user request (e.g., "first 4", "top 3", "5 articles")
+    const countMatch = lower.match(/\b(?:first|top|latest|last)\s+(\d+)\b|\b(\d+)\s+(?:articles?|results?|posts?|items?|headlines?)\b/);
+    const requestedCount = countMatch ? parseInt(countMatch[1] || countMatch[2], 10) : null;
+
+    // Clean source input: everything before the analysis instruction
+    const sourceMatch = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?(?:use|then)|,\s*(?:analy|summarize|explain|break)|and\s+(?:use|analy|summarize|then))/i);
+    const cleanSourceInput = sourceMatch ? sourceMatch[1].trim() : trimmed;
+
+    // Build source context (pass article count to the source tool)
+    const sourceContext = {};
+    if (requestedCount) sourceContext.articleCount = requestedCount;
+
+    // Build analysis prompt — detailed per-item summary + opinionated conclusion
+    const topicMatch = cleanSourceInput.match(/(?:about|on|for|regarding)\s+(.+?)$/i);
+    const topicHint = topicMatch ? topicMatch[1].trim() : "the topic";
+    const countHint = requestedCount ? `the ${requestedCount}` : "each";
+
+    const analysisInstruction = `Read the data from the previous step carefully. For ${countHint} article${requestedCount === 1 ? "" : "s"}, provide a detailed summary based on the ACTUAL CONTENT — not just the headline. Include key facts, quotes, and developments from each article.
+
+After all individual summaries, write a final "My Analysis" section with your opinionated take on the overall situation regarding ${topicHint}. What patterns do you see? What might happen next? What should the reader pay attention to?
+
+Format: numbered list of article summaries, then a horizontal rule, then your analysis.`;
+
+    console.log(`[planner] Compound (2-step): ${sourceTool} → llm${requestedCount ? ` (count: ${requestedCount})` : ""}`);
+    return [
+      { tool: sourceTool, input: cleanSourceInput, context: sourceContext, reasoning: "compound_source" },
+      { tool: "llm", input: analysisInstruction, context: { useChainContext: true }, reasoning: "compound_analyze" }
+    ];
   }
 
   // ── 3-step compound: source → analysis/nlp → destination (whatsapp/email) ──

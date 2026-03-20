@@ -398,6 +398,34 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     console.log(`📊 Execution complete: ${stateGraph.length} steps executed`);
 
+    // ── Collect learned facts from all steps ──
+    const allLearnedFacts = [];
+    for (const s of stateGraph) {
+        const facts = s.rawData?.learnedFacts;
+        if (Array.isArray(facts)) {
+            allLearnedFacts.push(...facts);
+        }
+    }
+
+    // ── Append learning indicator to reply if facts were learned ──
+    let finalReply = lastFinalized?.reply || "Task completed.";
+    if (allLearnedFacts.length > 0) {
+        const newFacts = allLearnedFacts.filter(f => f.action === "learned");
+        const reinforced = allLearnedFacts.filter(f => f.action === "reinforced");
+        const parts = [];
+        if (newFacts.length > 0) {
+            const topics = [...new Set(newFacts.map(f => f.topic))];
+            parts.push(`📚 Learned: ${topics.join(", ")}${newFacts.some(f => f.ongoing) ? " *(ongoing)*" : ""}`);
+        }
+        if (reinforced.length > 0) {
+            const topics = [...new Set(reinforced.map(f => f.topic))];
+            parts.push(`🔄 Reinforced: ${topics.join(", ")}`);
+        }
+        if (parts.length > 0) {
+            finalReply += `\n\n---\n${parts.join(" | ")}`;
+        }
+    }
+
     // ── ANSWER: announce final synthesis ──
     emitThought("ANSWER",
         `Synthesizing final response from ${lastFinalized?.tool || "unknown"} results (${stateGraph.length} step${stateGraph.length !== 1 ? "s" : ""} completed).`,
@@ -405,13 +433,14 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
     );
 
     return {
-        reply: lastFinalized?.reply || "Task completed.",
+        reply: finalReply,
         tool: lastFinalized?.tool || "unknown",
         data: lastFinalized?.data || null,
         reasoning: lastFinalized?.reasoning || "Execution finished.",
         success: lastFinalized?.success ?? true,
         final: true,
         stateGraph: stateGraph || [],
-        thoughtChain
+        thoughtChain,
+        learnedFacts: allLearnedFacts.length > 0 ? allLearnedFacts : undefined
     };
 }

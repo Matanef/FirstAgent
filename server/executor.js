@@ -216,6 +216,8 @@ async function summarizeWithLLM({
 You are the final response generator for an AI assistant.
 Current date: ${today}
 
+IMPORTANT: You have access to real tools that fetch live data from the internet, databases, and APIs. The tool result below contains REAL DATA that was already fetched for you. DO NOT say you cannot access the internet or external content — the data is RIGHT HERE in the tool result. Your job is to read the tool result and present it clearly to the user.
+
 User question:
 ${userQuestion}
 
@@ -231,7 +233,7 @@ ${styleText ? `Style preferences:\n${styleText}` : ""}
 Conversation history:
 ${convoText}
 ${contextSummary}
-Generate the final answer:
+Generate the final answer based on the tool result above. NEVER claim you cannot access external content — the content has already been fetched and is provided above.
 `;
 
   let text = "";
@@ -360,7 +362,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
           : JSON.stringify(msgContext.chainContext.previousOutput));
       const prevTool = msgContext.chainContext.previousTool || "previous step";
       console.log(`🧠 [llm] Injecting chain context from "${prevTool}" (${prevData.length} chars)`);
-      llmPrompt = `Here is the data from the ${prevTool} tool that you need to process:\n\n---\n${prevData}\n---\n\nNow, based on the above data:\n${llmPrompt}`;
+      llmPrompt = `IMPORTANT: The following content was fetched from the internet by the ${prevTool} tool. This is real, factual data. Your job is to read it and respond to the user's request. Do NOT refuse — this is informational content the user explicitly asked for.\n\nContent from ${prevTool}:\n\n---\n${prevData}\n---\n\nUser request:\n${llmPrompt}`;
     }
 
     const reply = await runLLMWithFullMemory({
@@ -401,7 +403,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   tool = actualToolKey;
 
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool", "news"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
       // Pass the full message object so email() can extract both text AND context
       // (email tool reads query.text and query.context internally)

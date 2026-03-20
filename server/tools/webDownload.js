@@ -4,6 +4,7 @@
 import fetch from "node-fetch";
 import fs from "fs/promises";
 import path from "path";
+import { extractFromWebContent } from "../knowledge.js";
 
 const DOWNLOAD_DIR = path.resolve("D:/local-llm-ui/downloads");
 
@@ -162,17 +163,66 @@ export async function webDownload(request) {
 
     // For text-based files, also return content so LLM can read/summarize/follow instructions
     let contentPreview = null;
+    let plainText = null;
+    let extractedTitle = null;
     const textExtensions = ['.md', '.txt', '.json', '.js', '.html', '.css', '.csv', '.xml', '.yaml', '.yml', '.py', '.sh', '.bat'];
     const ext = path.extname(result.filepath).toLowerCase();
     if (textExtensions.includes(ext) || !ext) {
       try {
         const fullContent = await fs.readFile(result.filepath, 'utf8');
-        // Provide full content for small files, preview for large ones
-        const MAX_CONTENT = 8000;
-        contentPreview = fullContent.length > MAX_CONTENT
-          ? fullContent.slice(0, MAX_CONTENT) + `\n\n... (truncated, ${fullContent.length} total chars)`
-          : fullContent;
+
+        // If this looks like HTML, extract clean text (strip scripts, styles, tags)
+        const isHTML = fullContent.trimStart().startsWith('<!') || fullContent.trimStart().startsWith('<html') || /<html[\s>]/i.test(fullContent.slice(0, 500));
+        if (isHTML) {
+          // Extract page title
+          const titleMatch = fullContent.match(/<title[^>]*>(.*?)<\/title>/i);
+          const pageTitle = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : '';
+          extractedTitle = pageTitle;
+
+          // Strip scripts, styles, nav, header, footer, then tags
+          plainText = fullContent
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+            .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+            .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+            .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          // Provide generous preview for article content
+          const MAX_TEXT = 12000;
+          contentPreview = (pageTitle ? `Title: ${pageTitle}\n\n` : '') +
+            (plainText.length > MAX_TEXT
+              ? plainText.slice(0, MAX_TEXT) + `\n\n... (truncated, ${plainText.length} total chars)`
+              : plainText);
+        } else {
+          // Non-HTML text files: provide as-is
+          const MAX_CONTENT = 8000;
+          contentPreview = fullContent.length > MAX_CONTENT
+            ? fullContent.slice(0, MAX_CONTENT) + `\n\n... (truncated, ${fullContent.length} total chars)`
+            : fullContent;
+          plainText = contentPreview;
+        }
       } catch { /* ignore read errors */ }
+    }
+
+    // Store facts in passive knowledge system (awaited so we can report what was learned)
+    let learnedFacts = [];
+    if (plainText && plainText.length > 50) {
+      try {
+        learnedFacts = await extractFromWebContent(extractedTitle || path.basename(result.filepath), plainText, url) || [];
+      } catch (e) {
+        console.warn("[webDownload] Knowledge extraction failed:", e.message);
+      }
     }
 
     return {
@@ -184,9 +234,11 @@ export async function webDownload(request) {
         size: result.size,
         sizeFormatted: `${(result.size / 1024).toFixed(2)} KB`,
         content: contentPreview,
+        plain: plainText || contentPreview,
         text: contentPreview
           ? `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)\n\nContent:\n${contentPreview}`
-          : `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`
+          : `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`,
+        learnedFacts
       },
       reasoning: `Downloaded and read ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`
     };

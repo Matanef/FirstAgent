@@ -104,33 +104,43 @@ function detectCategory(query) {
 function extractTopic(query) {
   const text = typeof query === "string" ? query : query?.text || "";
   const lower = text.toLowerCase();
-  
-  // Remove common phrases
-  let cleaned = lower
-    .replace(/give me|show me|get|fetch|latest|recent|breaking|top/gi, '')
-    .replace(/news|headlines|articles|stories/gi, '')
-    .replace(/about|regarding|on|for/gi, '')
+
+  // Strip conversational noise before extracting topic
+  let stripped = lower
+    .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
+    .replace(/\b(search for|look up|find|fetch|get|show me|give me)\b/gi, "")
+    .replace(/\b(to learn about it|to learn|to know|to read|to see|to check)\b/gi, "")
+    .replace(/\b(latest|recent|breaking|top|current)\b/gi, "")
+    .replace(/\b(news|headlines|articles|stories)\b/gi, "")
+    .replace(/\b(about|regarding|on|for)\s+(?:it|this|that|them)\s*$/gi, "")
+    .replace(/\s+/g, " ")
     .trim();
-  
-  // Extract specific topic patterns
-  const topicMatch = lower.match(/(?:about|regarding|on|for)\s+([a-z0-9\s]+)$/i);
+
+  // Extract specific topic patterns — match first "about/regarding/on/for" + topic
+  // Strip "news" before matching so "news about X" → "about X" → captures "X"
+  const forTopicMatch = stripped.replace(/\bnews\b/gi, "").trim();
+  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i)
+    || lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
   if (topicMatch) {
-    return topicMatch[1].trim();
+    const topic = topicMatch[1].replace(/\b(it|this|that)\b/gi, "").trim();
+    if (topic.length > 2) return topic;
   }
-  
-  // Extract from "X news"
-  const newsMatch = lower.match(/([a-z0-9\s]+)\s+news/i);
+
+  // Extract from "X news" — use stripped version to avoid "show me latest" noise
+  const newsMatch = stripped.match(/([a-z0-9\s]+)\s+news/i) || lower.match(/([a-z0-9\s]+)\s+news/i);
   if (newsMatch) {
-    const topic = newsMatch[1].trim();
-    if (topic.length > 2 && !['the', 'latest', 'breaking', 'top'].includes(topic)) {
+    const rejectPrefixes = new Set(["the", "latest", "breaking", "top", "show", "me", "get", "give"]);
+    const topic = newsMatch[1].trim().split(/\s+/).filter(w => !rejectPrefixes.has(w)).join(" ");
+    if (topic.length > 2) {
       return topic;
     }
   }
-  
-  // If we have a meaningful cleaned string (reject useless words like "any", "some", "all")
-  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your"]);
-  if (cleaned.length > 2 && cleaned.split(/\s+/).length <= 4 && !rejectWords.has(cleaned)) {
-    return cleaned;
+
+  // Use the cleaned/stripped version if meaningful
+  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for"]);
+  const words = stripped.split(/\s+/).filter(w => !rejectWords.has(w) && w.length > 1);
+  if (words.length > 0 && words.length <= 6) {
+    return words.join(" ");
   }
 
   return null;
@@ -200,6 +210,7 @@ Summary (2-3 sentences):`;
 export async function news(request) {
   try {
     const query = typeof request === "string" ? request : request?.text || "";
+    const articleCount = (typeof request === "object" ? request?.context?.articleCount : null) || 8;
 
     // Extract topic and detect category
     const topic = extractTopic(query);
@@ -244,15 +255,23 @@ export async function news(request) {
       allItems.push(...result.items);
     }
 
-    // FIX #4: Filter by topic if specified
-    const filteredItems = topic ? filterByTopic(allItems, topic) : allItems;
-    
-    console.log(`📊 Total items: ${allItems.length}, Filtered: ${filteredItems.length}`);
+    // Filter out stale articles (older than 7 days)
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const freshItems = allItems.filter(item => {
+      if (!item.date) return true; // keep items with no date (assume recent)
+      const pubDate = new Date(item.date).getTime();
+      return !isNaN(pubDate) && pubDate > sevenDaysAgo;
+    });
 
-    // Scrape and summarize top 3 filtered articles
+    // FIX #4: Filter by topic if specified
+    const filteredItems = topic ? filterByTopic(freshItems, topic) : freshItems;
+
+    console.log(`📊 Total items: ${allItems.length}, Fresh: ${freshItems.length}, Filtered: ${filteredItems.length}`);
+
+    // Scrape and summarize top articles (respects articleCount from chain context)
     // Falls back to RSS description if scraping fails
     const summaries = [];
-    const scrapePromises = filteredItems.slice(0, 8).map(async (article) => {
+    const scrapePromises = filteredItems.slice(0, articleCount).map(async (article) => {
       console.log(`  Scraping: ${article.title}`);
       const content = await scrapeArticle(article.link);
       // Use scraped content, or fall back to RSS description
@@ -397,8 +416,13 @@ export async function news(request) {
       </style>
     `;
 
-    // Store facts in passive knowledge system (non-blocking)
-    extractFromNews(summaries, topic).catch(e => console.warn("[news] Knowledge extraction failed:", e.message));
+    // Store facts in passive knowledge system (awaited so we can report what was learned)
+    let learnedFacts = [];
+    try {
+      learnedFacts = await extractFromNews(summaries, topic) || [];
+    } catch (e) {
+      console.warn("[news] Knowledge extraction failed:", e.message);
+    }
 
     return {
       tool: "news",
@@ -412,7 +436,8 @@ export async function news(request) {
         filteredItems: filteredItems.length,
         html,
         preformatted: true,
-        text: html
+        text: html,
+        learnedFacts
       },
       reasoning: `Fetched ${allItems.length} headlines, ${topic ? `filtered to ${filteredItems.length} about "${topic}"` : 'showing all'}, summarized top ${summaries.length} articles`
     };

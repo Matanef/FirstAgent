@@ -337,14 +337,19 @@ export async function search(query) {
 
   console.log(`✅ Returning ${topResults.length} deduplicated results from ${data.totalSources} sources`);
 
-  // Store facts in passive knowledge system (non-blocking)
-  extractFromSearch(topResults, synthesis, normalizedQuery).catch(e => console.warn("[search] Knowledge extraction failed:", e.message));
+  // Store facts in passive knowledge system (awaited so we can report what was learned)
+  let learnedFacts = [];
+  try {
+    learnedFacts = await extractFromSearch(topResults, synthesis, normalizedQuery) || [];
+  } catch (e) {
+    console.warn("[search] Knowledge extraction failed:", e.message);
+  }
 
   return {
     tool: "search",
     success: true,
     final: true,
-    data,
+    data: { ...data, learnedFacts },
     reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo), found ${topResults.length} relevant results`
   };
 }

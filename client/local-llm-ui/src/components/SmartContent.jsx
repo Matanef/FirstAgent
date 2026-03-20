@@ -1,5 +1,14 @@
 // client/local-llm-ui/src/components/SmartContent.jsx
 import DOMPurify from "dompurify";
+
+// Allow target="_blank" on links — DOMPurify strips it by default
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A") {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
 import YouTubeVideoGrid from "./YouTubeVideoGrid";
 import FileSystemBrowser from "./FileSystemBrowser";
 import CodeBlock from "./CodeBlock";
