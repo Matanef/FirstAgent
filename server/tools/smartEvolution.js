@@ -108,13 +108,17 @@ async function checkToolNameConflict(proposedName) {
   const filename = proposedName.endsWith(".js") ? proposedName : `${proposedName}.js`;
   const funcName = proposedName.replace(/\.js$/, "");
 
+  // Check index.js for exact matches (word-boundary aware)
   try {
     const indexContent = await fs.readFile(path.join(TOOLS_DIR, "index.js"), "utf8");
-    if (indexContent.includes(`"${funcName}"`) || indexContent.includes(`${funcName},`) || indexContent.includes(`${funcName}`)) {
+    // Match exact export name: "funcName," or "funcName}" in TOOLS object, or exact import
+    const exactPattern = new RegExp(`\\b${funcName}\\b\\s*[,}]|import\\s*\\{\\s*${funcName}\\s*\\}`, "m");
+    if (exactPattern.test(indexContent)) {
       return { conflict: true, reason: `Tool "${funcName}" already exists in index.js` };
     }
   } catch { /* proceed */ }
 
+  // Check if file already exists on disk
   try {
     await fs.access(path.join(TOOLS_DIR, filename));
     return { conflict: true, reason: `File ${filename} already exists on disk` };
@@ -250,7 +254,8 @@ ${researchFindings.substring(0, 5000)}
 
 TASK: Identify ONE new tool that would most benefit this agent system. Requirements:
 1. Must fill a REAL gap — not duplicate any existing tool above
-2. Must be implementable with ONLY the installed npm dependencies OR Node.js built-in modules
+2. The toolName MUST be unique — it cannot match any existing tool name listed above (not even partially — e.g., don't suggest "memoryTool" if one exists)
+3. Must be implementable with ONLY the installed npm dependencies OR Node.js built-in modules
 3. Must be compatible with the hardware (consider RAM, GPU, model capabilities)
 4. Must follow ES Module pattern (import/export, async functions)
 5. Must be practically useful — not a demo or toy
@@ -304,9 +309,10 @@ If you genuinely cannot identify a useful new tool, respond with:
   const conflict = await checkToolNameConflict(proposal.toolName);
   if (conflict.conflict) {
     output += `  Tool name conflict: ${conflict.reason}\n`;
-    output += "\n**Pipeline aborted — name collision.**\n";
+    output += "  The LLM suggested a tool that already exists. Run again to get a different suggestion.\n";
+    output += "\n**Pipeline stopped — name collision. Try running again.**\n";
     await appendAuditLog({ step: 3, action: "think", result: "name_conflict", toolName: proposal.toolName });
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
+    return { tool: "smartEvolution", success: true, final: true, data: { text: output, preformatted: true } };
   }
 
   output += `  Proposed: **${proposal.toolName}** — ${proposal.description}\n\n`;
