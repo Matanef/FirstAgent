@@ -297,6 +297,7 @@ async function findDuplicates(files, options = {}) {
 // NATURAL LANGUAGE PARSING
 // ============================================================
 function parseNaturalLanguage(text) {
+    if (!text) return {};
     const context = {};
 
     const pathMatch = text.match(/(?:in|under|at|from)\s+([a-zA-Z]:[\\\/][^\s,]+|[.\/][^\s,]+)/i);

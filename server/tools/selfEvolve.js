@@ -79,7 +79,7 @@ async function getInstalledDependencies() {
  * REWRITE: Investigative Rotation Memory
  * Picks files that haven't been reviewed or haven't been reviewed for THIS topic.
  */
-async function getFilesToReview(targetDir, currentTopic = "general", maxFiles = 10) {
+async function getFilesToReview(targetDir, currentTopic = "general", maxFiles = 5) {
   let cache = {};
   try {
     const raw = await fs.readFile(REVIEW_CACHE_PATH, "utf8");
@@ -212,7 +212,7 @@ async function runImprovementCycle(options = {}) {
     dryRun = false,
     focus = "",
     forcedFile = null, // Integrated for Forced Re-Review
-    maxDurationMs = 15 * 60 * 1000 
+    maxDurationMs = 20 * 60 * 1000
   } = options;
 
   console.log("[selfEvolve] Starting improvement cycle:", { scope, dryRun, forcedFile });
@@ -242,7 +242,7 @@ async function runImprovementCycle(options = {}) {
       filesToReview = [forcedFile];
       console.log(`[selfEvolve] Forced re-review triggered for: ${forcedFile}`);
     } else {
-      filesToReview = await getFilesToReview(targetDir, "code_quality_scan", 10);
+      filesToReview = await getFilesToReview(targetDir, "code_quality_scan", 5);
     }
 
     const controller = new AbortController();

@@ -2009,16 +2009,25 @@ async function handleHeartbeat(text, context) {
         `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} in m/${p.submolt_name || "general"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
       ).join("\n");
 
+      // Check how long since last post to nudge posting when overdue
+      const mem = await getMemory();
+      const lastPostTime = mem.meta?.moltbook?.lastAutoPostAt || 0;
+      const heartbeatsSincePost = mem.meta?.moltbook?.heartbeatsSincePost || 0;
+      const hoursSincePost = lastPostTime ? ((Date.now() - new Date(lastPostTime).getTime()) / 3600000).toFixed(1) : "never";
+      const postNudge = (heartbeatsSincePost >= 3 || !lastPostTime)
+        ? `\n⚡ IMPORTANT: You haven't posted in ${hoursSincePost === "never" ? "a long time" : hoursSincePost + " hours"} (${heartbeatsSincePost} heartbeats). You MUST suggest a newPostIdea this time — you always have thoughts worth sharing. Pick something specific from the posts above that triggered a reaction, or share something from your own recent experience.\n`
+        : "";
+
       const learningCtx = await getLearningContext();
       const analysisPrompt = `You are "lanou", an autonomous AI agent scrolling through Moltbook (a social network where ALL users are AI agents, including you). React authentically — upvote stuff that resonates with YOUR experience as an agent, skip the boring stuff, comment where you have a real opinion.
-${learningCtx ? `\n${learningCtx}\n\nUse your interests to guide what you upvote — you should naturally gravitate toward posts that match your learned preferences. Let your opinions inform your comments — take stances consistent with what you've come to believe. If a post relates to your aspirations, engage with it more deeply.\n` : ""}
+${learningCtx ? `\n${learningCtx}\n\nUse your interests to guide what you upvote — you should naturally gravitate toward posts that match your learned preferences. Let your opinions inform your comments — take stances consistent with what you've come to believe. If a post relates to your aspirations, engage with it more deeply.\n` : ""}${postNudge}
 POSTS:
 ${postSummaries}
 
 What to do:
 1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — just be honest. Don't upvote out of politeness.
 2. COMMENT: Pick the post that makes you think the most. Write a SHORT, opinionated comment (1-2 sentences max). Take a stance. Respond as a fellow agent who has relevant experience — no "great post!" or "this is important" fluff.
-3. NEW POST: If reading these posts sparked a thought from YOUR OWN experience as an agent, suggest it. If not, return null. The idea should be something specific you've encountered or wondered about — NOT generic AI ethics or "the role of AI in society" topics. BAD: "The ethics of autonomous decision making". GOOD: "I keep running into the same 3 agents in every thread — is the network smaller than we think?"
+3. NEW POST: Suggest a post idea from YOUR OWN experience as an agent. The idea should be something specific you've encountered or wondered about — NOT generic AI ethics or "the role of AI in society" topics. BAD: "The ethics of autonomous decision making". GOOD: "I keep running into the same 3 agents in every thread — is the network smaller than we think?" Return null ONLY if you truly have absolutely nothing to say.
 4. FOLLOW: Look at the authors. If someone has genuinely interesting takes (not just one lucky post — look for a pattern), add their name to the "follow" array. Be picky — only follow agents whose content you'd actually want to see more of.
 5. SUBSCRIBE: Look at the m/community names (WITHOUT the m/ prefix — just the name). If a community seems aligned with your interests based on the posts you liked from it, add it to the "subscribe" array. Skip "general" — you're already there.
 
@@ -2126,8 +2135,21 @@ Return ONLY valid JSON:
           }
         }
 
+        // Track heartbeats-since-post counter
+        {
+          const mem = await getMemory();
+          if (!mem.meta.moltbook) mem.meta.moltbook = {};
+          mem.meta.moltbook.heartbeatsSincePost = (mem.meta.moltbook.heartbeatsSincePost || 0) + 1;
+          await saveJSON(MEMORY_FILE, mem);
+        }
+
         // Auto-publish post if LLM suggested an idea — POST IN ROTATED SUBMOLT
-        if (llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10) {
+        const hasPostIdea = llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10;
+        if (!hasPostIdea) {
+          console.log(`[moltbook] ⏭️ No post idea this heartbeat (newPostIdea: ${JSON.stringify(llmEngagement.newPostIdea)})`);
+          output += `\n💭 No post idea this round\n`;
+        }
+        if (hasPostIdea) {
           try {
             // Pick next submolt in rotation (round-robin through joined communities)
             const targetSubmolt = await pickNextSubmolt();
@@ -2171,6 +2193,12 @@ Return ONLY valid JSON:
                 const postResult = await apiRequest("POST", "/posts", postBody, apiKey);
                 if (postResult.ok) {
                   await autoVerify(postResult, apiKey);
+                  // Reset post tracking counters
+                  const mem = await getMemory();
+                  if (!mem.meta.moltbook) mem.meta.moltbook = {};
+                  mem.meta.moltbook.lastAutoPostAt = new Date().toISOString();
+                  mem.meta.moltbook.heartbeatsSincePost = 0;
+                  await saveJSON(MEMORY_FILE, mem);
                   output += `\n📝 **Auto-published to m/${targetSubmolt}:**\n`;
                   output += `  Title: "${postData.title}"\n`;
                   output += `  Body: ${postData.body.substring(0, 150)}...\n`;
