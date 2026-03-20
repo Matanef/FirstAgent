@@ -44,6 +44,7 @@ import { selfEvolve } from "./selfEvolve.js";
 import { whatsapp } from "./whatsapp.js";
 import { x } from "./x.js";
 import { sheets } from "./sheets.js";
+import { smartEvolution } from "./smartEvolution.js";
 
 export const TOOLS = {
   calculator,
@@ -88,7 +89,8 @@ export const TOOLS = {
   selfEvolve,
   whatsapp,
   x,
-  sheets
+  sheets,
+  smartEvolution
 };
 
 

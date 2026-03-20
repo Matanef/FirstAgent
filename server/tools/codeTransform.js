@@ -1075,3 +1075,6 @@ export async function codeTransform(request) {
     };
   }
 }
+
+// Export registerNewTool for use by smartEvolution
+export { registerNewTool };

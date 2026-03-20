@@ -146,6 +146,7 @@ function inferToolFromText(text) {
   if (/\b(refactor|rewrite|transform|optimize|improve|modify)\b/.test(lower)) return "codeTransform";
   if (/\b(code\s+review|security|performance|quality|audit|smell)\b/.test(lower)) return "codeReview";
   if (/\b(review|inspect|examine)\b/.test(lower)) return "review"; // Fallback general review
+  if (/\b(smart\s*evolut|discover\s+new\s+tools?|invent\s+tool)\b/.test(lower)) return "smartEvolution";
   if (/\b(evolve|autonomous|self[- ]?evolve)\b/.test(lower)) return "selfEvolve";
   if (/\b(dependency|graph|circular|dead\s+code)\b/.test(lower)) return "projectGraph";
   if (/\b(index|symbols|class|function\s+list)\b/.test(lower)) return "projectIndex";
@@ -1281,7 +1282,28 @@ if (
   // CODE GURU TOOLS — must come BEFORE general review to prevent collision
   // ──────────────────────────────────────────────────────────
 
-// Self-Evolution — active code modification (NOT diagnostics)
+// Smart Evolution — discover and create NEW tools (must come BEFORE selfEvolve)
+  if (!isSchedulingIntent && /\b(smart\s*evolut|discover\s+new\s+tools?|create\s+new\s+tool\s+autonom|evolve\s+and\s+create|invent\s+a?\s*new\s+tool|tool\s+discovery|suggest\s+new\s+tools?)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution");
+    const evolveCtx = {};
+    if (/\b(dry.?run|preview|plan)\b/i.test(lower)) evolveCtx.action = "dryrun";
+    else if (/\b(history|log)\b/i.test(lower)) evolveCtx.action = "history";
+    else if (/\b(status|pending)\b/i.test(lower)) evolveCtx.action = "status";
+    else evolveCtx.action = "run";
+    return [{ tool: "smartEvolution", input: trimmed, context: evolveCtx, reasoning: "certainty_smart_evolution" }];
+  }
+
+  // Smart Evolution approval/rejection
+  if (/\b(approve\s+evolution|evolution\s+approv|proceed\s+with\s+evolution)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (approve)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "approve" }, reasoning: "certainty_smart_evolution_approve" }];
+  }
+  if (/\b(reject\s+evolution|cancel\s+evolution|abort\s+evolution)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (reject)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "reject" }, reasoning: "certainty_smart_evolution_reject" }];
+  }
+
+  // Self-Evolution — active code modification (NOT diagnostics)
   if (!isSchedulingIntent && /\b(self[- ]?evolv|evolve\s+(yourself|your|my)|improve\s+(yourself|your\s+code|my\s+code)|scan\s+github\s+and\s+(improve|evolve|upgrade)|upgrade\s+(yourself|your\s+tools)|autonomous\s+improv|make\s+yourself\s+better|evolution\s+cycle)\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfEvolve");
     const evolveContext = {};
