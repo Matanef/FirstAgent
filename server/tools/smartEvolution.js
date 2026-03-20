@@ -26,6 +26,7 @@ const TOOLS_DIR = path.resolve(__dirname);
 
 const AUDIT_LOG = path.join(DATA_DIR, "smart-evolution-log.json");
 const PENDING_FILE = path.join(DATA_DIR, "pending-evolution-proposal.json");
+const SUGGESTIONS_FILE = path.join(DATA_DIR, "toolSuggestions.json");
 
 // Security patterns to block in generated code
 const SECURITY_PATTERNS = [
@@ -161,6 +162,43 @@ async function loadPendingProposal() {
 
 async function clearPendingProposal() {
   try { await fs.unlink(PENDING_FILE); } catch { /* doesn't exist */ }
+}
+
+// ─── HELPER: Tool suggestions list (implement later) ─────────────
+async function loadSuggestions() {
+  try { return JSON.parse(await fs.readFile(SUGGESTIONS_FILE, "utf8")); } catch { return []; }
+}
+
+async function saveSuggestions(suggestions) {
+  await fs.mkdir(path.dirname(SUGGESTIONS_FILE), { recursive: true });
+  await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify(suggestions, null, 2));
+}
+
+async function addSuggestion(proposal, report, systemInfo) {
+  const suggestions = await loadSuggestions();
+  const id = suggestions.length > 0 ? Math.max(...suggestions.map(s => s.id)) + 1 : 1;
+  suggestions.push({
+    id,
+    toolName: proposal.toolName,
+    description: proposal.description,
+    rationale: proposal.rationale,
+    capabilities: proposal.capabilities || [],
+    complexity: proposal.complexity || "medium",
+    proposal,
+    report,
+    systemInfo,
+    savedAt: new Date().toISOString(),
+    status: "pending" // pending | approved | rejected | implemented
+  });
+  await saveSuggestions(suggestions);
+  console.log(`[smartEvolution] Saved suggestion #${id}: ${proposal.toolName}`);
+  return id;
+}
+
+async function removeSuggestion(id) {
+  const suggestions = await loadSuggestions();
+  const filtered = suggestions.filter(s => s.id !== id);
+  await saveSuggestions(filtered);
 }
 
 // ─── HELPER: Rollback tool creation ──────────────────────────────
@@ -359,7 +397,10 @@ ${proposal.implementationPlan}
   await savePendingProposal({ proposal, report, systemInfo, createdAt: new Date().toISOString() });
 
   output += "---\n\n";
-  output += '**Awaiting your approval.** Say **"approve evolution"** to proceed with building, or **"reject evolution"** to cancel.\n';
+  output += '**Awaiting your decision:**\n';
+  output += '  • **"approve evolution"** — proceed with building now\n';
+  output += '  • **"reject evolution"** — discard this idea\n';
+  output += '  • **"save for later"** — add to your tool suggestions backlog\n';
 
   // Optional: send notification via WhatsApp or email
   if (notifyVia === "whatsapp" || notifyVia === "email") {
@@ -707,6 +748,28 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
 // ═══════════════════════════════════════════════════════════════════
 //  ENTRY POINT
 // ═══════════════════════════════════════════════════════════════════
+// ─── Exported: check for stale suggestions (called by heartbeat/scheduler) ──
+export async function checkStaleSuggestions() {
+  try {
+    const suggestions = await loadSuggestions();
+    const pending = suggestions.filter(s => s.status === "pending");
+    if (pending.length === 0) return null;
+
+    // Only remind if the oldest pending suggestion is at least 24h old
+    const oldest = pending.reduce((a, b) => new Date(a.savedAt) < new Date(b.savedAt) ? a : b);
+    const ageHours = (Date.now() - new Date(oldest.savedAt).getTime()) / 3600000;
+    if (ageHours < 24) return null;
+
+    // Pick a random pending suggestion to highlight
+    const pick = pending[Math.floor(Math.random() * pending.length)];
+    return {
+      count: pending.length,
+      highlight: pick,
+      message: `💡 You have ${pending.length} tool suggestion${pending.length > 1 ? "s" : ""} saved for later. How about implementing **${pick.toolName}**? (${pick.description})\n\nSay **"implement suggestion ${pick.id}"** to build it, **"show tool suggestions"** to see all, or **"no"** to skip.`
+    };
+  } catch { return null; }
+}
+
 export async function smartEvolution(request) {
   const text = typeof request === "string" ? request : (request?.text || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
@@ -723,6 +786,87 @@ export async function smartEvolution(request) {
       case "reject": {
         await clearPendingProposal();
         return { tool: "smartEvolution", success: true, final: true, data: { text: "Evolution proposal rejected and cleared." } };
+      }
+
+      case "later": {
+        // Save current pending proposal to suggestions backlog
+        const pending = await loadPendingProposal();
+        if (!pending?.proposal) {
+          return { tool: "smartEvolution", success: false, final: true, data: { text: "No pending proposal to save. Run `suggest new tools` first." } };
+        }
+        const suggId = await addSuggestion(pending.proposal, pending.report, pending.systemInfo);
+        await clearPendingProposal();
+        await appendAuditLog({ step: 5, action: "saved_for_later", toolName: pending.proposal.toolName, suggestionId: suggId });
+        return {
+          tool: "smartEvolution", success: true, final: true,
+          data: { text: `✅ Saved **${pending.proposal.toolName}** to your tool suggestions backlog (ID: #${suggId}).\n\nSay **"show tool suggestions"** to view your backlog, or **"implement suggestion ${suggId}"** when you're ready.`, preformatted: true }
+        };
+      }
+
+      case "listSuggestions": {
+        const suggestions = await loadSuggestions();
+        if (suggestions.length === 0) {
+          return { tool: "smartEvolution", success: true, final: true, data: { text: "No tool suggestions saved. Run `suggest new tools` to generate ideas." } };
+        }
+        let listText = "**🧰 Tool Suggestions Backlog:**\n\n";
+        for (const s of suggestions) {
+          const statusIcon = s.status === "implemented" ? "✅" : s.status === "rejected" ? "❌" : "⏳";
+          listText += `**#${s.id}** ${statusIcon} **${s.toolName}** (${s.complexity})\n`;
+          listText += `  ${s.description}\n`;
+          listText += `  _Saved: ${new Date(s.savedAt).toLocaleDateString()}_\n\n`;
+        }
+        listText += `---\nSay **"implement suggestion N"** to build one, or **"remove suggestion N"** to discard.`;
+        return { tool: "smartEvolution", success: true, final: true, data: { text: listText, preformatted: true } };
+      }
+
+      case "implementSuggestion": {
+        // Extract suggestion ID from text
+        const idMatch = text.match(/(\d+)/);
+        if (!idMatch) {
+          return { tool: "smartEvolution", success: false, final: true, data: { text: "Please specify a suggestion number. Example: `implement suggestion 3`" } };
+        }
+        const targetId = parseInt(idMatch[1], 10);
+        const suggestions = await loadSuggestions();
+        const target = suggestions.find(s => s.id === targetId);
+        if (!target) {
+          return { tool: "smartEvolution", success: false, final: true, data: { text: `Suggestion #${targetId} not found. Say "show tool suggestions" to see available ideas.` } };
+        }
+        if (target.status === "implemented") {
+          return { tool: "smartEvolution", success: true, final: true, data: { text: `Suggestion #${targetId} (${target.toolName}) has already been implemented.` } };
+        }
+        // Load it as a pending proposal and run the approval flow
+        await savePendingProposal({ proposal: target.proposal, report: target.report, systemInfo: target.systemInfo, createdAt: target.savedAt, fromSuggestion: targetId });
+        console.log(`[smartEvolution] Loading suggestion #${targetId} (${target.toolName}) for implementation`);
+
+        // Execute the build pipeline (steps 6-9)
+        const buildResult = await executeApprovedProposal();
+
+        // If successful, mark the suggestion as implemented
+        if (buildResult.success) {
+          const updatedSuggestions = await loadSuggestions();
+          const idx = updatedSuggestions.findIndex(s => s.id === targetId);
+          if (idx !== -1) {
+            updatedSuggestions[idx].status = "implemented";
+            updatedSuggestions[idx].implementedAt = new Date().toISOString();
+            await saveSuggestions(updatedSuggestions);
+          }
+        }
+        return buildResult;
+      }
+
+      case "removeSuggestion": {
+        const rmMatch = text.match(/(\d+)/);
+        if (!rmMatch) {
+          return { tool: "smartEvolution", success: false, final: true, data: { text: "Please specify a suggestion number. Example: `remove suggestion 3`" } };
+        }
+        const rmId = parseInt(rmMatch[1], 10);
+        const allSuggestions = await loadSuggestions();
+        const exists = allSuggestions.find(s => s.id === rmId);
+        if (!exists) {
+          return { tool: "smartEvolution", success: false, final: true, data: { text: `Suggestion #${rmId} not found.` } };
+        }
+        await removeSuggestion(rmId);
+        return { tool: "smartEvolution", success: true, final: true, data: { text: `🗑️ Removed suggestion #${rmId} (${exists.toolName}) from the backlog.` } };
       }
 
       case "status": {

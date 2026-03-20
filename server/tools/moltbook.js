@@ -2405,6 +2405,16 @@ Return ONLY valid JSON:
 
   output += `\n**Rate limits:** 1 post/30min, 50 comments/day, 1 comment/20sec\n`;
   output += `\n**Summary:** ${actions.length > 0 ? actions.join("; ") : "All clear — no urgent actions needed."}\n`;
+
+  // ── Check for stale tool suggestions (periodic nudge) ──
+  try {
+    const { checkStaleSuggestions } = await import("./smartEvolution.js");
+    const stale = await checkStaleSuggestions();
+    if (stale) {
+      output += `\n---\n${stale.message}\n`;
+    }
+  } catch { /* smartEvolution not available — skip */ }
+
   output += `\nHEARTBEAT_OK`;
 
   const mem = await getMemory();

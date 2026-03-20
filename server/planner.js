@@ -1293,7 +1293,7 @@ if (
     return [{ tool: "smartEvolution", input: trimmed, context: evolveCtx, reasoning: "certainty_smart_evolution" }];
   }
 
-  // Smart Evolution approval/rejection
+  // Smart Evolution approval/rejection/save-for-later
   if (/\b(approve\s+evolution|evolution\s+approv|proceed\s+with\s+evolution)\b/i.test(lower)) {
     console.log("[planner] certainty branch: smartEvolution (approve)");
     return [{ tool: "smartEvolution", input: trimmed, context: { action: "approve" }, reasoning: "certainty_smart_evolution_approve" }];
@@ -1301,6 +1301,22 @@ if (
   if (/\b(reject\s+evolution|cancel\s+evolution|abort\s+evolution)\b/i.test(lower)) {
     console.log("[planner] certainty branch: smartEvolution (reject)");
     return [{ tool: "smartEvolution", input: trimmed, context: { action: "reject" }, reasoning: "certainty_smart_evolution_reject" }];
+  }
+  if (/\b(save\s+(?:it\s+)?for\s+later|implement\s+later|maybe\s+later|backlog\s+(?:it|this))\b/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (save for later)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "later" }, reasoning: "certainty_smart_evolution_later" }];
+  }
+  if (/\b(show|list|view|see)\s+(?:my\s+)?tool\s+suggest/i.test(lower) || /\btool\s+suggest\w*\s+(?:list|backlog)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (list suggestions)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "listSuggestions" }, reasoning: "certainty_smart_evolution_list" }];
+  }
+  if (/\bimplement\s+suggest\w*\s*#?\d+/i.test(lower) || /\bbuild\s+suggest\w*\s*#?\d+/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (implement suggestion)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "implementSuggestion" }, reasoning: "certainty_smart_evolution_implement" }];
+  }
+  if (/\b(remove|delete|discard)\s+suggest\w*\s*#?\d+/i.test(lower)) {
+    console.log("[planner] certainty branch: smartEvolution (remove suggestion)");
+    return [{ tool: "smartEvolution", input: trimmed, context: { action: "removeSuggestion" }, reasoning: "certainty_smart_evolution_remove" }];
   }
 
   // Self-Evolution — active code modification (NOT diagnostics)
