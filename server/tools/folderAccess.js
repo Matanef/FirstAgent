@@ -299,7 +299,29 @@ export async function folderAccess(request) {
   }
 
   // Normalize path
-  const normalizedPath = path.resolve(folderPath);
+  let normalizedPath = path.resolve(folderPath);
+
+  // If path doesn't exist, try finding the directory name under PROJECT_ROOT subdirectories
+  try {
+    await fs.stat(normalizedPath);
+  } catch {
+    const dirName = path.basename(normalizedPath);
+    // Search one level deep under PROJECT_ROOT for a matching directory
+    try {
+      const topLevel = await fs.readdir(PROJECT_ROOT, { withFileTypes: true });
+      for (const entry of topLevel) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(PROJECT_ROOT, entry.name, dirName);
+        try {
+          const stat = await fs.stat(candidate);
+          if (stat.isDirectory()) {
+            normalizedPath = candidate;
+            break;
+          }
+        } catch { /* not found here, keep looking */ }
+      }
+    } catch { /* can't read PROJECT_ROOT, proceed with original */ }
+  }
 
   // Verify path exists
   try {
