@@ -149,6 +149,10 @@ export async function getKnowledgeContext() {
 export async function extractFromNews(articles, topic) {
   if (!articles || articles.length === 0) return [];
 
+  // Reject garbage topics — conversational noise that leaked through
+  const isGarbageTopic = !topic || topic.length < 3 ||
+    /^(lets?|catch|up|on|the|show|me|get|give|summarize|read)\b/i.test(topic);
+
   // Take top 3 most relevant articles
   const top = articles.slice(0, 3);
   const learned = [];
@@ -162,12 +166,17 @@ export async function extractFromNews(articles, topic) {
     const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop)\b/i;
     const ongoing = ongoingKeywords.test(title) || ongoingKeywords.test(summary);
 
+    // Derive topic from article content, not user's query (avoids "lets catch up on" as topic)
+    const articleTopic = isGarbageTopic
+      ? title.substring(0, 60).replace(/[:.!?]+$/, "").trim()
+      : topic;
+
     const factText = summary
       ? `${title}. ${summary.substring(0, 200)}`
       : title;
 
     const r = await addFact({
-      topic: topic || title.substring(0, 60),
+      topic: articleTopic,
       fact: factText.substring(0, 300),
       source: `news${article.source ? `/${article.source}` : ""}`,
       ongoing,
