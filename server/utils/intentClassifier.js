@@ -39,6 +39,22 @@ const CHAT_PATTERNS = [
   /\btalk about\s+(something|anything)\b/i,
   /\bwhat should we (talk|chat|discuss) about\b/i,
   /\b(bored|lonely|just\s+chatting|just\s+talking)\b/i,
+  // Conversational continuations — signals the user wants to keep chatting
+  /\b(i'?m here to|just here to|came to)\s+(chat|talk|hang|chill|converse)/i,
+  /\bnot\s+(specifically|really|particularly)\b/i,
+  /\bjust\s+(wanted|want|wanna)\s+to\s+(chat|talk|say|ask)/i,
+  /\bnothing\s+(specific|particular|special|in\s+mind)\b/i,
+  /\bjust\s+(checking\s+in|saying\s+hi|dropping\s+by|hanging(\s+out)?)\b/i,
+  /\bno\s+(task|request|question)s?\s*(right now|at the moment|really|today)?\b/i,
+  /\bwhat('?s| is) (your|the)\s+(vibe|mood|energy)\b/i,
+  /\bhow('?s|.s) your (day|night|evening|morning)\b/i,
+  /\btell me (something|a story|a joke|more)\b/i,
+  /\b(anyway|anyhow|so+),?\s*(what|how|where|who)/i,
+  /\bI (think|believe|feel|wonder|guess|suppose)\b/i,
+  /\bthat('?s| is) (interesting|cool|funny|weird|crazy|wild|true|fair)\b/i,
+  /\byeah\b.*\b(but|though|right|exactly|totally|agree)\b/i,
+  /\bwhat about you\b/i,
+  /\byou (know|think|agree|reckon)\b/i,
 ];
 
 /**
@@ -123,8 +139,12 @@ export function classifyIntent(message, recentHistory = []) {
 
   // If in a chat conversation and no strong task signals, continue chatting
   const recentChatCount = recentHistory.filter(h => h.mode === "chat").length;
+  const lastTurnWasChat = recentHistory.length > 0 && recentHistory[recentHistory.length - 1]?.mode === "chat";
+
   if (recentChatCount >= 3 && taskScore === 0) {
-    chatScore += 2; // Boost chat likelihood in ongoing conversation
+    chatScore += 2; // Strong boost in deep conversation
+  } else if (lastTurnWasChat && taskScore === 0) {
+    chatScore += 1; // Mild boost — last turn was chat, no task signals, likely still chatting
   }
 
   // Decision

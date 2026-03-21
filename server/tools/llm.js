@@ -4,6 +4,7 @@
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 import { getKnowledgeContext } from "../knowledge.js";
+import { getPersonalityContext } from "../personality.js";
 
 /**
  * Internal helper: perform a POST to Ollama with timeout + abort
@@ -52,17 +53,20 @@ export async function llm(prompt, configOptions = {}) {
   const url = CONFIG.LLM_API_URL + "api/generate";
 
   try {
-    // Inject passive knowledge for user-facing prompts (not internal tool calls)
+    // Inject personality + knowledge for user-facing prompts (not internal JSON tool calls)
     let finalPrompt = prompt;
     if (!configOptions.skipKnowledge && !configOptions.format) {
       try {
-        const knowledgeCtx = await getKnowledgeContext();
-        if (knowledgeCtx) {
-          finalPrompt = `${knowledgeCtx}\n\n---\n\n${prompt}`;
+        const [personalityCtx, knowledgeCtx] = await Promise.all([
+          getPersonalityContext("chat").catch(() => ""),
+          getKnowledgeContext().catch(() => "")
+        ]);
+        const prefix = [personalityCtx, knowledgeCtx].filter(Boolean).join("\n\n---\n\n");
+        if (prefix) {
+          finalPrompt = `${prefix}\n\n---\n\n${prompt}`;
         }
       } catch (e) {
-        // Non-blocking — don't fail the LLM call if knowledge is unavailable
-        console.warn("[llm] Knowledge injection failed:", e.message);
+        console.warn("[llm] Context injection failed:", e.message);
       }
     }
 
