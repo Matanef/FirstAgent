@@ -5,6 +5,11 @@
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 const MAX_DEPTH = 10;
 const MAX_FILES = 2000;
@@ -195,13 +200,33 @@ function detectIntent(text) {
  * Extract path from text
  */
 function extractPath(text) {
-  // Try explicit paths first
+  // Try explicit absolute paths first (e.g., D:/local-llm-ui/server or /home/user/code)
   const pathMatch = text.match(/([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/);
   if (pathMatch) return pathMatch[1].replace(/\\/g, "/");
 
   // Try quoted paths
   const quotedMatch = text.match(/["']([^"']+)["']/);
-  if (quotedMatch) return quotedMatch[1];
+  if (quotedMatch) {
+    const q = quotedMatch[1];
+    if (!path.isAbsolute(q)) return path.resolve(PROJECT_ROOT, q);
+    return q;
+  }
+
+  // Try relative paths with slashes (e.g., "local-llm-ui/server/", "server/tools")
+  const relativeMatch = text.match(/(?:^|\s)([\w.-]+(?:\/[\w.-]+)+)\/?(?:\s|$)/);
+  if (relativeMatch) {
+    let rel = relativeMatch[1];
+    // If the path starts with the project folder name, strip it to avoid doubling
+    const projectDirName = path.basename(PROJECT_ROOT);
+    if (rel.startsWith(projectDirName + "/")) rel = rel.slice(projectDirName.length + 1);
+    return path.resolve(PROJECT_ROOT, rel);
+  }
+
+  // Try bare directory names (e.g., "the server directory", "in tools", "client folder")
+  const lower = text.toLowerCase();
+  const dirNameMatch = lower.match(/\b(?:the\s+|my\s+)?(\w+)\s+(?:directory|folder|dir)\b/) ||
+    lower.match(/\b(?:in|inside|under|within)\s+(?:the\s+)?(\w+)\s*\/?/);
+  if (dirNameMatch) return path.resolve(PROJECT_ROOT, dirNameMatch[1]);
 
   return null;
 }
