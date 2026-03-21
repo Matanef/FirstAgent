@@ -82,17 +82,48 @@ async function collectSystemInfo() {
   return info;
 }
 
-// ─── HELPER: Scan existing tools ─────────────────────────────────
+// ─── HELPER: Scan existing tools (deep — reads descriptions) ─────
 async function scanExistingTools() {
   const toolFiles = [];
+  const toolDescriptions = []; // "toolName — description"
   try {
     const files = await fs.readdir(TOOLS_DIR);
     for (const f of files) {
-      if (f.endsWith(".js") && !f.includes(".backup") && !f.includes(".tmp") && f !== "index.js") {
+      if (f.endsWith(".js") && !f.includes(".backup") && !f.includes(".tmp") && !f.includes(".staging") && f !== "index.js") {
         toolFiles.push(f);
+        // Extract description from each tool file (first comment line, JSDoc, or export function line)
+        try {
+          const content = await fs.readFile(path.join(TOOLS_DIR, f), "utf8");
+          const lines = content.split("\n").slice(0, 30); // only scan first 30 lines
+          let desc = "";
+          // Try: "// Description" on line 2
+          for (const line of lines) {
+            const commentMatch = line.match(/^\/\/\s*(.{10,120})$/);
+            if (commentMatch && !commentMatch[1].startsWith("server/") && !commentMatch[1].startsWith("import")) {
+              desc = commentMatch[1].trim();
+              break;
+            }
+            // Try JSDoc @description or first * line
+            const jsdocMatch = line.match(/^\s*\*\s+(.{10,120})$/);
+            if (jsdocMatch && !jsdocMatch[1].startsWith("@")) {
+              desc = jsdocMatch[1].trim();
+              break;
+            }
+          }
+          // Fallback: extract from export function name
+          if (!desc) {
+            const exportMatch = content.match(/export\s+async\s+function\s+(\w+)/);
+            desc = exportMatch ? `(exports: ${exportMatch[1]})` : "(no description)";
+          }
+          toolDescriptions.push(`${f.replace(".js", "")} — ${desc}`);
+        } catch {
+          toolDescriptions.push(`${f.replace(".js", "")} — (could not read)`);
+        }
       }
     }
-  } catch { /* fallback */ }
+  } catch (e) { console.warn("[smartEvolution] Tool file scan failed:", e.message); }
+
+  console.log(`[smartEvolution] Scanned ${toolFiles.length} tool files, ${toolDescriptions.length} descriptions extracted`);
 
   // Get project graph for dependency info
   let graph = null;
@@ -101,7 +132,47 @@ async function scanExistingTools() {
     if (graphResult.success) graph = graphResult.data;
   } catch { /* non-critical */ }
 
-  return { toolFiles, toolCount: toolFiles.length, graph };
+  // Read planner routing patterns to understand covered intents
+  let plannerIntents = "";
+  try {
+    const plannerContent = await fs.readFile(path.resolve(TOOLS_DIR, "..", "planner.js"), "utf8");
+    // Extract certainty branch comments and tool names
+    const branches = plannerContent.match(/\/\/.*certainty.*|console\.log\(`\[planner\] certainty branch: .+`\)/g);
+    if (branches) {
+      plannerIntents = branches.slice(0, 40).map(b => b.replace("console.log(`[planner] ", "").replace("`)", "")).join("\n");
+    }
+  } catch { /* non-critical */ }
+
+  // Read recent telemetry for tool usage patterns
+  let usagePatterns = "";
+  try {
+    const telemetryPath = path.resolve(DATA_DIR, "telemetry.json");
+    const telemetry = JSON.parse(await fs.readFile(telemetryPath, "utf8"));
+    if (Array.isArray(telemetry)) {
+      // Count tool usage in last 50 entries
+      const recent = telemetry.slice(-50);
+      const counts = {};
+      for (const entry of recent) {
+        const tool = entry.tool || entry.action;
+        if (tool) counts[tool] = (counts[tool] || 0) + 1;
+      }
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      usagePatterns = sorted.slice(0, 15).map(([t, c]) => `${t}: ${c}x`).join(", ");
+    }
+  } catch { /* telemetry not available */ }
+
+  // Read agent's learned interests from memory
+  let agentInterests = "";
+  try {
+    const { getMemory } = await import("../memory.js");
+    const mem = await getMemory();
+    const learning = mem.meta?.moltbook?.learning;
+    if (learning?.interests?.length) {
+      agentInterests = learning.interests.map(i => i.topic).join(", ");
+    }
+  } catch { /* non-critical */ }
+
+  return { toolFiles, toolDescriptions, toolCount: toolFiles.length, graph, plannerIntents, usagePatterns, agentInterests };
 }
 
 // ─── HELPER: Check tool name conflicts ───────────────────────────
@@ -235,10 +306,15 @@ async function runEvolutionPipeline(options = {}) {
   const systemInfo = await collectSystemInfo();
   const toolScan = await scanExistingTools();
 
+  console.log(`[smartEvolution] Deep scan: ${toolScan.toolDescriptions.length} descriptions, ${toolScan.plannerIntents ? "intents loaded" : "no intents"}, usage: ${toolScan.usagePatterns || "none"}, interests: ${toolScan.agentInterests || "none"}`);
+
   output += `  Hardware: ${systemInfo.cpu.cores}-core ${systemInfo.cpu.model.substring(0, 40)}, ${systemInfo.ram.total} RAM\n`;
   output += `  GPU: ${systemInfo.gpu.substring(0, 60)}\n`;
   output += `  Ollama: v${systemInfo.ollama.version}, ${systemInfo.ollama.models.length} models\n`;
-  output += `  Tools: ${toolScan.toolCount} existing tools\n`;
+  output += `  Tools: ${toolScan.toolCount} existing tools (${toolScan.toolDescriptions.length} with descriptions)\n`;
+  output += `  Planner intents: ${toolScan.plannerIntents ? "loaded" : "not available"}\n`;
+  output += `  Usage patterns: ${toolScan.usagePatterns || "no telemetry"}\n`;
+  output += `  Agent interests: ${toolScan.agentInterests || "none learned yet"}\n`;
   output += `  Dependencies: ${systemInfo.dependencies.length} npm packages\n\n`;
 
   await appendAuditLog({ step: 1, action: "scan", toolCount: toolScan.toolCount, models: systemInfo.ollama.models.map(m => m.name) });
@@ -268,12 +344,32 @@ async function runEvolutionPipeline(options = {}) {
   output += "**Step 3/9 — Strategic Analysis**\n";
   console.log("[smartEvolution] Step 3: THINK — LLM analyzing gaps and opportunities");
 
-  const existingToolsList = toolScan.toolFiles.map(f => `  - ${f.replace(".js", "")}`).join("\n");
+  // Build rich tool inventory with descriptions (not just filenames)
+  const existingToolsList = toolScan.toolDescriptions.length > 0
+    ? toolScan.toolDescriptions.map(d => `  - ${d}`).join("\n")
+    : toolScan.toolFiles.map(f => `  - ${f.replace(".js", "")}`).join("\n");
+
+  // Build usage context section
+  const usageSection = toolScan.usagePatterns
+    ? `\nRECENT TOOL USAGE (last 50 interactions):\n${toolScan.usagePatterns}\nThis shows which tools the user ACTUALLY uses — prioritize gaps near frequently-used tools.\n`
+    : "";
+
+  // Build intent coverage section
+  const intentSection = toolScan.plannerIntents
+    ? `\nCOVERED INTENTS (planner routing):\n${toolScan.plannerIntents}\nThese patterns are already handled. Do NOT suggest tools for intents already covered.\n`
+    : "";
+
+  // Build agent interests section
+  const interestsSection = toolScan.agentInterests
+    ? `\nAGENT'S LEARNED INTERESTS:\n${toolScan.agentInterests}\nThe agent's user is interested in these topics — consider tools that serve these interests.\n`
+    : "";
 
   const thinkPrompt = `You are the strategic planning module of an autonomous AI agent system. Your job is to identify ONE new tool that would meaningfully extend this system's capabilities.
 
-CURRENT TOOLS (${toolScan.toolCount} tools):
+CURRENT TOOLS WITH DESCRIPTIONS (${toolScan.toolCount} tools):
 ${existingToolsList}
+
+READ THE LIST ABOVE CAREFULLY. Each line shows "toolName — description". Do NOT suggest a tool that overlaps with ANY existing tool. For example, if "weather — fetches weather forecasts" exists, do NOT suggest weatherForecast.
 
 SYSTEM PROFILE:
 - OS: ${systemInfo.os.platform} ${systemInfo.os.arch}
@@ -284,35 +380,35 @@ SYSTEM PROFILE:
 - Ollama: v${systemInfo.ollama.version}
 - Local models: ${systemInfo.ollama.models.map(m => `${m.name} (${m.size})`).join(", ") || "none detected"}
 
-INSTALLED NPM DEPENDENCIES:
+INSTALLED NPM DEPENDENCIES (you can ONLY use these + Node.js built-ins):
 ${systemInfo.dependencies.join(", ")}
-
+${usageSection}${intentSection}${interestsSection}
 GITHUB RESEARCH (trending tools and patterns):
 ${researchFindings.substring(0, 5000)}
 
 TASK: Identify ONE new tool that would most benefit this agent system. Requirements:
-1. Must fill a REAL gap — not duplicate any existing tool above
-2. The toolName MUST be unique — it cannot match any existing tool name listed above (not even partially — e.g., don't suggest "memoryTool" if one exists)
-3. Must be implementable with ONLY the installed npm dependencies OR Node.js built-in modules
-3. Must be compatible with the hardware (consider RAM, GPU, model capabilities)
-4. Must follow ES Module pattern (import/export, async functions)
-5. Must be practically useful — not a demo or toy
-6. Be creative but realistic — think about what would make this agent more capable day-to-day
+1. Must fill a REAL gap — read every tool description above and confirm your suggestion doesn't overlap
+2. The toolName MUST be unique — cannot match any existing tool name (not even partially)
+3. Must be implementable with ONLY the installed npm dependencies listed above OR Node.js built-in modules (fs, path, os, child_process, http, crypto, etc.)
+4. Must be compatible with the hardware (consider RAM, GPU, model capabilities)
+5. Must follow ES Module pattern (import/export, async functions)
+6. Must be practically useful — not a demo or toy
+7. Think about what workflows the user does FREQUENTLY (based on usage data) and what's missing from those workflows
+8. Consider what would make compound tool chains more powerful (e.g., a tool that produces data other tools could consume)
 
-Examples of GOOD suggestions: a clipboard manager, a PDF reader, a cron-style task runner, an image analyzer (if vision model available), a database query tool, a system monitor, a bookmark manager, a translation tool.
-Examples of BAD suggestions: another search tool (already exists), another LLM wrapper (already exists), a tool that needs packages not installed.
+Examples of BAD suggestions: anything that duplicates an existing tool's description, a tool requiring npm packages NOT in the dependency list, vague "manager" tools with no clear use case.
 
 Return ONLY valid JSON:
 {
   "toolName": "camelCaseToolName",
   "filename": "camelCaseToolName.js",
   "description": "One-line description of what the tool does",
-  "rationale": "2-3 sentences explaining why this fills a gap in current capabilities",
+  "rationale": "2-3 sentences explaining why this fills a gap. Reference specific existing tools it complements and specific user workflows it would improve.",
   "capabilities": ["capability1", "capability2", "capability3"],
   "dependsOn": ["npm-package-or-builtin-it-uses"],
   "risks": ["potential issue 1", "potential issue 2"],
   "complexity": "low|medium|high",
-  "implementationPlan": "Detailed multi-paragraph technical plan. Describe the main function, what APIs it calls, how it handles errors, what it returns. Be specific enough that a code generator could implement it."
+  "implementationPlan": "Detailed multi-paragraph technical plan. Describe the main function, what APIs it calls, how it handles errors, what it returns. Be specific enough that a code generator could implement it. Reference the actual npm packages from the installed list."
 }
 
 If you genuinely cannot identify a useful new tool, respond with:
