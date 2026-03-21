@@ -264,6 +264,8 @@ function isCancelCommand(text) {
   const trimmed = (text || "").trim().toLowerCase();
   return (
     trimmed === "cancel" ||
+    trimmed === "cancle" ||
+    trimmed === "cancell" ||
     trimmed === "discard" ||
     trimmed === "don't send" ||
     trimmed === "dont send" ||
@@ -1079,7 +1081,8 @@ if (
 
   // MOLTBOOK: Single-action detection — expanded for full API coverage
   // Guard: if the user wants to SCHEDULE a moltbook task, let it fall through to the scheduler branch
-  if (/\bmoltbook\b/i.test(lower) &&
+  // Also catch moltbook API-style requests (e.g., "POST /api/v1/agents/me/setup-owner-email")
+  if ((/\bmoltbook\b/i.test(lower) || /\/api\/v\d\/agents?\b/i.test(lower) || /\bsetup[- ]?owner[- ]?email\b/i.test(lower)) &&
       !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate)\b/i.test(lower)) {
     console.log("[planner] certainty branch: moltbook");
     const context = {};
@@ -1133,6 +1136,9 @@ if (
     // Heartbeat & Status
     else if (/\b(heartbeat|check\s*in|routine|engage)\b/i.test(lower)) context.action = "heartbeat";
     else if (/\b(status|session|check)\b/i.test(lower)) context.action = "status";
+    // Setup email for login
+    else if (/\b(set\s*up|setup|configure)\b/i.test(lower) && /\bemail\b/i.test(lower)) context.action = "setupEmail";
+    else if (/\bsetup[- ]?owner[- ]?email\b/i.test(lower)) context.action = "setupEmail";
     else context.action = "feed";
     return [{ tool: "moltbook", input: trimmed, context, reasoning: "certainty_moltbook" }];
   }
@@ -1216,9 +1222,12 @@ if (
 
   // Email keywords: compose, browse/read, or draft
   // Guard: skip if compound intent (e.g. "send email with summary of the news")
+  // Guard: skip if this looks like a moltbook API request (e.g., "POST /api/v1/agents/me/setup-owner-email")
   if (/\b(email|e-mail|mail|inbox|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
       !isSendItCommand(lower) &&
-      !hasCompoundIntent(lower)) {
+      !hasCompoundIntent(lower) &&
+      !/\/api\/v\d\/agents?\b/i.test(lower) &&
+      !(/\b(set\s*up|setup|configure)\b/i.test(lower) && /\b(moltbook|owner[- ]?email)\b/i.test(lower))) {
     const emailContext = {};
     if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) {
       emailContext.action = "browse";
@@ -1768,7 +1777,15 @@ Format: numbered list of article summaries, then a horizontal rule, then your an
       sourceInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "show moltbook feed";
     } else if (/\b(?:news|headlines?)\b/i.test(lower)) {
       sourceTool = "news";
-      sourceInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "get the news";
+      // Extract just the news portion, strip compound tail (", summarize...", ", and email...")
+      let rawNewsInput = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?use|,\s*analy|,\s*summarize)/i)?.[1]?.trim() || "get the news";
+      // Clean compound noise: "Search for AI breakthroughs, get the latest tech news" → "AI breakthroughs tech news"
+      sourceInput = rawNewsInput
+        .replace(/\bget\s+(?:the\s+)?(?:latest|recent|breaking|top|current)\s+(?:\w+\s+)?(?:news|headlines|articles)\b/gi, "")
+        .replace(/\b(search\s+for|look\s+up|find|fetch|get|show\s+me|give\s+me)\b/gi, "")
+        .replace(/,\s*,/g, ",")
+        .replace(/^[,\s]+|[,\s]+$/g, "")
+        .trim() || "get the news";
     }
 
     // Extract the user's analysis focus topic (e.g., "the new Spiderman movie" from "analyze sentiment on the new Spiderman movie")
@@ -1779,9 +1796,20 @@ Format: numbered list of article summaries, then a horizontal rule, then your an
     const useNlp = /\b(nlp\s+tool|nlp|extract\s+entities|NER)\b/i.test(lower);
     const analysisTool = useNlp ? "nlp_tool" : "llm";
     const topicInstruction = focusTopic ? `Focus specifically on content related to "${focusTopic}". Ignore tweets that are clearly about other topics.` : "";
-    const analysisPrompt = useNlp
-      ? `analyze sentiment of the data${focusTopic ? ` about ${focusTopic}` : ""}`
-      : `Analyze the sentiment and key themes of the following tweets.${topicInstruction ? " " + topicInstruction : ""} Provide: 1) Overall sentiment (positive/negative/neutral/mixed) with your own assessment — do NOT use scores from any previous analysis, judge the actual tweet content yourself, 2) Key themes discussed, 3) 2-3 notable tweet quotes WITH their tweet URLs (use the URLs from the data). Format as a clear, readable summary suitable for a WhatsApp message. Do NOT ask follow-up questions — just deliver the analysis.`;
+    let analysisPrompt;
+    if (useNlp) {
+      analysisPrompt = `analyze sentiment of the data${focusTopic ? ` about ${focusTopic}` : ""}`;
+    } else if (sourceTool === "news") {
+      analysisPrompt = `Analyze the following news articles and provide a comprehensive summary.${topicInstruction ? " " + topicInstruction : ""} Provide:
+1) Overall sentiment of the coverage (positive/negative/neutral/mixed)
+2) Key themes and developments discussed
+3) For EACH article, provide a detailed 2-3 sentence summary with the article title and source URL
+4) Your own brief analysis of what these developments mean
+
+Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or cut short. Do NOT ask follow-up questions — just deliver the analysis.`;
+    } else {
+      analysisPrompt = `Analyze the sentiment and key themes of the following data.${topicInstruction ? " " + topicInstruction : ""} Provide: 1) Overall sentiment (positive/negative/neutral/mixed) with your own assessment — do NOT use scores from any previous analysis, judge the actual content yourself, 2) Key themes discussed, 3) 2-3 notable quotes WITH their source URLs (use the URLs from the data). Format as a clear, readable summary. Do NOT ask follow-up questions — just deliver the analysis.`;
+    }
 
     // Detect destination
     let destTool = "whatsapp";
@@ -1796,7 +1824,15 @@ Format: numbered list of article summaries, then a horizontal rule, then your an
       destContext.useLastResult = true;
     } else if (/\b(?:email|mail)\b/i.test(lower)) {
       destTool = "email";
-      destInput = "email me the analysis results";
+      // Extract recipient email address from the original query
+      const emailAddrMatch = trimmed.match(/[\w.+-]+@[\w.-]+\.\w{2,}/);
+      const emailAddr = emailAddrMatch ? emailAddrMatch[0] : "";
+      destInput = emailAddr
+        ? `email the analysis results to ${emailAddr}`
+        : "email me the analysis results";
+      destContext.to = emailAddr || undefined;
+      destContext.useLastResult = true;
+      destContext.action = "draft";
     }
 
     console.log(`[planner] Compound (3-step analyze): ${sourceTool} → ${analysisTool} → ${destTool}`);

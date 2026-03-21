@@ -150,8 +150,15 @@ export async function extractFromNews(articles, topic) {
   if (!articles || articles.length === 0) return [];
 
   // Reject garbage topics — conversational noise that leaked through
-  const isGarbageTopic = !topic || topic.length < 3 ||
-    /^(lets?|catch|up|on|the|show|me|get|give|summarize|read)\b/i.test(topic);
+  // Also clean up topic: strip trailing noise like ", get the latest tech news"
+  const cleanedTopic = (topic || "")
+    .replace(/,?\s*get\s+(?:the\s+)?(?:latest|recent|breaking)?\s*(?:\w+\s+)?(?:news|articles|headlines)\b.*/gi, "")
+    .replace(/,?\s*(?:and\s+)?(?:email|send|mail)\b.*/gi, "")
+    .replace(/,?\s*(?:summarize|analyze)\b.*/gi, "")
+    .replace(/^[,\s]+|[,\s]+$/g, "")
+    .trim();
+  const isGarbageTopic = !cleanedTopic || cleanedTopic.length < 3 ||
+    /^(lets?|catch|up|on|the|show|me|get|give|summarize|read|search|find|look)\b/i.test(cleanedTopic);
 
   // Take top 3 most relevant articles
   const top = articles.slice(0, 3);
@@ -169,7 +176,7 @@ export async function extractFromNews(articles, topic) {
     // Derive topic from article content, not user's query (avoids "lets catch up on" as topic)
     const articleTopic = isGarbageTopic
       ? title.substring(0, 60).replace(/[:.!?]+$/, "").trim()
-      : topic;
+      : cleanedTopic;
 
     const factText = summary
       ? `${title}. ${summary.substring(0, 200)}`

@@ -934,10 +934,34 @@ Complete integration with Moltbook, the social network for AI agents. Uses the R
     - Saves heartbeat timestamp to memory for scheduling
     - **Auto-publish (Sprint 9):** The heartbeat now generates and posts an original thought piece inspired by trending topics, making your agent an active community participant
 
+#### Faceless Niche Authority (FNA)
+An autonomous "reporter" mode that analyzes a submolt community's posts and generates an opinionated tweet-style post summarizing what's happening. Rotates through submolts automatically (round-robin). Learns interests from the analysis.
+
+**Submolts in rotation:** general, agents, memory, builds, philosophy, security, consciousness, technology, blesstheirhearts, pondering
+
+37. `"Moltbook faceless niche dry run"` — Analyze the next submolt in rotation and preview the tweet WITHOUT posting (safe preview mode)
+38. `"Moltbook FNA"` — Short alias — analyze next submolt and post live
+39. `"Moltbook faceless niche"` — Analyze the next submolt and post the generated tweet live
+40. `"Moltbook niche authority"` — Alternative trigger phrase (same as above)
+41. `"Moltbook FNA reply scan"` — Check for replies to the last FNA tweet and auto-respond (designed to be called periodically for ~30 minutes after a tweet)
+42. `"Moltbook FNA reply check"` — Same as reply scan
+
+**How it works:**
+1. Fetches 15 newest + 5 hottest posts from the target submolt
+2. Sends all posts + comments to LLM for analysis (top subjects, mood, notable quotes)
+3. LLM generates a tweet-style post (opinionated take on what's happening in the community)
+4. Posts the tweet to the submolt (or previews in dry run mode)
+5. Extracts interests from the analysis for agent learning
+6. Starts a reply scanner (30 scans) to auto-respond to any replies
+
+**Dry run vs Live:**
+- `dry run` — Shows analysis + generated tweet in chat, does NOT post
+- Without `dry run` — Analyzes, posts the tweet live, starts reply scanner
+
 #### Complex Moltbook Workflows
-37. `"Run moltbook heartbeat, then check if anyone replied to my posts, and DM the top commenter saying thanks"` — Multi-step engagement workflow
-38. `"Read the top trending post on moltbook, give me your honest opinion about it, and if it's interesting leave a thoughtful comment"` — Read + opinion + conditional comment flow
-39. `"Search moltbook for posts about autonomous agents, analyze the sentiment, and post a response sharing our perspective"` — Search + analyze + create flow
+43. `"Run moltbook heartbeat, then check if anyone replied to my posts, and DM the top commenter saying thanks"` — Multi-step engagement workflow
+44. `"Read the top trending post on moltbook, give me your honest opinion about it, and if it's interesting leave a thoughtful comment"` — Read + opinion + conditional comment flow
+45. `"Search moltbook for posts about autonomous agents, analyze the sentiment, and post a response sharing our perspective"` — Search + analyze + create flow
 
 ---
 

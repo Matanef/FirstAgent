@@ -701,6 +701,35 @@ try {
         if (humidMatch) plainContent += `💧 Humidity: ${humidMatch[1]}%\n`;
       }
 
+      // LLM analysis output: convert markdown to clean HTML email
+      if (!plainContent && (prevTool === "llm" || prevTool === "nlp_tool")) {
+        // The LLM output is markdown-formatted text — convert to HTML for a clean email
+        let html = prevOutput
+          // Escape HTML entities first
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          // Bold: **text** → <strong>text</strong>
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          // Italic: *text* → <em>text</em>
+          .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+          // Markdown links: [text](url) → <a href="url">text</a>
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+          // Bare URLs: wrap in <a> tags (but not already inside href)
+          .replace(/(?<!href=")(https?:\/\/[^\s<)"]+)/g, '<a href="$1">$1</a>')
+          // Numbered list items: "1. " → proper list formatting
+          .replace(/^(\d+)\.\s+/gm, '<li style="margin-bottom: 6px;">')
+          // Paragraph breaks: double newline → </p><p>
+          .replace(/\n{2,}/g, '</p><p style="margin: 12px 0;">')
+          // Single newlines within paragraphs → <br>
+          .replace(/\n/g, "<br>\n");
+
+        plainContent = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 700px;">
+<p style="margin: 12px 0;">${html}</p>
+</div>`;
+        isHtml = true;
+      }
+
       // Fallback: generic HTML-to-text stripping
       if (!plainContent) {
         plainContent = prevOutput
@@ -733,7 +762,8 @@ try {
           review: "Code Review Results",
           githubTrending: "Trending GitHub Repos",
           youtube: "YouTube Search Results",
-          x: "X/Twitter Trends & Tweets"
+          x: "X/Twitter Trends & Tweets",
+          llm: "AI Analysis Summary"
         };
         subject = toolSubjects[prevTool] || `Results from ${prevTool}`;
       }
@@ -793,16 +823,33 @@ try {
     if (cc.length > 0) textLines.push(`**Cc:** ${cc.join(", ")}`);
     if (bcc.length > 0) textLines.push(`**Bcc:** ${bcc.join(", ")}`);
     textLines.push(`**Subject:** ${subject}`);
-    textLines.push(`**Message:**\n${body}`);
+    // For HTML emails, show a clean plain-text preview in chat instead of raw HTML
+    if (isHtml) {
+      const plainPreview = body
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/p>/gi, "\n\n")
+        .replace(/<\/li>/gi, "\n")
+        .replace(/<li[^>]*>/gi, "• ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      textLines.push(`**Message:**\n${plainPreview}`);
+      textLines.push("\n_(Formatted as HTML email)_");
+    } else {
+      textLines.push(`**Message:**\n${body}`);
+    }
     if (attachments.length > 0) {
       textLines.push(
         `\n📎 **Attachments (${attachments.length}):**\n${attachments
           .map(a => `• ${a.filename}`)
           .join("\n")}`
       );
-    }
-    if (isHtml) {
-      textLines.push("\n(Will be sent as an HTML email)");
     }
     textLines.push(`\n\nSay "send it" to confirm, or "cancel" to discard.`);
 

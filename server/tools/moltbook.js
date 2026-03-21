@@ -390,6 +390,11 @@ function inferAction(text) {
   if (/\bjoin\s+moltbook\b/.test(lower) && !/\b(community|submolt|group)\b/.test(lower)) return "register";
   if (/\bskill\.md\b/.test(lower) || /\bfollow.*instructions?\b/.test(lower)) return "register";
 
+  // Owner email setup (must come before auth to catch "set up email for login")
+  if (/\b(set\s*up|setup|configure|link)\b.*\b(email|e-mail)\b.*\b(moltbook|login|account)\b/i.test(lower) ||
+      /\b(moltbook|login)\b.*\b(set\s*up|setup|configure|link)\b.*\b(email|e-mail)\b/i.test(lower) ||
+      /\bsetup[- ]owner[- ]email\b/i.test(lower)) return "setupEmail";
+
   // Auth
   if (/\b(log\s*in|sign\s*in|authenticate)\b/.test(lower)) return "login";
   if (/\b(log\s*out|sign\s*out)\b/.test(lower)) return "logout";
@@ -519,6 +524,36 @@ async function autoVerify(result, apiKey) {
 // ──────────────────────────────────────────────────────────
 // REGISTRATION & AUTH
 // ──────────────────────────────────────────────────────────
+
+async function handleSetupEmail(text, context) {
+  const mem = await getMemory();
+  const apiKey = mem.meta?.moltbook?.api_key;
+  if (!apiKey) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Not registered on Moltbook yet. Use 'register on moltbook' first." } };
+  }
+
+  // Extract email from the text
+  const emailMatch = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/);
+  const email = emailMatch ? emailMatch[0] : mem.profile?.email;
+
+  if (!email) {
+    return { tool: "moltbook", success: false, final: true, data: { text: "Please provide an email address. Example: 'Set up my email for Moltbook login: your@email.com'" } };
+  }
+
+  console.log(`[moltbook] Setting up owner email: ${email}`);
+  const result = await apiRequest("POST", "/agents/me/setup-owner-email", { email }, apiKey);
+
+  if (result.ok) {
+    return {
+      tool: "moltbook", success: true, final: true,
+      data: { text: `**Owner email configured!**\n\nEmail: ${email}\n\nYou should receive a verification email from Moltbook. Check your inbox (and spam folder) and click the verification link to complete the login setup.` }
+    };
+  } else if (result.status === 409) {
+    return { tool: "moltbook", success: true, final: true, data: { text: `Email ${email} is already set up for this agent. Check your inbox for the verification link, or try logging in at https://www.moltbook.com/login` } };
+  } else {
+    return { tool: "moltbook", success: false, final: true, data: { text: `Failed to set up owner email: HTTP ${result.status}. ${JSON.stringify(result.data || "")}` } };
+  }
+}
 
 async function handleRegister(text, context) {
   const memory = await getMemory();
@@ -3176,6 +3211,7 @@ export async function moltbook(input) {
     switch (action) {
       // Registration & Auth
       case "register":       return await handleRegister(text, context);
+      case "setupEmail":     return await handleSetupEmail(text, context);
 
       // Profile
       case "profile":        return await handleProfile(text, context);

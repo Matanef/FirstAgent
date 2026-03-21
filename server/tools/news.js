@@ -108,6 +108,8 @@ function extractTopic(query) {
   // Strip conversational noise before extracting topic
   let stripped = lower
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
+    // Must come BEFORE stripping "get" — matches "get the latest tech news" as a whole phrase
+    .replace(/\bget\s+(?:the\s+)?(?:latest|recent|breaking|top|current)\s+(?:\w+\s+)?(?:news|headlines|articles)\b/gi, "")
     .replace(/\b(search for|look up|find|fetch|get|show me|give me)\b/gi, "")
     .replace(/\b(to learn about it|to learn|to know|to read|to see|to check)\b/gi, "")
     .replace(/\b(let'?s?\s+)?catch\s+(me\s+)?up\s+(on)?\b/gi, "")
@@ -117,7 +119,9 @@ function extractTopic(query) {
     .replace(/\b(latest|recent|breaking|top|current)\b/gi, "")
     .replace(/\b(news|headlines|articles|stories)\b/gi, "")
     .replace(/\b(about|regarding|on|for)\s+(?:it|this|that|them)\s*$/gi, "")
+    .replace(/\band\s+(?:email|send|mail)\b.*$/gi, "")
     .replace(/\s+/g, " ")
+    .replace(/^[,\s]+|[,\s]+$/g, "")
     .trim();
 
   // Extract specific topic patterns — match first "about/regarding/on/for" + topic
@@ -153,9 +157,16 @@ function extractTopic(query) {
 // Filter headlines by topic
 function filterByTopic(items, topic) {
   if (!topic) return items;
-  
-  const keywords = topic.toLowerCase().split(/\s+/);
-  
+
+  // Filter out common/short words that match everything
+  const stopWords = new Set(["the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "is", "it", "get", "be", "do", "has", "was", "are", "by", "as", "my", "me", "we", "us"]);
+  const keywords = topic.toLowerCase()
+    .replace(/[,]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopWords.has(w));
+
+  if (keywords.length === 0) return items;
+
   return items.filter(item => {
     const searchText = `${item.title} ${item.description || ''}`.toLowerCase();
     return keywords.some(keyword => searchText.includes(keyword));
