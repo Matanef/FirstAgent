@@ -1,8 +1,8 @@
 # Agent Tool Guide — Complete Reference
 
-> **43 registered tools** across 10 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning + conversational partner mode. Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
+> **50+ registered tools** across 10 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning + conversational partner mode + Smart Evolution (autonomous tool discovery). Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
 >
-> _Last updated: March 2026 — Sprint 10 (standalone twitter-client.js replacing broken library, conversational partner mode with isPersonalConversation(), heartbeat auto-publish, moltbook rich HTML, selfEvolve guardrails, applyPatch categorized backups)_
+> _Last updated: March 2026 — Sprint 11 (smartEvolution tool discovery pipeline, agent learning system, passive knowledge, deep scan with tool descriptions, enhanced planner routing for 14+ previously-broken prompts)_
 
 ---
 
@@ -339,6 +339,22 @@ Send WhatsApp messages to individual contacts or bulk-send to everyone in an Exc
 
 ---
 
+### `sheets` — Google Sheets Integration
+
+Read, write, and manipulate Google Sheets spreadsheets. Supports creating new sheets, reading cell ranges, writing data, and appending rows.
+
+**Requires:** Google Sheets API credentials configured.
+
+**Triggered by:** "google sheets", "spreadsheet", "sheet", "create a sheet", "read the sheet", "write to sheet", "append to sheet"
+
+**Example prompts:**
+1. `"Create a Google Sheet with my contacts"` — Create new spreadsheet
+2. `"Read the sheet 'Sales Data' range A1:D10"` — Read specific range
+3. `"Append this data to the sheet"` — Add rows to existing sheet
+4. `"Write the results to a Google Sheet"` — Output data to sheet (often used in compound chains)
+
+---
+
 ## 4. File & Code Operations
 
 ### `file` — File System Browser & Reader
@@ -651,6 +667,59 @@ selfEvolve.js
 
 ---
 
+### `smartEvolution` — Autonomous Tool Discovery & Creation (9-Step Pipeline)
+
+Strategic planning module that discovers, proposes, and builds entirely new tools for the agent system. Unlike `selfEvolve` (which improves existing code), `smartEvolution` invents new capabilities.
+
+**9-Step Pipeline:**
+1. **SCAN** — Deep inventory of all 50+ tools (reads descriptions, not just filenames), system hardware, Ollama models, npm deps, planner routing intents, usage telemetry, and agent's learned interests
+2. **RESEARCH** — Scans GitHub for trending agent tools and patterns via `githubScanner`
+3. **THINK** — LLM analyzes gaps between current capabilities and opportunities, proposes ONE new tool
+4. **REPORT** — Builds detailed proposal with rationale, capabilities, dependencies, risks, and implementation plan
+5. **APPROVE** — Presents proposal to user with three options: approve, reject, or save for later
+6. **VALIDATE** — Gemini reviews the implementation plan (mandatory gate)
+7. **BUILD** — `codeTransform.generateNewCode()` creates the tool + `registerNewTool()` adds it to index.js
+8. **VERIFY** — Syntax check → ESLint → Gemini code review (mandatory gate)
+9. **NOTIFY** — "Tool created, restart server to activate"
+
+**Tool Suggestions Backlog:** Saved ideas are stored in `data/tool-suggestions.json` and can be reviewed/implemented later.
+
+**Triggered by:** "suggest new tools", "smart evolution", "invent a tool", "discover new capabilities", "what tools should I add", "evolve new tools", "propose a tool"
+
+**Example prompts:**
+1. `"Suggest new tools"` — Full discovery pipeline (scan → research → propose)
+2. `"Smart evolution"` — Same as above
+3. `"Approve evolution"` — Approve the current proposal and start building
+4. `"Reject evolution"` — Discard the current proposal
+5. `"Save for later"` — Add to tool suggestions backlog
+6. `"Show tool suggestions"` — View saved backlog of ideas
+7. `"Implement tool suggestion 1"` — Build a tool from the backlog
+
+**Guardrails:**
+- Tool name conflict detection (won't overwrite existing tools)
+- Gemini validation gate before building (mandatory)
+- Gemini code review after building (mandatory)
+- Dependencies must already be installed (npm)
+- Audit log of all proposals: `data/smart-evolution-audit.json`
+
+---
+
+### `testGen` — Automated Test Generation
+
+Generates QA test files for tools using LLM-powered analysis. Used automatically by `selfEvolve` after applying patches to verify improvements.
+
+**Triggered by:** Used internally by selfEvolve — not typically called directly.
+
+---
+
+### `geminiValidator` — Gemini Code Review Gate
+
+Sends code patches to Google Gemini for logic validation and safety review. Used as a mandatory gate in both `selfEvolve` and `smartEvolution` pipelines.
+
+**Triggered by:** Used internally by selfEvolve and smartEvolution — not typically called directly.
+
+---
+
 ## 7. Finance & Shopping
 
 ### `finance` — Stock Prices & Market Data
@@ -743,11 +812,28 @@ Full sports tool using API-Football v3. Supports: upcoming fixtures, past result
 
 ---
 
+### `spotify` — Spotify Music Control
+
+Search and control Spotify playback. Find tracks, albums, artists, and playlists.
+
+**Triggered by:** "spotify", "play song", "play music", "find song", "search spotify"
+
+**Example prompts:**
+1. `"Search Spotify for Bohemian Rhapsody"` — Find a track
+2. `"Play some jazz on Spotify"` — Genre-based search
+3. `"Find playlists for studying"` — Playlist search
+
+---
+
 ### `lotrJokes` — Lord of the Rings Jokes
 
-Fun tool that tells Lord of the Rings themed jokes.
+Fun tool that tells Lord of the Rings themed jokes. An easter egg for Tolkien fans.
 
-**Triggered by:** "LOTR joke", "Lord of the Rings joke", "hobbit joke"
+**Triggered by:** "LOTR joke", "Lord of the Rings joke", "hobbit joke", "tell me a Gandalf joke", "Frodo joke"
+
+**Example prompts:**
+1. `"Tell me a Lord of the Rings joke"` — Random LOTR joke
+2. `"Gandalf joke"` — Tolkien-themed humor
 
 ---
 

@@ -1382,7 +1382,7 @@ if (
 
   // Folder Access — browse any folder, directory tree, folder structure
   // Must come BEFORE file tool to catch "scan folder", "browse directory", "show tree"
-  if (/\b(folder\s*(structure|tree|scan|browse|explore|access|content)|directory\s*(tree|structure|listing|layout)|project\s*(structure|tree|layout|hierarchy)|show\s+(the\s+)?(tree|folder|directory)|browse\s+(folder|directory)|scan\s+(folder|directory|the\s+folder|the\s+directory)|list\s+(all\s+)?(files\s+in|folder|directory|recursiv))\b/i.test(lower)) {
+  if (/\b(folder\s*(structure|tree|scan|browse|explore|access|content)|directory\s*(tree|structure|listing|layout)|project\s*(structure|tree|layout|hierarchy)|show\s+(the\s+)?(tree|folder|directory)|browse\s+(folder|directory)|scan\s+(folder|directory|the\s+folder|the\s+directory)|list\s+(all\s+)?(\w+\s+)?files?\s+in\b|list\s+(folder|directory|recursiv)|what\s+files?\s+(are\s+)?in\b|which\s+files?\s+(are\s+)?in\b)\b/i.test(lower)) {
     console.log("[planner] certainty branch: folderAccess");
     const faContext = {};
     if (/\btree|structure|hierarchy|layout\b/i.test(lower)) faContext.action = "tree";
@@ -1472,8 +1472,8 @@ if (
   }
 
   // Calendar keywords — must come BEFORE sports to prevent "meeting with team" → sports
-  if (/\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call))\b/i.test(lower) &&
-      !/\b(score|match|game|league|football|soccer|basketball|nba|nfl)\b/i.test(lower)) {
+  if (/\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call|appointment|dentist|doctor)|what\s+events?\b|my\s+events|am\s+i\s+(free|busy|available)|free\s+(time|slot|tomorrow|today|this)|availab(le|ility)\s+(today|tomorrow|this|next))\b/i.test(lower) &&
+      !/\b(score|match|game|league|football|soccer|basketball|nba|nfl|sports?\s+events?)\b/i.test(lower)) {
     console.log("[planner] certainty branch: calendar");
     return [{ tool: "calendar", input: trimmed, context: {}, reasoning: "certainty_calendar" }];
   }
@@ -1522,21 +1522,24 @@ if (
     return [{ tool: "gitLocal", input: trimmed, context: {}, reasoning: "certainty_git_local" }];
   }
 
-  // Package manager keywords
-  if (/\b(npm\s+(install|uninstall|list|remove|update)|install\s+package|uninstall\s+package|list\s+packages|package\s+manager)\b/i.test(lower)) {
+  // Package manager keywords — expanded to catch bare "install axios", "update all packages", etc.
+  if (/\b(npm\s+(install|uninstall|list|remove|update|info|outdated)|install\s+(package|[@a-z][\w\/-]*)|uninstall\s+(package|[@a-z][\w\/-]*)|remove\s+(the\s+)?(unused\s+)?package|list\s+(\w+\s+)?packages|update\s+(all\s+)?packages|package\s+manager|what\s+version\s+of\s+\w+\s+is\s+installed|which\s+packages|installed\s+packages|outdated\s+packages)\b/i.test(lower) &&
+      !/\b(amazon|buy|shop|order)\b/i.test(lower)) {
     const pkgContext = {};
     if (/\binstall\b/i.test(lower)) pkgContext.action = "install";
     else if (/\buninstall|remove\b/i.test(lower)) pkgContext.action = "uninstall";
-    else if (/\blist|show|installed\b/i.test(lower)) pkgContext.action = "list";
+    else if (/\blist|show|installed|what\s+version|which|outdated\b/i.test(lower)) pkgContext.action = "list";
     else if (/\bupdate\b/i.test(lower)) pkgContext.action = "update";
-    const pkgMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
+    const pkgMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z][\w\/-]*)/i);
     if (pkgMatch) pkgContext.package = pkgMatch[1];
     console.log("[planner] certainty branch: packageManager");
     return [{ tool: "packageManager", input: trimmed, context: pkgContext, reasoning: "certainty_package_manager" }];
   }
 
-  // Shopping keywords
-  if (/\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) &&
+  // Shopping keywords — includes "best X" product queries
+  if ((/\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) ||
+       /\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(lower) ||
+       /\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)) &&
       !/\b(stock|share|invest)\b/i.test(lower)) {
     console.log("[planner] certainty branch: shopping");
     return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
@@ -1574,6 +1577,26 @@ if (
     return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
   }
 
+  // Contacts management
+  if (/\b(contacts?|address\s*book|phone\s*(number|book)|my\s+contacts|add\s+contact|find\s+contact|who\s+is\s+\w+'\s*s?\s*(number|email|phone))\b/i.test(lower) &&
+      !/\b(github|email\s+(to|about|regarding))\b/i.test(lower)) {
+    console.log("[planner] certainty branch: contacts");
+    return [{ tool: "contacts", input: trimmed, context: {}, reasoning: "certainty_contacts" }];
+  }
+
+  // Document QA — load/query document knowledge base
+  if (/\b(load\s+document|index\s+(this\s+)?document|knowledge\s+base|query\s+(the\s+)?document|ask\s+(the\s+)?document|document\s+qa|search\s+(in|within)\s+(the\s+)?document)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: documentQA");
+    return [{ tool: "documentQA", input: trimmed, context: {}, reasoning: "certainty_document_qa" }];
+  }
+
+  // LOTR Jokes — fun easter egg
+  if (/\b(lotr|lord\s+of\s+the\s+rings?|hobbit|gandalf|frodo|aragorn|sauron|mordor)\b/i.test(lower) &&
+      /\b(joke|funny|humor|laugh|tell\s+me)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: lotrJokes");
+    return [{ tool: "lotrJokes", input: trimmed, context: {}, reasoning: "certainty_lotr_jokes" }];
+  }
+
   // Memory read keywords (what do you know about me, my name, etc.)
   if (/\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower) &&
       !/\b(password|credential)\b/i.test(lower)) {
@@ -1582,17 +1605,16 @@ if (
   }
 
   // Self-improvement keywords — expanded patterns
-  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting|what issues|performance report|diagnose|diagnostic report|how well are you doing)\b/i.test(lower)) {
+  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting|what issues|performance report|diagnose|diagnostic report|how well are you doing|improve\s+your\s+(tool|routing|selection|accuracy|performance|code)|review\s+your\s+(\w+\s+)?(code|logic|routing|planner|executor))\b/i.test(lower)) {
     console.log("[planner] certainty branch: selfImprovement");
     return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "certainty_self_improvement" }];
   }
 
   // General knowledge questions — route to search instead of unreliable LLM classifier
-  // Catches "what is X", "who is X", "how does X work", etc. that would otherwise
-  // fall to the LLM classifier which often misroutes to calculator
-  if (/\b(what is|who is|who was|when did|where is|how many|how does|why do|define|meaning of|history of)\b/i.test(lower) &&
+  // Catches "what is X", "who is X", "how does X work", "tell me about X" etc.
+  if (/\b(what is|what are|who is|who was|when did|where is|how many|how does|why do|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+)\b/i.test(lower) &&
       !isMathExpression(trimmed) && !hasExplicitFilePath(trimmed) &&
-      !/\b(stock|weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install)\b/i.test(lower) &&
+      !/\b(stock|weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install|buy|shop|price|product|deal|best\s+\w+\s+(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair))\b/i.test(lower) &&
       lower.length > 15) {
     console.log("[planner] certainty branch: general_knowledge → search");
     return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_general_knowledge" }];
