@@ -451,7 +451,10 @@ EXAMPLES (correct routing):
 - "read from spreadsheet 1BxiMVs0XRA5" → sheets
 
 NEGATIVE EXAMPLES (common mistakes to avoid):
-- "how are you" → llm (NOT selfImprovement, NOT weather)
+- "how are you" → llm (NOT selfImprovement, NOT weather, NOT lotrJokes)
+- "let's talk about the situation" → llm (NOT lotrJokes, NOT any other tool)
+- "what should I do about X?" → llm (NOT lotrJokes)
+- "tell me a joke" → llm (NOT lotrJokes — lotrJokes is ONLY for explicit LOTR jokes)
 - "how accurate is your routing" → selfImprovement (NOT calculator, NOT weather)
 - "what's the weather like" → weather (NOT llm)
 - "tell me about stocks" → finance (NOT search)
@@ -471,7 +474,7 @@ RULES:
 5. "moltbook" → moltbook
 6. "browse/visit [website]" → webBrowser
 7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
-8. When unsure, return "llm" (the safest fallback)
+8. When unsure, return "llm" (the safest fallback). NEVER return lotrJokes unless the user explicitly asks for a "Lord of the Rings joke"
 9. "refactor/optimize/rewrite code" → codeTransform (NOT review)
 10. "code review/security review/audit" → codeReview (NOT review)
 11. "folder structure/tree/scan directory" → folderAccess (NOT file)
@@ -487,7 +490,13 @@ Respond with ONLY the tool name (one word, no explanation).`;
     }
 
     const text = response.data.text.trim().toLowerCase();
-    const intent = text.split("|")[0].trim().replace(/[^a-z_]/g, "");
+    let intent = text.split("|")[0].trim().replace(/[^a-z_]/g, "");
+
+    // Hard guard: lotrJokes should ONLY be used when explicitly requested
+    if (intent === "lotrjokes" && !/\b(lotr|lord\s+of\s+the\s+rings|hobbit|gandalf|frodo)\b/i.test(message)) {
+      console.log("🧠 LLM classified lotrJokes but user didn't ask for LOTR → overriding to llm");
+      intent = "llm";
+    }
 
     console.log("🧠 LLM classified:", intent);
 
