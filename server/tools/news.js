@@ -110,6 +110,10 @@ function extractTopic(query) {
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
     .replace(/\b(search for|look up|find|fetch|get|show me|give me)\b/gi, "")
     .replace(/\b(to learn about it|to learn|to know|to read|to see|to check)\b/gi, "")
+    .replace(/\b(let'?s?\s+)?catch\s+(me\s+)?up\s+(on)?\b/gi, "")
+    .replace(/\bsummarize\s+(?:the\s+)?(?:first|top|last|latest)?\s*\d*\s*(?:articles?|stories|headlines?)?\b/gi, "")
+    .replace(/\busing\s+(?:the\s+)?\w+\s+tool\b/gi, "")
+    .replace(/\b(?:first|top|last|latest)\s+\d+\b/gi, "")
     .replace(/\b(latest|recent|breaking|top|current)\b/gi, "")
     .replace(/\b(news|headlines|articles|stories)\b/gi, "")
     .replace(/\b(about|regarding|on|for)\s+(?:it|this|that|them)\s*$/gi, "")
@@ -210,7 +214,10 @@ Summary (2-3 sentences):`;
 export async function news(request) {
   try {
     const query = typeof request === "string" ? request : request?.text || "";
-    const articleCount = (typeof request === "object" ? request?.context?.articleCount : null) || 8;
+    // Article count: from context (compound pattern), or parsed from query text, or default 8
+    const contextCount = typeof request === "object" ? request?.context?.articleCount : null;
+    const textCountMatch = query.match(/\b(?:first|top|latest|last)\s+(\d+)\b|\b(\d+)\s+(?:articles?|stories|headlines?)\b/i);
+    const articleCount = contextCount || (textCountMatch ? parseInt(textCountMatch[1] || textCountMatch[2], 10) : 8);
 
     // Extract topic and detect category
     const topic = extractTopic(query);

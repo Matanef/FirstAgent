@@ -204,6 +204,10 @@ function hasCompoundIntent(text) {
   // Pattern 5b: multi-step with "Use the LLM/agent/nlp/tool to..." mid-sentence
   if (/\buse\s+(?:the\s+)?(?:llm|agent|ai|nlp)\s+(?:tool\s+)?to\b/i.test(lower)) return true;
 
+  // Pattern 5d: "summarize/analyze" + source tool keyword (news/moltbook/search) → compound
+  if (/\b(?:summarize|analy[sz]e|break\s*down|explain)\b/i.test(lower) &&
+      /\b(?:news|moltbook|search|articles?|headlines?)\b/i.test(lower)) return true;
+
   // Pattern 5c: multi-tool pipeline keywords (search + categorize/summarize/analyze + save/append/sheet/send/whatsapp)
   if (/\b(?:search|find|get)\b/i.test(lower) &&
       /\b(?:categorize|classify|summarize|analyze|sentiment)\b/i.test(lower) &&
