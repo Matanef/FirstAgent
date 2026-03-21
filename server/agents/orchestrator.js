@@ -100,9 +100,10 @@ export async function handleMessage({
   }
 
   // 4. Store assistant turn with mode tag
+  const assistantContent = result.reply || result.data?.text || "";
   await addTurn(conversationId, {
     role: "assistant",
-    content: result.reply || "",
+    content: assistantContent,
     mode: classification.mode,
     tool: result.tool,
     timestamp: new Date().toISOString(),

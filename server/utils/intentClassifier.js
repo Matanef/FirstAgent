@@ -22,7 +22,7 @@ const CHAT_PATTERNS = [
   /\bwho (are|made|created) you\b/i,
   /\bwhat (can you|are you capable of)\b/i,
   /\b(thanks?|thank you|good job|well done|nice work|great job)\b/i,
-  /\b(hello|hey|hi|good morning|good evening|good night|good afternoon)\s*[!?.]*$/i,
+  /\b(hello|hey|hi|good morning|good evening|good night|good afternoon)(\s+(man|dude|pal|friend|buddy|bro|mate|fam|homie|guys?|there|everyone|all))?\b/i,
   /\bhow was your (day|night|weekend)\b/i,
   /\bdo you have (feelings|emotions|consciousness|a soul)\b/i,
   /\bwhat makes you (different|special|unique)\b/i,
@@ -101,9 +101,9 @@ export function classifyIntent(message, recentHistory = []) {
   const lower = trimmed.toLowerCase();
 
   // Very short messages in conversational context are likely chat
-  if (trimmed.length < 15) {
+  if (trimmed.length < 25) {
     // Greetings
-    if (/^(hi|hey|hello|yo|sup|howdy|hola|good\s+(morning|evening|night|afternoon))[!?.\s]*$/i.test(trimmed)) {
+    if (/^(hi|hey|hello|yo|sup|howdy|hola|good\s+(morning|evening|night|afternoon))\b(\s+(man|dude|pal|friend|buddy|bro|mate|fam|homie|guys?|there|everyone|all))?[!?.\s]*$/i.test(trimmed)) {
       return { mode: "chat", confidence: 0.95, reason: "greeting" };
     }
     // Thank you
