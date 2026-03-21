@@ -1528,8 +1528,9 @@ if (
     const pkgContext = {};
     if (/\binstall\b/i.test(lower)) pkgContext.action = "install";
     else if (/\buninstall|remove\b/i.test(lower)) pkgContext.action = "uninstall";
-    else if (/\blist|show|installed|what\s+version|which|outdated\b/i.test(lower)) pkgContext.action = "list";
+    else if (/\boutdated\b/i.test(lower)) pkgContext.action = "outdated";
     else if (/\bupdate\b/i.test(lower)) pkgContext.action = "update";
+    else if (/\blist|show|installed|what\s+version|which\b/i.test(lower)) pkgContext.action = "list";
     const pkgMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z][\w\/-]*)/i);
     if (pkgMatch) pkgContext.package = pkgMatch[1];
     console.log("[planner] certainty branch: packageManager");

@@ -110,6 +110,52 @@ async function listPackages() {
 }
 
 /**
+ * Update package(s)
+ */
+async function updatePackages(packageName = "") {
+  const target = packageName || "";
+  const command = `npm update ${target}`.trim();
+  console.log(`🔄 Updating ${target || "all packages"}...`);
+  const result = await runNpmCommand(command);
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+  return {
+    success: true,
+    message: `Updated ${target || "all packages"}`,
+    output: result.stdout || "All packages are up to date"
+  };
+}
+
+/**
+ * Check for outdated packages
+ */
+async function outdatedPackages() {
+  const command = "npm outdated --json";
+  console.log("🔍 Checking for outdated packages...");
+  const result = await runNpmCommand(command);
+  // npm outdated exits with code 1 if there are outdated packages, which is not an error
+  const stdout = result.stdout || "{}";
+  try {
+    const data = JSON.parse(stdout);
+    const packages = Object.entries(data).map(([name, info]) => ({
+      name,
+      current: info.current,
+      wanted: info.wanted,
+      latest: info.latest
+    }));
+    return {
+      success: true,
+      packages,
+      count: packages.length,
+      message: packages.length > 0 ? `${packages.length} outdated package(s)` : "All packages are up to date"
+    };
+  } catch {
+    return { success: true, packages: [], count: 0, message: "All packages are up to date" };
+  }
+}
+
+/**
  * Main package manager tool
  */
 export async function packageManager(request) {
@@ -122,6 +168,7 @@ export async function packageManager(request) {
       if (/\binstall\b/.test(lower)) action = "install";
       else if (/\buninstall|remove\b/.test(lower)) action = "uninstall";
       else if (/\bupdate\b/.test(lower)) action = "update";
+      else if (/\boutdated\b/.test(lower)) action = "outdated";
       else action = "list";
       const pkgMatch = request.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
       if (pkgMatch) packageName = pkgMatch[1];
@@ -138,6 +185,7 @@ export async function packageManager(request) {
         if (/\binstall\b/.test(lower)) action = "install";
         else if (/\buninstall|remove\b/.test(lower)) action = "uninstall";
         else if (/\bupdate\b/.test(lower)) action = "update";
+        else if (/\boutdated\b/.test(lower)) action = "outdated";
         else action = "list";
         if (!packageName) {
           const pkgMatch = text.match(/(?:install|uninstall|remove|update)\s+([@a-z0-9\/-]+)/i);
@@ -182,6 +230,14 @@ export async function packageManager(request) {
         result = await uninstallPackage(packageName);
         break;
 
+      case "update":
+        result = await updatePackages(packageName);
+        break;
+
+      case "outdated":
+        result = await outdatedPackages();
+        break;
+
       case "list":
         result = await listPackages();
         break;
@@ -191,7 +247,7 @@ export async function packageManager(request) {
           tool: "packageManager",
           success: false,
           final: true,
-          error: `Unknown action: ${action}. Use: install, uninstall, or list`
+          error: `Unknown action: ${action}. Use: install, uninstall, update, outdated, or list`
         };
     }
 
