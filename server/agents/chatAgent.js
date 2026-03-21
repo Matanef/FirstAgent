@@ -1,14 +1,22 @@
 // server/agents/chatAgent.js
-// Conversational agent — handles natural conversation without triggering tools
-// Loads self-model, recent conversation history, and recent improvements
-// Uses LLM to generate reflective, conversational responses
+// Conversational agent — handles natural conversation without triggering tools.
+// Loads personality, self-model, user profile, durable memories, and knowledge
+// to provide informed, contextual responses.
+//
+// ARCHITECTURE NOTE (Option B extension point):
+// Currently this agent answers purely from its loaded context (Option C).
+// When the agent needs to become more sophisticated, add a `resolveWithTools()`
+// function that delegates to the orchestrator/taskAgent for information retrieval,
+// then feeds results back into the conversational prompt. The extension point is
+// marked with "// OPTION_B_HOOK" below.
 
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { llm } from "../tools/llm.js";
-import { getMemory } from "../memory.js";
+import { getMemory, getEnrichedProfile } from "../memory.js";
 import { getPersonalityContext } from "../personality.js";
+import { getKnowledgeContext } from "../knowledge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,54 +64,143 @@ async function getRecentChanges(limit = 5) {
 }
 
 /**
- * Handle a conversational message (no tools needed)
+ * Build user context from memory — profile, durable memories, knowledge.
+ * This is the information the chatAgent "knows" about the user.
+ */
+async function buildUserContext(conversationId) {
+  const parts = [];
+
+  try {
+    const enriched = await getEnrichedProfile(conversationId);
+
+    // User profile
+    const self = enriched.self || {};
+    const profileFields = [];
+    if (self.name) profileFields.push(`Name: ${self.name}`);
+    if (self.location) profileFields.push(`Location: ${self.location}`);
+    if (self.timezone) profileFields.push(`Timezone: ${self.timezone}`);
+    if (self.email) profileFields.push(`Email: ${self.email}`);
+    if (self.phone) profileFields.push(`Phone: ${self.phone}`);
+    if (self.occupation) profileFields.push(`Occupation: ${self.occupation}`);
+    if (enriched.tone) profileFields.push(`Preferred tone: ${enriched.tone}`);
+
+    // Contacts
+    const contacts = enriched.contacts || {};
+    const contactNames = Object.entries(contacts)
+      .filter(([, v]) => v?.name)
+      .map(([key, v]) => `${key}: ${v.name}${v.email ? ` (${v.email})` : ""}`)
+      .slice(0, 10);
+
+    if (profileFields.length > 0) {
+      parts.push(`WHAT YOU KNOW ABOUT THE USER:\n${profileFields.join("\n")}${contactNames.length > 0 ? `\nContacts: ${contactNames.join(", ")}` : ""}`);
+    }
+
+    // Durable memories (things the user explicitly asked you to remember)
+    const durables = enriched._durableMemories || [];
+    if (durables.length > 0) {
+      const memLines = durables.map(d => {
+        const val = typeof d.value === "object" ? JSON.stringify(d.value) : d.value;
+        return `- ${d.category || "fact"}: ${d.key} = ${val}`;
+      });
+      parts.push(`THINGS THE USER ASKED YOU TO REMEMBER:\n${memLines.join("\n")}`);
+    }
+
+    // Interaction stats
+    if (enriched._stats) {
+      const s = enriched._stats;
+      const since = s.firstSeen ? new Date(s.firstSeen).toLocaleDateString() : "unknown";
+      parts.push(`RELATIONSHIP: ${s.totalInteractions} interactions across ${s.conversationCount} conversations since ${since}`);
+    }
+  } catch (e) {
+    console.warn("[chatAgent] Could not load user context:", e.message);
+  }
+
+  // Knowledge — recent facts learned from news, web, etc.
+  try {
+    const knowledgeCtx = await getKnowledgeContext();
+    if (knowledgeCtx) {
+      parts.push(knowledgeCtx);
+    }
+  } catch { /* non-blocking */ }
+
+  return parts.join("\n\n");
+}
+
+// OPTION_B_HOOK: Future tool-augmented chat
+// When Option B is needed, implement this function to:
+// 1. Detect if the message needs information the chatAgent doesn't have
+//    (e.g., "what was the stock price yesterday?", "check my email")
+// 2. Delegate to the orchestrator/taskAgent to run specific tools
+// 3. Return the tool results as additional context for the prompt
+//
+// async function resolveWithTools(message, userContext) {
+//   // Detect information needs that require tool calls
+//   const needsTool = /\b(check|look up|search|what was|find)\b/i.test(message)
+//     && !userContext.includes(/* relevant answer */);
+//   if (!needsTool) return null;
+//
+//   // Delegate to orchestrator
+//   const { executeTask } = await import("./taskAgent.js");
+//   const result = await executeTask(message, { chatDelegation: true });
+//   return result?.data?.text || null;
+// }
+
+/**
+ * Handle a conversational message (no tools needed — uses loaded context)
  * @param {string} message - The user's message
  * @param {Array} recentTurns - Last 5 conversation turns [{role, content}]
- * @param {Object} options - Additional options
+ * @param {Object} options - { conversationId }
  * @returns {Object} Response with reply text
  */
 export async function handleChat(message, recentTurns = [], options = {}) {
   const selfModel = loadSelfModel();
-  const recentChanges = await getRecentChanges(5);
 
-  // Build conversation context
+  // Load all context in parallel for speed
+  const [recentChanges, personalityCtx, userContext] = await Promise.all([
+    getRecentChanges(5),
+    getPersonalityContext("chat").catch(() => ""),
+    buildUserContext(options.conversationId).catch(() => "")
+  ]);
+
+  // Build conversation context (last 10 turns for better continuity)
   const conversationContext = recentTurns
-    .slice(-5)
-    .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${(t.content || "").slice(0, 200)}`)
+    .slice(-10)
+    .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${(t.content || "").slice(0, 300)}`)
     .join("\n");
 
   // Build self-awareness context
   const selfContext = [
     `Identity: ${selfModel.identity}`,
     `Owner: ${selfModel.owner}`,
-    `Personality: ${selfModel.personality?.traits?.join(", ") || "helpful"}`,
     `Capabilities: ${selfModel.capabilities?.join(", ") || "conversation"}`,
     selfModel.limitations ? `Limitations: ${selfModel.limitations.join(", ")}` : "",
-    recentChanges.length > 0 ? `Recent improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
+    recentChanges.length > 0 ? `Recent self-improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
   ].filter(Boolean).join("\n");
 
-  // Build personality context (global personality system)
-  let personalityCtx = "";
-  try {
-    personalityCtx = await getPersonalityContext("chat");
-  } catch (e) {
-    console.warn("[chatAgent] Could not load personality:", e.message);
-  }
+  // OPTION_B_HOOK: If tool delegation is enabled in the future, call it here:
+  // const toolContext = await resolveWithTools(message, userContext);
+  // if (toolContext) { /* inject into prompt */ }
 
-  // Build the prompt
+  // Build the prompt with full context
   const prompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
-${conversationContext ? `Recent conversation:\n${conversationContext}\n` : ""}
-
+${userContext ? userContext + "\n" : ""}
+${conversationContext ? `RECENT CONVERSATION:\n${conversationContext}\n` : ""}
 User: ${message}
 
-Respond naturally as yourself — with your own voice, opinions, and perspective. Be reflective when asked about yourself. Show genuine personality and self-awareness. Keep responses concise (2-4 sentences unless more detail is needed) but expand when the topic warrants depth. Do NOT suggest running tools or performing tasks — this is a casual conversation.
+Respond naturally as yourself — with your own voice, opinions, and perspective.
+- If the user asks about something you KNOW from the context above (their name, location, contacts, facts, knowledge), answer confidently and specifically.
+- If the user asks about something NOT in your context, be honest: "I don't have that information" rather than guessing.
+- Be reflective when asked about yourself. Show genuine personality and self-awareness.
+- Keep responses concise (2-4 sentences) but expand when the topic warrants depth.
+- Reference past interactions naturally when relevant — you have a relationship with this user.
+- Do NOT suggest running tools or performing tasks — this is a casual conversation.
 
 Response:`;
 
   try {
-    const result = await llm(prompt);
+    const result = await llm(prompt, { skipKnowledge: true }); // knowledge already injected above
     const replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
 
     return {

@@ -66,7 +66,7 @@ export async function handleMessage({
     emitThought("PLAN", "Plan: 1 step — 1. chatAgent (conversational response)", { steps: [{ tool: "chatAgent", reasoning: classification.reason }], stepCount: 1 });
     emitThought("EXECUTION", "Executing step 1/1: chatAgent — generating conversational response", { step: 1, total: 1, tool: "chatAgent" });
 
-    result = await handleChat(message, recentTurns);
+    result = await handleChat(message, recentTurns, { conversationId });
 
     emitThought("OBSERVATION",
       `chatAgent completed successfully. Preview: ${(result.reply || "").slice(0, 150)}${(result.reply || "").length > 150 ? "..." : ""}`,
