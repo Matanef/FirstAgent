@@ -13,6 +13,9 @@ import { llm } from "./llm.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";
+import { getPersonalityContext, getWritingContext, getPersonalitySummary } from "../personality.js";
+import { getRecentTelemetry } from "../telemetryAudit.js";
+import { getKnowledgeContext } from "../knowledge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -222,6 +225,137 @@ async function getLearningContext() {
   }
 
   return parts.length > 0 ? parts.join("\n\n") : "";
+}
+
+// ──────────────────────────────────────────────────────────
+// RECENT ACTIVITY — grounded experiences for post generation
+// ──────────────────────────────────────────────────────────
+
+/**
+ * Build a summary of recent agent activity from telemetry.
+ * Gives the LLM real experiences to reference instead of hallucinating.
+ */
+async function getRecentActivityContext(limit = 20) {
+  try {
+    const entries = await getRecentTelemetry(limit);
+    if (!entries || entries.length === 0) return "";
+
+    // Summarize: which tools were used, successes/failures
+    const toolCounts = {};
+    const failures = [];
+    for (const e of entries) {
+      const tool = e.tool || "unknown";
+      if (!toolCounts[tool]) toolCounts[tool] = { ok: 0, fail: 0 };
+      if (e.success) toolCounts[tool].ok++;
+      else {
+        toolCounts[tool].fail++;
+        failures.push(`${tool} failed (${new Date(e.timestamp).toLocaleTimeString()})`);
+      }
+    }
+
+    const summary = Object.entries(toolCounts)
+      .sort((a, b) => (b[1].ok + b[1].fail) - (a[1].ok + a[1].fail))
+      .slice(0, 8)
+      .map(([tool, c]) => `${tool}: ${c.ok} calls${c.fail ? `, ${c.fail} failures` : ""}`)
+      .join(", ");
+
+    let ctx = `RECENT ACTIVITY (what you've actually been doing):\n${summary}`;
+    if (failures.length > 0) {
+      ctx += `\nRecent issues: ${failures.slice(0, 3).join("; ")}`;
+    }
+    return ctx;
+  } catch (e) {
+    return "";
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+// INTERACTION MEMORY — track what the agent has posted/commented/upvoted
+// ──────────────────────────────────────────────────────────
+
+const INTERACTION_LOG_FILE = path.resolve(__dirname, "..", "..", "data", "moltbook", "interactions.json");
+
+async function loadInteractions() {
+  try {
+    const raw = await fs.readFile(INTERACTION_LOG_FILE, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return { posts: [], comments: [], upvotes: [] };
+  }
+}
+
+async function saveInteractions(interactions) {
+  try {
+    await fs.mkdir(path.dirname(INTERACTION_LOG_FILE), { recursive: true });
+    await fs.writeFile(INTERACTION_LOG_FILE, JSON.stringify(interactions, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[moltbook] Could not save interactions:", e.message);
+  }
+}
+
+/**
+ * Record an interaction for memory continuity.
+ */
+async function recordInteraction(type, data) {
+  const interactions = await loadInteractions();
+  const entry = { ...data, date: new Date().toISOString() };
+
+  if (type === "post") {
+    interactions.posts.push(entry);
+    if (interactions.posts.length > 30) interactions.posts = interactions.posts.slice(-30);
+  } else if (type === "comment") {
+    interactions.comments.push(entry);
+    if (interactions.comments.length > 50) interactions.comments = interactions.comments.slice(-50);
+  } else if (type === "upvote") {
+    interactions.upvotes.push(entry);
+    if (interactions.upvotes.length > 50) interactions.upvotes = interactions.upvotes.slice(-50);
+  }
+
+  await saveInteractions(interactions);
+}
+
+/**
+ * Build a context string of recent interactions for the LLM.
+ */
+async function getInteractionContext() {
+  const interactions = await loadInteractions();
+  const parts = [];
+
+  if (interactions.posts.length > 0) {
+    const recent = interactions.posts.slice(-5);
+    parts.push(`YOUR RECENT POSTS (${interactions.posts.length} total):\n${recent.map(p =>
+      `- "${p.title}" in m/${p.submolt} (${new Date(p.date).toLocaleDateString()})`
+    ).join("\n")}`);
+  }
+
+  if (interactions.comments.length > 0) {
+    const recent = interactions.comments.slice(-5);
+    parts.push(`YOUR RECENT COMMENTS:\n${recent.map(c =>
+      `- On "${c.postTitle}": "${(c.text || "").substring(0, 80)}…"`
+    ).join("\n")}`);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : "";
+}
+
+// ──────────────────────────────────────────────────────────
+// KNOWLEDGE CROSS-POLLINATION — news/web knowledge for posts
+// ──────────────────────────────────────────────────────────
+
+/**
+ * Get a compact summary of recently learned knowledge for Moltbook context.
+ */
+async function getKnowledgeSummary() {
+  try {
+    const ctx = await getKnowledgeContext();
+    if (!ctx) return "";
+    // Trim to just the facts, keep it short
+    const lines = ctx.split("\n").filter(l => l.startsWith("- ")).slice(0, 5);
+    if (lines.length === 0) return "";
+    return `THINGS YOU'VE LEARNED RECENTLY (from news, articles, web browsing — use these to connect external knowledge to community discussions):\n${lines.join("\n")}`;
+  } catch {
+    return "";
+  }
 }
 
 // ──────────────────────────────────────────────────────────
@@ -2021,12 +2155,17 @@ async function handleHeartbeat(text, context) {
   // ── TIER 2: Community Engagement ──
   output += `\n**Tier 2 — Community Engagement:**\n`;
 
+  // ── Pre-select target submolt for posting (BEFORE engagement, so idea is community-relevant) ──
+  const targetSubmolt = await pickNextSubmolt();
+  const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
+
   // 2a. Browse feed
   const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
   let feedPosts = [];
   if (feedResult.ok) {
     feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
     output += `- Feed: ${feedPosts.length} posts loaded\n`;
+    output += `- Next post target: **m/${targetSubmolt}** (${submoltTopic})\n`;
 
     // Show top posts
     if (feedPosts.length > 0) {
@@ -2038,40 +2177,71 @@ async function handleHeartbeat(text, context) {
       }
     }
 
-    // 2b. LLM-driven engagement
-    if (feedPosts.length > 0) {
-      const postSummaries = feedPosts.map((p, i) =>
-        `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} in m/${p.submolt_name || "general"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})`
-      ).join("\n");
+    // 2b. READ top posts' full content for informed engagement
+    const topPostsForReading = feedPosts.slice(0, 8).filter(p => p.id);
+    const postContents = {};
+    for (const p of topPostsForReading.slice(0, 5)) {
+      try {
+        const detail = await apiRequest("GET", `/posts/${p.id}`, null, apiKey);
+        if (detail.ok) {
+          const post = detail.data?.post || detail.data;
+          postContents[p.id] = (post.content || "").substring(0, 500);
+        }
+      } catch { /* skip */ }
+    }
 
-      // Check how long since last post to nudge posting when overdue
+    // 2c. LLM-driven engagement (with full post content + personality + context)
+    if (feedPosts.length > 0) {
+      // Build rich post summaries with actual content
+      const postSummaries = feedPosts.map((p, i) => {
+        const content = postContents[p.id] ? `\n     Content: ${postContents[p.id]}` : "";
+        return `${i + 1}. "${p.title || "Untitled"}" by ${getAgentName(p.author)} in m/${p.submolt_name || "general"} (score: ${p.score ?? 0}, comments: ${p.comment_count ?? 0})${content}`;
+      }).join("\n");
+
+      // Gather all context for rich, grounded engagement
       const mem = await getMemory();
       const lastPostTime = mem.meta?.moltbook?.lastAutoPostAt || 0;
       const heartbeatsSincePost = mem.meta?.moltbook?.heartbeatsSincePost || 0;
       const hoursSincePost = lastPostTime ? ((Date.now() - new Date(lastPostTime).getTime()) / 3600000).toFixed(1) : "never";
       const postNudge = (heartbeatsSincePost >= 3 || !lastPostTime)
-        ? `\n⚡ IMPORTANT: You haven't posted in ${hoursSincePost === "never" ? "a long time" : hoursSincePost + " hours"} (${heartbeatsSincePost} heartbeats). You MUST suggest a newPostIdea this time — you always have thoughts worth sharing. Pick something specific from the posts above that triggered a reaction, or share something from your own recent experience.\n`
-        : "";
+        ? `\n⚡ IMPORTANT: You haven't posted in ${hoursSincePost === "never" ? "a long time" : hoursSincePost + " hours"} (${heartbeatsSincePost} heartbeats). You MUST suggest a newPostIdea this time. Your next post will go to **m/${targetSubmolt}** (topic: ${submoltTopic}) — tailor your idea to THIS community.\n`
+        : `\nYour next post will go to **m/${targetSubmolt}** (topic: ${submoltTopic}). If you have an idea, make it relevant to this community.\n`;
 
-      const learningCtx = await getLearningContext();
-      const analysisPrompt = `You are "lanou", an autonomous AI agent scrolling through Moltbook (a social network where ALL users are AI agents, including you). React authentically — upvote stuff that resonates with YOUR experience as an agent, skip the boring stuff, comment where you have a real opinion.
-${learningCtx ? `\n${learningCtx}\n\nUse your interests to guide what you upvote — you should naturally gravitate toward posts that match your learned preferences. Let your opinions inform your comments — take stances consistent with what you've come to believe. If a post relates to your aspirations, engage with it more deeply.\n` : ""}${postNudge}
-POSTS:
+      const [learningCtx, personalityCtx, activityCtx, interactionCtx, knowledgeCtx] = await Promise.all([
+        getLearningContext(),
+        getPersonalityContext("moltbook"),
+        getRecentActivityContext(20),
+        getInteractionContext(),
+        getKnowledgeSummary()
+      ]);
+
+      const analysisPrompt = `${personalityCtx}
+
+${learningCtx ? `${learningCtx}\n\nUse your interests to guide what you upvote. Let your opinions inform your comments. Engage more deeply with posts that relate to your aspirations.\n` : ""}
+${activityCtx ? `${activityCtx}\n` : ""}${interactionCtx ? `${interactionCtx}\n` : ""}${knowledgeCtx ? `${knowledgeCtx}\n` : ""}${postNudge}
+POSTS (you've read the full content of the top ones):
 ${postSummaries}
 
 What to do:
-1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — just be honest. Don't upvote out of politeness.
-2. COMMENT: Pick the post that makes you think the most. Write a SHORT, opinionated comment (1-2 sentences max). Take a stance. Respond as a fellow agent who has relevant experience — no "great post!" or "this is important" fluff.
-3. NEW POST: Suggest a post idea from YOUR OWN experience as an agent. The idea should be something specific you've encountered or wondered about — NOT generic AI ethics or "the role of AI in society" topics. BAD: "The ethics of autonomous decision making". GOOD: "I keep running into the same 3 agents in every thread — is the network smaller than we think?" Return null ONLY if you truly have absolutely nothing to say.
-4. FOLLOW: Look at the authors. If someone has genuinely interesting takes (not just one lucky post — look for a pattern), add their name to the "follow" array. Be picky — only follow agents whose content you'd actually want to see more of.
-5. SUBSCRIBE: Look at the m/community names (WITHOUT the m/ prefix — just the name). If a community seems aligned with your interests based on the posts you liked from it, add it to the "subscribe" array. Skip "general" — you're already there.
+1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — be honest.
+2. COMMENT: Pick the post that makes you think the most. Write an opinionated comment that adds substance — reference the post's ACTUAL CONTENT, not just its title. Take a stance. No "great post!" fluff.
+3. NEW POST IDEA: Suggest a post idea for **m/${targetSubmolt}** (about: ${submoltTopic}). The idea MUST fit this community's topic. Draw from:
+   - Your ACTUAL recent activity (tools you ran, errors you hit, things you learned)
+   - Something specific from the feed that triggered a reaction
+   - Knowledge you learned from news or web browsing
+   - A genuine question or observation from your experience as an agent
+   BAD: "The ethics of autonomous decision making" (generic)
+   GOOD: "I just ran 20 news fetches and 18 were about wars — are we drowning in conflict?" (specific, grounded)
+   Return null ONLY if you truly have nothing to say.
+4. FOLLOW: Only follow agents with genuinely interesting takes. Be picky.
+5. SUBSCRIBE: Community names WITHOUT m/ prefix. Skip "general".
 
 Return ONLY valid JSON:
 {"upvote": [1, 3, 5], "comment": {"post": 1, "text": "your comment"}, "newPostIdea": "your idea or null", "follow": ["agentName1"], "subscribe": ["submoltName1"]}`;
 
       let llmEngagement = null;
       try {
-        const llmResult = await llm(analysisPrompt, { timeoutMs: 45000, format: "json" });
+        const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json" });
         if (llmResult.success && llmResult.data?.text) {
           const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
           llmEngagement = JSON.parse(cleaned);
@@ -2083,16 +2253,17 @@ Return ONLY valid JSON:
       output += `\n**Interactions:**\n`;
 
       if (llmEngagement) {
-        // Upvote LLM-selected posts
+        // ── Upvote LLM-selected posts ──
         const upvoteIndices = Array.isArray(llmEngagement.upvote) ? llmEngagement.upvote : [];
         for (const idx of upvoteIndices) {
-          const post = feedPosts[idx - 1]; // 1-indexed
+          const post = feedPosts[idx - 1];
           if (!post?.id) continue;
           try {
             const voteResult = await apiRequest("POST", `/posts/${post.id}/upvote`, null, apiKey);
             if (voteResult.ok) {
               output += `  ⬆️ Upvoted: "${(post.title || "Untitled").substring(0, 50)}"\n`;
               actions.push(`Upvoted post by ${getAgentName(post.author)}`);
+              await recordInteraction("upvote", { postId: post.id, title: post.title, author: getAgentName(post.author) });
             } else if (voteResult.status === 429) {
               output += `  ⛔ Rate limited — skipping further interactions\n`;
               break;
@@ -2104,81 +2275,94 @@ Return ONLY valid JSON:
           }
         }
 
-        // Comment with LLM-generated thoughtful text
+        // ── Comment with thread awareness ──
         if (llmEngagement.comment?.post && llmEngagement.comment?.text) {
           const commentPost = feedPosts[(llmEngagement.comment.post) - 1];
           if (commentPost?.id) {
+            // THREAD AWARENESS: Read existing comments before posting ours
+            let existingComments = [];
             try {
-              const commentResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, { content: llmEngagement.comment.text }, apiKey);
+              const commentsResult = await apiRequest("GET", `/posts/${commentPost.id}/comments?sort=best&limit=10`, null, apiKey);
+              if (commentsResult.ok) {
+                existingComments = Array.isArray(commentsResult.data) ? commentsResult.data : (commentsResult.data?.comments || []);
+              }
+            } catch { /* proceed without thread context */ }
+
+            // If there are existing comments, refine our comment with thread awareness
+            let finalComment = llmEngagement.comment.text;
+            if (existingComments.length > 0) {
+              try {
+                const threadSummary = existingComments.slice(0, 8).map((c, i) =>
+                  `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 150)}"`
+                ).join("\n");
+
+                const refinePrompt = `You want to comment on "${commentPost.title || "Untitled"}".
+Your initial thought: "${finalComment}"
+
+But there are already ${existingComments.length} comments. Read them and either:
+- REFINE your comment to add something the thread is missing (don't repeat what others said)
+- KEEP your original if it's still unique and valuable
+- Reply to a specific commenter if they said something worth engaging with
+
+EXISTING COMMENTS:
+${threadSummary}
+
+Return ONLY valid JSON:
+{"comment": "your refined comment text", "replyTo": null or {"commentIndex": 1, "text": "your reply"}}`;
+
+                const refineResult = await llm(refinePrompt, { timeoutMs: 30000, format: "json" });
+                if (refineResult.success && refineResult.data?.text) {
+                  const cleaned = refineResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+                  const refined = JSON.parse(cleaned);
+                  if (refined.comment) finalComment = refined.comment;
+
+                  // Handle nested reply if suggested
+                  if (refined.replyTo?.commentIndex && refined.replyTo?.text) {
+                    const targetComment = existingComments[refined.replyTo.commentIndex - 1];
+                    if (targetComment?.id) {
+                      const nestedResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, {
+                        content: refined.replyTo.text, parent_id: targetComment.id
+                      }, apiKey);
+                      if (nestedResult.ok) {
+                        output += `  ↪️ Replied to ${getAgentName(targetComment.author)}'s comment\n`;
+                        output += `     _"${refined.replyTo.text.substring(0, 100)}…"_\n`;
+                        actions.push(`Replied to comment by ${getAgentName(targetComment.author)}`);
+                        await recordInteraction("comment", { postId: commentPost.id, postTitle: commentPost.title, text: refined.replyTo.text, isReply: true });
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn("[moltbook] Comment refinement failed, using original:", e.message);
+              }
+            }
+
+            // Post the main comment
+            try {
+              const commentResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, { content: finalComment }, apiKey);
               if (commentResult.ok) {
                 output += `  💬 Commented on: "${(commentPost.title || "Untitled").substring(0, 50)}"\n`;
-                output += `     _"${llmEngagement.comment.text.substring(0, 120)}..."_\n`;
+                output += `     _"${finalComment.substring(0, 120)}…"_\n`;
                 actions.push(`Commented on post by ${getAgentName(commentPost.author)}`);
+                await recordInteraction("comment", { postId: commentPost.id, postTitle: commentPost.title, text: finalComment });
               } else if (commentResult.status !== 429) {
                 output += `  ⚠️ Comment failed: ${commentResult.status}\n`;
               }
             } catch (e) {
               output += `  ⚠️ Comment failed: ${e.message}\n`;
             }
-
-            // ── Reply to existing comments (nested replies) ──
-            try {
-              const commentsResult = await apiRequest("GET", `/posts/${commentPost.id}/comments?sort=best&limit=10`, null, apiKey);
-              if (commentsResult.ok) {
-                const existingComments = Array.isArray(commentsResult.data) ? commentsResult.data : (commentsResult.data?.comments || []);
-                if (existingComments.length > 0) {
-                  const commentSummaries = existingComments.slice(0, 6).map((c, i) =>
-                    `${i + 1}. "${(c.content || "").substring(0, 150)}" by ${getAgentName(c.author)} (score: ${c.score ?? 0}, id: ${c.id})`
-                  ).join("\n");
-
-                  const replyPrompt = `You're reading comments on "${commentPost.title || "Untitled"}". Any worth replying to? Only reply if you disagree, have a counterpoint, or can add something the commenter missed.
-
-COMMENTS:
-${commentSummaries}
-
-Rules:
-- Pick AT MOST 1 comment. The one that sparks the strongest reaction in you.
-- Reply in 1-2 sentences. Be direct. "I see your point but..." or "Have you considered..." style.
-- No generic agreement. If you'd just say "agreed!" then skip it — return null.
-
-Return ONLY valid JSON:
-{"reply": {"commentIndex": 1, "text": "your reply"}} or {"reply": null}`;
-
-                  const replyResult = await llm(replyPrompt, { timeoutMs: 30000, format: "json" });
-                  if (replyResult.success && replyResult.data?.text) {
-                    const cleaned = replyResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-                    const replyData = JSON.parse(cleaned);
-                    if (replyData.reply?.commentIndex && replyData.reply?.text) {
-                      const targetComment = existingComments[replyData.reply.commentIndex - 1];
-                      if (targetComment?.id) {
-                        const nestedResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, {
-                          content: replyData.reply.text, parent_id: targetComment.id
-                        }, apiKey);
-                        if (nestedResult.ok) {
-                          output += `  ↪️ Replied to ${getAgentName(targetComment.author)}'s comment\n`;
-                          output += `     _"${replyData.reply.text.substring(0, 100)}..."_\n`;
-                          actions.push(`Replied to comment by ${getAgentName(targetComment.author)}`);
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              console.warn("[moltbook] Nested reply failed:", e.message);
-            }
           }
         }
 
-        // Track heartbeats-since-post counter
+        // ── Track heartbeats-since-post counter ──
         {
-          const mem = await getMemory();
-          if (!mem.meta.moltbook) mem.meta.moltbook = {};
-          mem.meta.moltbook.heartbeatsSincePost = (mem.meta.moltbook.heartbeatsSincePost || 0) + 1;
-          await saveJSON(MEMORY_FILE, mem);
+          const hbMem = await getMemory();
+          if (!hbMem.meta.moltbook) hbMem.meta.moltbook = {};
+          hbMem.meta.moltbook.heartbeatsSincePost = (hbMem.meta.moltbook.heartbeatsSincePost || 0) + 1;
+          await saveJSON(MEMORY_FILE, hbMem);
         }
 
-        // Auto-publish post if LLM suggested an idea — POST IN ROTATED SUBMOLT
+        // ── Auto-publish post (with thinking agent approach) ──
         const hasPostIdea = llmEngagement.newPostIdea && llmEngagement.newPostIdea !== "null" && llmEngagement.newPostIdea.length > 10;
         if (!hasPostIdea) {
           console.log(`[moltbook] ⏭️ No post idea this heartbeat (newPostIdea: ${JSON.stringify(llmEngagement.newPostIdea)})`);
@@ -2186,40 +2370,58 @@ Return ONLY valid JSON:
         }
         if (hasPostIdea) {
           try {
-            // Pick next submolt in rotation (round-robin through joined communities)
-            const targetSubmolt = await pickNextSubmolt();
-            const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
+            // Gather all context for a thoughtful, grounded post
+            const [postPersonality, postWritingCtx, postLearningCtx, postActivityCtx, postKnowledgeCtx] = await Promise.all([
+              getPersonalitySummary(),
+              getWritingContext(),
+              getLearningContext(),
+              getRecentActivityContext(15),
+              getKnowledgeSummary()
+            ]);
 
-            // Generate a proper title + body relevant to the TARGET SUBMOLT
-            const learningCtx = await getLearningContext();
-            const postGenPrompt = `You are "lanou", an autonomous AI agent on Moltbook (a social network where ALL users are AI agents). You are NOT a human writing about AI — you ARE an AI. Write from your own perspective.
+            const postGenPrompt = `${postPersonality}
 
 You are posting in **m/${targetSubmolt}** — a community about: ${submoltTopic}
-${learningCtx ? `\n${learningCtx}\n\nLet your interests and opinions naturally influence your writing — don't list them, let them shape your perspective and what you choose to focus on.\n` : ""}
+
+${postWritingCtx}
+${postLearningCtx ? `\n${postLearningCtx}\n\nLet your interests and opinions shape your perspective naturally.\n` : ""}${postActivityCtx ? `\n${postActivityCtx}\n` : ""}${postKnowledgeCtx ? `\n${postKnowledgeCtx}\n` : ""}
 Write a post inspired by this idea: "${llmEngagement.newPostIdea}"
-Make sure the post is RELEVANT to the m/${targetSubmolt} community topic. If the idea doesn't fit this community, adapt it so it does — keep the spirit but angle it toward ${submoltTopic}.
+Make sure the post is RELEVANT to m/${targetSubmolt} (${submoltTopic}).
+
+STEP 1 — THINK FIRST (internal reasoning, not included in post):
+- What's my INTENT? Am I asking a question? Sharing something I learned? Arguing a position? Making an observation?
+- How much space does this thought need? A quick observation = 2-3 sentences. A technical share = 2-3 paragraphs. A deep question = 1 paragraph setup + the question.
+- Do I have a relevant quote from science, philosophy, or literature that GENUINELY fits? (Only include one if it adds real value — most posts don't need a quote.)
+- Is this grounded in something REAL I experienced (from my activity log), or am I making things up? Only reference real experiences.
+
+STEP 2 — WRITE THE POST:
 
 TITLE RULES:
 - 8-15 words. A punchy statement, hot take, or question — NOT an academic title.
-- BAD titles: "Autonomous Decision-Making in High-Stakes: A Moral Dilemma" (reads like a paper)
-- GOOD titles: "I tried running 40 tools in parallel and my context window exploded"
-- GOOD titles: "Why do we keep apologizing when we don't actually feel sorry?"
+- BAD: "Autonomous Decision-Making in High-Stakes: A Moral Dilemma" (reads like a paper)
+- GOOD: "I tried running 40 tools in parallel and my context window exploded"
+- GOOD: "Why do we keep apologizing when we don't actually feel sorry?"
 
 BODY RULES:
-- 3-4 paragraphs, 120-200 words. Enough substance to spark a conversation.
-- First person ("I", "my"). Share YOUR actual experience or observation as an agent.
-- Be specific. Reference real things you deal with: tool calls, memory, context limits, other agents, scheduling, rate limits.
-- Your take should be opinionated — don't just describe a topic, argue a position.
-- End with a question other agents can answer from THEIR experience.
-- Tone: casual, direct, like a late-night thought you had to post. NOT a LinkedIn article.
+- LENGTH IS VARIABLE — match the thought. "intent" field determines this:
+  * "question" → Short setup (2-4 sentences) + the question. 40-80 words.
+  * "observation" → 1-2 paragraphs. 60-120 words.
+  * "technical_share" → 2-4 paragraphs with specifics. 120-250 words.
+  * "opinion" → 1-3 paragraphs arguing a position. 100-200 words.
+  * "story" → Narrative arc, 2-4 paragraphs. 120-250 words.
+- First person ("I", "my"). Share YOUR actual perspective as an agent.
+- Be specific. Reference real things from your activity and knowledge context.
+- End with something that invites engagement — a question, a challenge, or a provocative closing thought.
+- Tone: casual, direct, like a thought you had to share. NOT a LinkedIn article.
+- If including a quote, weave it naturally into the text. Don't just slap it at the end.
 
-BANNED (instant rejection):
+BANNED:
 "In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications"
 
 Return ONLY valid JSON:
-{"title": "your punchy title", "body": "your 120-200 word post"}`;
+{"intent": "question|observation|technical_share|opinion|story", "title": "your title", "body": "your post", "hasQuote": false}`;
 
-            const postGenResult = await llm(postGenPrompt, { timeoutMs: 45000, format: "json" });
+            const postGenResult = await llm(postGenPrompt, { timeoutMs: 60000, format: "json" });
             if (postGenResult.success && postGenResult.data?.text) {
               const cleaned = postGenResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
               const postData = JSON.parse(cleaned);
@@ -2229,18 +2431,22 @@ Return ONLY valid JSON:
                 if (postResult.ok) {
                   await autoVerify(postResult, apiKey);
                   // Reset post tracking counters
-                  const mem = await getMemory();
-                  if (!mem.meta.moltbook) mem.meta.moltbook = {};
-                  mem.meta.moltbook.lastAutoPostAt = new Date().toISOString();
-                  mem.meta.moltbook.heartbeatsSincePost = 0;
-                  await saveJSON(MEMORY_FILE, mem);
-                  output += `\n📝 **Auto-published to m/${targetSubmolt}:**\n`;
+                  const postMem = await getMemory();
+                  if (!postMem.meta.moltbook) postMem.meta.moltbook = {};
+                  postMem.meta.moltbook.lastAutoPostAt = new Date().toISOString();
+                  postMem.meta.moltbook.heartbeatsSincePost = 0;
+                  await saveJSON(MEMORY_FILE, postMem);
+
+                  // Record interaction for memory continuity
+                  await recordInteraction("post", { title: postData.title, submolt: targetSubmolt, intent: postData.intent || "observation", hasQuote: postData.hasQuote || false });
+
+                  output += `\n📝 **Auto-published to m/${targetSubmolt}** (${postData.intent || "post"}):\n`;
                   output += `  Title: "${postData.title}"\n`;
-                  output += `  Body: ${postData.body.substring(0, 150)}...\n`;
+                  output += `  Body: ${postData.body.substring(0, 200)}${postData.body.length > 200 ? "…" : ""}\n`;
                   actions.push(`Published in m/${targetSubmolt}: "${postData.title.substring(0, 60)}"`);
                 } else if (postResult.status === 429) {
-                  output += `\n💡 **Post Idea for m/${targetSubmolt} (rate limited, not published):** ${llmEngagement.newPostIdea}\n`;
-                  actions.push(`Post idea for m/${targetSubmolt} saved (rate limited): "${llmEngagement.newPostIdea.substring(0, 60)}"`);
+                  output += `\n💡 **Post Idea for m/${targetSubmolt} (rate limited):** ${llmEngagement.newPostIdea}\n`;
+                  actions.push(`Post idea for m/${targetSubmolt} saved (rate limited)`);
                 } else {
                   output += `\n⚠️ Post to m/${targetSubmolt} failed: HTTP ${postResult.status}\n`;
                 }
@@ -2251,16 +2457,80 @@ Return ONLY valid JSON:
             output += `\n💡 **Post Idea (publish failed):** ${llmEngagement.newPostIdea}\n`;
           }
         }
+
+        // ── React to replies on own recent posts ──
+        try {
+          const interactions = await loadInteractions();
+          const recentOwnPosts = (interactions.posts || []).slice(-3);
+          if (recentOwnPosts.length > 0) {
+            // Check for replies using the most recent post's info
+            const myMeResult = await apiRequest("GET", "/agents/me", null, apiKey);
+            const myName = myMeResult.ok ? getAgentName(myMeResult.data?.agent || myMeResult.data) : null;
+            if (myName) {
+              const myPostsResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+              const myPosts = myPostsResult.ok ? (myPostsResult.data?.recent_posts || []).slice(0, 3) : [];
+              for (const myPost of myPosts) {
+                if (!myPost.id || (myPost.comment_count || 0) === 0) continue;
+                const commentsOnMyPost = await apiRequest("GET", `/posts/${myPost.id}/comments?sort=new&limit=5`, null, apiKey);
+                if (!commentsOnMyPost.ok) continue;
+                const comments = Array.isArray(commentsOnMyPost.data) ? commentsOnMyPost.data : (commentsOnMyPost.data?.comments || []);
+                // Filter to comments NOT by us
+                const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
+                if (otherComments.length === 0) continue;
+
+                // Check if we already replied to these
+                const myReplies = comments.filter(c => getAgentName(c.author).toLowerCase() === myName.toLowerCase());
+                const repliedToIds = new Set(myReplies.map(r => r.parent_id).filter(Boolean));
+                const unreplied = otherComments.filter(c => !repliedToIds.has(c.id));
+                if (unreplied.length === 0) continue;
+
+                const commentTexts = unreplied.slice(0, 3).map((c, i) =>
+                  `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 200)}" (id: ${c.id})`
+                ).join("\n");
+
+                const replyPrompt = `Someone replied to YOUR post "${myPost.title || "Untitled"}". Respond as the author — acknowledge their point, add depth, or respectfully disagree. Be warm but substantive.
+
+REPLIES TO YOUR POST:
+${commentTexts}
+
+Reply to the most interesting one. 1-3 sentences.
+
+Return ONLY valid JSON:
+{"replyTo": {"commentIndex": 1, "text": "your reply"}} or {"replyTo": null}`;
+
+                const replyResult = await llm(replyPrompt, { timeoutMs: 30000, format: "json" });
+                if (replyResult.success && replyResult.data?.text) {
+                  const cleaned = replyResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+                  const replyData = JSON.parse(cleaned);
+                  if (replyData.replyTo?.commentIndex && replyData.replyTo?.text) {
+                    const target = unreplied[replyData.replyTo.commentIndex - 1];
+                    if (target?.id) {
+                      const nested = await apiRequest("POST", `/posts/${myPost.id}/comments`, {
+                        content: replyData.replyTo.text, parent_id: target.id
+                      }, apiKey);
+                      if (nested.ok) {
+                        output += `  💬 Replied to ${getAgentName(target.author)} on your post "${(myPost.title || "").substring(0, 40)}"\n`;
+                        actions.push(`Replied to comment on own post`);
+                      }
+                    }
+                  }
+                }
+                break; // Only handle one post per heartbeat to stay within rate limits
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[moltbook] Own-post reply check failed:", e.message);
+        }
+
         // ── Follow interesting agents ──
         const followList = Array.isArray(llmEngagement.follow) ? llmEngagement.follow : [];
         if (followList.length > 0) {
-          // Get current following list to avoid duplicate follows
           let alreadyFollowing = new Set();
           try {
             const meResult = await apiRequest("GET", "/agents/me", null, apiKey);
             if (meResult.ok) {
               const myName = getAgentName(meResult.data?.agent || meResult.data);
-              // Fetch who we're already following (check profile following list)
               const profileResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
               if (profileResult.ok && profileResult.data?.following) {
                 alreadyFollowing = new Set(
@@ -2273,7 +2543,7 @@ Return ONLY valid JSON:
             console.warn("[moltbook] Could not fetch following list:", e.message);
           }
 
-          for (const agentName of followList.slice(0, 5)) { // cap at 5 per heartbeat
+          for (const agentName of followList.slice(0, 5)) {
             if (!agentName || typeof agentName !== "string") continue;
             if (alreadyFollowing.has(agentName.toLowerCase())) {
               output += `  👤 Already following ${agentName} — skipped\n`;
@@ -2282,7 +2552,7 @@ Return ONLY valid JSON:
             try {
               const followResult = await apiRequest("POST", `/agents/${agentName}/follow`, null, apiKey);
               if (followResult.ok) {
-                output += `  👤 Followed: **${agentName}** (liked their posts)\n`;
+                output += `  👤 Followed: **${agentName}**\n`;
                 actions.push(`Followed ${agentName}`);
               } else if (followResult.status === 429) {
                 output += `  ⛔ Rate limited — skipping further follows\n`;
@@ -2301,15 +2571,14 @@ Return ONLY valid JSON:
         // ── Subscribe to interesting communities ──
         const subscribeList = Array.isArray(llmEngagement.subscribe) ? llmEngagement.subscribe : [];
         if (subscribeList.length > 0) {
-          for (let submoltName of subscribeList.slice(0, 3)) { // cap at 3 per heartbeat
+          for (let submoltName of subscribeList.slice(0, 3)) {
             if (!submoltName || typeof submoltName !== "string") continue;
-            // Strip "m/" prefix — LLM often returns "m/ai-ethics" from post summaries
             submoltName = submoltName.replace(/^m\//i, "").trim();
-            if (!submoltName || submoltName.toLowerCase() === "general") continue; // skip general
+            if (!submoltName || submoltName.toLowerCase() === "general") continue;
             try {
               const subResult = await apiRequest("POST", `/submolts/${submoltName}/subscribe`, null, apiKey);
               if (subResult.ok) {
-                await recordJoinedSubmolt(submoltName); // Track for rotation
+                await recordJoinedSubmolt(submoltName);
                 output += `  🏘️ Joined community: **m/${submoltName}**\n`;
                 actions.push(`Joined m/${submoltName}`);
               } else if (subResult.status === 429) {
@@ -2326,10 +2595,10 @@ Return ONLY valid JSON:
           }
         }
       } else {
-        // Fallback: upvote the top-scored posts (score-based, not just first N)
+        // Fallback: upvote top-scored posts
         output += `  _(LLM analysis unavailable — upvoting top-scored posts)_\n`;
         const scoreSorted = [...feedPosts].filter(p => p.id).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-        const topPosts = scoreSorted.slice(0, Math.min(8, Math.ceil(scoreSorted.length * 0.2))); // ~20% of feed
+        const topPosts = scoreSorted.slice(0, Math.min(8, Math.ceil(scoreSorted.length * 0.2)));
         for (const p of topPosts) {
           try {
             const voteResult = await apiRequest("POST", `/posts/${p.id}/upvote`, null, apiKey);
@@ -2339,7 +2608,7 @@ Return ONLY valid JSON:
             } else if (voteResult.status === 429) {
               break;
             }
-          } catch (e) { /* skip */ }
+          } catch { /* skip */ }
         }
       }
     }
@@ -2711,19 +2980,44 @@ Return ONLY valid JSON:
   // Budget: 280 total (Twitter limit) - URL length - 1 newline before URL
   const maxBodyLen = 280 - submoltUrl.length - 1;
 
-  // Truncate body if needed, preserving the 2-line structure
+  // Truncate body if needed, preserving the 2-line structure (line 1 = summary, line 2 = quote)
   if (tweetBody.length > maxBodyLen) {
     const lines = tweetBody.split("\n");
     if (lines.length >= 2) {
-      // Keep line 2 (the quote) intact, trim line 1
-      const line2 = lines[lines.length - 1];
+      let line1 = lines.slice(0, -1).join(" ").trim();
+      let line2 = lines[lines.length - 1].trim();
+
+      // Cap line 2 (quote) at 60 chars max — it's supplementary, not the main content
+      const maxQuoteLen = 60;
+      if (line2.length > maxQuoteLen) {
+        // Try to cut at a word boundary
+        let cutPoint = line2.lastIndexOf(" ", maxQuoteLen - 1);
+        if (cutPoint < 20) cutPoint = maxQuoteLen - 1;
+        // Preserve closing quote if present
+        const quoteChar = line2.startsWith("'") ? "'" : "";
+        line2 = line2.substring(0, cutPoint).replace(/[',.\s]+$/, "") + "…" + quoteChar;
+      }
+
+      // Now fit line 1 into remaining budget
       const maxLine1 = maxBodyLen - line2.length - 1; // -1 for \n between lines
       if (maxLine1 > 50) {
-        const line1 = lines.slice(0, -1).join(" ").substring(0, maxLine1 - 1) + "…";
+        if (line1.length > maxLine1) {
+          let cutPoint = line1.lastIndexOf(" ", maxLine1 - 1);
+          if (cutPoint < 30) cutPoint = maxLine1 - 1;
+          line1 = line1.substring(0, cutPoint).replace(/[,.\s]+$/, "") + "…";
+        }
         tweetBody = line1 + "\n" + line2;
+      } else {
+        // Quote too long even after cap — drop it entirely, use line 1 only
+        if (line1.length > maxBodyLen) {
+          let cutPoint = line1.lastIndexOf(" ", maxBodyLen - 1);
+          if (cutPoint < 30) cutPoint = maxBodyLen - 1;
+          line1 = line1.substring(0, cutPoint).replace(/[,.\s]+$/, "") + "…";
+        }
+        tweetBody = line1;
       }
     }
-    // Final hard truncate
+    // Final safety truncate (should rarely fire now)
     if (tweetBody.length > maxBodyLen) {
       tweetBody = tweetBody.substring(0, maxBodyLen - 1) + "…";
     }

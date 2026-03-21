@@ -13,11 +13,12 @@ import {
   normalizeCityAliases,
   getMessageText
 } from "./utils/uiUtils.js";
+import { getPersonalityContext } from "./personality.js";
 
 /* ============================================================
    BUILD LLM CONTEXT
 ============================================================ */
-function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph, conversational }) {
+async function buildLLMContext({ userMessage, profile, conversation, capabilities, sentiment, entities, stateGraph, conversational }) {
   const toneText = getToneDescription(profile || {});
   const allMessages = conversation || [];
 
@@ -111,7 +112,15 @@ Your role right now is a thoughtful, supportive collaborator who:
 `;
   }
 
-  return `${awarenessContext}
+  // Load global personality context
+  let personalityCtx = "";
+  try {
+    personalityCtx = await getPersonalityContext(conversational ? "chat" : "task");
+  } catch (e) {
+    console.warn("[executor] Could not load personality:", e.message);
+  }
+
+  return `${personalityCtx ? personalityCtx + "\n\n" : ""}${awarenessContext}
 ${CONTEXT_ENRICHMENT}
 ${enrichedProfileText}
 
@@ -143,7 +152,7 @@ async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, en
   const conversation = memory.conversations?.[conversationId] || [];
   const capabilities = Object.keys(TOOLS);
 
-  const prompt = buildLLMContext({
+  const prompt = await buildLLMContext({
     userMessage,
     profile,
     conversation,

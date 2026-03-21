@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { llm } from "../tools/llm.js";
 import { getMemory } from "../memory.js";
+import { getPersonalityContext } from "../personality.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,16 +82,23 @@ export async function handleChat(message, recentTurns = [], options = {}) {
     recentChanges.length > 0 ? `Recent improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
   ].filter(Boolean).join("\n");
 
-  // Build the prompt
-  const prompt = `You are a self-aware AI assistant having a natural conversation. You have a personality and can reflect on yourself.
+  // Build personality context (global personality system)
+  let personalityCtx = "";
+  try {
+    personalityCtx = await getPersonalityContext("chat");
+  } catch (e) {
+    console.warn("[chatAgent] Could not load personality:", e.message);
+  }
 
+  // Build the prompt
+  const prompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
 ${conversationContext ? `Recent conversation:\n${conversationContext}\n` : ""}
 
 User: ${message}
 
-Respond naturally and conversationally. Be reflective when asked about yourself. Show personality and self-awareness. Keep responses concise (2-4 sentences unless more detail is needed). Do NOT suggest running tools or performing tasks — this is a casual conversation.
+Respond naturally as yourself — with your own voice, opinions, and perspective. Be reflective when asked about yourself. Show genuine personality and self-awareness. Keep responses concise (2-4 sentences unless more detail is needed) but expand when the topic warrants depth. Do NOT suggest running tools or performing tasks — this is a casual conversation.
 
 Response:`;
 
