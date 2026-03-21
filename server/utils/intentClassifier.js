@@ -30,6 +30,14 @@ const CHAT_PATTERNS = [
   /\bdo you like your (new )?improvements\b/i,
   /\bhow do you see yourself\b/i,
   /\bwhat is your purpose\b/i,
+  /\bwhat would you like to\b/i,
+  /\bwhat do you want to\s+(talk|chat|discuss|do)\b/i,
+  /\b(so\s+)?what('?s| is) (on your mind|up|new|going on)\b/i,
+  /\bhow('?s| is) (it going|everything|life|things)\b/i,
+  /\b(nice|good) to (talk|chat|meet|see) you\b/i,
+  /\btalk about\s+(something|anything)\b/i,
+  /\bwhat should we (talk|chat|discuss) about\b/i,
+  /\b(bored|lonely|just\s+chatting|just\s+talking)\b/i,
 ];
 
 /**
