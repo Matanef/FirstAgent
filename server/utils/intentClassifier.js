@@ -138,14 +138,24 @@ export function classifyIntent(message, recentHistory = []) {
   }
 
   // If in a chat conversation and no strong task signals, continue chatting
+  // BUT: apply time decay — if the last message was 5+ min ago, user may have switched context
   const recentChatCount = recentHistory.filter(h => h.mode === "chat").length;
-  const lastTurnWasChat = recentHistory.length > 0 && recentHistory[recentHistory.length - 1]?.mode === "chat";
+  const lastTurn = recentHistory.length > 0 ? recentHistory[recentHistory.length - 1] : null;
+  const lastTurnWasChat = lastTurn?.mode === "chat";
 
-  if (recentChatCount >= 3 && taskScore === 0) {
-    chatScore += 2; // Strong boost in deep conversation
-  } else if (lastTurnWasChat && taskScore === 0) {
-    chatScore += 1; // Mild boost — last turn was chat, no task signals, likely still chatting
+  // Time decay: reduce chat stickiness if the conversation has gone quiet
+  const lastTurnAge = lastTurn?.timestamp
+    ? (Date.now() - new Date(lastTurn.timestamp).getTime()) / 60000 // minutes
+    : Infinity;
+  const isRecentConversation = lastTurnAge < 5; // last message was <5 min ago
+
+  if (taskScore === 0 && chatScore > 0 && lastTurnWasChat && isRecentConversation) {
+    chatScore += 1; // Mild boost — actively chatting and this message also has chat patterns
+  } else if (taskScore === 0 && chatScore === 0 && recentChatCount >= 3 && isRecentConversation) {
+    chatScore += 1; // Ambiguous message during active chat — slight lean toward chat
   }
+  // NOTE: No boost if taskScore > 0 (user is requesting an action)
+  // NOTE: No boost if conversation is stale (>5 min) — user may have switched context
 
   // Decision
   if (taskScore > 0 && chatScore === 0) {

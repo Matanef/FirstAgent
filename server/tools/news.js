@@ -2,11 +2,16 @@
 // COMPLETE FIX: News with topic extraction and filtering
 
 import Parser from "rss-parser";
+import fetch from "node-fetch";
+import * as cheerio from "cheerio";
+import iconv from "iconv-lite";
 import { safeFetch } from "../utils/fetch.js";
 import { llm } from "./llm.js";
 import { extractFromNews } from "../knowledge.js";
 
 const parser = new Parser();
+
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 // ── GENERAL NEWS FEEDS (40+) ──
 const FEEDS = {
@@ -80,6 +85,184 @@ const CATEGORY_FEEDS = {
   }
 };
 
+// ── SCRAPE SOURCES (non-RSS Israeli news flash pages) ──
+// These are web pages with headline snapshots, not RSS feeds.
+// Each source has a custom scraper that returns items in the same format as RSS.
+const SCRAPE_SOURCES = {
+  mako_flash: {
+    url: "https://www.mako.co.il/news-news-flash",
+    label: "mako_flash",
+    scraper: scrapeMako
+  },
+  ynet_flash: {
+    url: "https://www.ynet.co.il/news/category/184",
+    label: "ynet_flash",
+    scraper: scrapeYnet
+  },
+  rotter: {
+    url: "http://www.rotter.net/news/news.php?nws=1",
+    label: "rotter",
+    scraper: scrapeRotter
+  }
+};
+
+/**
+ * Scrape Mako news flash page.
+ * Structure: <li><h3>HH:MM | headline</h3></li>
+ * No direct article links — headlines are accordion-based.
+ */
+async function scrapeMako() {
+  try {
+    const res = await fetch(SCRAPE_SOURCES.mako_flash.url, {
+      headers: { "User-Agent": BROWSER_UA },
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    // Detect CAPTCHA/block page
+    if (html.includes("captcha") || html.includes("We are sorry") || html.length < 20000) {
+      console.warn("📰 mako_flash: blocked by CAPTCHA/bot detection");
+      return [];
+    }
+
+    const $ = cheerio.load(html);
+
+    const items = [];
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+
+    $("h3").each((i, el) => {
+      const raw = $(el).text().trim();
+      // Format: "HH:MM | headline text"
+      const match = raw.match(/^(\d{1,2}:\d{2})\s*\|\s*(.+)$/);
+      if (!match) return;
+
+      const [, time, headline] = match;
+      items.push({
+        title: headline.trim(),
+        link: SCRAPE_SOURCES.mako_flash.url,
+        date: `${today}T${time.padStart(5, "0")}:00.000Z`,
+        description: headline.trim(),
+        source: "mako_flash"
+      });
+    });
+
+    console.log(`📰 Scraped mako_flash: ${items.length} items`);
+    return items;
+  } catch (err) {
+    console.warn(`📰 Scrape mako_flash failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Scrape Ynet breaking news / flash page.
+ * Structure: <div class="AccordionSection {articleId}"> with .title and time[datetime]
+ */
+async function scrapeYnet() {
+  try {
+    const res = await fetch(SCRAPE_SOURCES.ynet_flash.url, {
+      headers: { "User-Agent": BROWSER_UA },
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    const items = [];
+
+    $("[class*=AccordionSection]").each((i, el) => {
+      const cls = $(el).attr("class") || "";
+      const idMatch = cls.match(/AccordionSection\s+(\w+)/);
+      const articleId = idMatch ? idMatch[1] : "";
+
+      const title = $(el).find("[class*=title]").first().text().trim();
+      if (!title || title.length < 5) return;
+
+      // Timestamp from time[datetime] inside the section
+      const datetime = $(el).find("time[datetime]").attr("datetime") || "";
+
+      items.push({
+        title,
+        link: articleId
+          ? `https://www.ynet.co.il/news/article/${articleId}`
+          : SCRAPE_SOURCES.ynet_flash.url,
+        date: datetime || new Date().toISOString(),
+        description: title,
+        source: "ynet_flash"
+      });
+    });
+
+    console.log(`📰 Scraped ynet_flash: ${items.length} items`);
+    return items.slice(0, 25); // Cap to avoid flooding — Ynet can return 100+ items
+  } catch (err) {
+    console.warn(`📰 Scrape ynet_flash failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Scrape Rotter.net news page.
+ * Rotter uses Windows-1255 encoding and blocks some user agents.
+ * Structure: table-based layout with <a> links containing headlines.
+ */
+async function scrapeRotter() {
+  try {
+    const res = await fetch(SCRAPE_SOURCES.rotter.url, {
+      headers: {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "he,en-US;q=0.9,en;q=0.8",
+        "Referer": "http://www.rotter.net/",
+        "Cache-Control": "no-cache"
+      },
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Rotter uses Windows-1255 encoding
+    const buf = await res.buffer();
+    const html = iconv.decode(buf, "win1255");
+    const $ = cheerio.load(html);
+
+    const items = [];
+    const seen = new Set();
+
+    // Rotter uses table rows with links
+    $("a").each((i, el) => {
+      const href = $(el).attr("href") || "";
+      const text = $(el).text().trim();
+
+      // Filter: must be a meaningful headline (Hebrew text, reasonable length)
+      if (text.length < 10 || text.length > 200) return;
+      if (seen.has(text)) return;
+      // Skip navigation/UI links
+      if (/^(http|www\.)/.test(text)) return;
+      if (/\.(jpg|png|gif|css|js)$/i.test(href)) return;
+
+      seen.add(text);
+      const fullLink = href.startsWith("http")
+        ? href
+        : href.startsWith("/")
+          ? `http://www.rotter.net${href}`
+          : SCRAPE_SOURCES.rotter.url;
+
+      items.push({
+        title: text,
+        link: fullLink,
+        date: new Date().toISOString(),
+        description: text,
+        source: "rotter"
+      });
+    });
+
+    console.log(`📰 Scraped rotter: ${items.length} items`);
+    return items;
+  } catch (err) {
+    console.warn(`📰 Scrape rotter failed: ${err.message}`);
+    return [];
+  }
+}
+
 /**
  * Detect if the user is asking for a specific news category
  */
@@ -107,12 +290,14 @@ function extractTopic(query) {
 
   // Strip conversational noise before extracting topic
   let stripped = lower
+    // Strip "let's" first — apostrophe makes regex word boundaries tricky
+    .replace(/let['\u2018\u2019]?s\b/gi, "")
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
     // Must come BEFORE stripping "get" — matches "get the latest tech news" as a whole phrase
     .replace(/\bget\s+(?:the\s+)?(?:latest|recent|breaking|top|current)\s+(?:\w+\s+)?(?:news|headlines|articles)\b/gi, "")
     .replace(/\b(search for|look up|find|fetch|get|show me|give me)\b/gi, "")
     .replace(/\b(to learn about it|to learn|to know|to read|to see|to check)\b/gi, "")
-    .replace(/\b(let'?s?\s+)?catch\s+(me\s+)?up\s+(on)?\b/gi, "")
+    .replace(/\b(?:catch\s+(?:me\s+)?up|(?:get|check)\s+(?:me\s+)?(?:updated|up))\s*(?:on)?\b/gi, "")
     .replace(/\bsummarize\s+(?:the\s+)?(?:first|top|last|latest)?\s*\d*\s*(?:articles?|stories|headlines?)?\b/gi, "")
     .replace(/\busing\s+(?:the\s+)?\w+\s+tool\b/gi, "")
     .replace(/\b(?:first|top|last|latest)\s+\d+\b/gi, "")
@@ -120,32 +305,52 @@ function extractTopic(query) {
     .replace(/\b(news|headlines|articles|stories)\b/gi, "")
     .replace(/\b(about|regarding|on|for)\s+(?:it|this|that|them)\s*$/gi, "")
     .replace(/\band\s+(?:email|send|mail)\b.*$/gi, "")
+    // Strip filler/quantifier words that aren't topics
+    .replace(/\b(some|any|all|few|more|every|many|much|several|updated?)\b/gi, "")
     .replace(/\s+/g, " ")
     .replace(/^[,\s]+|[,\s]+$/g, "")
     .trim();
 
+  // Words that look like topics but aren't — quantifiers, pronouns, filler
+  const topicNoiseWords = new Set([
+    "some", "any", "all", "few", "more", "every", "many", "much", "several",
+    "it", "this", "that", "them", "us", "me", "updated", "news", "headlines",
+    "the", "a", "an", "on", "in", "at", "to", "for", "of"
+  ]);
+
+  function cleanTopic(raw) {
+    if (!raw) return null;
+    const cleaned = raw.replace(/\b(it|this|that|some|any|all|news|headlines)\b/gi, "").trim();
+    if (cleaned.length < 3) return null;
+    // Reject if ALL remaining words are noise
+    const words = cleaned.split(/\s+/).filter(w => !topicNoiseWords.has(w.toLowerCase()) && w.length > 1);
+    return words.length > 0 ? words.join(" ") : null;
+  }
+
   // Extract specific topic patterns — match first "about/regarding/on/for" + topic
   // Strip "news" before matching so "news about X" → "about X" → captures "X"
   const forTopicMatch = stripped.replace(/\bnews\b/gi, "").trim();
-  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i)
-    || lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
-  if (topicMatch) {
-    const topic = topicMatch[1].replace(/\b(it|this|that)\b/gi, "").trim();
-    if (topic.length > 2) return topic;
-  }
+  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const cleanedTopic = cleanTopic(topicMatch?.[1]);
+  if (cleanedTopic) return cleanedTopic;
+
+  // Fallback: try "about X" from original (but still clean it)
+  const lowerTopicMatch = lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const cleanedLowerTopic = cleanTopic(lowerTopicMatch?.[1]);
+  if (cleanedLowerTopic) return cleanedLowerTopic;
 
   // Extract from "X news" — use stripped version to avoid "show me latest" noise
   const newsMatch = stripped.match(/([a-z0-9\s]+)\s+news/i) || lower.match(/([a-z0-9\s]+)\s+news/i);
   if (newsMatch) {
-    const rejectPrefixes = new Set(["the", "latest", "breaking", "top", "show", "me", "get", "give"]);
+    const rejectPrefixes = new Set(["the", "latest", "breaking", "top", "show", "me", "get", "give", "some", "any", "all"]);
     const topic = newsMatch[1].trim().split(/\s+/).filter(w => !rejectPrefixes.has(w)).join(" ");
-    if (topic.length > 2) {
+    if (topic.length > 2 && !topicNoiseWords.has(topic.toLowerCase())) {
       return topic;
     }
   }
 
   // Use the cleaned/stripped version if meaningful
-  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for"]);
+  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for", "on", "in"]);
   const words = stripped.split(/\s+/).filter(w => !rejectWords.has(w) && w.length > 1);
   if (words.length > 0 && words.length <= 6) {
     return words.join(" ");
@@ -267,32 +472,52 @@ export async function news(request) {
       }
     });
 
-    const feedResults = await Promise.all(feedPromises);
-    for (const result of feedResults) {
+    // Also scrape non-RSS sources in parallel with RSS feeds
+    const scrapePromisesArr = Object.entries(SCRAPE_SOURCES).map(async ([name, source]) => {
+      try {
+        const items = await source.scraper();
+        return { source: name, items, error: null };
+      } catch (err) {
+        console.warn(`📰 Scrape ${name} failed: ${err.message}`);
+        return { source: name, error: err.message, items: [] };
+      }
+    });
+
+    // Wait for both RSS feeds and scraped sources
+    const [feedResults, webScrapeResults] = await Promise.all([
+      Promise.all(feedPromises),
+      Promise.all(scrapePromisesArr)
+    ]);
+
+    for (const result of [...feedResults, ...webScrapeResults]) {
       results.push(result);
       allItems.push(...result.items);
     }
 
-    // Filter out stale articles (older than 7 days)
+    // ── Separate flash items from RSS items ──
+    const flashSourceNames = new Set(Object.keys(SCRAPE_SOURCES));
+    const flashItems = allItems.filter(i => flashSourceNames.has(i.source));
+    const rssItems = allItems.filter(i => !flashSourceNames.has(i.source));
+
+    // Filter out stale RSS articles (older than 7 days)
+    // Flash items are always fresh (scraped just now)
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const freshItems = allItems.filter(item => {
-      if (!item.date) return true; // keep items with no date (assume recent)
+    const freshRssItems = rssItems.filter(item => {
+      if (!item.date) return true;
       const pubDate = new Date(item.date).getTime();
       return !isNaN(pubDate) && pubDate > sevenDaysAgo;
     });
 
-    // FIX #4: Filter by topic if specified
-    const filteredItems = topic ? filterByTopic(freshItems, topic) : freshItems;
+    // Topic filter only applies to RSS items — flash headlines always show
+    const filteredRssItems = topic ? filterByTopic(freshRssItems, topic) : freshRssItems;
 
-    console.log(`📊 Total items: ${allItems.length}, Fresh: ${freshItems.length}, Filtered: ${filteredItems.length}`);
+    console.log(`📊 Total: ${allItems.length} (${flashItems.length} flash + ${rssItems.length} RSS), Fresh RSS: ${freshRssItems.length}, Filtered RSS: ${filteredRssItems.length}`);
 
-    // Scrape and summarize top articles (respects articleCount from chain context)
-    // Falls back to RSS description if scraping fails
+    // Scrape and summarize top RSS articles (flash items are headline-only, no scraping)
     const summaries = [];
-    const scrapePromises = filteredItems.slice(0, articleCount).map(async (article) => {
+    const scrapePromises = filteredRssItems.slice(0, articleCount).map(async (article) => {
       console.log(`  Scraping: ${article.title}`);
       const content = await scrapeArticle(article.link);
-      // Use scraped content, or fall back to RSS description
       const textForSummary = content || article.description || null;
       if (textForSummary && textForSummary.length > 50) {
         const summary = await summarizeArticle(article.title, textForSummary);
@@ -300,137 +525,222 @@ export async function news(request) {
           return { title: article.title, link: article.link, source: article.source, summary };
         }
       }
-      // If no content at all, create a minimal summary from the title
       return { title: article.title, link: article.link, source: article.source, summary: article.description || article.title };
     });
 
     const scrapeResults = await Promise.all(scrapePromises);
     summaries.push(...scrapeResults.filter(Boolean));
 
-    // Build HTML
+    // ── Source label formatting ──
+    function formatSourceLabel(source) {
+      return source.replace(/_flash$/, "").toUpperCase();
+    }
+
+    // ── Build HTML ──
+
+    // Flash section: compact scrollable ticker of breaking headlines (always shown if items exist)
+    const flashHtml = flashItems.length > 0 ? `
+      <div class="news-flash-section">
+        <div class="news-flash-header">⚡ Breaking News Flash</div>
+        <div class="news-flash-list">
+          ${flashItems.slice(0, 20).map(i => {
+            const time = i.date ? new Date(i.date).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "";
+            const src = formatSourceLabel(i.source);
+            return `<div class="news-flash-item">
+              <span class="flash-time">${time}</span>
+              <span class="flash-source">${src}</span>
+              <a href="${i.link}" target="_blank" class="flash-headline">${i.title}</a>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+    ` : "";
+
+    // Summary cards (RSS articles only)
     const summaryCards = summaries.map(s => `
       <div class="news-summary-card">
         <div class="news-summary-header">
-          <span class="news-source">${s.source.toUpperCase()}</span>
+          <span class="news-source">${formatSourceLabel(s.source)}</span>
         </div>
         <h3 class="news-summary-title">${s.title}</h3>
         <p class="news-summary-text">${s.summary}</p>
         <a href="${s.link}" target="_blank" class="news-summary-link">Read full article →</a>
       </div>
-    `).join('');
+    `).join("");
+
+    // RSS headline table
+    const headlineTable = filteredRssItems.length > 0 ? `
+      <div class="ai-table-wrapper">
+        <h3>${topic ? "Related Headlines" : "All Headlines"}</h3>
+        <table class="ai-table">
+          <thead>
+            <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
+          </thead>
+          <tbody>
+            ${filteredRssItems.slice(0, 30).map(i => `
+              <tr>
+                <td>${formatSourceLabel(i.source)}</td>
+                <td><a href="${i.link}" target="_blank">${i.title}</a></td>
+                <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    ` : "";
 
     const html = `
       <div class="news-container">
-        ${topic ? `<div class="news-topic-banner">📰 News about: <strong>${topic}</strong></div>` : ''}
-        
+        ${topic ? `<div class="news-topic-banner">📰 News about: <strong>${topic}</strong></div>` : ""}
+        ${flashHtml}
         ${summaries.length > 0 ? `
           <div class="news-summaries">
             <h2>Top Stories</h2>
             ${summaryCards}
           </div>
-        ` : ''}
-        
-        <div class="ai-table-wrapper">
-          <h3>${topic ? 'All Related Headlines' : 'All Headlines'}</h3>
-          <table class="ai-table">
-            <thead>
-              <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
-            </thead>
-            <tbody>
-              ${filteredItems.slice(0, 30).map(i => `
-                <tr>
-                  <td>${i.source}</td>
-                  <td><a href="${i.link}" target="_blank">${i.title}</a></td>
-                  <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
+        ` : ""}
+        ${headlineTable}
       </div>
-      
+
       <style>
 
-/* 1. Force the H2 to take up 100% width and center the text */
-  .news-summaries h2 {
-    width: 100%;
-    text-align: center;
-    margin-bottom: 1.5rem;
+/* ── Flash section ── */
+  .news-flash-section {
+    background: var(--bg-tertiary);
+    border: 1px solid #e74c3c;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+  }
+  .news-flash-header {
+    background: #e74c3c;
+    color: white;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    letter-spacing: 0.5px;
+  }
+  .news-flash-list {
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 0.25rem 0;
+  }
+  .news-flash-item {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.35rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+    line-height: 1.4;
+  }
+  .news-flash-item:last-child {
+    border-bottom: none;
+  }
+  .flash-time {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    min-width: 38px;
+    flex-shrink: 0;
+    font-family: monospace;
+  }
+  .flash-source {
+    background: #e74c3c;
+    color: white;
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    flex-shrink: 0;
+    letter-spacing: 0.3px;
+  }
+  .flash-headline {
     color: var(--text-primary);
+    text-decoration: none;
+    flex: 1;
+  }
+  .flash-headline:hover {
+    text-decoration: underline;
+    opacity: 0.8;
   }
 
+/* ── Topic banner ── */
   .news-topic-banner {
     background: var(--accent);
     color: white;
     padding: 0.75rem 1rem;
     border-radius: 6px;
-    margin-bottom: 1rem;
+    margin-bottom: 0.5rem;
     font-size: 1.1rem;
-    text-align: center; /* Also centering the banner for a cleaner look */
+    text-align: center;
   }
 
+/* ── Main container ── */
   .news-container {
     display: flex;
     flex-direction: column;
-    gap: 2rem;
+    gap: 1.5rem;
   }
 
-        .news-summaries {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 1rem;
-          /* 2. Center the cards themselves if there is extra space */
-          justify-content: center; 
-        }
-
-        .news-summary-card {
-          background: var(--bg-tertiary);
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 2rem;
-          width: 440px;
-          height: 280px;
-          overflow: hidden;
-          display: flex;
-          flex-direction: column;
-          text-align: left; /* Keep card text left-aligned */
-        }-direction: column;
-        }
-        .news-summary-header {
-          height: 14px
-          margin-bottom: 0.5rem;
-        }
-        .news-source {
-          background: var(--accent);
-          color: white;
-          padding: 0.10rem 0.50rem;
-          border-radius: 4px;
-          font-size: 0.75rem;
-          font-weight: 400;
-          width: 0.1rem
-        }
-        .news-summary-title {
-          margin: 0.5rem 0;
-          font-size: 1.1rem;
-          color: var(--text-primary);
-        }
-        .news-summary-text {
-          margin: 1rem 0;
-          line-height: 1.6;
-          color: var(--text-secondary);
-          font-size: 0.9rem;
-          flex: 1;
-          overflow: hidden;
-        }
-        .news-summary-link {
-          color: var(--accent);
-          text-decoration: none;
-          font-weight: 500;
-        }
-        .news-summary-link:hover {
-          text-decoration: underline;
-          opacity: 0.7;
-        }
+/* ── Summary cards ── */
+  .news-summaries {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    justify-content: center;
+  }
+  .news-summaries h2 {
+    width: 100%;
+    text-align: center;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+  }
+  .news-summary-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    width: 420px;
+    max-height: 260px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+  }
+  .news-summary-header {
+    margin-bottom: 0.4rem;
+  }
+  .news-source {
+    background: var(--accent);
+    color: white;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 500;
+  }
+  .news-summary-title {
+    margin: 0.4rem 0;
+    font-size: 1.05rem;
+    color: var(--text-primary);
+  }
+  .news-summary-text {
+    margin: 0.5rem 0;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    flex: 1;
+    overflow: hidden;
+  }
+  .news-summary-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 0.85rem;
+  }
+  .news-summary-link:hover {
+    text-decoration: underline;
+    opacity: 0.7;
+  }
       </style>
     `;
 
@@ -451,13 +761,14 @@ export async function news(request) {
         summaries,
         topic,
         totalItems: allItems.length,
-        filteredItems: filteredItems.length,
+        flashItems: flashItems.length,
+        filteredItems: filteredRssItems.length,
         html,
         preformatted: true,
         text: html,
         learnedFacts
       },
-      reasoning: `Fetched ${allItems.length} headlines, ${topic ? `filtered to ${filteredItems.length} about "${topic}"` : 'showing all'}, summarized top ${summaries.length} articles`
+      reasoning: `Fetched ${allItems.length} items (${flashItems.length} flash + ${rssItems.length} RSS), ${topic ? `filtered RSS to ${filteredRssItems.length} about "${topic}"` : "showing all"}, summarized top ${summaries.length} articles`
     };
   } catch (err) {
     return {

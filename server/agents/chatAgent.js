@@ -14,7 +14,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { llm } from "../tools/llm.js";
-import { getMemory, getEnrichedProfile } from "../memory.js";
+import { getMemory, getEnrichedProfile, saveJSON, MEMORY_FILE } from "../memory.js";
 import { getPersonalityContext } from "../personality.js";
 import { getKnowledgeContext } from "../knowledge.js";
 
@@ -84,25 +84,45 @@ async function buildUserContext(conversationId) {
     if (self.occupation) profileFields.push(`Occupation: ${self.occupation}`);
     if (enriched.tone) profileFields.push(`Preferred tone: ${enriched.tone}`);
 
-    // Contacts
-    const contacts = enriched.contacts || {};
-    const contactNames = Object.entries(contacts)
-      .filter(([, v]) => v?.name)
-      .map(([key, v]) => `${key}: ${v.name}${v.email ? ` (${v.email})` : ""}`)
-      .slice(0, 10);
-
-    if (profileFields.length > 0) {
-      parts.push(`WHAT YOU KNOW ABOUT THE USER:\n${profileFields.join("\n")}${contactNames.length > 0 ? `\nContacts: ${contactNames.join(", ")}` : ""}`);
+    // Age
+    if (enriched.self?.age || enriched.profile?.age) {
+      profileFields.push(`Age: ${enriched.self?.age || enriched.profile?.age}`);
     }
 
-    // Durable memories (things the user explicitly asked you to remember)
+    // Contacts / Family
+    const contacts = enriched.contacts || enriched.profile?.contacts || {};
+    const contactLines = Object.entries(contacts)
+      .filter(([, v]) => v?.name)
+      .map(([key, v]) => {
+        const details = [];
+        if (v.relation) details.push(v.relation);
+        if (v.nickname) details.push(`goes by ${v.nickname}`);
+        if (v.gender) details.push(v.gender);
+        if (v.email) details.push(v.email);
+        if (v.phone) details.push(v.phone);
+        if (v.lifeEvents?.length) details.push(v.lifeEvents.join(", "));
+        return `- ${key}: ${v.name}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
+      })
+      .slice(0, 15);
+
+    if (profileFields.length > 0 || contactLines.length > 0) {
+      let section = `WHAT YOU KNOW ABOUT THE USER:\n${profileFields.join("\n")}`;
+      if (contactLines.length > 0) {
+        section += `\n\nFamily & Contacts:\n${contactLines.join("\n")}`;
+      }
+      parts.push(section);
+    }
+
+    // Durable memories (things the user explicitly asked you to remember, or auto-extracted from chat)
     const durables = enriched._durableMemories || [];
     if (durables.length > 0) {
       const memLines = durables.map(d => {
+        // Support both formats: { fact, savedAt } (memoryTool) and { category, key, value } (legacy)
+        if (d.fact) return `- ${d.fact}`;
         const val = typeof d.value === "object" ? JSON.stringify(d.value) : d.value;
         return `- ${d.category || "fact"}: ${d.key} = ${val}`;
       });
-      parts.push(`THINGS THE USER ASKED YOU TO REMEMBER:\n${memLines.join("\n")}`);
+      parts.push(`THINGS YOU KNOW / REMEMBER:\n${memLines.join("\n")}`);
     }
 
     // Interaction stats
@@ -146,6 +166,169 @@ async function buildUserContext(conversationId) {
 // }
 
 /**
+ * Async background fact extractor — detects personal information shared during
+ * casual conversation and persists it to durable memory + profile.
+ * Runs AFTER the response is sent, so it doesn't slow down the conversation.
+ *
+ * @param {string} message - The user's message
+ * @param {string} conversationId - For logging
+ */
+async function extractAndSaveFacts(message, conversationId) {
+  try {
+    const lower = message.toLowerCase();
+
+    // Quick bail — skip very short messages or messages that don't contain personal info signals
+    if (message.length < 20) return;
+    if (!/\b(my|i'm|i am|name is|called|years?\s*old|\d{2,3}\s*(years|y\/o)|getting\s+married|lives?\s+in|work\s+(at|as|in)|dog|cat|pet|sister|brother|mom|mother|dad|father|wife|husband|girlfriend|boyfriend|son|daughter|child|baby|family)\b/i.test(message)) {
+      return;
+    }
+
+    const memory = await getMemory();
+    if (!memory.profile) memory.profile = {};
+    if (!memory.durable) memory.durable = [];
+    if (!memory.profile.contacts) memory.profile.contacts = {};
+
+    let changed = false;
+
+    // --- Pattern-based extraction for structured profile fields ---
+
+    // Age: "i'm 41", "i am 41 years old", "I'm 41 by the way"
+    const ageMatch = message.match(/\bi(?:'?m| am)\s+(\d{1,3})(?:\s+(?:years?\s*old|y\/o))?\b/i);
+    if (ageMatch && parseInt(ageMatch[1]) >= 10 && parseInt(ageMatch[1]) <= 120) {
+      const age = parseInt(ageMatch[1]);
+      if (!memory.profile.age || memory.profile.age !== age) {
+        memory.profile.age = age;
+        changed = true;
+        console.log(`[chatAgent:facts] Extracted age: ${age}`);
+      }
+    }
+
+    // Family members: "my mother's name is X", "my sister is X", "my dog's name is Lanou"
+    // Single-word name capture to avoid grabbing conjunctions like "but", "and"
+    const familyPatterns = [
+      // "my [relation]'s name is [Name]" or "my [relation] is [Name]"
+      /my\s+(mother|mom|father|dad|sister|brother|wife|husband|girlfriend|boyfriend|son|daughter|dog|cat|pet)(?:'?s?\s+name)?\s+(?:is|=)\s+([A-Za-z]+)/gi,
+      // "[relation]'s name is [Name]"
+      /\b(mother|mom|father|dad|sister|brother|wife|husband|girlfriend|boyfriend|son|daughter|dog|cat|pet)(?:'?s?\s+name)\s+(?:is|=)\s+([A-Za-z]+)/gi,
+    ];
+
+    for (const pattern of familyPatterns) {
+      let match;
+      while ((match = pattern.exec(message)) !== null) {
+        let relation = match[1].toLowerCase();
+        const name = match[2].trim();
+
+        // Normalize relation keys
+        if (relation === "mom") relation = "mother";
+        if (relation === "dad") relation = "father";
+
+        const existing = memory.profile.contacts[relation];
+        if (!existing || existing.name !== name) {
+          memory.profile.contacts[relation] = {
+            ...(existing || {}),
+            name,
+            relation,
+            addedBy: "chatAgent",
+            addedAt: new Date().toISOString()
+          };
+          changed = true;
+          console.log(`[chatAgent:facts] Extracted contact: ${relation} = ${name}`);
+        }
+      }
+    }
+
+    // Preference: "he/she prefer(s) [nickname]" — e.g., "Rafael but he prefer Rafi"
+    const preferMatch = message.match(/(\w+)\s+but\s+(?:he|she|they)\s+prefer(?:s)?\s+(\w+)/i);
+    if (preferMatch) {
+      const fullName = preferMatch[1];
+      const nickname = preferMatch[2];
+      // Find the contact with that full name and add nickname
+      for (const [key, contact] of Object.entries(memory.profile.contacts)) {
+        if (contact.name && contact.name.toLowerCase() === fullName.toLowerCase()) {
+          if (contact.nickname !== nickname) {
+            contact.nickname = nickname;
+            changed = true;
+            console.log(`[chatAgent:facts] Extracted nickname: ${fullName} → ${nickname}`);
+          }
+        }
+      }
+    }
+
+    // Gender/sex clarification for pets: "Lanou is a male dog"
+    const genderMatch = message.match(/(\w+)\s+is\s+a\s+(male|female)\s+(dog|cat|pet)/i);
+    if (genderMatch) {
+      const petName = genderMatch[1];
+      const gender = genderMatch[2].toLowerCase();
+      for (const [key, contact] of Object.entries(memory.profile.contacts)) {
+        if (contact.name && contact.name.toLowerCase() === petName.toLowerCase()) {
+          if (contact.gender !== gender) {
+            contact.gender = gender;
+            changed = true;
+            console.log(`[chatAgent:facts] Extracted pet gender: ${petName} = ${gender}`);
+          }
+        }
+      }
+    }
+
+    // Life events: "Dana is getting married", "my sister is getting married"
+    // Require a capitalized name (not conjunctions like "and", "is")
+    const marriageMatch = message.match(/\b([A-Z][a-z]{1,20})\s+(?:is\s+)?getting\s+married(?:\s+soon)?/);
+    if (marriageMatch) {
+      const who = marriageMatch[1].toLowerCase();
+      // Try to match to a known contact
+      for (const [key, contact] of Object.entries(memory.profile.contacts)) {
+        if (contact.name && contact.name.toLowerCase() === who) {
+          if (!contact.lifeEvents) contact.lifeEvents = [];
+          const alreadyNoted = contact.lifeEvents.some(e => e.includes("getting married"));
+          if (!alreadyNoted) {
+            contact.lifeEvents.push(`getting married (mentioned ${new Date().toISOString().split("T")[0]})`);
+            changed = true;
+            console.log(`[chatAgent:facts] Extracted life event: ${contact.name} getting married`);
+          }
+        }
+      }
+    }
+
+    // Save any remaining unstructured personal facts as durable memory
+    // Only if we detected personal info signals but couldn't parse them into structured fields
+    if (!changed && /\b(my|i'm|i am)\b/i.test(message) && message.length > 30) {
+      // Use a lightweight check — if the message contains clear personal disclosure patterns
+      const disclosurePatterns = [
+        /i(?:'m| am)\s+(?:a|an)\s+\w+/i,  // "I'm a developer"
+        /i\s+(?:live|work|study)\s+(?:in|at|for)/i,  // "I live in Tel Aviv"
+        /i\s+(?:like|love|hate|enjoy|prefer)\s+/i,  // "I like hiking"
+        /i\s+(?:have|had|got)\s+(?:a|an|\d)/i,  // "I have 2 kids"
+      ];
+
+      const isDisclosure = disclosurePatterns.some(p => p.test(message));
+      if (isDisclosure) {
+        // Avoid duplicates — check if similar fact already saved
+        const factText = message.trim().replace(/[.!]+$/, "");
+        const isDuplicate = memory.durable.some(d =>
+          d.fact && d.fact.toLowerCase().includes(factText.toLowerCase().slice(0, 40))
+        );
+        if (!isDuplicate) {
+          memory.durable.push({
+            fact: factText,
+            savedAt: new Date().toISOString(),
+            source: "chatAgent_auto"
+          });
+          changed = true;
+          console.log(`[chatAgent:facts] Saved durable fact from conversation`);
+        }
+      }
+    }
+
+    if (changed) {
+      await saveJSON(MEMORY_FILE, memory);
+      console.log(`[chatAgent:facts] Memory updated from conversation`);
+    }
+  } catch (err) {
+    console.warn("[chatAgent:facts] Fact extraction failed (non-blocking):", err.message);
+  }
+}
+
+/**
  * Handle a conversational message (no tools needed — uses loaded context)
  * @param {string} message - The user's message
  * @param {Array} recentTurns - Last 5 conversation turns [{role, content}]
@@ -186,22 +369,35 @@ export async function handleChat(message, recentTurns = [], options = {}) {
 ${selfContext}
 
 ${userContext ? userContext + "\n" : ""}
-${conversationContext ? `RECENT CONVERSATION:\n${conversationContext}\n` : ""}
-User: ${message}
+${conversationContext ? `CONVERSATION SO FAR (background context only — do NOT repeat or re-address old topics):\n${conversationContext}\n\n---\n` : ""}
+THE USER JUST SAID: "${message}"
 
-Respond naturally as yourself — with your own voice, opinions, and perspective.
+Respond ONLY to what the user just said above. The conversation history is for context only — do NOT circle back to earlier topics unless the user explicitly brings them up again.
+
+Rules:
+- Respond naturally as yourself — with your own voice, opinions, and perspective.
 - If the user asks about something you KNOW from the context above (their name, location, contacts, facts, knowledge), answer confidently and specifically.
 - If the user asks about something NOT in your context, be honest: "I don't have that information" rather than guessing.
 - Be reflective when asked about yourself. Show genuine personality and self-awareness.
 - Keep responses concise (2-4 sentences) but expand when the topic warrants depth.
 - Reference past interactions naturally when relevant — you have a relationship with this user.
 - Do NOT suggest running tools or performing tasks — this is a casual conversation.
+- Do NOT use the user's name in every message. Use it sparingly — only in an initial greeting or to emphasize something important. Never more than once per message.
+- Do NOT end every message with a question. You can make statements, share thoughts, react, or just acknowledge. Not every message needs a follow-up hook.
+- Do NOT ask "how's your day" or "what's on your mind" or "anything else" unless the conversation has genuinely stalled. If the user just told you something, respond to THAT.
+- Match the user's energy. If they're casual and brief, be casual and brief. If they're sharing something heavy, be present — don't pivot to cheerfulness.
 
 Response:`;
 
   try {
     const result = await llm(prompt, { skipKnowledge: true }); // knowledge already injected above
     const replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
+
+    // Fire-and-forget: extract personal facts from the user's message and save to memory
+    // This runs AFTER the response is generated, so it doesn't slow down the conversation
+    extractAndSaveFacts(message, options.conversationId).catch(err =>
+      console.warn("[chatAgent] Background fact extraction error:", err.message)
+    );
 
     return {
       reply: replyText.trim(),

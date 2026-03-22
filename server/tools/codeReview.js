@@ -264,12 +264,18 @@ Provide:
  * Detect review intent
  */
 function detectReviewType(text) {
-  const lower = text.toLowerCase();
-  if (/\bsecur/i.test(lower)) return "security";
-  if (/\bperform/i.test(lower)) return "performance";
-  if (/\barchitect/i.test(lower)) return "architecture";
-  if (/\b(quality|smell|lint|clean)/i.test(lower)) return "quality";
-  return "full";
+const lower = text.toLowerCase();
+const reviewTypeMap = {
+  secur: 'security',
+  perform: 'performance',
+  architect: 'architecture',
+  quality: 'quality',
+  smell: 'quality',
+  lint: 'quality',
+  clean: 'quality'
+};
+const match = Object.keys(reviewTypeMap).find(key => new RegExp(`\\b${key}\\b`, 'i').test(lower));
+return match ? reviewTypeMap[match] : 'full';
 }
 
 /**

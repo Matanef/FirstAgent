@@ -24,27 +24,27 @@ function loadFile(filePath) {
     throw new Error(`File not found: ${filePath}`);
   }
 
-  const ext = path.extname(filePath).toLowerCase();
-  const raw = fs.readFileSync(filePath, "utf8");
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    const raw = fs.readFileSync(filePath, "utf8");
 
-  switch (ext) {
-    case ".json":
-      try {
+    switch (ext) {
+      case ".json":
         const obj = JSON.parse(raw);
         return JSON.stringify(obj, null, 2);
-      } catch {
+      case ".html":
+      case ".htm":
+        // Strip HTML tags, keep text
+        return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      case ".csv":
+        // Keep CSV as-is — it's structured text
         return raw;
-      }
-    case ".html":
-    case ".htm":
-      // Strip HTML tags, keep text
-      return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    case ".csv":
-      // Keep CSV as-is — it's structured text
-      return raw;
-    default:
-      // .txt, .md, .js, .py, .ts, .log, etc. — return as-is
-      return raw;
+      default:
+        // .txt, .md, .js, .py, .ts, .log, etc. — return as-is
+        return raw;
+    }
+  } catch (err) {
+    throw new Error(`Failed to read file ${filePath}: ${err.message}`);
   }
 }
 

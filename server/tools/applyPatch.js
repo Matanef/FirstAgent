@@ -157,12 +157,12 @@ export async function applyPatch(request) {
     try {
       originalCode = await fs.readFile(filePath, 'utf8');
       console.log(`📖 Read ${originalCode.length} characters from ${targetFile}`);
-    } catch (err) {
+    } catch (fileErr) {
       return {
         tool: "applyPatch",
         success: false,
         final: true,
-        error: `Failed to read file: ${err.message}`
+        error: `Failed to read file: ${fileErr.message}`
       };
     }
 
@@ -220,7 +220,7 @@ export async function applyPatch(request) {
     try {
       await fs.rename(stagingPath, filePath);
       console.log(`✅ Updated ${targetFile} (atomic swap)`);
-    } catch (err) {
+    } catch (renameErr) {
       // Fallback to copy if rename fails (cross-device)
       try {
         await fs.copyFile(stagingPath, filePath);
@@ -301,13 +301,13 @@ export async function applyPatch(request) {
       }
     };
 
-  } catch (err) {
-    console.error("❌ applyPatch error:", err);
+  } catch (patchErr) {
+    console.error("❌ applyPatch error:", patchErr);
     return {
       tool: "applyPatch",
       success: false,
       final: true,
-      error: `Patch application failed: ${err.message}`
+      error: `Patch application failed: ${patchErr.message}`
     };
   }
 }

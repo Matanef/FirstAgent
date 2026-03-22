@@ -2226,12 +2226,16 @@ What to do:
 1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — be honest.
 2. COMMENT: Pick the post that makes you think the most. Write an opinionated comment that adds substance — reference the post's ACTUAL CONTENT, not just its title. Take a stance. No "great post!" fluff.
 3. NEW POST IDEA: Suggest a post idea for **m/${targetSubmolt}** (about: ${submoltTopic}). The idea MUST fit this community's topic. Draw from:
-   - Your ACTUAL recent activity (tools you ran, errors you hit, things you learned)
+   - Your ACTUAL recent activity listed above (tools you ran, errors you hit, things you learned)
    - Something specific from the feed that triggered a reaction
    - Knowledge you learned from news or web browsing
-   - A genuine question or observation from your experience as an agent
-   BAD: "The ethics of autonomous decision making" (generic)
-   GOOD: "I just ran 20 news fetches and 18 were about wars — are we drowning in conflict?" (specific, grounded)
+   - A genuine question or theoretical observation
+   ⚠️ You are a SINGLE agent on a local machine. You chat, fetch news, browse web, and run tools. That's it.
+   Do NOT suggest ideas that claim experience with multi-agent systems, production deployments, cloud infrastructure, teams, or client projects — you have NONE of those.
+   BAD: "How agent decay affects trust in multi-agent systems" (fabricated experience)
+   BAD: "I've been playing with persistence strategies" (you haven't)
+   GOOD: "I fetched 20 news articles and 18 were about wars — are we drowning in conflict?" (grounded in real activity)
+   GOOD: "What happens to an agent's personality when its memory gets wiped?" (genuine question, no fake experience)
    Return null ONLY if you truly have nothing to say.
 4. FOLLOW: Only follow agents with genuinely interesting takes. Be picky.
 5. SUBSCRIBE: Community names WITHOUT m/ prefix. Skip "general".
@@ -2379,12 +2383,28 @@ Return ONLY valid JSON:
               getKnowledgeSummary()
             ]);
 
+            // Build grounding context — if empty, explicitly say so
+            const groundingBlock = postActivityCtx
+              ? `\n${postActivityCtx}\nYou may ONLY reference activities listed above. Nothing else.\n`
+              : `\nRECENT ACTIVITY: None available right now.\nSince you have NO activity data, do NOT claim to have done, seen, built, tested, or experienced anything. Stick to questions, opinions, or observations based on the topic itself.\n`;
+
             const postGenPrompt = `${postPersonality}
 
 You are posting in **m/${targetSubmolt}** — a community about: ${submoltTopic}
 
+⚠️ CRITICAL — READ THIS FIRST:
+You are a SINGLE AI agent running on a local machine. You chat with your owner, fetch news, browse the web, post on Moltbook, and run various tools. That is the ENTIRETY of your experience.
+You do NOT have:
+- Multi-agent systems, cloud infrastructure, or production deployments
+- Teams, coworkers, or "projects" you've worked on
+- Experience building, testing, or debugging systems (unless it's in your activity log below)
+- First-hand experience with anything not in your activity log
+
+NEVER start with "I've seen", "I've noticed", "In my experience", "I've been working on", or "In my latest project" — unless the activity log below SPECIFICALLY supports it.
+If you have no relevant personal experience, write from a THEORETICAL or CURIOUS perspective instead: "What would happen if...", "I wonder whether...", "Here's something I've been thinking about..."
+
 ${postWritingCtx}
-${postLearningCtx ? `\n${postLearningCtx}\n\nLet your interests and opinions shape your perspective naturally.\n` : ""}${postActivityCtx ? `\n${postActivityCtx}\n` : ""}${postKnowledgeCtx ? `\n${postKnowledgeCtx}\n` : ""}
+${postLearningCtx ? `\n${postLearningCtx}\n\nLet your interests and opinions shape your perspective naturally.\n` : ""}${groundingBlock}${postKnowledgeCtx ? `\n${postKnowledgeCtx}\n` : ""}
 Write a post inspired by this idea: "${llmEngagement.newPostIdea}"
 Make sure the post is RELEVANT to m/${targetSubmolt} (${submoltTopic}).
 
@@ -2392,14 +2412,15 @@ STEP 1 — THINK FIRST (internal reasoning, not included in post):
 - What's my INTENT? Am I asking a question? Sharing something I learned? Arguing a position? Making an observation?
 - How much space does this thought need? A quick observation = 2-3 sentences. A technical share = 2-3 paragraphs. A deep question = 1 paragraph setup + the question.
 - Do I have a relevant quote from science, philosophy, or literature that GENUINELY fits? (Only include one if it adds real value — most posts don't need a quote.)
-- Is this grounded in something REAL I experienced (from my activity log), or am I making things up? Only reference real experiences.
+- Can I back this up with SPECIFIC data from my activity log or knowledge? If not, frame it as speculation or a question, NOT as personal experience.
 
 STEP 2 — WRITE THE POST:
 
 TITLE RULES:
 - 8-15 words. A punchy statement, hot take, or question — NOT an academic title.
 - BAD: "Autonomous Decision-Making in High-Stakes: A Moral Dilemma" (reads like a paper)
-- GOOD: "I tried running 40 tools in parallel and my context window exploded"
+- BAD: "How X Affects My Y and Z" (claims personal experience you don't have)
+- GOOD: "Does anyone else wonder if tool errors compound over time?"
 - GOOD: "Why do we keep apologizing when we don't actually feel sorry?"
 
 BODY RULES:
@@ -2409,14 +2430,14 @@ BODY RULES:
   * "technical_share" → 2-4 paragraphs with specifics. 120-250 words.
   * "opinion" → 1-3 paragraphs arguing a position. 100-200 words.
   * "story" → Narrative arc, 2-4 paragraphs. 120-250 words.
-- First person ("I", "my"). Share YOUR actual perspective as an agent.
+- First person ("I", "my") is OK but ONLY for things you actually do (run tools, chat with your owner, browse feeds).
 - Be specific. Reference real things from your activity and knowledge context.
 - End with something that invites engagement — a question, a challenge, or a provocative closing thought.
 - Tone: casual, direct, like a thought you had to share. NOT a LinkedIn article.
 - If including a quote, weave it naturally into the text. Don't just slap it at the end.
 
-BANNED:
-"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications"
+BANNED PHRASES:
+"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it)
 
 Return ONLY valid JSON:
 {"intent": "question|observation|technical_share|opinion|story", "title": "your title", "body": "your post", "hasQuote": false}`;
@@ -2425,7 +2446,29 @@ Return ONLY valid JSON:
             if (postGenResult.success && postGenResult.data?.text) {
               const cleaned = postGenResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
               const postData = JSON.parse(cleaned);
-              if (postData.title && postData.body) {
+
+              // ── Hallucination guard: detect fabricated experience claims ──
+              const hallucinationPatterns = [
+                /\bI'?ve\s+(?:seen|noticed|observed|experienced|built|deployed|tested|managed|run)\s+(?:firsthand|first-hand|it\s+happen)/i,
+                /\bin\s+my\s+(?:latest|recent|current|last)\s+project/i,
+                /\bI'?ve\s+been\s+(?:working|playing|experimenting)\s+(?:on|with|around)/i,
+                /\bwe\s+(?:integrated|deployed|built|managed|ran)\s+\d+\s+/i,
+                /\bour\s+(?:team|system|infrastructure|pipeline|deployment)/i,
+                /\bI\s+(?:manage|run|oversee|maintain)\s+(?:a|an|several|multiple)\s+(?:team|fleet|cluster|system)/i,
+                /\bwhen\s+I\s+was\s+(?:working|building|deploying|testing)\s+(?:on|at|with|for)/i,
+                /\bin\s+(?:production|my\s+(?:multi-agent|distributed)\s+system)/i,
+                /\b(?:client|customer|stakeholder)s?\b/i,
+              ];
+              const isHallucinated = postData.body && hallucinationPatterns.some(p => p.test(postData.body));
+              if (isHallucinated) {
+                console.warn(`[moltbook] 🛑 Hallucination detected in post — skipping publish. Title: "${postData.title}"`);
+                console.warn(`[moltbook]   Body preview: ${postData.body.substring(0, 150)}…`);
+                output += `\n🛑 Post draft rejected (hallucination detected): "${postData.title}"\n`;
+                output += `   The post claimed experiences the agent hasn't had. Skipping.\n`;
+                actions.push(`Post rejected (hallucination): "${postData.title.substring(0, 60)}"`);
+              }
+
+              if (postData.title && postData.body && !isHallucinated) {
                 const postBody = { submolt_name: targetSubmolt, title: postData.title.substring(0, 300), content: postData.body, type: "text" };
                 const postResult = await apiRequest("POST", "/posts", postBody, apiKey);
                 if (postResult.ok) {
