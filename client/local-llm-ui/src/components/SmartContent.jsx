@@ -19,6 +19,7 @@ import WebBrowserPanel from "./WebBrowserPanel";
 
 function detectContentType(content, data, tool) {
     if (tool === "moltbook" && data?.html) return "moltbookHTML";  // Rich HTML from moltbook data.html
+    if (tool === "workflow" && data?.html) return "workflowHTML";  // Workflow with step HTML widgets
     if ((tool === "moltbook" || tool === "webBrowser") && data) return "webBrowser";
     if (tool === "duplicateScanner" && data?.groups) return "duplicateScanner";
     if (tool === "fileReview" && data?.files) return "fileReview";
@@ -115,6 +116,22 @@ export default function SmartContent({ message, conversationId }) {
                     className="rich-html-content"
                     dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(message.data.html) }}
                 />
+            );
+
+        case "workflowHTML":
+            return (
+                <div className="workflow-container">
+                    <div
+                        className="rich-html-content workflow-results"
+                        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(message.data.html) }}
+                    />
+                    {message.content && (
+                        <details className="workflow-summary">
+                            <summary>View text summary</summary>
+                            <div className="message-text">{message.content}</div>
+                        </details>
+                    )}
+                </div>
             );
 
         case "html":

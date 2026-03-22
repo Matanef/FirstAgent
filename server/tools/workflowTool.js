@@ -6,6 +6,10 @@ import { getAllWorkflows, getWorkflow, executeWorkflow, createWorkflow, parseWor
 /**
  * Execute a tool by name (used by workflow engine)
  * Lazy-loads TOOLS to avoid circular dependency (index.js → workflowTool.js → index.js)
+ *
+ * Tools expect a single { text, context } object (same as executor.js).
+ * The workflow engine calls toolExecutor(toolName, input, context) with separate args,
+ * so we wrap them here before passing to the tool.
  */
 async function toolExecutor(toolName, input, context) {
   const { TOOLS } = await import("./index.js");
@@ -14,7 +18,12 @@ async function toolExecutor(toolName, input, context) {
     return { success: false, error: `Tool "${toolName}" not found` };
   }
   try {
-    return await tool(input, context);
+    // Wrap input + context into the { text, context } object that tools expect
+    const toolInput = (typeof input === "object" && input !== null)
+      ? { ...input, context: { ...(input.context || {}), ...(context || {}) } }
+      : { text: input || "", context: context || {} };
+
+    return await tool(toolInput);
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -147,6 +156,8 @@ export async function workflow(query) {
         data: {
           preformatted: true,
           text: result.summary,
+          html: result.html || null,
+          results: result.results || [],
         },
       };
     }
