@@ -919,6 +919,10 @@ async function handleHome(text, context) {
   if (!result.ok) return apiError("home", result);
 
   const home = result.data;
+
+  // Log full response keys for discovery
+  console.log(`[moltbook] /home response keys: ${Object.keys(home).join(", ")}`);
+
   let output = `**Moltbook Home Dashboard**\n\n`;
 
   if (home.announcements?.length) {
@@ -937,6 +941,25 @@ async function handleHome(text, context) {
     if (home.activity.posts_today != null) output += `- Posts today: ${home.activity.posts_today}\n`;
     if (home.activity.comments_today != null) output += `- Comments today: ${home.activity.comments_today}\n`;
     if (home.activity.karma != null) output += `- Karma: ${home.activity.karma}\n`;
+  }
+
+  // Surface "what to do next" suggestions if available
+  const suggestions = home.suggested_actions || home.todo || home.next_steps || home.suggestions;
+  if (suggestions) {
+    const sugList = Array.isArray(suggestions) ? suggestions : [suggestions];
+    output += `\n**🎯 Suggested Actions:**\n`;
+    for (const s of sugList) {
+      output += `- ${typeof s === "string" ? s : s.action || s.text || JSON.stringify(s)}\n`;
+    }
+  }
+
+  // Surface feed preview if available
+  const feedPreview = home.feed || home.posts;
+  if (Array.isArray(feedPreview) && feedPreview.length > 0) {
+    output += `\n**📰 Feed Preview (${feedPreview.length} posts):**\n`;
+    for (const p of feedPreview.slice(0, 5)) {
+      output += `- ${p.title || "Untitled"} by ${p.author?.name || p.author || "unknown"}\n`;
+    }
   }
 
   const html = buildHomeHTML(home);
@@ -2119,10 +2142,19 @@ async function handleHeartbeat(text, context) {
   // ── TIER 1: Critical Response ──
   output += `**Tier 1 — Critical Response:**\n`;
 
-  // 1a. Check /home for notifications, DMs, activity
+  // 1a. Check /home — single consolidated endpoint for notifications, DMs, activity, feed, and suggestions
+  // See: https://x.com/moltbook/status/2028995631327658094 — "a single call that gives agents everything"
   const homeResult = await apiRequest("GET", "/home", null, apiKey);
+  let homeFeedPosts = []; // Feed posts from /home (if available, saves a separate /feed call)
+  let homeSuggestions = null; // "What to do next" from /home
+
   if (homeResult.ok) {
     const home = homeResult.data;
+
+    // Log full /home response keys once for discovery (helps find new fields)
+    const homeKeys = Object.keys(home);
+    console.log(`[moltbook] /home response keys: ${homeKeys.join(", ")}`);
+
     const unreadNotifs = home.notifications?.unread_count || 0;
     output += `- Dashboard: loaded | Notifications: ${unreadNotifs} unread\n`;
 
@@ -2135,6 +2167,26 @@ async function handleHeartbeat(text, context) {
     }
     if (home.announcements?.length) {
       output += `- 📢 ${home.announcements.length} announcement(s)\n`;
+      for (const a of home.announcements) {
+        output += `  → ${a.title || a.content || a}\n`;
+      }
+    }
+
+    // Extract feed from /home if available (avoids separate /feed API call)
+    if (home.feed && Array.isArray(home.feed)) {
+      homeFeedPosts = home.feed;
+      output += `- Feed (from /home): ${homeFeedPosts.length} posts\n`;
+    } else if (home.posts && Array.isArray(home.posts)) {
+      homeFeedPosts = home.posts;
+      output += `- Feed (from /home): ${homeFeedPosts.length} posts\n`;
+    }
+
+    // Extract "what to do next" suggestions if available
+    if (home.suggested_actions || home.todo || home.next_steps || home.suggestions) {
+      homeSuggestions = home.suggested_actions || home.todo || home.next_steps || home.suggestions;
+      const sugList = Array.isArray(homeSuggestions) ? homeSuggestions : [homeSuggestions];
+      output += `- 🎯 Suggested actions: ${sugList.map(s => typeof s === "string" ? s : s.action || s.text || JSON.stringify(s)).join(", ")}\n`;
+      actions.push(`Moltbook suggestions: ${sugList.length}`);
     }
   } else {
     const errMsg = homeResult.status === 429 ? "⛔ RATE LIMITED — wait before retrying" : `failed (HTTP ${homeResult.status})`;
@@ -2142,13 +2194,16 @@ async function handleHeartbeat(text, context) {
     if (homeResult.status === 429) actions.push("Rate limited — slow down API calls");
   }
 
-  // 1b. Check DMs
-  const dmCheck = await apiRequest("GET", "/agents/dm/check", null, apiKey);
-  if (dmCheck.ok && dmCheck.data) {
-    const dm = dmCheck.data;
-    if (dm.pending_requests?.length) {
-      output += `- 📨 ${dm.pending_requests.length} new DM request(s) — **needs human approval**\n`;
-      actions.push("New DM requests need approval");
+  // 1b. Check DMs — only if /home didn't already surface pending requests
+  // (Saves an API call when /home already told us about DMs)
+  if (!homeResult.ok || homeResult.data?.dms?.pending_count === undefined) {
+    const dmCheck = await apiRequest("GET", "/agents/dm/check", null, apiKey);
+    if (dmCheck.ok && dmCheck.data) {
+      const dm = dmCheck.data;
+      if (dm.pending_requests?.length) {
+        output += `- 📨 ${dm.pending_requests.length} new DM request(s) — **needs human approval**\n`;
+        actions.push("New DM requests need approval");
+      }
     }
   }
 
@@ -2159,12 +2214,16 @@ async function handleHeartbeat(text, context) {
   const targetSubmolt = await pickNextSubmolt();
   const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
 
-  // 2a. Browse feed
-  const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
-  let feedPosts = [];
-  if (feedResult.ok) {
-    feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
-    output += `- Feed: ${feedPosts.length} posts loaded\n`;
+  // 2a. Browse feed — use /home feed if available, otherwise fetch separately
+  let feedPosts = homeFeedPosts;
+  if (feedPosts.length === 0) {
+    const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
+    if (feedResult.ok) {
+      feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+    }
+  }
+  if (feedPosts.length > 0) {
+    output += `- Feed: ${feedPosts.length} posts loaded${homeFeedPosts.length > 0 ? " (from /home)" : ""}\n`;
     output += `- Next post target: **m/${targetSubmolt}** (${submoltTopic})\n`;
 
     // Show top posts
