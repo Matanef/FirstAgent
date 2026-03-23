@@ -45,6 +45,9 @@ import { whatsapp } from "./whatsapp.js";
 import { x } from "./x.js";
 import { sheets } from "./sheets.js";
 import { smartEvolution } from "./smartEvolution.js";
+import { systemMonitor } from "./systemMonitor.js";
+import { webhookTunnel } from "./webhookTunnel.js";
+import { markdownCompiler } from "./markdownCompiler.js";
 
 export const TOOLS = {
   calculator,
@@ -90,7 +93,10 @@ export const TOOLS = {
   whatsapp,
   x,
   sheets,
-  smartEvolution
+  smartEvolution,
+  systemMonitor,
+  markdownCompiler,
+  webhookTunnel
 };
 
 
