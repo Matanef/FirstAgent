@@ -305,6 +305,12 @@ function extractTopic(query) {
     .replace(/\b(news|headlines|articles|stories)\b/gi, "")
     .replace(/\b(about|regarding|on|for)\s+(?:it|this|that|them)\s*$/gi, "")
     .replace(/\band\s+(?:email|send|mail)\b.*$/gi, "")
+    // Strip trailing compound instructions from multi-step prompts
+    // e.g., "AI news, using the llm summarize" → "AI news"
+    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai|gpt|model)\b.*$/gi, "")
+    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:summarize|analyze|send|email|forward|compile|create|generate)\b.*$/gi, "")
+    .replace(/\band\s+(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai)\b.*$/gi, "")
+    .replace(/\band\s+(?:then\s+)?(?:summarize|analyze|send|forward)\b.*$/gi, "")
     // Strip filler/quantifier words that aren't topics
     .replace(/\b(some|any|all|few|more|every|many|much|several|updated?)\b/gi, "")
     .replace(/\s+/g, " ")

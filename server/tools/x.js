@@ -125,7 +125,13 @@ function extractSearchQuery(text) {
     .replace(/\b(tweets?|posts?)\s+(about|on|for|regarding)\s*/gi, "")
     .replace(/\b(on\s+)?twitter\b/gi, "")
     .replace(/\b(on\s+)?x\b/gi, "")
-    // Strip trailing instructions that leaked from compound prompts
+    // Strip trailing compound instructions that leak from multi-step prompts
+    // e.g., "Dune 3, using the llm summarize the sentiment" → "Dune 3"
+    // e.g., "AI news and then email me" → "AI news"
+    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai|gpt|model)\b.*$/gi, "")
+    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:summarize|analyze|send|email|forward|compile|create|generate|write|make)\b.*$/gi, "")
+    .replace(/\band\s+(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai)\b.*$/gi, "")
+    .replace(/\band\s+(?:then\s+)?(?:summarize|analyze|send|email|forward)\b.*$/gi, "")
     .replace(/,?\s*\b(?:read|get|show|fetch)\s+(?:the\s+)?(?:first|last|top|latest|recent)?\s*\d*\s*(?:tweets?|posts?|results?)?\s*$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
