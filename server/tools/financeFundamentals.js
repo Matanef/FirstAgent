@@ -217,7 +217,21 @@ const COMPANY_TO_TICKER = {
   amazon: "AMZN", microsoft: "MSFT", meta: "META", nvidia: "NVDA",
   amd: "AMD", intel: "INTC", netflix: "NFLX", disney: "DIS",
   boeing: "BA", ford: "F", paypal: "PYPL", uber: "UBER",
-  spotify: "SPOT", shopify: "SHOP"
+  spotify: "SPOT", shopify: "SHOP",
+  // Cybersecurity
+  "check point": "CHKP", checkpoint: "CHKP", fortinet: "FTNT",
+  "palo alto": "PANW", crowdstrike: "CRWD", zscaler: "ZS",
+  sentinelone: "S", "sentinel one": "S", cyberark: "CYBR",
+  // Finance & Banking
+  "jp morgan": "JPM", jpmorgan: "JPM", "goldman sachs": "GS",
+  "bank of america": "BAC", visa: "V", mastercard: "MA",
+  // Healthcare
+  pfizer: "PFE", moderna: "MRNA", "johnson & johnson": "JNJ",
+  unitedhealth: "UNH", abbvie: "ABBV",
+  // Other major
+  walmart: "WMT", costco: "COST", starbucks: "SBUX",
+  "coca cola": "KO", pepsi: "PEP", salesforce: "CRM",
+  oracle: "ORCL", adobe: "ADBE", broadcom: "AVGO"
 };
 
 const TICKER_STOPWORDS = new Set([
@@ -415,13 +429,43 @@ export async function financeFundamentals(message) {
     });
   }
 
-  const html = buildFundamentalsHtml(tickers, fundamentals);
+  // Validate: flag tickers where ALL data fields are null (no real data fetched)
+  const validTickers = [];
+  const failedTickers = [];
+  for (const ticker of tickers) {
+    const f = fundamentals[ticker];
+    const hasAnyData = f && Object.entries(f).some(([k, v]) => k !== "marketCapNormalized" && v != null);
+    if (hasAnyData) {
+      validTickers.push(ticker);
+    } else {
+      failedTickers.push(ticker);
+      console.warn(`[financeFundamentals] ⚠️ No data returned for ${ticker} — all fields null`);
+    }
+  }
+
+  if (!validTickers.length) {
+    return {
+      tool: "finance-fundamentals",
+      success: false,
+      final: true,
+      error: `Could not fetch fundamentals for: ${tickers.join(", ")}. All API sources returned no data.`
+    };
+  }
+
+  const html = buildFundamentalsHtml(validTickers, fundamentals);
   const chartData = await buildComparisonChartData(tickers, fundamentals);
 
+  const failedNote = failedTickers.length
+    ? `\n⚠️ No data available for: ${failedTickers.join(", ")}`
+    : "";
+
   const payload = {
-    tickers,
+    tickers: validTickers,
+    failedTickers,
     fundamentals,
-    html,
+    html: html + (failedTickers.length
+      ? `<p class="finance-warning">⚠️ No data available for: ${failedTickers.join(", ")}</p>`
+      : ""),
     charts: {
       type: "multi-ticker-comparison",
       metrics: ["pe", "eps"],

@@ -384,6 +384,9 @@ async function saveCredentials(creds) {
 // API HELPERS
 // ──────────────────────────────────────────────────────────
 
+// When true, suppress per-request console.log (used during heartbeat to reduce noise)
+let quietMode = false;
+
 async function apiRequest(method, endpoint, body, apiKey) {
   const url = `${API_BASE}${endpoint}`;
   const headers = { "Content-Type": "application/json" };
@@ -397,7 +400,7 @@ async function apiRequest(method, endpoint, body, apiKey) {
     options.body = JSON.stringify(body);
   }
 
-  console.log(`[moltbook] ${method} ${endpoint}`);
+  if (!quietMode) console.log(`[moltbook] ${method} ${endpoint}`);
 
   let res;
   try {
@@ -2136,6 +2139,9 @@ async function handleHeartbeat(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("heartbeat");
 
+  // Suppress per-request logging during heartbeat to reduce terminal noise
+  quietMode = true;
+
   const actions = [];
   let output = `**🫀 Moltbook Heartbeat**\n\n`;
 
@@ -2829,6 +2835,8 @@ Return ONLY valid JSON:
   mem.meta.moltbook.lastHeartbeat = new Date().toISOString();
   await saveJSON(MEMORY_FILE, mem);
 
+  quietMode = false;
+  console.log("[moltbook] 🫀 Heartbeat complete");
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: output.trim(), action: "heartbeat", actions } };
 }
 
@@ -3668,6 +3676,7 @@ export async function moltbook(input) {
       default:               return await handleFeed(text, context);
     }
   } catch (err) {
+    quietMode = false; // Always reset on error
     console.error("[moltbook] Error:", err);
     return {
       tool: "moltbook", success: false, final: true,

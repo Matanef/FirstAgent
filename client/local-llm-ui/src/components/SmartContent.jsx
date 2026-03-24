@@ -20,6 +20,7 @@ import WebBrowserPanel from "./WebBrowserPanel";
 function detectContentType(content, data, tool) {
     if (tool === "moltbook" && data?.html) return "moltbookHTML";  // Rich HTML from moltbook data.html
     if (tool === "workflow" && data?.html) return "workflowHTML";  // Workflow with step HTML widgets
+    if ((tool === "finance" || tool === "finance-fundamentals" || tool === "financeFundamentals") && data?.html) return "financeHTML";
     if ((tool === "moltbook" || tool === "webBrowser") && data) return "webBrowser";
     if (tool === "duplicateScanner" && data?.groups) return "duplicateScanner";
     if (tool === "fileReview" && data?.files) return "fileReview";
@@ -130,6 +131,19 @@ export default function SmartContent({ message, conversationId }) {
                             <summary>View text summary</summary>
                             <div className="message-text">{message.content}</div>
                         </details>
+                    )}
+                </div>
+            );
+
+        case "financeHTML":
+            return (
+                <div className="finance-container">
+                    <div
+                        className="rich-html-content finance-results"
+                        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(message.data.html) }}
+                    />
+                    {message.content && (
+                        <div className="message-text" style={{ marginTop: "0.5rem" }}>{message.content}</div>
                     )}
                 </div>
             );

@@ -243,6 +243,12 @@ Conversation history:
 ${convoText}
 ${contextSummary}
 Generate the final answer based on the tool result above. NEVER claim you cannot access external content — the content has already been fetched and is provided above.
+
+ANTI-FABRICATION RULES:
+- ONLY use numbers, names, and facts that appear LITERALLY in the tool result above.
+- If the tool result contains no data for a specific item, say "data not available" — NEVER invent or estimate values.
+- NEVER copy data from one ticker/entity onto another. Each item's data must come from its own entry in the tool result.
+- If the tool result is empty or contains only errors, tell the user the data could not be fetched.
 `;
 
   let text = "";
@@ -468,6 +474,19 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   // ERROR HANDLING
   if (!stepResult.success) {
     const errorText = result?.error || result?.data?.error || "Tool execution failed.";
+
+    // Finance tools: NEVER let LLM hallucinate data on failure — return the error directly
+    const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals"];
+    if (noHallucinateOnError.includes(tool)) {
+      console.warn(`[finalizer] ${tool} failed — returning error directly (no LLM summarization)`);
+      return {
+        reply: `I wasn't able to fetch the requested financial data. ${errorText}`,
+        tool,
+        success: false,
+        final: true
+      };
+    }
+
     try {
       const errorExplanation = await summarizeWithLLM({
         userQuestion: getMessageText(message),
@@ -485,9 +504,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     }
   }
 
-  // PRE-FORMATTED RESULTS (EMAIL DRAFTS)
+  // PRE-FORMATTED RESULTS (finance tables, email drafts, etc.)
   if (result.data?.preformatted && result.data?.text) {
     return { reply: result.data.text, tool, data: result.data, success: true, final: true };
+  }
+
+  // FINANCE FUNDAMENTALS — has its own HTML table, skip LLM summarization
+  if ((tool === "financeFundamentals" || tool === "finance-fundamentals") && result.data?.html) {
+    const textSummary = result.data.tickers
+      ? `Fundamentals for: ${result.data.tickers.join(", ")}`
+      : "Financial fundamentals retrieved.";
+    return { reply: textSummary, tool, data: result.data, success: true, final: true };
   }
 
   // EMAIL CONFIRMATION

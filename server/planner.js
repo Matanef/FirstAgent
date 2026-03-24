@@ -380,7 +380,7 @@ function extractContextSignals(message) {
   if (hasExplicitFilePath(message)) signals.push("CONTAINS_FILE_PATH");
   if (/\b(github|repo|repository)\b/i.test(message)) signals.push("MENTIONS_GITHUB");
   if (/\b(trending|popular|top)\b/i.test(lower)) signals.push("MENTIONS_TRENDING");
-  if (/\b(stock|share|ticker)\b/i.test(lower)) signals.push("MENTIONS_FINANCE");
+  if (/\b(stocks?|shares?|ticker)\b/i.test(lower)) signals.push("MENTIONS_FINANCE");
   if (containsKeyword(lower, WEATHER_KEYWORDS)) signals.push("MENTIONS_WEATHER");
   if (/\b(news|headline|article)\b/i.test(lower)) signals.push("MENTIONS_NEWS");
   if (/\b(email|mail)\b/i.test(lower)) signals.push("MENTIONS_EMAIL");
@@ -459,7 +459,11 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "tell me a joke" → llm (NOT lotrJokes — lotrJokes is ONLY for explicit LOTR jokes)
 - "how accurate is your routing" → selfImprovement (NOT calculator, NOT weather)
 - "what's the weather like" → weather (NOT llm)
-- "tell me about stocks" → finance (NOT search)
+- "tell me about stocks" → finance (NOT search, NOT financeFundamentals)
+- "show me their stocks" → finance (NOT financeFundamentals)
+- "stock prices of X Y Z" → finance (NOT financeFundamentals)
+- "compare stocks" → finance (NOT financeFundamentals)
+- "P/E ratio and fundamentals of Apple" → financeFundamentals (NOT finance)
 - "what do you know about me" → memorytool (NOT search)
 - "schedule a task every hour" → scheduler (NOT tasks)
 - "refactor my code" → codeTransform (NOT review, NOT file)
@@ -482,6 +486,7 @@ RULES:
 11. "folder structure/tree/scan directory" → folderAccess (NOT file)
 12. "dependency graph/circular deps/dead code" → projectGraph
 13. "evolve yourself/improve your code" → selfEvolve (NOT selfImprovement)
+14. "stock/stocks/stock price/compare stocks" → finance. ONLY use financeFundamentals for explicit fundamentals requests (P/E, balance sheet, market cap analysis, EPS, dividends)
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -1470,7 +1475,7 @@ if (
   // Finance keywords — with company name → ticker resolution
   // FINANCE_COMPANIES and FINANCE_INTENT are now module-level constants (top of file)
   // Guard: skip if compound intent detected (e.g. "get stock prices and email me")
-  if ((/\b(stock|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO)\b/i.test(lower) ||
+  if ((/\b(stocks?|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO|stock\s+price)\b/i.test(lower) ||
       (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) &&
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: finance");

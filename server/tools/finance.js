@@ -11,7 +11,21 @@ const COMPANY_TO_TICKER = {
   amd: "AMD", intel: "INTC", netflix: "NFLX", disney: "DIS",
   boeing: "BA", ford: "F", paypal: "PYPL", uber: "UBER",
   spotify: "SPOT", shopify: "SHOP", twitter: "X", snap: "SNAP",
-  coinbase: "COIN", palantir: "PLTR", rivian: "RIVN", lucid: "LCID"
+  coinbase: "COIN", palantir: "PLTR", rivian: "RIVN", lucid: "LCID",
+  // Cybersecurity
+  "check point": "CHKP", checkpoint: "CHKP", fortinet: "FTNT",
+  "palo alto": "PANW", crowdstrike: "CRWD", zscaler: "ZS",
+  sentinelone: "S", "sentinel one": "S", cyberark: "CYBR",
+  // Finance & Banking
+  "jp morgan": "JPM", jpmorgan: "JPM", "goldman sachs": "GS",
+  "bank of america": "BAC", visa: "V", mastercard: "MA",
+  // Healthcare
+  pfizer: "PFE", moderna: "MRNA", "johnson & johnson": "JNJ",
+  unitedhealth: "UNH", abbvie: "ABBV",
+  // Other major
+  walmart: "WMT", costco: "COST", starbucks: "SBUX",
+  "coca cola": "KO", pepsi: "PEP", salesforce: "CRM",
+  oracle: "ORCL", adobe: "ADBE", broadcom: "AVGO"
 };
 
 /**
@@ -108,6 +122,28 @@ async function fetchFinnhub(symbol) {
 }
 
 /**
+ * Build an HTML table for stock price results
+ */
+function buildStockHtml(results) {
+  const rows = results.map(r => {
+    const price = r.price != null ? `$${r.price}` : "-";
+    const change = r.change_percent || "-";
+    const isPositive = String(change).includes("-") ? false : true;
+    const changeClass = isPositive ? "stock-up" : "stock-down";
+    return `<tr>
+      <td><strong>${r.symbol}</strong></td>
+      <td>${price}</td>
+      <td class="${changeClass}">${change}</td>
+    </tr>`;
+  }).join("");
+
+  return `<table class="finance-table">
+    <thead><tr><th>Symbol</th><th>Price</th><th>Change</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+/**
  * Main finance tool
  * Accepts a raw query string, extracts tickers, fetches data, returns summary.
  */
@@ -155,9 +191,12 @@ export async function finance(query) {
         tool: "finance",
         success: false,
         final: true,
-        error: "Failed to fetch stock data"
+        error: `Failed to fetch stock data for: ${tickers.join(", ")}. The API did not return results for these tickers.`
       };
     }
+
+    // Build HTML table
+    const html = buildStockHtml(results);
 
     const summary = results
       .map(r => `${r.symbol}: $${r.price} (${r.change_percent})`)
@@ -169,7 +208,9 @@ export async function finance(query) {
       final: true,
       data: {
         stocks: results,
-        text: `Stock information:\n${summary}`
+        html,
+        text: `Stock information:\n${summary}`,
+        preformatted: true
       }
     };
 
