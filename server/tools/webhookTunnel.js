@@ -1,100 +1,102 @@
 // server/tools/webhookTunnel.js
-// Opens an ngrok tunnel to receive incoming webhooks (WhatsApp, Discord, etc.)
-
 import http from "http";
 import fs from "fs/promises";
 import path from "path";
-import ngrok from "ngrok";
+import { spawn, execSync } from "child_process";
 import { PROJECT_ROOT } from "../utils/config.js";
 
-// Global state to keep the server alive across tool executions
 let activeServer = null;
 let activeTunnelUrl = null;
-const PORT = 5050; // Default port for our listener
+let ngrokProcess = null; // Track the native process
+const PORT = 5055; 
 
 export async function webhookTunnel(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
-  const lowerText = text.toLowerCase();
 
   try {
-    // Handle shutdown intent
-    if (lowerText.includes("stop") || lowerText.includes("close") || lowerText.includes("kill")) {
-      if (!activeServer && !activeTunnelUrl) {
-        return { tool: "webhookTunnel", success: true, final: true, data: { text: "No active tunnel to stop.", preformatted: true } };
-      }
-      
-      if (activeTunnelUrl) await ngrok.disconnect();
-      if (activeServer) activeServer.close();
-      
-      activeServer = null;
+    if (text.toLowerCase().match(/(stop|close|kill)/)) {
+      if (ngrokProcess) { ngrokProcess.kill(); ngrokProcess = null; }
+      if (activeServer) { activeServer.close(); activeServer = null; }
       activeTunnelUrl = null;
-      
-      return { tool: "webhookTunnel", success: true, final: true, data: { text: "🛑 Webhook tunnel and server successfully shut down.", preformatted: true } };
+      try {
+        if (process.platform === 'win32') execSync('taskkill /f /t /im ngrok.exe', { stdio: 'ignore' });
+      } catch (e) {}
+      return { tool: "webhookTunnel", success: true, final: true, data: { text: "🛑 Webhook tunnel shut down.", preformatted: true } };
     }
 
-    // Handle start intent
-    if (activeTunnelUrl) {
-      return { tool: "webhookTunnel", success: true, final: true, data: { text: `⚠️ Tunnel is already running at: **${activeTunnelUrl}**\nListening on port ${PORT}.`, preformatted: true } };
-    }
+    if (activeTunnelUrl) return { tool: "webhookTunnel", success: true, final: true, data: { text: `⚠️ Tunnel is already running at: **${activeTunnelUrl}**`, preformatted: true } };
 
-    // Ensure our data directory exists
+    if (activeServer) { activeServer.close(); activeServer = null; }
+
     const dataDir = path.join(PROJECT_ROOT, "data");
     await fs.mkdir(dataDir, { recursive: true });
     const logFile = path.join(dataDir, "webhook_events.json");
 
-    // Start native HTTP server
     activeServer = http.createServer(async (req, res) => {
       let body = "";
-      req.on("data", chunk => { body += chunk.toString(); });
+      req.on("data", chunk => body += chunk.toString());
       req.on("end", async () => {
         try {
-          const payload = {
-            timestamp: new Date().toISOString(),
-            method: req.method,
-            url: req.url,
-            headers: req.headers,
-            body: body ? JSON.parse(body) : {}
-          };
-
-          // Append to log file (agent can read this file later)
+          const payload = { timestamp: new Date().toISOString(), method: req.method, url: req.url, body: body ? JSON.parse(body) : {} };
           const currentData = await fs.readFile(logFile, "utf8").catch(() => "[]");
           const events = JSON.parse(currentData);
           events.push(payload);
           await fs.writeFile(logFile, JSON.stringify(events, null, 2));
-
-          console.log(`[Webhook] Received event at ${req.url}`);
-        } catch (e) {
-          console.error("[Webhook] Failed to process payload", e);
-        }
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("OK");
+        } catch (e) {}
+        res.writeHead(200); res.end("OK");
       });
     });
 
     activeServer.listen(PORT);
 
-    // Start ngrok tunnel
-    activeTunnelUrl = await ngrok.connect({
-      addr: PORT,
-      authtoken: process.env.NGROK_AUTHTOKEN // Required for ngrok
-    });
+    // 1. Sweep Zombies
+    try {
+      if (process.platform === 'win32') execSync('taskkill /f /t /im ngrok.exe', { stdio: 'ignore' });
+    } catch (e) {}
+
+    // 2. Set Token Natively
+    const token = process.env.NGROK_AUTHTOKEN.trim();
+    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    execSync(`${npxCmd} ngrok config add-authtoken ${token}`, { stdio: 'ignore' });
+
+// 3. Spawn Native CLI (Exactly what you ran manually)
+    ngrokProcess = spawn(npxCmd, ['ngrok', 'http', PORT.toString()], { shell: true });
+
+    // 4. Poller (Checks 4040, 4041, etc., just in case)
+    let urlFound = false;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      for (let apiPort = 4040; apiPort <= 4042; apiPort++) {
+        try {
+          const apiRes = await fetch(`http://127.0.0.1:${apiPort}/api/tunnels`);
+          if (!apiRes.ok) continue;
+          const apiData = await apiRes.json();
+          if (apiData.tunnels && apiData.tunnels.length > 0) {
+            activeTunnelUrl = apiData.tunnels[0].public_url;
+            urlFound = true;
+            break;
+          }
+        } catch (e) {}
+      }
+      if (urlFound) break;
+    }
+
+    if (!urlFound) throw new Error("Could not retrieve URL from native ngrok process.");
 
     return {
       tool: "webhookTunnel",
       success: true,
       final: true,
       data: {
-        text: `✅ **Webhook Tunnel Established**\n\n**Public URL:** ${activeTunnelUrl}\n**Local Port:** ${PORT}\n\nIncoming events will be logged to \`data/webhook_events.json\`. You can use this URL for your WhatsApp/Discord webhook configurations.`,
+        text: `✅ **Webhook Tunnel Established**\n\n**Public URL:** ${activeTunnelUrl}\n**Local Port:** ${PORT}`,
         preformatted: true
       }
     };
 
   } catch (error) {
-    return {
-      tool: "webhookTunnel",
-      success: false,
-      final: true,
-      error: `Action failed: Could not manage webhook tunnel - ${error.message}`
-    };
+    if (activeServer) { activeServer.close(); activeServer = null; }
+    if (ngrokProcess) { ngrokProcess.kill(); ngrokProcess = null; }
+    console.error("🚨 RAW ERROR:", error.message);
+    return { tool: "webhookTunnel", success: false, final: true, error: `Action failed: ${error.message}` };
   }
 }
