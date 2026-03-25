@@ -8,6 +8,7 @@ import iconv from "iconv-lite";
 import { safeFetch } from "../utils/fetch.js";
 import { llm } from "./llm.js";
 import { extractFromNews } from "../knowledge.js";
+import { CONFIG } from "../utils/config.js";
 
 const parser = new Parser();
 
@@ -320,13 +321,13 @@ function extractTopic(query) {
   // Words that look like topics but aren't — quantifiers, pronouns, filler
   const topicNoiseWords = new Set([
     "some", "any", "all", "few", "more", "every", "many", "much", "several",
-    "it", "this", "that", "them", "us", "me", "updated", "news", "headlines",
-    "the", "a", "an", "on", "in", "at", "to", "for", "of"
+    "it", "its", "this", "that", "them", "their", "us", "me", "updated", "news", "headlines",
+    "the", "a", "an", "on", "in", "at", "to", "for", "of", "new"
   ]);
 
   function cleanTopic(raw) {
     if (!raw) return null;
-    const cleaned = raw.replace(/\b(it|this|that|some|any|all|news|headlines)\b/gi, "").trim();
+    const cleaned = raw.replace(/\b(it|its|this|that|some|any|all|their|news|headlines)\b/gi, "").trim();
     if (cleaned.length < 3) return null;
     // Reject if ALL remaining words are noise
     const words = cleaned.split(/\s+/).filter(w => !topicNoiseWords.has(w.toLowerCase()) && w.length > 1);
@@ -370,18 +371,28 @@ function filterByTopic(items, topic) {
   if (!topic) return items;
 
   // Filter out common/short words that match everything
-  const stopWords = new Set(["the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "is", "it", "get", "be", "do", "has", "was", "are", "by", "as", "my", "me", "we", "us"]);
+  const stopWords = new Set(["the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "is", "it", "its", "get", "be", "do", "has", "was", "are", "by", "as", "my", "me", "we", "us", "new", "old", "big", "how", "why", "what"]);
   const keywords = topic.toLowerCase()
-    .replace(/[,]/g, " ")
+    .replace(/[,']/g, " ")
     .split(/\s+/)
     .filter(w => w.length > 2 && !stopWords.has(w));
 
   if (keywords.length === 0) return items;
 
-  return items.filter(item => {
+  // Score-based filtering: require at least half of meaningful keywords to match,
+  // or at least 2 keywords for multi-keyword topics. This prevents articles matching
+  // on a single generic word like "security" from drowning out relevant results.
+  const minMatchCount = keywords.length <= 2 ? 1 : Math.max(2, Math.ceil(keywords.length * 0.4));
+
+  const scored = items.map(item => {
     const searchText = `${item.title} ${item.description || ''}`.toLowerCase();
-    return keywords.some(keyword => searchText.includes(keyword));
-  });
+    const matchCount = keywords.filter(kw => searchText.includes(kw)).length;
+    return { item, matchCount };
+  }).filter(s => s.matchCount >= minMatchCount);
+
+  // Sort by relevance (most keyword matches first)
+  scored.sort((a, b) => b.matchCount - a.matchCount);
+  return scored.map(s => s.item);
 }
 
 async function scrapeArticle(url) {
@@ -515,9 +526,38 @@ export async function news(request) {
     });
 
     // Topic filter only applies to RSS items — flash headlines always show
-    const filteredRssItems = topic ? filterByTopic(freshRssItems, topic) : freshRssItems;
+    let filteredRssItems = topic ? filterByTopic(freshRssItems, topic) : freshRssItems;
 
     console.log(`📊 Total: ${allItems.length} (${flashItems.length} flash + ${rssItems.length} RSS), Fresh RSS: ${freshRssItems.length}, Filtered RSS: ${filteredRssItems.length}`);
+
+    // If topic filtering eliminated most results, the topic is too specific for RSS feeds.
+    // Fall back to web search via SerpAPI to find relevant news articles.
+    if (topic && filteredRssItems.length < 3) {
+      console.log(`📰 Topic "${topic}" too specific for RSS — augmenting with web search`);
+      try {
+        const serpKey = CONFIG.SERPAPI_KEY;
+        if (serpKey) {
+          const searchQuery = encodeURIComponent(`${topic} news ${new Date().getFullYear()}`);
+          const serpUrl = `https://serpapi.com/search.json?q=${searchQuery}&tbm=nws&api_key=${serpKey}&num=10`;
+          const resp = await safeFetch(serpUrl);
+          const data = typeof resp === "string" ? JSON.parse(resp) : resp;
+          const newsResults = data?.news_results || [];
+          const searchItems = newsResults.map(r => ({
+            title: r.title,
+            link: r.link,
+            date: r.date,
+            description: r.snippet || "",
+            source: r.source?.name || "web"
+          }));
+          if (searchItems.length > 0) {
+            console.log(`📰 Web search found ${searchItems.length} news articles for "${topic}"`);
+            filteredRssItems = [...searchItems, ...filteredRssItems];
+          }
+        }
+      } catch (err) {
+        console.warn(`📰 Web search fallback failed: ${err.message}`);
+      }
+    }
 
     // Scrape and summarize top RSS articles (flash items are headline-only, no scraping)
     const summaries = [];
