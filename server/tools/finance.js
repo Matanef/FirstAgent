@@ -14,7 +14,8 @@ const COMPANY_TO_TICKER = {
   coinbase: "COIN", palantir: "PLTR", rivian: "RIVN", lucid: "LCID",
   // Cybersecurity
   "check point": "CHKP", checkpoint: "CHKP", fortinet: "FTNT",
-  "palo alto": "PANW", crowdstrike: "CRWD", zscaler: "ZS",
+  "palo alto": "PANW", crowdstrike: "CRWD", "crowed strike": "CRWD",
+  crowedstrike: "CRWD", "crowd strike": "CRWD", zscaler: "ZS",
   sentinelone: "S", "sentinel one": "S", cyberark: "CYBR",
   // Finance & Banking
   "jp morgan": "JPM", jpmorgan: "JPM", "goldman sachs": "GS",

@@ -14,8 +14,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ── Module-level constants (avoid re-creating on every plan() call) ──
-const FINANCE_COMPANIES = /\b(tesla|apple|google|alphabet|amazon|microsoft|meta|nvidia|amd|intel|netflix|disney|boeing|ford|paypal|uber|spotify|shopify)\b/i;
+const FINANCE_COMPANIES = /\b(tesla|apple|google|alphabet|amazon|microsoft|meta|nvidia|amd|intel|netflix|disney|boeing|ford|paypal|uber|spotify|shopify|check\s*point|checkpoint|fortinet|palo\s*alto|crowdstrike|crowd\s*strike|crowed\s*strike|zscaler|sentinelone|cyberark|jp\s*morgan|goldman\s*sachs|visa|mastercard|pfizer|moderna|coinbase|palantir)\b/i;
 const FINANCE_INTENT = /\b(doing|price|worth|trading|performance|value|stock|share|market|up|down|earnings|revenue)\b/i;
+
+// "Why" questions about stocks/markets are RESEARCH questions, not price lookups
+// e.g. "why are cybersecurity stocks dropping?" → search, NOT finance
+const FINANCE_RESEARCH_QUESTION = /\b(why\s+(did|are|is|do|has|have|were|was)|what\s+caused|what\s+happened|reason|explain)\b.*\b(stock|share|price|market|drop|crash|fall|decline|surge|rally|jump)/i;
 
 // Track last routing decision for user correction feedback
 let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null };
@@ -129,10 +133,11 @@ function inferToolFromText(text) {
   if (/\b(weather|forecast|temperature)\b/.test(lower)) return "weather";
   if (/\b(email|inbox|mail|send\s+an?\s+email)\b/.test(lower)) return "email";
   if (/\b(news|headline|article)\b/.test(lower)) return "news";
-  if (/\b(stock|finance|market|portfolio|price\s+of)\b/.test(lower)) return "finance";
+  if (/\b(search|look\s+up|find|google)\b/.test(lower)) return "search";
+  if (/\b(stock|finance|market|portfolio|price\s+of)\b/.test(lower) &&
+      !/\b(why|what\s+caused|reason|explain)\b/.test(lower)) return "finance";
   if (/\b(sport|score|match|fixture|nba|nfl)\b/.test(lower)) return "sports";
   if (/\b(calendar|event|meeting|schedule|appointment)\b/.test(lower)) return "calendar";
-  if (/\b(search|look\s+up|find|google)\b/.test(lower)) return "search";
   if (/\b(git|commit|branch|github)\b/.test(lower)) return "gitLocal";
   if (/\b(task|todo|reminder)\b/.test(lower)) return "tasks";
   if (/\b(write|create|generate)\s+(a\s+)?(file|script)\b/.test(lower)) return "fileWrite";
@@ -463,6 +468,10 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "show me their stocks" → finance (NOT financeFundamentals)
 - "stock prices of X Y Z" → finance (NOT financeFundamentals)
 - "compare stocks" → finance (NOT financeFundamentals)
+- "why are cybersecurity stocks dropping?" → search (NOT finance — this is a research question)
+- "why did CHKP stock price drop?" → search (NOT finance — asking for reasons, not price data)
+- "search for why stock prices dropped" → search (NOT finance, NOT shopping)
+- "what caused the market crash?" → search (NOT finance — explanatory question)
 - "P/E ratio and fundamentals of Apple" → financeFundamentals (NOT finance)
 - "what do you know about me" → memorytool (NOT search)
 - "schedule a task every hour" → scheduler (NOT tasks)
@@ -487,6 +496,8 @@ RULES:
 12. "dependency graph/circular deps/dead code" → projectGraph
 13. "evolve yourself/improve your code" → selfEvolve (NOT selfImprovement)
 14. "stock/stocks/stock price/compare stocks" → finance. ONLY use financeFundamentals for explicit fundamentals requests (P/E, balance sheet, market cap analysis, EPS, dividends)
+15. "why did stocks drop/crash/fall" or "what caused the price drop" → search. These are RESEARCH questions needing web search, NOT finance price lookups
+16. "search for price drops" or "search for why stock fell" → search (NOT shopping — "price" in financial context is NOT a shopping query)
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -1474,10 +1485,21 @@ if (
 
   // Finance keywords — with company name → ticker resolution
   // FINANCE_COMPANIES and FINANCE_INTENT are now module-level constants (top of file)
-  // Guard: skip if compound intent detected (e.g. "get stock prices and email me")
+  // Guard 1: skip if compound intent detected (e.g. "get stock prices and email me")
+  // Guard 2: skip "why" research questions (e.g. "why are stocks dropping?") → those need search
+  // Guard 3: skip if no specific ticker/company mentioned and it's a general "why" question
   if ((/\b(stocks?|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO|stock\s+price)\b/i.test(lower) ||
       (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) &&
-      !hasCompoundIntent(lower)) {
+      !hasCompoundIntent(lower) &&
+      !FINANCE_RESEARCH_QUESTION.test(lower)) {
+    // Extra guard: if message has stock keywords but NO specific ticker/company, and starts
+    // with a "why/what caused" pattern, this is a research question → skip to search
+    const hasSpecificCompany = FINANCE_COMPANIES.test(lower) || /\b[A-Z]{2,5}\b/.test(trimmed);
+    const isExplanatoryQuestion = /\b(why|what\s+caused|what\s+happened|reason)\b/i.test(lower);
+    if (isExplanatoryQuestion && !hasSpecificCompany) {
+      console.log("[planner] finance keywords found but this is a research question without specific tickers → routing to search");
+      return [{ tool: "search", input: trimmed, context: {}, reasoning: "finance_research_to_search" }];
+    }
     console.log("[planner] certainty branch: finance");
     return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
   }
@@ -1565,10 +1587,12 @@ if (
   }
 
   // Shopping keywords — includes "best X" product queries
+  // Guard: "price drop/drops/dropped" in financial context is NOT shopping
   if ((/\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) ||
        /\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(lower) ||
        /\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)) &&
-      !/\b(stock|share|invest)\b/i.test(lower)) {
+      !/\b(stock|share|invest|market|ticker|cybersecurity|crypto|bitcoin|earnings)\b/i.test(lower) &&
+      !/\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower)) {
     console.log("[planner] certainty branch: shopping");
     return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
   }
@@ -1640,9 +1664,11 @@ if (
 
   // General knowledge questions — route to search instead of unreliable LLM classifier
   // Catches "what is X", "who is X", "how does X work", "tell me about X" etc.
-  if (/\b(what is|what are|who is|who was|when did|where is|how many|how does|why do|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+)\b/i.test(lower) &&
+  // NOTE: "stock/price" are NOT excluded here — "why did stocks drop?" is a search question.
+  // Finance certainty above already catches actual price lookup requests with specific tickers.
+  if (/\b(what is|what are|who is|who was|when did|where is|how many|how does|why do|why did|why are|why is|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+)\b/i.test(lower) &&
       !isMathExpression(trimmed) && !hasExplicitFilePath(trimmed) &&
-      !/\b(stock|weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install|buy|shop|price|product|deal|best\s+\w+\s+(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair))\b/i.test(lower) &&
+      !/\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install|buy|shop|product|deal|best\s+\w+\s+(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair))\b/i.test(lower) &&
       lower.length > 15) {
     console.log("[planner] certainty branch: general_knowledge → search");
     return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_general_knowledge" }];
