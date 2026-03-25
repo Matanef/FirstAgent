@@ -1,10 +1,14 @@
 // server/tools/applyPatch.js
 // Applies code improvements based on review suggestions and trending patterns
+// NOW WITH SELF-HEALING: 3-attempt retry loop with syntax + ESLint validation
 
 import fs from "fs/promises";
 import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
 import { llm } from "./llm.js";
+import { validateStaged, cleanupStaging } from "../utils/codeValidator.js";
+
+const MAX_HEAL_ATTEMPTS = 3;
 
 /**
  * Resolves a filename to its full path
@@ -63,9 +67,20 @@ function extractTargetFile(text) {
 }
 
 /**
- * Generate improved code using LLM
+ * Generate improved code using LLM.
+ * @param {Object} opts
+ * @param {string|null} opts.previousError - If set, the LLM is in recovery mode
  */
-async function generateImprovedCode({ originalCode, reviewSuggestions, trendingPatterns, filename }) {
+async function generateImprovedCode({ originalCode, reviewSuggestions, trendingPatterns, filename, previousError }) {
+  // ── Build recovery context if this is a retry after validation failure ──
+  const recoveryBlock = previousError ? `
+
+⚠️ CRITICAL: Your previous attempt FAILED validation with this error:
+[ERROR START]
+${previousError}
+[ERROR END]
+You MUST fix this error. Do NOT repeat the same mistake. Analyze the error carefully.` : "";
+
   const prompt = `You are a code improvement assistant. Your task is to improve the provided code based on review suggestions and trending patterns.
 
 **TARGET FILE:** ${filename}
@@ -80,6 +95,7 @@ ${reviewSuggestions || 'No specific suggestions provided'}
 
 **TRENDING PATTERNS:**
 ${trendingPatterns || 'No trending patterns provided'}
+${recoveryBlock}
 
 **INSTRUCTIONS:**
 1. Apply the review suggestions where applicable
@@ -87,7 +103,7 @@ ${trendingPatterns || 'No trending patterns provided'}
 3. Maintain the original functionality
 4. Preserve all imports and exports
 5. Keep the code structure similar to avoid breaking changes
-6. Add comments explaining significant changes
+6. This project uses ES Modules ONLY (import/export). NEVER use require() or module.exports.
 
 **OUTPUT FORMAT:**
 Return ONLY the complete improved code without any markdown formatting, explanations, or preamble. Start directly with the first line of code.
@@ -96,16 +112,16 @@ Return ONLY the complete improved code without any markdown formatting, explanat
 
   try {
     const response = await llm(prompt);
-    
+
     if (!response.success || !response.data?.text) {
       throw new Error("LLM failed to generate improved code");
     }
 
     let improvedCode = response.data.text.trim();
-    
+
     // Remove markdown code fences if present
     improvedCode = improvedCode.replace(/^```[a-z]*\n?/gm, '').replace(/\n?```$/gm, '');
-    
+
     return improvedCode;
   } catch (err) {
     throw new Error(`Code generation failed: ${err.message}`);
@@ -170,35 +186,62 @@ export async function applyPatch(request) {
     const reviewSuggestions = context.reviewSuggestions || context.review || "Apply general best practices";
     const trendingPatterns = context.trendingPatterns || context.patterns || "";
 
-    console.log("🤖 Generating improved code with LLM...");
+    console.log("🤖 Generating improved code with self-healing loop...");
 
-    // 5. Generate improved code
-    const improvedCode = await generateImprovedCode({
-      originalCode,
-      reviewSuggestions: typeof reviewSuggestions === 'string' 
-        ? reviewSuggestions 
-        : JSON.stringify(reviewSuggestions, null, 2),
-      trendingPatterns: typeof trendingPatterns === 'string'
-        ? trendingPatterns
-        : JSON.stringify(trendingPatterns, null, 2),
-      filename: targetFile
-    });
+    // ══════════════════════════════════════════════════════════════
+    // 🛡️ SELF-HEALING LOOP: Generate → Validate → Retry up to 3×
+    // ══════════════════════════════════════════════════════════════
+    let improvedCode = null;
+    let lastError = null;
+    let healAttempt = 0;
 
-    // 6. Syntax check before writing (staging → validate → swap)
-    const stagingPath = `${filePath}.staging.js`;
-    await fs.writeFile(stagingPath, improvedCode, 'utf8');
+    while (healAttempt < MAX_HEAL_ATTEMPTS) {
+      healAttempt++;
 
-    try {
-      const { execSync } = await import("child_process");
-      execSync(`node --check "${stagingPath}"`, { timeout: 10000 });
-      console.log(`✅ Syntax check passed for ${targetFile}`);
-    } catch (syntaxErr) {
-      await fs.unlink(stagingPath).catch(() => {});
+      if (lastError) {
+        console.log(`[applyPatch] ♻️ Self-healing attempt ${healAttempt}/${MAX_HEAL_ATTEMPTS} — fixing: ${lastError.slice(0, 100)}`);
+      }
+
+      // Generate code (with error context on retries)
+      try {
+        improvedCode = await generateImprovedCode({
+          originalCode,
+          reviewSuggestions: typeof reviewSuggestions === 'string'
+            ? reviewSuggestions
+            : JSON.stringify(reviewSuggestions, null, 2),
+          trendingPatterns: typeof trendingPatterns === 'string'
+            ? trendingPatterns
+            : JSON.stringify(trendingPatterns, null, 2),
+          filename: targetFile,
+          previousError: lastError // Feed validation error back to LLM on retry
+        });
+      } catch (genErr) {
+        lastError = genErr.message;
+        console.warn(`[applyPatch] Generation failed on attempt ${healAttempt}: ${lastError}`);
+        continue;
+      }
+
+      // Validate the generated code (syntax + ESLint)
+      const validation = await validateStaged(improvedCode, filePath);
+
+      if (validation.valid) {
+        console.log(`[applyPatch] 🟢 Validation passed on attempt ${healAttempt}${validation.warnings?.length ? ` (${validation.warnings.length} warnings)` : ""}`);
+        // Clean up staging file — we'll do our own atomic swap below
+        await cleanupStaging(filePath);
+        break;
+      } else {
+        lastError = validation.error;
+        console.warn(`[applyPatch] 🔴 Validation failed (${validation.stage}): ${lastError?.slice(0, 150)}`);
+        improvedCode = null; // Reset so we know if all attempts failed
+      }
+    }
+
+    if (!improvedCode) {
       return {
         tool: "applyPatch",
         success: false,
         final: true,
-        error: `Syntax check failed — patch NOT applied:\n${syntaxErr.stderr?.toString() || syntaxErr.message}`
+        error: `Patch failed after ${MAX_HEAL_ATTEMPTS} self-healing attempts.\nLast error: ${lastError}`
       };
     }
 
@@ -216,24 +259,17 @@ export async function applyPatch(request) {
       console.warn(`⚠️ Could not create backup: ${err.message}`);
     }
 
-    // 8. Atomic swap: staging → live
+    // 8. Write validated code to the live file
     try {
-      await fs.rename(stagingPath, filePath);
-      console.log(`✅ Updated ${targetFile} (atomic swap)`);
-    } catch (renameErr) {
-      // Fallback to copy if rename fails (cross-device)
-      try {
-        await fs.copyFile(stagingPath, filePath);
-        await fs.unlink(stagingPath).catch(() => {});
-        console.log(`✅ Updated ${targetFile} (copy fallback)`);
-      } catch (err2) {
-        return {
-          tool: "applyPatch",
-          success: false,
-          final: true,
-          error: `Failed to write file: ${err2.message}`
-        };
-      }
+      await fs.writeFile(filePath, improvedCode, "utf8");
+      console.log(`✅ Updated ${targetFile} (validated + written)`);
+    } catch (writeErr) {
+      return {
+        tool: "applyPatch",
+        success: false,
+        final: true,
+        error: `Failed to write file: ${writeErr.message}`
+      };
     }
 
     // 9. Generate diff summary
@@ -254,7 +290,7 @@ export async function applyPatch(request) {
             <strong>Backup:</strong> ${relativeBackup}
           </div>
           <div class="patch-actions">
-            <p>✅ Syntax validated and file updated (atomic swap)</p>
+            <p>✅ Syntax + ESLint validated (${healAttempt} attempt${healAttempt > 1 ? "s" : ""})</p>
             <p>💾 Original backed up to backups/${toolName}/</p>
             <p>📦 Ready to commit changes</p>
           </div>
@@ -297,7 +333,7 @@ export async function applyPatch(request) {
         improvedLines,
         lineDiff,
         html,
-        text: `✅ Applied improvements to ${targetFile}\n\nOriginal: ${originalLines} lines\nImproved: ${improvedLines} lines\nChange: ${lineDiff > 0 ? '+' : ''}${lineDiff} lines\n\nBackup saved to: ${relativeBackup}\nSyntax validated ✅ — Ready to commit!`
+        text: `✅ Applied improvements to ${targetFile}\n\nOriginal: ${originalLines} lines\nImproved: ${improvedLines} lines\nChange: ${lineDiff > 0 ? '+' : ''}${lineDiff} lines\n\nBackup saved to: ${relativeBackup}\n🛡️ Self-healed in ${healAttempt} attempt${healAttempt > 1 ? "s" : ""} (syntax + ESLint) ✅ — Ready to commit!`
       }
     };
 
