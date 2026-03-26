@@ -40,9 +40,6 @@ const MIN_CHUNK_CHARS = 30;               // Skip trivial chunks (single-line ex
 
 // ── Directories to index (relative to PROJECT_ROOT)
 const INDEX_DIRS = [
-  "server/tools",
-  "server/utils",
-  "server/agents",
   "server",
   "client/local-llm-ui/src/components"
 ];

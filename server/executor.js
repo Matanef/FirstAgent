@@ -581,3 +581,6 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   };
 }
 
+
+
+// TODO: executor: wire "chartGenerator" (./tools/chartGenerator.js) into the execution pipeline

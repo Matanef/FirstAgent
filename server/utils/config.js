@@ -64,6 +64,9 @@ export const CONFIG = {
   TOOL_BUDGET_SEARCH: parseInt(process.env.TOOL_BUDGET_SEARCH || '3'),
   TOOL_BUDGET_FINANCE: parseInt(process.env.TOOL_BUDGET_FINANCE || '2'),
   TOOL_BUDGET_CALCULATOR: parseInt(process.env.TOOL_BUDGET_CALCULATOR || '1'),
+  
+  //Smart Evolution
+  CHARTS_DIR: path.resolve(process.cwd(), "data", "charts"),
 
   // Finance Providers
   FINANCE_PROVIDER: process.env.FINANCE_PROVIDER || 'alpha',

@@ -48,11 +48,18 @@ import { smartEvolution } from "./smartEvolution.js";
 import { systemMonitor } from "./systemMonitor.js";
 import { webhookTunnel } from "./webhookTunnel.js";
 import { markdownCompiler } from "./markdownCompiler.js";
+import { codeSandbox } from "./codeSandbox.js";
+import { codeRag } from "./codeRag.js";
+import { projectSnapshot } from "./projectSnapshot.js";
+import { chartGenerator } from "./chartGenerator.js";
 
 export const TOOLS = {
   calculator,
   contacts,
   calendar,
+  chartGenerator,
+  codeSandbox,
+  codeRag,
   documentQA,
   lotrJokes,
   workflow,
@@ -88,6 +95,7 @@ export const TOOLS = {
   codeTransform,
   projectGraph,
   projectIndex,
+  projectSnapshot,
   githubScanner,
   selfEvolve,
   whatsapp,
@@ -123,3 +131,5 @@ if (invalidCount > 0) {
 console.log(`   📦 Total: ${Object.keys(TOOLS).length}\n`);
 
 export default TOOLS;
+
+export { chartGenerator } from "./chartGenerator.js";

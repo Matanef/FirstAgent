@@ -395,7 +395,8 @@ function extractContextSignals(message) {
   return signals;
 }
 
-async function detectIntentWithLLM(message, contextSignals, availableTools = []) {
+async function detectIntentWithLLM(message, contextSignals, availableTools = [  "chartGenerator"
+]) {
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
     : "";
@@ -753,7 +754,7 @@ Return valid JSON array only:`;
  * Resolve a raw tool name (from LLM output) to a valid tool in the registry.
  * Handles aliases, case-insensitive matching, and partial matches.
  */
-function resolveToolName(rawIntent, availableTools) {
+function resolveToolName(rawIntent, availableTools, originalMessage = "") {
   const aliasMap = {
     'nlptool': 'nlp_tool',
     'nlp': 'nlp_tool',
@@ -795,6 +796,11 @@ function resolveToolName(rawIntent, availableTools) {
     if (tool) {
       console.log(`[planner] resolveToolName: partial match "${cleaned}" -> "${tool}"`);
     }
+  }
+  // 🛑 THE HARD GUARD: Apply to all resolved tools
+  if (tool === "lotrJokes" && originalMessage && !/\b(lotr|lord\s+of\s+the\s+rings|hobbit|gandalf|frodo)\b/i.test(originalMessage)) {
+    console.log("🧠 Decomposer hallucinated lotrJokes. Overriding to llm.");
+    return "llm"; 
   }
 
   return tool;
@@ -1321,7 +1327,7 @@ if (
   // ──────────────────────────────────────────────────────────
 
 // Smart Evolution — discover and create NEW tools (must come BEFORE selfEvolve)
-  if (!isSchedulingIntent && /\b(smart\s*evolut|discover\s+new\s+tools?|create\s+new\s+tool\s+autonom|evolve\s+and\s+create|invent\s+a?\s*new\s+tool|tool\s+discovery|suggest\s+new\s+tools?)\b/i.test(lower)) {
+  if (!isSchedulingIntent && /\b(smart\s*evolution|smart\s*evolve|discover\s+new\s+tools?|create\s+new\s+tool\s+autonom|evolve\s+and\s+create|invent\s+a?\s*new\s+tool|tool\s+discovery|suggest\s+new\s+tools?)\b/i.test(lower)) {
     console.log("[planner] certainty branch: smartEvolution");
     const evolveCtx = {};
     if (/\b(dry.?run|preview|plan)\b/i.test(lower)) evolveCtx.action = "dryrun";
@@ -1441,8 +1447,18 @@ if (
     return [{ tool: "projectGraph", input: trimmed, context: pgContext, reasoning: "certainty_project_graph" }];
   }
 
+// ── CERTAINTY: CODE RAG VS PROJECT INDEX ──
+  const isRagTrigger = /\b(semantic|rag|vector|meaning|embed|reindex|code\s*rag)\b/i.test(lower);
+  const isSearchTrigger = /\b(search\s+(the\s+)?(code|codebase|project)|how\s+does\s+(the\s+)?(code|system|orchestrator|app)|where\s+in\s+(the\s+)?code)\b/i.test(lower);
+  
+  if (isRagTrigger || (isSearchTrigger && !/\b(overview|stats|symbol)\b/i.test(lower))) {
+    console.log(`[planner] certainty branch: codeRag`);
+    return [{ tool: "codeRag", input: trimmed, context: {}, reasoning: "certainty_code_rag" }];
+  }
+
   // Project Index — semantic code search, function/class lookup
-  if (/\b(index\s+(the\s+)?project|project\s+index|build\s+(an?\s+)?index|reindex|search\s+(for\s+)?function|find\s+(the\s+)?class|symbol\s+search|search\s+symbol|function\s+list|class\s+list)\b/i.test(lower)) {
+  // NOTE: I removed "reindex|" from the regex below so it doesn't steal the codeRag intent!
+  if (/\b(index\s+(the\s+)?project|project\s+index|build\s+(an?\s+)?index|search\s+(for\s+)?function|find\s+(the\s+)?class|symbol\s+search|search\s+symbol|function\s+list|class\s+list)\b/i.test(lower)) {
     console.log("[planner] certainty branch: projectIndex");
     const piContext = {};
     if (/\bbuild|create|rebuild|reindex/i.test(lower)) piContext.action = "build";

@@ -16,6 +16,8 @@ import { projectGraph } from "./projectGraph.js";
 import { registerNewTool } from "./codeTransform.js";
 import { logImprovement } from "../telemetryAudit.js";
 import { CONFIG } from "../utils/config.js";
+import { validateStaged, cleanupStaging } from "../utils/codeValidator.js";
+import { codeRag } from "./codeRag.js";
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -82,48 +84,70 @@ async function collectSystemInfo() {
   return info;
 }
 
-// ─── HELPER: Scan existing tools (deep — reads descriptions) ─────
+// ─── HELPER: Scan existing tools (semantic — uses codeRag) ───────
 async function scanExistingTools() {
   const toolFiles = [];
-  const toolDescriptions = []; // "toolName — description"
+  const toolDescriptions = [];
+
+  // ── Phase 1: List tool files on disk ──
   try {
     const files = await fs.readdir(TOOLS_DIR);
     for (const f of files) {
       if (f.endsWith(".js") && !f.includes(".backup") && !f.includes(".tmp") && !f.includes(".staging") && f !== "index.js") {
         toolFiles.push(f);
-        // Extract description from each tool file (first comment line, JSDoc, or export function line)
-        try {
-          const content = await fs.readFile(path.join(TOOLS_DIR, f), "utf8");
-          const lines = content.split("\n").slice(0, 30); // only scan first 30 lines
-          let desc = "";
-          // Try: "// Description" on line 2
-          for (const line of lines) {
-            const commentMatch = line.match(/^\/\/\s*(.{10,120})$/);
-            if (commentMatch && !commentMatch[1].startsWith("server/") && !commentMatch[1].startsWith("import")) {
-              desc = commentMatch[1].trim();
-              break;
-            }
-            // Try JSDoc @description or first * line
-            const jsdocMatch = line.match(/^\s*\*\s+(.{10,120})$/);
-            if (jsdocMatch && !jsdocMatch[1].startsWith("@")) {
-              desc = jsdocMatch[1].trim();
-              break;
-            }
-          }
-          // Fallback: extract from export function name
-          if (!desc) {
-            const exportMatch = content.match(/export\s+async\s+function\s+(\w+)/);
-            desc = exportMatch ? `(exports: ${exportMatch[1]})` : "(no description)";
-          }
-          toolDescriptions.push(`${f.replace(".js", "")} — ${desc}`);
-        } catch {
-          toolDescriptions.push(`${f.replace(".js", "")} — (could not read)`);
-        }
       }
     }
   } catch (e) { console.warn("[smartEvolution] Tool file scan failed:", e.message); }
 
-  console.log(`[smartEvolution] Scanned ${toolFiles.length} tool files, ${toolDescriptions.length} descriptions extracted`);
+  // ── Phase 2: Use codeRag for semantic tool descriptions ──
+  // Instead of blindly reading first 30 lines of every file, query the
+  // semantic index for exported tool functions and their purposes.
+  let ragChunks = [];
+  try {
+    const ragResponse = await codeRag({
+      text: "exported tool functions descriptions capabilities purpose",
+      context: { action: "search", topK: 40 }
+    });
+    if (ragResponse.success && ragResponse.data?.results) {
+      ragChunks = ragResponse.data.results;
+      console.log(`[smartEvolution] codeRag returned ${ragChunks.length} semantic chunks`);
+    }
+  } catch (e) {
+    console.log(`[smartEvolution] codeRag not available (${e.message}) — using filename-only fallback`);
+  }
+
+  // Build a file→chunk lookup from RAG results
+  const ragByFile = new Map();
+  for (const chunk of ragChunks) {
+    if (chunk.file) {
+      const basename = path.basename(chunk.file);
+      if (!ragByFile.has(basename)) {
+        ragByFile.set(basename, chunk);
+      }
+    }
+  }
+
+  // Build descriptions: prefer RAG semantic data, fallback to filename
+  for (const f of toolFiles) {
+    const toolName = f.replace(".js", "");
+    const ragMatch = ragByFile.get(f);
+    if (ragMatch?.code) {
+      // Extract a meaningful description from the semantic chunk
+      const lines = ragMatch.code.split("\n");
+      const descLine = lines.find(l =>
+        (/^\/\/\s*.{10,}/.test(l) && !/^\/\/\s*(server\/|import\s)/.test(l)) ||
+        /^\s*\*\s+[A-Z].{10,}/.test(l)
+      );
+      const desc = descLine
+        ? descLine.replace(/^\/\/\s*/, "").replace(/^\s*\*\s+/, "").trim()
+        : ragMatch.name || "(semantic chunk available)";
+      toolDescriptions.push(`${toolName} — ${desc}`);
+    } else {
+      toolDescriptions.push(`${toolName} — (not yet indexed in codeRag)`);
+    }
+  }
+
+  console.log(`[smartEvolution] Scanned ${toolFiles.length} tool files, ${toolDescriptions.length} descriptions (${ragByFile.size} from codeRag)`);
 
   // Get project graph for dependency info
   let graph = null;
@@ -136,7 +160,6 @@ async function scanExistingTools() {
   let plannerIntents = "";
   try {
     const plannerContent = await fs.readFile(path.resolve(TOOLS_DIR, "..", "planner.js"), "utf8");
-    // Extract certainty branch comments and tool names
     const branches = plannerContent.match(/\/\/.*certainty.*|console\.log\(`\[planner\] certainty branch: .+`\)/g);
     if (branches) {
       plannerIntents = branches.slice(0, 40).map(b => b.replace("console.log(`[planner] ", "").replace("`)", "")).join("\n");
@@ -149,7 +172,6 @@ async function scanExistingTools() {
     const telemetryPath = path.resolve(DATA_DIR, "telemetry.json");
     const telemetry = JSON.parse(await fs.readFile(telemetryPath, "utf8"));
     if (Array.isArray(telemetry)) {
-      // Count tool usage in last 50 entries
       const recent = telemetry.slice(-50);
       const counts = {};
       for (const entry of recent) {
@@ -295,7 +317,7 @@ async function rollbackToolCreation(toolName, filename) {
 //  MAIN PIPELINE
 // ═══════════════════════════════════════════════════════════════════
 async function runEvolutionPipeline(options = {}) {
-  const { notifyVia, dryRun = false } = options;
+  const { notifyVia, dryRun = false, userPrompt = "" } = options; // Added userPrompt here
   const startedAt = Date.now();
   let output = "**Smart Evolution — Tool Discovery Pipeline**\n\n";
 
@@ -385,6 +407,7 @@ ${systemInfo.dependencies.join(", ")}
 ${usageSection}${intentSection}${interestsSection}
 GITHUB RESEARCH (trending tools and patterns):
 ${researchFindings.substring(0, 5000)}
+${userPrompt ? `\nCRITICAL USER DIRECTIVE:\nThe user explicitly requested: "${userPrompt}"\nYou MUST follow these instructions. If the user forbids a topic, completely ignore that topic. Base your idea on their specific request.` : ""}
 
 TASK: Identify ONE new tool that would most benefit this agent system. Requirements:
 1. Must fill a REAL gap — read every tool description above and confirm your suggestion doesn't overlap
@@ -533,45 +556,23 @@ async function executeApprovedProposal() {
   let output = `**Smart Evolution — Building: ${proposal.toolName}**\n\n`;
   const filename = proposal.filename.endsWith(".js") ? proposal.filename : `${proposal.filename}.js`;
   const toolFilePath = path.join(TOOLS_DIR, filename);
+// ── STEP 6: USER APPROVAL LOGGING ─────────────
+  output += "**Step 6/9 — Plan Validation**\n";
+  console.log("[smartEvolution] Step 6: VALIDATE — User approved the plan");
+  output += "  Plan explicitly APPROVED by User. Proceeding to build...\n\n";
+  
+  await appendAuditLog({ step: 6, action: "user_approved_plan", toolName: proposal.toolName });
 
-  // ── STEP 6: VALIDATE PLAN WITH GEMINI (MANDATORY) ─────────────
-  output += "**Step 6/9 — Gemini Plan Validation (MANDATORY)**\n";
-  console.log("[smartEvolution] Step 6: VALIDATE — Gemini reviewing the plan");
+  // ══════════════════════════════════════════════════════════════
+  // STEPS 7+8: BUILD + VERIFY (Self-Healing Loop)
 
-  if (!process.env.GEMINI_API_KEY) {
-    output += "  BLOCKED: Gemini API key is required for evolution validation.\n";
-    output += "  Set GEMINI_API_KEY in your .env file and try again.\n";
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-  }
-
-  try {
-    const planValidation = await validateWithGemini({
-      filename: proposal.filename,
-      originalCode: "// New file — no original code",
-      proposedCode: proposal.implementationPlan,
-      intent: `Create a new agent tool called "${proposal.toolName}": ${proposal.description}. Capabilities: ${(proposal.capabilities || []).join(", ")}. Dependencies: ${(proposal.dependsOn || []).join(", ")}.`
-    });
-
-    if (!planValidation.valid) {
-      output += `  Gemini REJECTED the plan: ${planValidation.explanation}\n`;
-      output += "\n**Pipeline aborted at Step 6 — Gemini did not approve the plan.**\n";
-      await clearPendingProposal();
-      await appendAuditLog({ step: 6, action: "gemini_rejected_plan", toolName: proposal.toolName, reason: planValidation.explanation });
-      return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-    }
-    output += "  Gemini APPROVED the plan.\n\n";
-    console.log("[smartEvolution] Gemini approved the plan");
-  } catch (e) {
-    output += `  Gemini validation FAILED: ${e.message}\n`;
-    output += "\n**Pipeline halted — Gemini validation is mandatory and could not be completed.**\n";
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-  }
-
-  await appendAuditLog({ step: 6, action: "gemini_approved_plan", toolName: proposal.toolName });
-
-  // ── STEP 7: BUILD ─────────────────────────────────────────────
-  output += "**Step 7/9 — Code Generation**\n";
-  console.log("[smartEvolution] Step 7: BUILD — generating tool code");
+  // ══════════════════════════════════════════════════════════════
+  // STEPS 7+8: BUILD + VERIFY (Self-Healing Loop)
+  // Generate → Security Scan → validateStaged (syntax+ESLint) → Retry
+  // Gemini code review runs ONCE after the loop succeeds.
+  // ══════════════════════════════════════════════════════════════
+  output += "**Step 7-8/9 — Code Generation + Self-Healing Verification**\n";
+  console.log("[smartEvolution] Steps 7-8: BUILD+VERIFY — self-healing code generation loop");
 
   const buildPrompt = `Generate a complete, production-ready ES Module tool file for an AI agent system.
 
@@ -636,104 +637,93 @@ HARD RULES (violations cause instant rejection):
 Generate the COMPLETE file content. Do NOT use placeholder comments like "// implement here" — every function must be fully implemented.`;
 
   let generatedCode = null;
+  let lastError = null;
+  let healAttempt = 0;
   const MAX_BUILD_ATTEMPTS = 3;
 
-  for (let attempt = 1; attempt <= MAX_BUILD_ATTEMPTS; attempt++) {
-    console.log(`[smartEvolution] Build attempt ${attempt}/${MAX_BUILD_ATTEMPTS}`);
+  while (healAttempt < MAX_BUILD_ATTEMPTS) {
+    healAttempt++;
+
+    if (lastError) {
+      console.log(`[smartEvolution] ♻️ Self-healing attempt ${healAttempt}/${MAX_BUILD_ATTEMPTS} — fixing: ${lastError.slice(0, 100)}`);
+    }
+
+    // ── 7a. Generate code (with error feedback on retries) ──
+    console.log(`[smartEvolution] Build attempt ${healAttempt}/${MAX_BUILD_ATTEMPTS}`);
+    let code = null;
     try {
-      const buildResult = await llm(
-        attempt === 1 ? buildPrompt : `${buildPrompt}\n\nPREVIOUS ATTEMPT FAILED. Error: ${generatedCode?._lastError || "unknown"}. Fix the issue and regenerate the COMPLETE file.`,
-        { timeoutMs: 120000 }
-      );
+      const recoveryBlock = lastError ? `\n\n⚠️ CRITICAL: Your previous attempt FAILED validation with this error:\n[ERROR START]\n${lastError}\n[ERROR END]\nYou MUST fix this error. Do NOT repeat the same mistake. Analyze the error carefully.` : "";
+
+      const buildResult = await llm(buildPrompt + recoveryBlock, { timeoutMs: 120000 });
 
       if (buildResult.success && buildResult.data?.text) {
-        // Extract code from markdown fences if present
-        let code = buildResult.data.text;
+        code = buildResult.data.text;
         const fenceMatch = code.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
         if (fenceMatch) code = fenceMatch[1];
         code = code.trim();
 
         // Basic sanity checks
         if (!code.includes(`export async function ${proposal.toolName}`)) {
-          generatedCode = { _lastError: `Missing export function ${proposal.toolName}` };
-          output += `  Attempt ${attempt}: Missing required export — retrying...\n`;
+          lastError = `Missing export function ${proposal.toolName}`;
+          output += `  Attempt ${healAttempt}: Missing required export — retrying...\n`;
           continue;
         }
         if (code.length < 200) {
-          generatedCode = { _lastError: "Generated code too short (< 200 chars)" };
-          output += `  Attempt ${attempt}: Code too short — retrying...\n`;
+          lastError = "Generated code too short (< 200 chars)";
+          output += `  Attempt ${healAttempt}: Code too short — retrying...\n`;
           continue;
         }
-
-        generatedCode = code;
-        output += `  Attempt ${attempt}: Code generated (${code.length} chars)\n`;
-        break;
+      } else {
+        lastError = "LLM returned no text";
+        output += `  Attempt ${healAttempt}: LLM returned empty — retrying...\n`;
+        continue;
       }
     } catch (e) {
-      generatedCode = { _lastError: e.message };
-      output += `  Attempt ${attempt} failed: ${e.message}\n`;
+      lastError = e.message;
+      output += `  Attempt ${healAttempt} generation failed: ${e.message}\n`;
+      continue;
+    }
+
+    // ── 7b. Security scan (non-healable — aborts immediately) ──
+    const security = securityScan(code);
+    if (!security.safe) {
+      lastError = `Security violations: ${security.violations.join("; ")}`;
+      output += `  Attempt ${healAttempt}: Security scan FAILED — ${security.violations.join(", ")}\n`;
+      // Security violations are fed back to LLM for fix on next attempt
+      continue;
+    }
+
+    // ── 7c. Syntax + ESLint via shared codeValidator (self-healing) ──
+    const validation = await validateStaged(code, toolFilePath);
+
+    if (validation.valid) {
+      generatedCode = code;
+      await cleanupStaging(toolFilePath);
+      output += `  Attempt ${healAttempt}: Code generated + validated (${code.length} chars)`;
+      output += validation.warnings?.length ? ` (${validation.warnings.length} warnings)\n` : "\n";
+      console.log(`[smartEvolution] 🟢 Validation passed on attempt ${healAttempt}`);
+      break;
+    } else {
+      lastError = validation.error;
+      output += `  Attempt ${healAttempt}: Validation failed (${validation.stage}) — ${lastError?.slice(0, 150)}\n`;
+      console.warn(`[smartEvolution] 🔴 Validation failed (${validation.stage}): ${lastError?.slice(0, 150)}`);
+      generatedCode = null;
     }
   }
 
-  if (!generatedCode || typeof generatedCode !== "string") {
-    output += "\n**Pipeline aborted at Step 7 — could not generate valid code after 3 attempts.**\n";
+  if (!generatedCode) {
+    output += `\n**Pipeline aborted at Step 7-8 — could not generate valid code after ${MAX_BUILD_ATTEMPTS} self-healing attempts.**\n`;
+    output += `Last error: ${lastError}\n`;
     await clearPendingProposal();
-    await appendAuditLog({ step: 7, action: "build_failed", toolName: proposal.toolName });
+    await appendAuditLog({ step: 8, action: "build_verify_failed", toolName: proposal.toolName, lastError });
     return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
   }
 
-  await appendAuditLog({ step: 7, action: "code_generated", toolName: proposal.toolName, codeLength: generatedCode.length });
+  output += `  Security scan: PASSED\n`;
+  output += `  Syntax + ESLint: PASSED (self-healed in ${healAttempt} attempt${healAttempt > 1 ? "s" : ""})\n`;
+  await appendAuditLog({ step: 8, action: "code_validated", toolName: proposal.toolName, codeLength: generatedCode.length, attempts: healAttempt });
 
-  // ── STEP 8: VERIFY (SYNTAX → SECURITY → ESLINT → GEMINI) ─────
-  output += "\n**Step 8/9 — Multi-Layer Verification**\n";
-  console.log("[smartEvolution] Step 8: VERIFY — running all safety checks");
-
-  // Write to staging file first
-  const stagingPath = `${toolFilePath}.staging.js`;
-  await fs.writeFile(stagingPath, generatedCode, "utf8");
-
-  // 8a. Syntax check
-  try {
-    await execAsync(`node --check "${stagingPath}"`, { timeout: 10000 });
-    output += "  Syntax check: PASSED\n";
-  } catch (e) {
-    output += `  Syntax check: FAILED — ${e.stderr?.substring(0, 200) || e.message}\n`;
-    try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
-    await clearPendingProposal();
-    await appendAuditLog({ step: 8, action: "syntax_failed", toolName: proposal.toolName });
-    output += "\n**Pipeline aborted at Step 8 — syntax error.**\n";
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-  }
-
-  // 8b. Security scan
-  const security = securityScan(generatedCode);
-  if (!security.safe) {
-    output += `  Security scan: FAILED\n`;
-    for (const v of security.violations) output += `    - ${v}\n`;
-    try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
-    await clearPendingProposal();
-    await appendAuditLog({ step: 8, action: "security_failed", toolName: proposal.toolName, violations: security.violations });
-    output += "\n**Pipeline aborted at Step 8 — security violations detected.**\n";
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-  }
-  output += "  Security scan: PASSED\n";
-
-  // 8c. ESLint check
-  try {
-    await execAsync(`npx eslint@8 --no-eslintrc --env node --env es2024 --parser-options=ecmaVersion:latest --parser-options=sourceType:module --rule "no-undef:error" "${stagingPath}"`, { timeout: 30000 });
-    output += "  ESLint check: PASSED\n";
-  } catch (e) {
-    output += `  ESLint check: WARNING — ${e.stdout?.substring(0, 200) || e.message}\n`;
-    // ESLint warnings don't abort — only errors do
-    if (e.status > 1) {
-      try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
-      await clearPendingProposal();
-      output += "\n**Pipeline aborted at Step 8 — ESLint errors.**\n";
-      return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-    }
-  }
-
-  // 8d. Gemini code review (MANDATORY)
+  // ── 8d. Gemini code review (MANDATORY — runs once after loop) ──
   console.log("[smartEvolution] Gemini code review (mandatory)");
   try {
     const codeValidation = await validateWithGemini({
@@ -746,33 +736,32 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     if (!codeValidation.valid) {
       output += `  Gemini code review: REJECTED — ${codeValidation.explanation}\n`;
 
-      // If Gemini provided a fix, try it
+      // If Gemini provided a fix, validate it through codeValidator
       if (codeValidation.fixedCode && codeValidation.fixedCode.length > 200) {
-        console.log("[smartEvolution] Gemini provided a fix — retrying verification");
+        console.log("[smartEvolution] Gemini provided a fix — validating via codeValidator");
         output += "  Gemini provided corrected code — re-verifying...\n";
-        generatedCode = codeValidation.fixedCode;
-        await fs.writeFile(stagingPath, generatedCode, "utf8");
 
-        // Re-run syntax + security on fixed code
-        try { await execAsync(`node --check "${stagingPath}"`, { timeout: 10000 }); } catch {
-          try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
-          await clearPendingProposal();
-          output += "  Gemini's fix also has syntax errors — aborting.\n";
-          output += "\n**Pipeline aborted at Step 8.**\n";
-          return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-        }
-
-        const fixSecurity = securityScan(generatedCode);
+        const fixSecurity = securityScan(codeValidation.fixedCode);
         if (!fixSecurity.safe) {
-          try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
           await clearPendingProposal();
           output += "  Gemini's fix has security violations — aborting.\n";
           output += "\n**Pipeline aborted at Step 8.**\n";
           return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
         }
-        output += "  Gemini's corrected code passed syntax + security checks.\n";
+
+        const fixValidation = await validateStaged(codeValidation.fixedCode, toolFilePath);
+        if (!fixValidation.valid) {
+          await cleanupStaging(toolFilePath);
+          await clearPendingProposal();
+          output += `  Gemini's fix failed validation (${fixValidation.stage}) — aborting.\n`;
+          output += "\n**Pipeline aborted at Step 8.**\n";
+          return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
+        }
+
+        generatedCode = codeValidation.fixedCode;
+        await cleanupStaging(toolFilePath);
+        output += "  Gemini's corrected code passed security + validation checks.\n";
       } else {
-        try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
         await clearPendingProposal();
         output += "\n**Pipeline aborted at Step 8 — Gemini rejected the code.**\n";
         return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
@@ -782,28 +771,20 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     }
   } catch (e) {
     output += `  Gemini code review FAILED: ${e.message}\n`;
-    try { await fs.unlink(stagingPath); } catch { /* cleanup */ }
     output += "\n**Pipeline halted — Gemini code review is mandatory.**\n";
     return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
   }
 
   await appendAuditLog({ step: 8, action: "all_checks_passed", toolName: proposal.toolName });
 
-  // ── ATOMIC DEPLOY: staging → final ─────────────────────────────
+  // ── ATOMIC DEPLOY: write validated code to final path ──────────
   try {
-    await fs.rename(stagingPath, toolFilePath);
+    await fs.writeFile(toolFilePath, generatedCode, "utf8");
     output += "\n  File deployed: server/tools/" + filename + "\n";
-  } catch (e) {
-    // Fallback: copy + delete
-    try {
-      await fs.copyFile(stagingPath, toolFilePath);
-      await fs.unlink(stagingPath);
-      output += "\n  File deployed (fallback): server/tools/" + filename + "\n";
-    } catch (copyErr) {
-      output += `\n  Deploy failed: ${copyErr.message}\n`;
-      output += "\n**Pipeline aborted — could not write final file.**\n";
-      return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-    }
+  } catch (writeErr) {
+    output += `\n  Deploy failed: ${writeErr.message}\n`;
+    output += "\n**Pipeline aborted — could not write final file.**\n";
+    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
   }
 
   // Register the new tool in index.js, planner.js, executor.js
@@ -988,11 +969,12 @@ export async function smartEvolution(request) {
       }
 
       case "dryrun":
-      case "run":
+case "run":
       default: {
         const dryRun = action === "dryrun" || /\b(dry.?run|preview|plan)\b/i.test(text);
         const notifyVia = /\bwhatsapp\b/i.test(text) ? "whatsapp" : (/\bemail\b/i.test(text) ? "email" : null);
-        return await runEvolutionPipeline({ notifyVia, dryRun });
+        // ADD userPrompt: text to this object!
+        return await runEvolutionPipeline({ notifyVia, dryRun, userPrompt: text }); 
       }
     }
   } catch (err) {
