@@ -143,6 +143,7 @@ function inferToolFromText(text) {
   if (/\b(write|create|generate)\s+(a\s+)?(file|script)\b/.test(lower)) return "fileWrite";
   if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
   if (/\b(youtube|video)\b/.test(lower)) return "youtube";
+  if (/\b(play|pause|skip|previous|spotify|music|song|track)\b/.test(lower)) return "spotifyController";
   if (/\b(tweet|twitter|x\s+trends?|trending\s+on\s+x)\b/.test(lower)) return "x";
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
 
@@ -444,6 +445,9 @@ EXAMPLES (correct routing):
 - "refactor D:/project/utils.js" → codeTransform (applies surgical code fixes)
 - "add error handling to server.js" → codeTransform
 - "fix the bug in server.js" → codeTransform (codeTransform handles bug fixes)
+- "list mcp servers" → mcpBridge
+- "list tools on sqlite mcp" → mcpBridge
+- "call read_query on sqlite mcp" → mcpBridge
 - "show dependency graph" → projectGraph
 - "find circular dependencies" → projectGraph
 - "index the project" → projectIndex
@@ -1087,6 +1091,18 @@ if (
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
   }
 
+  // MCP Bridge — Model Context Protocol server interactions
+  // Matches: "list mcp servers", "mcp tools on sqlite", "call read_query on sqlite mcp", "ask mcp to..."
+  if (/\b(mcp|sqlite|github|postgres|youtube)\b/i.test(lower) && /\b(list|show|call|run|use|ask|connect|disconnect|close|tools?|servers?|bridge)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: mcpBridge");
+    const mcpContext = {};
+    if (/\b(list|show|what|which|available)\b/i.test(lower) && /\bservers?\b/i.test(lower)) mcpContext.action = "list_servers";
+    else if (/\b(list|show|what|which)\b/i.test(lower) && /\btools?\b/i.test(lower)) mcpContext.action = "list_tools";
+    else if (/\b(disconnect|close|stop|kill)\b/i.test(lower)) mcpContext.action = "disconnect";
+    else if (/\b(call|run|execute|use|invoke|ask)\b/i.test(lower)) mcpContext.action = "call_tool";
+    return [{ tool: "mcpBridge", input: trimmed, context: {}, reasoning: "certainty_mcp" }];
+  }
+
   // ──────────────────────────────────────────────────────────
   // CREDENTIAL SAFETY GUARD: prevent passwords from going to memory tool
   // ──────────────────────────────────────────────────────────
@@ -1571,6 +1587,13 @@ if (
       !hasCompoundIntent(lower)) {
     console.log("[planner] certainty branch: sports");
     return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
+  }
+
+  // Spotify / Music Controller
+  if (/\b(play|pause|skip|previous|spotify|music|song|track)\b/i.test(lower) && 
+      !hasCompoundIntent(lower)) {
+    console.log("[planner] certainty branch: spotifyController");
+    return [{ tool: "spotifyController", input: trimmed, context: {}, reasoning: "certainty_spotify" }];
   }
 
   // YouTube keywords

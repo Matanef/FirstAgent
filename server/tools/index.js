@@ -52,6 +52,8 @@ import { codeSandbox } from "./codeSandbox.js";
 import { codeRag } from "./codeRag.js";
 import { projectSnapshot } from "./projectSnapshot.js";
 import { chartGenerator } from "./chartGenerator.js";
+import { spotifyController } from "./spotify.js";
+import { mcpBridge } from "./mcpBridge.js";
 
 export const TOOLS = {
   calculator,
@@ -68,6 +70,7 @@ export const TOOLS = {
   financeFundamentals,
   search,
   sports,
+  spotifyController,
   youtube,
   shopping,
   news,
@@ -104,7 +107,8 @@ export const TOOLS = {
   smartEvolution,
   systemMonitor,
   markdownCompiler,
-  webhookTunnel
+  webhookTunnel,
+  mcpBridge
 };
 
 
@@ -132,4 +136,3 @@ console.log(`   📦 Total: ${Object.keys(TOOLS).length}\n`);
 
 export default TOOLS;
 
-export { chartGenerator } from "./chartGenerator.js";

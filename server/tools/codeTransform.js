@@ -144,22 +144,81 @@ async function safeUpdateFile(filePath, updater) {
 }
 
 /**
- * Update server/tools/index.js to export the new tool
+ * Extract the actual exported function name from a tool file.
+ * Reads the file and looks for `export async function XXX` or `export { XXX }`.
+ * Falls back to filenameToIdentifier if no export found.
+ */
+async function getExportedFunctionName(toolFilePath) {
+  try {
+    const code = await fs.readFile(toolFilePath, "utf8");
+    // Match: export async function spotifyController(
+    const asyncMatch = code.match(/export\s+async\s+function\s+(\w+)\s*\(/);
+    if (asyncMatch) return asyncMatch[1];
+    // Match: export function spotifyController(
+    const syncMatch = code.match(/export\s+function\s+(\w+)\s*\(/);
+    if (syncMatch) return syncMatch[1];
+    // Match: export { spotifyController }
+    const namedMatch = code.match(/export\s*\{\s*(\w+)\s*\}/);
+    if (namedMatch) return namedMatch[1];
+  } catch { /* fall through */ }
+  // Fallback: derive from filename
+  return filenameToIdentifier(path.basename(toolFilePath));
+}
+
+/**
+ * Update server/tools/index.js to import the new tool and add it to TOOLS.
+ * Uses the actual exported function name from the tool file (not just the filename).
  */
 async function registerInToolsIndex(toolFilePath) {
   const indexPath = path.join(__dirname, "index.js");
   const filename = path.basename(toolFilePath);
-  const toolName = filenameToIdentifier(filename);
-  const exportLine = `export { ${toolName} } from "./${filename}";`;
+  const funcName = await getExportedFunctionName(toolFilePath);
+  const importLine = `import { ${funcName} } from "./${filename}";`;
 
   await safeUpdateFile(indexPath, content => {
-    if (content.includes(exportLine) || content.includes(`"./${filename}"`)) {
-      return content;
+    // Skip if already imported
+    if (content.includes(`"./${filename}"`) || content.includes(`'./${filename}'`)) {
+      console.log(`[registerTool] ${filename} already in index.js — skipping import`);
+      // Still check if it's in TOOLS
+    } else {
+      // Insert import line before the `export const TOOLS` block
+      const toolsExportIdx = content.indexOf("export const TOOLS");
+      if (toolsExportIdx !== -1) {
+        content = content.slice(0, toolsExportIdx) + importLine + "\n" + content.slice(toolsExportIdx);
+      } else {
+        // Fallback: append import at end of import section (before first blank line after imports)
+        const lines = content.split("\n");
+        let lastImportIdx = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith("import ")) lastImportIdx = i;
+        }
+        if (lastImportIdx !== -1) {
+          lines.splice(lastImportIdx + 1, 0, importLine);
+        } else {
+          lines.unshift(importLine);
+        }
+        content = lines.join("\n");
+      }
     }
-    const lines = content.split("\n");
-    // Try to keep alphabetical-ish: append at end of exports
-    lines.push(exportLine);
-    return lines.join("\n");
+
+    // Add to TOOLS object if not already there
+    const toolsRegex = /(export\s+const\s+TOOLS\s*=\s*\{)([\s\S]*?)(\};)/;
+    const toolsMatch = content.match(toolsRegex);
+    if (toolsMatch) {
+      const toolsBody = toolsMatch[2];
+      // Check if funcName is already listed (as a key or value)
+      if (!new RegExp(`\\b${funcName}\\b`).test(toolsBody)) {
+        // Find the last entry and add after it
+        const trimmedBody = toolsBody.trimEnd();
+        const needsComma = trimmedBody.length > 0 && !trimmedBody.endsWith(",");
+        const insertion = `${needsComma ? "," : ""}\n  ${funcName},`;
+        const newBody = toolsBody.replace(/(\s*)$/, insertion + "$1");
+        content = content.replace(toolsRegex, toolsMatch[1] + newBody + toolsMatch[3]);
+        console.log(`[registerTool] Added ${funcName} to TOOLS object`);
+      }
+    }
+
+    return content;
   });
 }
 

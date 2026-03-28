@@ -418,7 +418,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   tool = actualToolKey;
 
   let toolInput;
-  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool", "news", "smartEvolution"].includes(tool)) {
+  if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool", "news", "smartEvolution", "mcpBridge"].includes(tool)) {
     if (tool === "email" && typeof message === "object") {
       // Pass the full message object so email() can extract both text AND context
       // (email tool reads query.text and query.context internally)
@@ -538,7 +538,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "calendar", "documentQA", "contacts", 
     "duplicateScanner", "folderAccess", "codeReview",
     "projectGraph", "projectIndex", "githubScanner", "scheduler",
-    "packageManager", "memorytool", "whatsapp"
+    "packageManager", "memorytool", "whatsapp", "mcpBridge"
   ];
 
   if (summarizeTools.includes(tool)) {
@@ -584,3 +584,5 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
 
 
 // TODO: executor: wire "chartGenerator" (./tools/chartGenerator.js) into the execution pipeline
+
+// TODO: executor: wire "spotify" (./tools/spotify.js) into the execution pipeline

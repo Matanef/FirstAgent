@@ -41,6 +41,13 @@ if (!process.env.TWITTER_USERNAME || !process.env.TWITTER_PASSWORD) {
   warnings.push("⚠️  TWITTER_USERNAME/TWITTER_PASSWORD not set - X/Twitter tool will be unavailable");
 }
 
+// Spotify
+if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+  warnings.push("⚠️  SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET not set - Spotify tool will be unavailable");
+} else if (!process.env.SPOTIFY_REFRESH_TOKEN) {
+  warnings.push("⚠️  SPOTIFY_REFRESH_TOKEN not set - Spotify tool will be unavailable");
+}
+
 // Email - CORRECTED: Check for Gmail OAuth OR SMTP OR Email API
 if (!process.env.GOOGLE_CLIENT_ID && !process.env.EMAIL_API_KEY && !process.env.SMTP_HOST) {
   warnings.push("⚠️  No email configuration found - email tool will be unavailable");
@@ -113,6 +120,16 @@ export const CONFIG = {
   // Credential Encryption
   CREDENTIAL_MASTER_KEY: process.env.CREDENTIAL_MASTER_KEY,
 
+  // Spotify
+  SPOTIFY_CLIENT_ID: process.env.SPOTIFY_CLIENT_ID,
+  SPOTIFY_CLIENT_SECRET: process.env.SPOTIFY_CLIENT_SECRET,
+  SPOTIFY_REFRESH_TOKEN: process.env.SPOTIFY_REFRESH_TOKEN,
+
+  // MCP (Model Context Protocol)
+  // JSON string mapping server names to spawn configs:
+  // e.g. {"sqlite": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-sqlite", "test.db"]}}
+  MCP_SERVERS: process.env.MCP_SERVERS || null,
+
   // Moltbook
   MOLTBOOK_BASE_URL: process.env.MOLTBOOK_BASE_URL || 'https://moltbook.com',
 
@@ -172,6 +189,7 @@ if (CONFIG.isEmailAvailable()) {
   else console.log('  ✓ Email API configured');
 }
 if (CONFIG.isXAvailable()) console.log('  ✓ X/Twitter API configured');
+if (CONFIG.SPOTIFY_CLIENT_ID && CONFIG.SPOTIFY_CLIENT_SECRET && CONFIG.SPOTIFY_REFRESH_TOKEN) console.log('  ✓ Spotify API configured');
 if (CONFIG.CREDENTIAL_MASTER_KEY) console.log('  ✓ Credential encryption configured');
 if (CONFIG.MOLTBOOK_BASE_URL !== 'https://moltbook.com') console.log(`  ✓ Moltbook URL: ${CONFIG.MOLTBOOK_BASE_URL}`);
 console.log('='.repeat(60) + '\n');

@@ -1,6 +1,6 @@
 // server/tools/smartEvolution.js
 // Smart Evolution — discovers, proposes, and builds NEW tools for the agent system
-// 9-step pipeline: SCAN → RESEARCH → THINK → REPORT → APPROVE → VALIDATE → BUILD → VERIFY → NOTIFY
+// 10-step pipeline: SCAN → RESEARCH → THINK → REPORT → APPROVE → VALIDATE → BUILD → VERIFY → NOTIFY → METADATA
 
 import fs from "fs/promises";
 import path from "path";
@@ -29,6 +29,7 @@ const TOOLS_DIR = path.resolve(__dirname);
 const AUDIT_LOG = path.join(DATA_DIR, "smart-evolution-log.json");
 const PENDING_FILE = path.join(DATA_DIR, "pending-evolution-proposal.json");
 const SUGGESTIONS_FILE = path.join(DATA_DIR, "toolSuggestions.json");
+const METADATA_FILE = path.join(DATA_DIR, "tools_metadata.json");
 
 // Security patterns to block in generated code
 const SECURITY_PATTERNS = [
@@ -336,7 +337,7 @@ async function runEvolutionPipeline(options = {}) {
   let output = "**Smart Evolution — Tool Discovery Pipeline**\n\n";
 
   // ── STEP 1: SCAN ──────────────────────────────────────────────
-  output += "**Step 1/9 — System Scan**\n";
+  output += "**Step 1/10 — System Scan**\n";
   console.log("[smartEvolution] Step 1: SCAN — collecting system info and tool inventory");
 
   const systemInfo = await collectSystemInfo();
@@ -356,7 +357,7 @@ async function runEvolutionPipeline(options = {}) {
   await appendAuditLog({ step: 1, action: "scan", toolCount: toolScan.toolCount, models: systemInfo.ollama.models.map(m => m.name) });
 
   // ── STEP 2: RESEARCH ──────────────────────────────────────────
-  output += "**Step 2/9 — External Research**\n";
+  output += "**Step 2/10 — External Research**\n";
   console.log("[smartEvolution] Step 2: RESEARCH — scanning GitHub for tool ideas");
 
   let researchFindings = "No research data available.";
@@ -377,7 +378,7 @@ async function runEvolutionPipeline(options = {}) {
   await appendAuditLog({ step: 2, action: "research", findingsLength: researchFindings.length });
 
   // ── STEP 3: THINK ──────────────────────────────────────────────
-  output += "**Step 3/9 — Strategic Analysis**\n";
+  output += "**Step 3/10 — Strategic Analysis**\n";
   console.log("[smartEvolution] Step 3: THINK — LLM analyzing gaps and opportunities");
 
   // Build rich tool inventory with descriptions (not just filenames)
@@ -491,7 +492,7 @@ If you genuinely cannot identify a useful new tool, respond with:
   await appendAuditLog({ step: 3, action: "think", result: "proposal", toolName: proposal.toolName, description: proposal.description });
 
   // ── STEP 4: REPORT ─────────────────────────────────────────────
-  output += "**Step 4/9 — Proposal Report**\n\n";
+  output += "**Step 4/10 — Proposal Report**\n\n";
   console.log("[smartEvolution] Step 4: REPORT — building proposal document");
 
   const report = `
@@ -571,7 +572,7 @@ async function executeApprovedProposal() {
   const filename = proposal.filename.endsWith(".js") ? proposal.filename : `${proposal.filename}.js`;
   const toolFilePath = path.join(TOOLS_DIR, filename);
 // ── STEP 6: USER APPROVAL LOGGING ─────────────
-  output += "**Step 6/9 — Plan Validation**\n";
+  output += "**Step 6/10 — Plan Validation**\n";
   console.log("[smartEvolution] Step 6: VALIDATE — User approved the plan");
   output += "  Plan explicitly APPROVED by User. Proceeding to build...\n\n";
   
@@ -585,7 +586,7 @@ async function executeApprovedProposal() {
   // Generate → Security Scan → validateStaged (syntax+ESLint) → Retry
   // Gemini code review runs ONCE after the loop succeeds.
   // ══════════════════════════════════════════════════════════════
-  output += "**Step 7-8/9 — Code Generation + Self-Healing Verification**\n";
+  output += "**Step 7-8/10 — Code Generation + Self-Healing Verification**\n";
   console.log("[smartEvolution] Steps 7-8: BUILD+VERIFY — self-healing code generation loop");
 
   const buildPrompt = `Generate a complete, production-ready ES Module tool file for an AI agent system.
@@ -644,9 +645,21 @@ HARD RULES (violations cause instant rejection):
 3. NEVER use process.env directly — import CONFIG from "../utils/config.js" instead
 4. NEVER use eval() or new Function()
 5. Include proper error handling with try/catch throughout
-6. Include JSDoc comments for the main function
-7. The return format MUST include: tool, success, final, data (or error)
-8. Keep the file under 300 lines — focused and clean
+6. The return format MUST include: tool, success, final, data (or error)
+7. Keep the file under 300 lines — focused and clean
+
+MANDATORY DOCUMENTATION ("Birthright" policy — every tool is born documented):
+8. The main exported function MUST have a comprehensive JSDoc block including:
+   - @description — What the tool does in 1-2 sentences
+   - @param {string|object} request — with sub-properties documented
+   - @returns {object} — with the success/error shape documented
+   - @example — A valid request and expected response, like:
+     // @example
+     // const result = await toolName("example input");
+     // // → { tool: "toolName", success: true, final: true, data: { text: "...", preformatted: true } }
+9. Any regex patterns MUST have an inline comment explaining what they match and why
+10. Any external API calls MUST have a comment documenting the endpoint, expected response shape, and error handling
+11. Any complex data transformations or mappings MUST have inline comments explaining the logic
 
 Generate the COMPLETE file content. Do NOT use placeholder comments like "// implement here" — every function must be fully implemented.`;
 
@@ -811,13 +824,11 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
   }
 
   // ── STEP 9: NOTIFY ────────────────────────────────────────────
-  output += "\n**Step 9/9 — Complete**\n\n";
+  output += "\n**Step 9/10 — Notification**\n";
   console.log("[smartEvolution] Step 9: NOTIFY — tool creation complete");
 
   output += `New tool **${proposal.toolName}** has been created and registered.\n`;
   output += `File: \`server/tools/${filename}\`\n\n`;
-  output += `**Restart the server to activate the new tool.**\n`;
-  output += `\`npm start\` or restart your dev server.\n`;
 
   // Log to telemetry
   try {
@@ -830,8 +841,52 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     });
   } catch { /* non-critical */ }
 
+  await appendAuditLog({ step: 9, action: "notify", toolName: proposal.toolName, filename, codeLength: generatedCode.length });
+
+  // ── STEP 10: METADATA UPDATE ───────────────────────────────────
+  output += "**Step 10/10 — Metadata Registry**\n";
+  console.log("[smartEvolution] Step 10: METADATA — updating tools_metadata.json");
+
+  try {
+    let metadata = [];
+    try { metadata = JSON.parse(await fs.readFile(METADATA_FILE, "utf8")); } catch { /* new file */ }
+    if (!Array.isArray(metadata)) metadata = [];
+
+    // Avoid duplicates — update if tool already exists, otherwise append
+    const existingIdx = metadata.findIndex(m => m.name === proposal.toolName);
+    const entry = {
+      name: proposal.toolName,
+      filename: `server/tools/${filename}`,
+      description: proposal.description,
+      capabilities: proposal.capabilities || [],
+      dependencies: proposal.dependsOn || [],
+      complexity: proposal.complexity || "medium",
+      addedAt: new Date().toISOString(),
+      source: "smartEvolution",
+      codeLength: generatedCode.length
+    };
+
+    if (existingIdx !== -1) {
+      metadata[existingIdx] = entry;
+    } else {
+      metadata.push(entry);
+    }
+
+    await fs.mkdir(path.dirname(METADATA_FILE), { recursive: true });
+    await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2));
+    output += `  Registry updated: ${metadata.length} tool(s) in tools_metadata.json\n`;
+    console.log(`[smartEvolution] Metadata updated: ${metadata.length} entries`);
+  } catch (metaErr) {
+    output += `  Metadata update failed (non-critical): ${metaErr.message}\n`;
+    console.warn("[smartEvolution] Metadata update failed:", metaErr.message);
+  }
+
+  output += "\n**Pipeline complete — tool ready.**\n";
+  output += `**Restart the server to activate the new tool.**\n`;
+  output += `\`npm start\` or restart your dev server.\n`;
+
   await clearPendingProposal();
-  await appendAuditLog({ step: 9, action: "complete", toolName: proposal.toolName, filename, codeLength: generatedCode.length });
+  await appendAuditLog({ step: 10, action: "complete", toolName: proposal.toolName, filename, codeLength: generatedCode.length });
 
   return { tool: "smartEvolution", success: true, final: true, data: { text: output, preformatted: true } };
 }
