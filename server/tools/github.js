@@ -8,9 +8,9 @@ let octokitInstance = null;
 
 function getOctokit() {
   if (!octokitInstance) {
-    const token = process.env.GITHUB_TOKEN || process.env.GITHUB_API_KEY;
+    const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN || process.env.GITHUB_API_KEY;
     if (!token) {
-      throw new Error('GitHub token not configured. Set GITHUB_TOKEN or GITHUB_API_KEY in .env');
+      throw new Error('GitHub token not configured. Set GITHUB_PERSONAL_ACCESS_TOKEN .env');
     }
     octokitInstance = new Octokit({ auth: token });
   }
@@ -39,7 +39,7 @@ async function testGitHubAccess() {
       tool: 'github',
       success: false,
       final: true,
-      error: `GitHub API access failed: ${err.message}\n\nPlease check:\n1. GITHUB_TOKEN or GITHUB_API_KEY is set in .env\n2. Token has the necessary permissions\n3. Token is not expired`,
+      error: `GitHub API access failed: ${err.message}\n\nPlease check:\n1. GITHUB_PERSONAL_ACCESS_TOKEN or GITHUB_API_KEY is set in .env\n2. Token has the necessary permissions\n3. Token is not expired`,
       data: {
         hasAccess: false,
         errorDetails: err.message
@@ -304,7 +304,7 @@ export async function github(request) {
 
     let errorMessage = err.message;
     if (err.status === 401) {
-      errorMessage = 'GitHub authentication failed. Please check your GITHUB_TOKEN in .env file.';
+      errorMessage = 'GitHub authentication failed. Please check your GITHUB_PERSONAL_ACCESS_TOKEN in .env file.';
     } else if (err.status === 403) {
       errorMessage = 'GitHub API rate limit exceeded or insufficient permissions.';
     } else if (err.status === 404) {

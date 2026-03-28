@@ -935,6 +935,32 @@ if (
     ];
   }
 
+// ── UNIFIED MCP ROUTING: Handles priority and context detection ──
+if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) || 
+   (/\bgithub\b/i.test(lower) && /\b(search|find|list\s+tools|call|mcp)\b/i.test(lower))) {
+    
+    console.log("[planner] Priority Routing: mcpBridge");
+    const mcpContext = { source: "priority_routing" };
+
+    // Smart Action Detection
+    if (/\b(list|show|available)\b.*\bservers?\b/i.test(lower)) {
+        mcpContext.action = "list_servers";
+    } else if (/\b(list|show|tools?)\b/i.test(lower)) {
+        mcpContext.action = "list_tools";
+    } else if (/\b(disconnect|close|stop)\b/i.test(lower)) {
+        mcpContext.action = "disconnect";
+    } else if (/\b(call|run|execute|use|ask)\b/i.test(lower)) {
+        mcpContext.action = "call_tool";
+    }
+
+    return [{ 
+      tool: "mcpBridge", 
+      input: trimmed, 
+      context: mcpContext, 
+      reasoning: "certainty_mcp_priority" 
+    }];
+}
+
   // Compute available tools once per plan
   const availableTools = listAvailableTools();
   console.log("[planner] availableTools:", availableTools.join(", "));

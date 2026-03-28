@@ -504,9 +504,29 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     }
   }
 
+// ── FIX: Handle MCP HTML results before they get summarized ──
+  if (tool === "mcpBridge" && result.data?.html) {
+    console.log("[executor] MCP HTML detected — bypassing LLM summarization");
+    return { 
+      reply: result.data.text || "Results retrieved.", 
+      html: result.data.html, // Ensure this is explicitly at the top level
+      tool, 
+      data: result.data, 
+      success: true, 
+      final: true 
+    };
+  }
+
   // PRE-FORMATTED RESULTS (finance tables, email drafts, etc.)
   if (result.data?.preformatted && result.data?.text) {
-    return { reply: result.data.text, tool, data: result.data, success: true, final: true };
+    return { 
+      reply: result.data.text, 
+      html: result.data.html || null, // Add this line to pass HTML through
+      tool, 
+      data: result.data, 
+      success: true, 
+      final: true 
+    };
   }
 
   // FINANCE FUNDAMENTALS — has its own HTML table, skip LLM summarization

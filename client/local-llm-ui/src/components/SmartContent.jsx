@@ -101,6 +101,8 @@ function FolderBrowserPanel({ html, content }) {
 }
 
 function detectContentType(content, data, tool) {
+    if (tool === "mcpBridge" && data?.html) return "mcpBridgeHTML"; 
+    if (tool === "folderAccess" && data?.html) return "folderAccessHTML";
     if (tool === "folderAccess" && data?.html) return "folderAccessHTML";
     if (tool === "shopping" && data?.html) return "shoppingHTML";
     if (tool === "moltbook" && data?.html) return "moltbookHTML";  // Rich HTML from moltbook data.html
@@ -116,6 +118,70 @@ function detectContentType(content, data, tool) {
     if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
     return "text";
 }
+function McpBridgePanel({ html, data, content }) {
+    const containerRef = useRef(null);
+
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+
+        // 1. ── Handle Copy JSON Button ──
+        const copyBtn = el.querySelector('[data-action="copy-json"]');
+        if (copyBtn) {
+            const handleCopy = () => {
+                const rawJson = JSON.stringify(data, null, 2);
+                navigator.clipboard.writeText(rawJson);
+                const originalText = copyBtn.innerText;
+                copyBtn.innerText = "✅ Copied!";
+                setTimeout(() => { copyBtn.innerText = originalText; }, 2000);
+            };
+            copyBtn.addEventListener('click', handleCopy);
+            copyBtn._cleanup = () => copyBtn.removeEventListener('click', handleCopy);
+        }
+
+        // 2. ── Handle Real-time Search Filter ──
+        const filterInput = el.querySelector('#github-filter');
+        if (filterInput) {
+            const handleFilter = (e) => {
+                const term = e.target.value.toLowerCase();
+                const rows = el.querySelectorAll('.repo-row');
+                
+                rows.forEach(row => {
+                    const text = row.textContent || row.innerText;
+                    row.style.display = text.toLowerCase().includes(term) ? "" : "none";
+                });
+            };
+            filterInput.addEventListener('keyup', handleFilter);
+            filterInput._cleanup = () => filterInput.removeEventListener('keyup', handleFilter);
+        }
+
+        // Cleanup on unmount
+        return () => {
+            const cBtn = el.querySelector('[data-action="copy-json"]');
+            const fInp = el.querySelector('#github-filter');
+            if (cBtn?._cleanup) cBtn._cleanup();
+            if (fInp?._cleanup) fInp._cleanup();
+        };
+    }, [html, data]);
+
+    return (
+        <div className="mcp-bridge-container">
+            <div
+                ref={containerRef}
+                className="rich-html-content mcp-results"
+                dangerouslySetInnerHTML={{ 
+                    // We can go back to standard sanitization now
+                    __html: DOMPurify.sanitize(html) 
+                }}
+            />
+            {content && (
+                <div className="message-text" style={{ marginTop: "0.8rem", opacity: 0.9 }}>
+                    {content}
+                </div>
+            )}
+        </div>
+    );
+}
 
 export default function SmartContent({ message, conversationId }) {
     const contentType = detectContentType(
@@ -125,6 +191,8 @@ export default function SmartContent({ message, conversationId }) {
     );
 
     switch (contentType) {
+        case "mcpBridgeHTML":
+            return <McpBridgePanel html={message.data.html} data={message.data} content={message.content} />;
         case "folderAccessHTML":
             return <FolderBrowserPanel html={message.data.html} content={message.content} />;
         case "webBrowser":
@@ -249,7 +317,10 @@ export default function SmartContent({ message, conversationId }) {
             return (
                 <div
                     className="rich-html-content"
-                    dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(message.content) }}
+                    dangerouslySetInnerHTML={{ 
+                        // UPDATE THIS LINE TOO:
+                        __html: DOMPurify.sanitize(message.content, { ADD_TAGS: ["script"] }) 
+                    }}
                 />
             );
 

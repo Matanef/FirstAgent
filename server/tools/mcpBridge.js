@@ -149,7 +149,6 @@ async function closeConnection(serverName) {
  * // → { action: "call_tool", server: "sqlite", toolName: "read_query", args: { query: "SELECT * FROM users" } }
  */
 function parseIntent(text, context = {}) {
-  // Context overrides take priority (from planner or chain context)
   if (context.action) {
     return {
       action: context.action,
@@ -161,54 +160,55 @@ function parseIntent(text, context = {}) {
 
   const lower = text.toLowerCase();
 
-  // Intent: list available MCP servers
-  // Matches: "list mcp servers", "what mcp servers", "show mcp servers", "available mcp"
-  if (/\b(list|show|what|which|available)\b.*\bmcp\s*(server|connection|bridge)s?\b/i.test(lower) ||
-      /\bmcp\s*(server|connection)s?\b.*\b(list|show|available)\b/i.test(lower)) {
+  // 1. List Servers
+  if (/\b(list|show|what|available)\b.*\bmcp\s*(server|connection|bridge)s?\b/i.test(lower)) {
     return { action: "list_servers" };
   }
 
-  // Intent: list tools on a specific MCP server
-  // Matches: "list tools on sqlite", "what tools does the postgres mcp have", "mcp sqlite tools"
-  const listToolsMatch = lower.match(/\b(?:list|show|what|which)\b.*\btools?\b.*\b(?:on|from|for|in)\s+(\w+)/i) ||
-                          lower.match(/\bmcp\s+(\w+)\s+tools?\b/i) ||
-                          lower.match(/\btools?\b.*\bmcp\s+(?:server\s+)?(\w+)/i);
+  // 2. List Tools (Matches: "list tools on github", "mcp github tools")
+  const listToolsMatch = lower.match(/\b(?:list|show|what)\b.*\btools?\b.*\b(?:on|from|for|in)\s+(\w+)/i) ||
+                        lower.match(/\bmcp\s+(\w+)\s+tools?\b/i);
   if (listToolsMatch) {
     return { action: "list_tools", server: listToolsMatch[1] };
   }
 
-  // Intent: call a specific tool on an MCP server
-  // Matches: "call read_query on sqlite with {...}", "use sqlite mcp tool read_query"
-  // Also: "ask sqlite to read_query {...}"
-  const callMatch = lower.match(/\b(?:call|run|execute|use|invoke)\s+(\w+)\s+(?:on|from|via)\s+(\w+)/i) ||
-                    lower.match(/\bask\s+(\w+)\s+(?:mcp\s+)?(?:to\s+)?(\w+)/i);
-  if (callMatch) {
-    // Extract JSON args if present — look for { ... } in the original text
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    let args = {};
-    if (jsonMatch) {
-      try { args = JSON.parse(jsonMatch[0]); } catch { /* not valid JSON, ignore */ }
+  // 3. SMART CALL (Matches: "search my github for...", "ask sqlite to list_tables")
+  // We look for the server name first
+  const serverNames = ["github", "sqlite", "youtube", "postgres"];
+  const targetServer = serverNames.find(name => lower.includes(name));
+
+  if (targetServer) {
+    // If we're at this stage, the planner already sent us here. 
+    // We just need to find the tool name. 
+    // Let's look for common tool verbs in the user's string.
+    let toolName = null;
+    if (targetServer === "github") {
+      if (lower.includes("search")) toolName = "search_code";
+      if (lower.includes("issue")) toolName = "list_issues";
+    } else if (targetServer === "sqlite") {
+      if (lower.includes("query") || lower.includes("select")) toolName = "execute_query";
     }
 
-    // Determine which capture is server vs tool based on pattern
-    // "call TOOL on SERVER" vs "ask SERVER to TOOL"
-    const isAskPattern = /\bask\b/i.test(lower);
-    return {
-      action: "call_tool",
-      server: isAskPattern ? callMatch[1] : callMatch[2],
-      toolName: isAskPattern ? callMatch[2] : callMatch[1],
-      args
-    };
+    // Fallback: If we can't guess the tool, try to find a word that looks like a tool name
+    const callMatch = lower.match(/\b(?:call|run|execute|use|invoke|ask)\s+(\w+)/i);
+    if (callMatch) toolName = callMatch[1];
+
+    if (toolName) {
+      // Extract JSON if it exists, otherwise pass the whole text as a query arg
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      let args = {};
+      if (jsonMatch) {
+        try { args = JSON.parse(jsonMatch[0]); } catch { /* ignore */ }
+      } else {
+        // Common MCP argument patterns
+        if (toolName === "search_code") args = { q: text.split("for").pop().trim() };
+        else if (toolName === "execute_query") args = { query: text };
+      }
+
+      return { action: "call_tool", server: targetServer, toolName, args };
+    }
   }
 
-  // Intent: disconnect/close a server
-  // Matches: "disconnect sqlite mcp", "close mcp sqlite"
-  const disconnectMatch = lower.match(/\b(?:disconnect|close|stop|kill)\s+(?:mcp\s+)?(\w+)/i);
-  if (disconnectMatch) {
-    return { action: "disconnect", server: disconnectMatch[1] };
-  }
-
-  // Fallback: show help
   return { action: "help" };
 }
 
@@ -285,7 +285,7 @@ async function handleListTools(serverName) {
  * @param {string} serverName - The server hosting the tool
  * @param {string} toolName - The tool to call
  * @param {Object} args - Arguments to pass to the tool
- * @returns {Promise<string>} Formatted result
+ * @returns {Promise<Object|string>} Formatted result (can return Object for HTML support)
  */
 async function handleCallTool(serverName, toolName, args = {}) {
   const client = await getOrCreateConnection(serverName);
@@ -294,19 +294,86 @@ async function handleCallTool(serverName, toolName, args = {}) {
 
   const result = await client.callTool({ name: toolName, arguments: args });
 
-  // Format the result for display
-  if (result.content && Array.isArray(result.content)) {
-    // MCP tools return content as an array of { type, text } blocks
-    const textParts = result.content
-      .filter(c => c.type === "text")
-      .map(c => c.text);
+  // ── NEW: Specialized Formatter for GitHub Search Results ──
+  // Check if this is a GitHub search and has items
+  const items = result.items || (result.content && result.content[0]?.text ? JSON.parse(result.content[0].text).items : null);
 
+  if (toolName === "search_code" && items) {
+    // We removed the .slice(0, 10) to show all results returned by the MCP
+const repos = items; 
+    
+
+const html = `
+      <div class="ai-github-search-results" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="24" />
+                <h3 style="margin: 0; color: #e7e9ea;">GitHub Code Search: "${args.q || args.query}"</h3>
+            </div>
+            
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="text" 
+                    id="github-filter" 
+                    placeholder="Filter these ${repos.length} results..." 
+                    style="padding: 6px 12px; border: 1px solid #38444d; border-radius: 6px; font-size: 12px; width: 180px; background: #0f1419; color: #e7e9ea;"
+                />
+                <button 
+                    data-action="copy-json"
+                    style="padding: 6px 12px; background: #38444d; color: #e7e9ea; border: 1px solid #566370; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;"
+                    onmouseover="this.style.background='#4a5568'"
+                    onmouseout="this.style.background='#38444d'"
+                >
+                    📋 JSON
+                </button>
+            </div>
+        </div>
+        
+        <p style="color: #8b98a5; font-size: 13px;">Found <strong>${result.total_count || items.length}</strong> matches.</p>
+        
+        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #444444; border-radius: 8px; background: #444444;">
+            <table id="github-results-table" style="width: 100%; border-collapse: collapse; font-size: 13px; color: #333;">
+                <thead style="position: sticky; top: 0; background: #444444; z-index: 1; box-shadow: inset 0 -1px 0 #444444;">
+                    <tr style="text-align: left;">
+                        <th style="padding: 10px; border-bottom: 1px solid #484a4d;">File / Repository</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #484a4d;">Path</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #484a4d; text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${repos.map(item => `
+                        <tr class="repo-row">
+                            <td style="padding: 10px; border-bottom: 1px solid #444444;">
+                                <strong style="color: #0969da;">${item.name}</strong><br/>
+                                <small style="color: #57606a;">${item.repository.full_name}</small>
+                            </td>
+                            <td style="padding: 10px; border-bottom: 1px solid #444444;">
+                                <code style="font-size: 11px; background: #e6a876; padding: 2px 4px; border-radius: 4px; color: #24292f;">${item.path}</code>
+                            </td>
+                            <td style="padding: 10px; border-bottom: 1px solid #444444; text-align: center;">
+                                <a href="${item.html_url}" target="_blank" 
+                                   style="display: inline-block; padding: 4px 12px; background: #1d7737; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 12px;">
+                                   View
+                                </a>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    </div>
+`;
+
+    return { html, text: `Found ${result.total_count || items.length} results for ${args.q}.` };
+  }
+
+  // ── ORIGINAL LOGIC: Fallback for other tools ──
+  if (result.content && Array.isArray(result.content)) {
+    const textParts = result.content.filter(c => c.type === "text").map(c => c.text);
     if (textParts.length > 0) {
       return `**📋 ${serverName}.${toolName} result:**\n\n${textParts.join("\n\n")}`;
     }
   }
 
-  // Fallback: stringify the raw result
   return `**📋 ${serverName}.${toolName} result:**\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
 }
 
@@ -379,7 +446,7 @@ export async function mcpBridge(request) {
 
       case "call_tool":
         if (!intent.server || !intent.toolName) {
-          output = "Please specify both the server and tool. Example: \"call read_query on sqlite with {\\\"query\\\": \\\"SELECT 1\\\"}\"";
+          output = "Please specify both the server and tool.";
           break;
         }
         output = await handleCallTool(intent.server, intent.toolName, intent.args || {});
@@ -403,7 +470,9 @@ export async function mcpBridge(request) {
       tool: "mcpBridge",
       success: true,
       final: true,
-      data: { text: output, preformatted: true }
+      data: typeof output === "object" 
+        ? { ...output, preformatted: true } 
+        : { text: output, preformatted: true }
     };
 
   } catch (err) {

@@ -16,6 +16,11 @@ if (!process.env.ALPHA_VANTAGE_KEY && !process.env.FINNHUB_KEY) {
   warnings.push("⚠️  No finance API keys set - finance tool will be unavailable");
 }
 
+// GitHub
+if (!process.env.GITHUB_PERSONAL_ACCESS_TOKEN) {
+  warnings.push("⚠️  GITHUB_PERSONAL_ACCESS_TOKEN not set - GitHub tool will be unavailable");
+}
+
 // Search
 if (!process.env.SERPAPI_KEY) {
   warnings.push("⚠️  SERPAPI_KEY not set - search features may be limited");
@@ -89,6 +94,9 @@ export const CONFIG = {
 
   // Sports
   SPORTS_API_KEY: process.env.SPORTS_API_KEY,
+
+  // GitHub
+  GITHUB_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
 
   // YouTube
   YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
@@ -192,4 +200,5 @@ if (CONFIG.isXAvailable()) console.log('  ✓ X/Twitter API configured');
 if (CONFIG.SPOTIFY_CLIENT_ID && CONFIG.SPOTIFY_CLIENT_SECRET && CONFIG.SPOTIFY_REFRESH_TOKEN) console.log('  ✓ Spotify API configured');
 if (CONFIG.CREDENTIAL_MASTER_KEY) console.log('  ✓ Credential encryption configured');
 if (CONFIG.MOLTBOOK_BASE_URL !== 'https://moltbook.com') console.log(`  ✓ Moltbook URL: ${CONFIG.MOLTBOOK_BASE_URL}`);
+if (CONFIG.GITHUB_TOKEN) console.log('  ✓ GitHub API configured');
 console.log('='.repeat(60) + '\n');

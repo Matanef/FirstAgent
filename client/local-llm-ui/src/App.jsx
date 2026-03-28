@@ -198,6 +198,7 @@ async function sendMessage() {
               last.thoughts = data.thoughtChain || accumulatedThoughts;
               last.tool = data.tool;
               last.data = data.data;
+              if (data.html) last.html = data.html;
               current[current.length - 1] = last;
               return { ...c, [activeId]: current };
             });
