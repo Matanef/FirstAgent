@@ -5,37 +5,96 @@ import fetch from "node-fetch";
  * githubTrending Tool
  * Fetches the current trending repositories from GitHub.
  */
+
+// server/tools/githubTrending.js
+
+// Add this helper function at the top or bottom of the file
+function generateTrendingHTML(repos, topic) {
+    return `
+        <div class="ai-trending-results" style="font-family: -apple-system, sans-serif; color: #e7e9ea;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">🔥</span>
+                    <h3 style="margin: 0; color: #e7e9ea;">Trending: ${topic || 'GitHub'}</h3>
+                </div>
+                <input type="text" id="trending-filter" placeholder="Filter repos..." 
+                    style="padding: 6px 12px; border: 1px solid #38444d; border-radius: 6px; font-size: 12px; width: 180px; background: #0f1419; color: #e7e9ea;" />
+            </div>
+            <div style="max-height: 400px; overflow-y: auto; border: 1px solid #38444d; border-radius: 8px; background: #15202b;">
+                <table id="trending-table" style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead style="position: sticky; top: 0; background: #192734; z-index: 1; box-shadow: inset 0 -1px 0 #38444d;">
+                        <tr style="text-align: left; color: #8b98a5;">
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d;">Repository</th>
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d;">Stars</th>
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d; text-align: center;">Link</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${repos.map(r => `
+                            <tr class="trending-row">
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d;">
+                                    <strong style="color: #1d9bf0;">${r.name}</strong><br/>
+                                    <small style="color: #8b98a5;">${r.description || 'No description'}</small>
+                                </td>
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d; font-weight: bold; color: #ffa726;">
+                                    ${r.stars.toLocaleString()} ⭐
+                                </td>
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d; text-align: center;">
+                                    <a href="${r.url}" target="_blank" style="padding: 4px 12px; background: #00ba7c; color: white; text-decoration: none; border-radius: 9999px; font-size: 11px; font-weight: bold;">View</a>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+
+
 export async function githubTrending(request) {
     try {
-        const query = typeof request === 'string'
-            ? request
-            : (request?.text || request?.query);
+        const query = typeof request === 'string' ? request : (request?.text || "");
+        const context = typeof request === 'object' ? (request?.context || {}) : {};
+        
+        // Use the limit from context (passed by planner) or extract from text
+        const countMatch = query.match(/\b(\d+)\b/);
+        const limit = context.limit || (countMatch ? parseInt(countMatch[1]) : 15);
 
         if (query && query.trim()) {
-            // Clean the query: strip common routing prefixes and noise words
+            // Clean the query: strip routing prefixes, tool keywords, numbers, and stop words
             let cleanQuery = query
-                .replace(/^.*?\b(show|list|find|get|search|display|fetch)\s+/i, "")
+                .replace(/^.*?\b(show|list|find|get|search|display|fetch|scan)\s+/i, "")
                 .replace(/\b(trending|on\s+github|github|repos?|repositories?|popular|top|open\s*source|frameworks?|libraries?|projects?)\b/gi, "")
+                .replace(/\b(\d+|first|last|top)\b/gi, "")
+                // Strip common English stop words that pollute the GitHub search query
+                .replace(/\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by|from|is|are|was|were|be|been|it|its|them|they|this|that|those|these|me|my|summarize|summarise|analyze|analyse|explain|about)\b/gi, "")
                 .replace(/\s{2,}/g, " ")
                 .trim();
-            if (cleanQuery.length < 2) cleanQuery = query.trim(); // fallback to original if over-stripped
 
-            console.log(`🔍 Searching GitHub for trending topic: ${cleanQuery} (raw: ${query})...`);
+            // If over-stripped (generic "trending repos" request), use general trending
+            if (cleanQuery.length < 2) {
+                console.log(`🌏 Query over-stripped to "${cleanQuery}" — falling back to general trending (limit: ${limit})`);
+                return await fetchTrendingRepos('past week', limit);
+            }
+
+            console.log(`🔍 Searching GitHub for trending topic: "${cleanQuery}" (raw: "${query}", limit: ${limit})...`);
             // Use GitHub Search API (publicly accessible for simple GET)
-            const searchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(cleanQuery)}+stars:>100&sort=stars&order=desc`;
+            const searchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(cleanQuery)}+stars:>100&sort=stars&order=desc&per_page=${limit}`;
             const response = await fetch(searchUrl, {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             });
             const data = await response.json();
-const repos = (data.items || []).slice(0, 10).map(repo => {
-    if (!repo) return null;
-    return {
-        name: repo.full_name,
-        url: repo.html_url,
-        description: repo.description,
-        stars: repo.stargazers_count
-    };
-}).filter(repo => repo !== null);
+            const repos = (data.items || []).slice(0, limit).map(repo => {
+                if (!repo) return null;
+                return {
+                    name: repo.full_name,
+                    url: repo.html_url,
+                    description: repo.description,
+                    stars: repo.stargazers_count
+                };
+            }).filter(repo => repo !== null);
 
             return {
                 tool: "githubTrending",
@@ -44,17 +103,19 @@ const repos = (data.items || []).slice(0, 10).map(repo => {
                 data: {
                     count: repos.length,
                     repositories: repos,
-                    topic: cleanQuery,
+                    topic: cleanQuery || "GitHub Trending",
                     timestamp: new Date().toISOString(),
+                    html: generateTrendingHTML(repos, cleanQuery || "GitHub Trending"),
+                    plain: JSON.stringify(repos, null, 2), // <--- THIS FEEDS THE LLM IN STEP 2
                     preformatted: true,
-                    text: `**Trending GitHub Repositories: ${cleanQuery}**\n\n` +
-                        repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}\n   ${r.description || 'No description'}`).join('\n\n')
+                    text: `I found ${repos.length} trending repositories${cleanQuery ? ` for "${cleanQuery}"` : ""}. You can review them in the specialized window above.`
                 },
-                reasoning: `Found ${repos.length} top repositories for topic "${cleanQuery}".`
+                reasoning: `Found ${repos.length} top repositories${cleanQuery ? ` for topic "${cleanQuery}"` : ""}.`
             };
+
         }
 
-        return await fetchTrendingRepos('past week');
+        return await fetchTrendingRepos('past week', limit);
     } catch (err) {
         console.error("❌ GitHub Trending Error:", err);
         return {
@@ -66,18 +127,20 @@ const repos = (data.items || []).slice(0, 10).map(repo => {
     }
 }
 
-async function fetchTrendingRepos(timeframe) {
-    console.log(`🌏 Fetching GitHub Trending via Search API (${timeframe})...`);
+async function fetchTrendingRepos(timeframe, limit = 15) {
+    console.log(`🌏 Fetching GitHub Trending via Search API (${timeframe}, limit: ${limit})...`);
     const oneWeekAgo = timeframe === 'past week' ? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] : '';
-    const searchUrl = `https://api.github.com/search/repositories?q=stars:>500${oneWeekAgo ? `+pushed:>${oneWeekAgo}` : ''}&sort=stars&order=desc&per_page=15`;
+    const searchUrl = `https://api.github.com/search/repositories?q=stars:>500${oneWeekAgo ? `+pushed:>${oneWeekAgo}` : ''}&sort=stars&order=desc&per_page=${limit}`;
     const response = await fetch(searchUrl, {
         headers: { 'Accept': 'application/vnd.github.v3+json' }
     });
+
     if (!response.ok) {
         throw new Error(`GitHub API error: HTTP ${response.status}`);
     }
+
     const data = await response.json();
-    const repos = (data.items || []).slice(0, 15).map(repo => ({
+    const repos = (data.items || []).slice(0, limit).map(repo => ({
         name: repo.full_name,
         url: repo.html_url,
         description: repo.description,
@@ -93,18 +156,21 @@ async function fetchTrendingRepos(timeframe) {
         };
     }
 
+    // FIXED: Removed undefined 'cleanQuery' and 'topic' references
     return {
-        tool: "githubTrending",
-        success: true,
-        final: true,
-        data: {
-            count: repos.length,
-            repositories: repos,
-            timestamp: new Date().toISOString(),
-            preformatted: true,
-            text: `**Trending GitHub Repositories (${timeframe})**\n\n` +
-                repos.map((r, i) => `${i + 1}. **[${r.name}](${r.url})** ⭐ ${r.stars.toLocaleString()}${r.language ? ` (${r.language})` : ''}\n   ${r.description || 'No description'}`).join('\n\n')
-        },
-        reasoning: `Found ${repos.length} trending repositories on GitHub.`
-    };
+            tool: "githubTrending",
+            success: true,
+            final: true,
+            data: {
+                count: repos.length,
+                repositories: repos,
+                topic: timeframe,
+                timestamp: new Date().toISOString(),
+                html: generateTrendingHTML(repos, timeframe),
+                plain: JSON.stringify(repos, null, 2), // <--- THIS FEEDS THE LLM IN STEP 2
+                preformatted: true,
+                text: `I found ${repos.length} trending repositories for the ${timeframe}. You can review them in the specialized window above.`
+            },
+            reasoning: `Found ${repos.length} trending repositories on GitHub.`
+        };
 }

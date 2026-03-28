@@ -116,7 +116,33 @@ function detectContentType(content, data, tool) {
     if (tool === "file" && data?.items) return "filesystem";
     if (tool === "weather" && data?.temp) return "weather";
     if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
+    if (tool === "githubTrending" && data?.html) return "trendingHTML";
     return "text";
+}
+
+function TrendingPanel({ html, content }) {
+    const containerRef = useRef(null);
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        const filterInput = el.querySelector('#trending-filter');
+        if (filterInput) {
+            const handleFilter = (e) => {
+                const term = e.target.value.toLowerCase();
+                const rows = el.querySelectorAll('.trending-row');
+                rows.forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(term) ? "" : "none";
+                });
+            };
+            filterInput.addEventListener('keyup', handleFilter);
+            return () => filterInput.removeEventListener('keyup', handleFilter);
+        }
+    }, [html]);
+
+    return (
+        <div ref={containerRef} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+    );
 }
 function McpBridgePanel({ html, data, content }) {
     const containerRef = useRef(null);
@@ -154,11 +180,28 @@ function McpBridgePanel({ html, data, content }) {
             filterInput.addEventListener('keyup', handleFilter);
             filterInput._cleanup = () => filterInput.removeEventListener('keyup', handleFilter);
         }
+        // 3. ── Handle SQLite Search Filter ──
+        const sqliteFilter = el.querySelector('#sqlite-filter');
+        if (sqliteFilter) {
+            const handleSqliteFilter = (e) => {
+                const term = e.target.value.toLowerCase();
+                const rows = el.querySelectorAll('.db-row');
+                
+                rows.forEach(row => {
+                    const text = row.textContent || row.innerText;
+                    row.style.display = text.toLowerCase().includes(term) ? "" : "none";
+                });
+            };
+            sqliteFilter.addEventListener('keyup', handleSqliteFilter);
+            sqliteFilter._cleanup = () => sqliteFilter.removeEventListener('keyup', handleSqliteFilter);
+        }
 
         // Cleanup on unmount
         return () => {
             const cBtn = el.querySelector('[data-action="copy-json"]');
             const fInp = el.querySelector('#github-filter');
+            const sFilt = el.querySelector('#sqlite-filter');
+            if (sFilt?._cleanup) sFilt._cleanup();
             if (cBtn?._cleanup) cBtn._cleanup();
             if (fInp?._cleanup) fInp._cleanup();
         };

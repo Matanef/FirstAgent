@@ -504,17 +504,17 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     }
   }
 
-// ── FIX: Handle MCP HTML results before they get summarized ──
-  if (tool === "mcpBridge" && result.data?.html) {
-    console.log("[executor] MCP HTML detected — bypassing LLM summarization");
-    return { 
-      reply: result.data.text || "Results retrieved.", 
-      html: result.data.html, // Ensure this is explicitly at the top level
-      tool, 
-      data: result.data, 
-      success: true, 
-      final: true 
-    };
+  // ── FIX: Add githubTrending to the HTML bypass ──
+  if ((tool === "mcpBridge" || tool === "githubTrending") && result.data?.html) {
+      console.log(`[executor] ${tool} HTML detected — bypassing LLM summarization`);
+      return { 
+        reply: result.data.text || "Results retrieved.", 
+        html: result.data.html, 
+        tool, 
+        data: result.data, 
+        success: true, 
+        final: true 
+      };
   }
 
   // PRE-FORMATTED RESULTS (finance tables, email drafts, etc.)

@@ -139,11 +139,12 @@ function inferToolFromText(text) {
   if (/\b(sport|score|match|fixture|nba|nfl)\b/.test(lower)) return "sports";
   if (/\b(calendar|event|meeting|schedule|appointment)\b/.test(lower)) return "calendar";
   if (/\b(git|commit|branch|github)\b/.test(lower)) return "gitLocal";
+  if (/\b(trending|popular\s+repos|scan\s+repos)\b/.test(lower)) return "githubTrending"; 
   if (/\b(task|todo|reminder)\b/.test(lower)) return "tasks";
   if (/\b(write|create|generate)\s+(a\s+)?(file|script)\b/.test(lower)) return "fileWrite";
-  if (/\b(trending|popular\s+repos)\b/.test(lower)) return "githubTrending";
   if (/\b(youtube|video)\b/.test(lower)) return "youtube";
   if (/\b(play|pause|skip|previous|spotify|music|song|track)\b/.test(lower)) return "spotifyController";
+  if (/\b(chart|graph|plot|visualize|diagram)\b/.test(lower)) return "chartGenerator";
   if (/\b(tweet|twitter|x\s+trends?|trending\s+on\s+x)\b/.test(lower)) return "x";
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
 
@@ -210,9 +211,9 @@ function hasCompoundIntent(text) {
   // Pattern 5b: multi-step with "Use the LLM/agent/nlp/tool to..." mid-sentence
   if (/\buse\s+(?:the\s+)?(?:llm|agent|ai|nlp)\s+(?:tool\s+)?to\b/i.test(lower)) return true;
 
-  // Pattern 5d: "summarize/analyze" + source tool keyword (news/moltbook/search) → compound
+  // Pattern 5d: "summarize/analyze" + source tool keyword (news/moltbook/search/github) → compound
   if (/\b(?:summarize|analy[sz]e|break\s*down|explain)\b/i.test(lower) &&
-      /\b(?:news|moltbook|search|articles?|headlines?)\b/i.test(lower)) return true;
+      /\b(?:news|moltbook|search|articles?|headlines?|trending|github|repos?)\b/i.test(lower)) return true;
 
   // Pattern 5c: multi-tool pipeline keywords (search + categorize/summarize/analyze + save/append/sheet/send/whatsapp)
   if (/\b(?:search|find|get)\b/i.test(lower) &&
@@ -597,6 +598,14 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
   const contextSignals = extractContextSignals(trimmed);
   console.log("[planner] handleCompoundIntent: attempting LLM decomposition...");
 
+  // Extract numeric limit/count from the ORIGINAL query (before LLM rewrites it)
+  // Patterns: "top 20", "first 10", "latest 5", "20 repos", "50 articles"
+  const limitMatch = lower.match(/\b(?:first|top|latest|last|scan)\s+(\d+)\b|\b(\d+)\s+(?:articles?|results?|posts?|items?|headlines?|repos?|repositories?|tweets?)\b/);
+  const requestedLimit = limitMatch ? parseInt(limitMatch[1] || limitMatch[2], 10) : null;
+  if (requestedLimit) {
+    console.log(`[planner] handleCompoundIntent: extracted limit=${requestedLimit} from query`);
+  }
+
   const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
 
   if (decomposedSteps && decomposedSteps.length > 1) {
@@ -605,10 +614,18 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     for (const step of decomposedSteps) {
       const resolvedTool = resolveToolName(step.tool, availableTools);
       if (resolvedTool) {
+        const isFirstStep = resolvedSteps.length === 0;
+        const stepContext = isFirstStep ? {} : { useChainContext: true };
+
+        // Inject extracted limit into the first step's context (data-fetching step)
+        if (isFirstStep && requestedLimit) {
+          stepContext.limit = requestedLimit;
+        }
+
         resolvedSteps.push({
           tool: resolvedTool,
           input: step.input || trimmed,
-          context: resolvedSteps.length > 0 ? { useChainContext: true } : {},
+          context: stepContext,
           reasoning: step.reasoning || "compound_llm_decomposed"
         });
       } else {
@@ -617,7 +634,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     }
 
     if (resolvedSteps.length > 1) {
-      console.log(`[planner] handleCompoundIntent: ${resolvedSteps.map(s => s.tool).join(" → ")}`);
+      console.log(`[planner] handleCompoundIntent: ${resolvedSteps.map(s => s.tool).join(" → ")}${requestedLimit ? ` (limit: ${requestedLimit})` : ""}`);
       return resolvedSteps;
     }
   }
@@ -1807,7 +1824,73 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     ];
   }
 
-// Pattern: "X and then Y and then Z" — generic multi-step decomposition (no commas required)
+
+// ──────────────────────────────────────────────────────────
+  // MULTI-STEP: Compound query detection
+  // Decomposes compound intents into sequential tool steps
+  // (reached when hasCompoundIntent() guard skipped a certainty branch above)
+  // ──────────────────────────────────────────────────────────
+  if (hasCompoundIntent(lower)) {
+    console.log("[planner] compound intent detected, checking compound patterns...");
+  }
+
+  // Pattern: "review X and create/generate a [better/new/improved] version" → review + fileWrite
+  if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(\w+\s+)?(version|copy|file|variant|output)\b/i.test(lower)) {
+    const absPathMatch = trimmed.match(/(?:review|analyze)\s+([A-Za-z]:[\\\/][^\s"']+)/i);
+    const relPathMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i);
+    const sourceFile = absPathMatch ? absPathMatch[1] : (relPathMatch ? relPathMatch[1] : "the code");
+    const sourceBasename = sourceFile.replace(/^.*[\\\/]/, "");
+    const destMatch = trimmed.match(/(?:at|to|in)\s+([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/i);
+    let destDir = destMatch ? destMatch[1] : null;
+
+    const now = new Date();
+    const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 14).replace(/^(\d{8})(\d{6})/, "$1-$2");
+    const extMatch = sourceBasename.match(/(\.\w+)$/);
+    const ext = extMatch ? extMatch[1] : ".js";
+    const nameOnly = sourceBasename.replace(/\.\w+$/, "");
+    const smartFilename = `${nameOnly}.agent.${ts}${ext}`;
+    const targetPath = destDir ? `${destDir.replace(/[\\\/]$/, "")}/${smartFilename}` : smartFilename;
+
+    const destContext = { useChainContext: true, targetPath, sourceFile, generateImproved: true };
+    console.log(`[planner] Compound: review "${sourceFile}" → generate "${targetPath}"`);
+    return [
+      { tool: "review", input: trimmed, context: {}, reasoning: "compound_review_source" },
+      { tool: "fileWrite", input: trimmed, context: destContext, reasoning: "compound_generate_improved" }
+    ];
+  }
+
+  // ── 2-step compound: source → llm summarize/analyze (no destination) ──
+  // MUST BE ABOVE GENERIC CHAIN PATTERN!
+  if (/\b(?:summarize|analy[sz]e|use\s+(?:the\s+)?llm|explain|break\s*down)\b/i.test(lower) &&
+      !(/\b(?:whatsapp|wa|email|send\s+to)\b/i.test(lower)) &&
+      /\b(?:search|find|get|check|show|read|fetch|news|moltbook|scan|trending)\b/i.test(lower)) {
+    
+    let sourceTool = "news";
+    if (/\b(?:search\s+(?:x|twitter)|tweets?\s+about|on\s+(?:x|twitter))\b/i.test(lower)) sourceTool = "x";
+    else if (/\b(?:moltbook)\b/i.test(lower)) sourceTool = "moltbook";
+    else if (/\b(?:trending|githubTrending|scan\s+repos)\b/i.test(lower)) sourceTool = "githubTrending";
+    else if (/\b(?:news|headlines?|articles?)\b/i.test(lower)) sourceTool = "news";
+    else if (/\b(?:search|google|look\s+up)\b/i.test(lower)) sourceTool = "search";
+
+    const countMatch = lower.match(/\b(?:first|top|latest|last|scan)\s+(\d+)\b|\b(\d+)\s+(?:articles?|results?|posts?|items?|headlines?|repos?)\b/);
+    const requestedCount = countMatch ? parseInt(countMatch[1] || countMatch[2], 10) : null;
+
+    const sourceMatch = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?(?:use|then)|,\s*(?:analy|summarize|explain|break)|and\s+(?:use|analy|summarize|then))/i);
+    const cleanSourceInput = sourceMatch ? sourceMatch[1].trim() : trimmed;
+
+    const sourceContext = {};
+    if (requestedCount) sourceContext.limit = requestedCount;
+
+    const analysisInstruction = `Provide a detailed summary of the data found in the previous step. Highlight the most interesting items and provide your technical opinion on the trends you see.`;
+
+    console.log(`[planner] Forced 2-step: ${sourceTool} → llm`);
+    return [
+      { tool: sourceTool, input: cleanSourceInput, context: sourceContext, reasoning: "compound_source_fetch" },
+      { tool: "llm", input: analysisInstruction, context: { useChainContext: true }, reasoning: "compound_analyze_step" }
+    ];
+  }
+
+  // Pattern: "X and then Y and then Z" — generic multi-step decomposition (no commas required)
   const chainPattern = trimmed.match(/^(.+?)\s+(?:(?:,\s*)?(?:and\s+)?then\s+|;\s*then\s+)(.+?)(?:\s+(?:(?:,\s*)?(?:and\s+)?then\s+|;\s*then\s+)(.+))?$/i);
   if (chainPattern) {
     const steps = [chainPattern[1], chainPattern[2], chainPattern[3]].filter(Boolean).map(s => s.trim());
@@ -1820,55 +1903,9 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     }
   }
 
-  // ── 2-step compound: source → llm summarize/analyze (no destination) ──
-  // Handles: "read the news about X, use llm to summarize them"
-  //          "get moltbook feed, summarize the top posts"
-  //          "search for X, use the llm tool to analyze the results"
-  if (/\b(?:summarize|analy[sz]e|use\s+(?:the\s+)?llm|explain|break\s*down)\b/i.test(lower) &&
-      !(/\b(?:whatsapp|wa|email|send\s+to)\b/i.test(lower)) &&
-      /\b(?:search|find|get|check|show|read|fetch|news|moltbook)\b/i.test(lower)) {
-    // Detect source tool
-    let sourceTool = "news";
-    let sourceInput = trimmed;
-    if (/\b(?:search\s+(?:x|twitter)|tweets?\s+about|on\s+(?:x|twitter))\b/i.test(lower)) {
-      sourceTool = "x";
-    } else if (/\b(?:moltbook)\b/i.test(lower)) {
-      sourceTool = "moltbook";
-    } else if (/\b(?:news|headlines?|articles?)\b/i.test(lower)) {
-      sourceTool = "news";
-    } else if (/\b(?:search|google|look\s+up)\b/i.test(lower)) {
-      sourceTool = "search";
-    }
 
-    // Extract article/result count from user request (e.g., "first 4", "top 3", "5 articles")
-    const countMatch = lower.match(/\b(?:first|top|latest|last)\s+(\d+)\b|\b(\d+)\s+(?:articles?|results?|posts?|items?|headlines?)\b/);
-    const requestedCount = countMatch ? parseInt(countMatch[1] || countMatch[2], 10) : null;
 
-    // Clean source input: everything before the analysis instruction
-    const sourceMatch = trimmed.match(/^(.+?)(?:,\s*(?:and\s+)?(?:use|then)|,\s*(?:analy|summarize|explain|break)|and\s+(?:use|analy|summarize|then))/i);
-    const cleanSourceInput = sourceMatch ? sourceMatch[1].trim() : trimmed;
 
-    // Build source context (pass article count to the source tool)
-    const sourceContext = {};
-    if (requestedCount) sourceContext.articleCount = requestedCount;
-
-    // Build analysis prompt — detailed per-item summary + opinionated conclusion
-    const topicMatch = cleanSourceInput.match(/(?:about|on|for|regarding)\s+(.+?)$/i);
-    const topicHint = topicMatch ? topicMatch[1].trim() : "the topic";
-    const countHint = requestedCount ? `the ${requestedCount}` : "each";
-
-    const analysisInstruction = `Read the data from the previous step carefully. For ${countHint} article${requestedCount === 1 ? "" : "s"}, provide a detailed summary based on the ACTUAL CONTENT — not just the headline. Include key facts, quotes, and developments from each article.
-
-After all individual summaries, write a final "My Analysis" section with your opinionated take on the overall situation regarding ${topicHint}. What patterns do you see? What might happen next? What should the reader pay attention to?
-
-Format: numbered list of article summaries, then a horizontal rule, then your analysis.`;
-
-    console.log(`[planner] Compound (2-step): ${sourceTool} → llm${requestedCount ? ` (count: ${requestedCount})` : ""}`);
-    return [
-      { tool: sourceTool, input: cleanSourceInput, context: sourceContext, reasoning: "compound_source" },
-      { tool: "llm", input: analysisInstruction, context: { useChainContext: true }, reasoning: "compound_analyze" }
-    ];
-  }
 
   // ── 3-step compound: source → analysis/nlp → destination (whatsapp/email) ──
   // Must come BEFORE the generic 2-step whatsapp/email patterns

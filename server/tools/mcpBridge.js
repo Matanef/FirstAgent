@@ -186,7 +186,9 @@ function parseIntent(text, context = {}) {
       if (lower.includes("search")) toolName = "search_code";
       if (lower.includes("issue")) toolName = "list_issues";
     } else if (targetServer === "sqlite") {
-      if (lower.includes("query") || lower.includes("select")) toolName = "execute_query";
+        if (/\b(query|select|insert|update|delete|create|drop|pragmas?)\b/i.test(lower)) {
+            toolName = "execute_query";
+        }
     }
 
     // Fallback: If we can't guess the tool, try to find a word that looks like a tool name
@@ -202,7 +204,11 @@ function parseIntent(text, context = {}) {
       } else {
         // Common MCP argument patterns
         if (toolName === "search_code") args = { q: text.split("for").pop().trim() };
-        else if (toolName === "execute_query") args = { query: text };
+        else if (toolName === "execute_query") {
+          // Extract the SQL part: find where the keyword "SELECT/INSERT/etc" starts
+          const sqlMatch = text.match(/\b(SELECT|INSERT|UPDATE|DELETE|CREATE|PRAGMA)\b[\s\S]*/i);
+          args = { query: sqlMatch ? sqlMatch[0].trim() : text };
+        }
       }
 
       return { action: "call_tool", server: targetServer, toolName, args };
@@ -294,84 +300,149 @@ async function handleCallTool(serverName, toolName, args = {}) {
 
   const result = await client.callTool({ name: toolName, arguments: args });
 
-  // ── NEW: Specialized Formatter for GitHub Search Results ──
-  // Check if this is a GitHub search and has items
+  // ── Specialized Formatter for GitHub Search Results ──
   const items = result.items || (result.content && result.content[0]?.text ? JSON.parse(result.content[0].text).items : null);
 
   if (toolName === "search_code" && items) {
-    // We removed the .slice(0, 10) to show all results returned by the MCP
-const repos = items; 
+    const repos = items; 
     
-
-const html = `
-      <div class="ai-github-search-results" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="24" />
-                <h3 style="margin: 0; color: #e7e9ea;">GitHub Code Search: "${args.q || args.query}"</h3>
+    const html = `
+        <div class="ai-github-search-results" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #e7e9ea;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="24" style="filter: invert(1);" />
+                    <h3 style="margin: 0; color: #e7e9ea; font-size: 1.1rem;">GitHub Code Search: "${args.q || args.query}"</h3>
+                </div>
+                
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <input type="text" 
+                        id="github-filter" 
+                        placeholder="Filter ${repos.length} results..." 
+                        style="padding: 6px 12px; border: 1px solid #38444d; border-radius: 6px; font-size: 12px; width: 180px; background: #0f1419; color: #e7e9ea;"
+                    />
+                    <button 
+                        data-action="copy-json"
+                        style="padding: 6px 12px; background: #38444d; color: #e7e9ea; border: 1px solid #566370; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;"
+                    >
+                        📋 JSON
+                    </button>
+                </div>
             </div>
             
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <input type="text" 
-                    id="github-filter" 
-                    placeholder="Filter these ${repos.length} results..." 
-                    style="padding: 6px 12px; border: 1px solid #38444d; border-radius: 6px; font-size: 12px; width: 180px; background: #0f1419; color: #e7e9ea;"
-                />
-                <button 
-                    data-action="copy-json"
-                    style="padding: 6px 12px; background: #38444d; color: #e7e9ea; border: 1px solid #566370; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;"
-                    onmouseover="this.style.background='#4a5568'"
-                    onmouseout="this.style.background='#38444d'"
-                >
-                    📋 JSON
-                </button>
+            <p style="color: #8b98a5; font-size: 13px; margin-bottom: 10px;">Found <strong>${result.total_count || items.length}</strong> matches.</p>
+            
+            <div style="max-height: 400px; overflow-y: auto; border: 1px solid #38444d; border-radius: 8px; background: #15202b;">
+                <table id="github-results-table" style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead style="position: sticky; top: 0; background: #192734; z-index: 1; box-shadow: inset 0 -1px 0 #38444d;">
+                        <tr style="text-align: left;">
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d; color: #8b98a5;">File / Repository</th>
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d; color: #8b98a5;">Path</th>
+                            <th style="padding: 12px 10px; border-bottom: 1px solid #38444d; color: #8b98a5; text-align: center;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${repos.map(item => `
+                            <tr class="repo-row">
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d;">
+                                    <strong style="color: #1d9bf0; font-size: 14px;">${item.name}</strong><br/>
+                                    <small style="color: #8b98a5;">${item.repository.full_name}</small>
+                                </td>
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d;">
+                                    <code style="font-size: 11px; background: #22303c; color: #ffa726; padding: 3px 6px; border-radius: 4px; border: 1px solid #38444d;">${item.path}</code>
+                                </td>
+                                <td style="padding: 12px 10px; border-bottom: 1px solid #38444d; text-align: center;">
+                                    <a href="${item.html_url}" target="_blank" 
+                                       style="display: inline-block; padding: 6px 14px; background: #00ba7c; color: white; text-decoration: none; border-radius: 9999px; font-weight: 700; font-size: 12px;">
+                                       View
+                                    </a>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
             </div>
         </div>
-        
-        <p style="color: #8b98a5; font-size: 13px;">Found <strong>${result.total_count || items.length}</strong> matches.</p>
-        
-        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #444444; border-radius: 8px; background: #444444;">
-            <table id="github-results-table" style="width: 100%; border-collapse: collapse; font-size: 13px; color: #333;">
-                <thead style="position: sticky; top: 0; background: #444444; z-index: 1; box-shadow: inset 0 -1px 0 #444444;">
-                    <tr style="text-align: left;">
-                        <th style="padding: 10px; border-bottom: 1px solid #484a4d;">File / Repository</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #484a4d;">Path</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #484a4d; text-align: center;">Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${repos.map(item => `
-                        <tr class="repo-row">
-                            <td style="padding: 10px; border-bottom: 1px solid #444444;">
-                                <strong style="color: #0969da;">${item.name}</strong><br/>
-                                <small style="color: #57606a;">${item.repository.full_name}</small>
-                            </td>
-                            <td style="padding: 10px; border-bottom: 1px solid #444444;">
-                                <code style="font-size: 11px; background: #e6a876; padding: 2px 4px; border-radius: 4px; color: #24292f;">${item.path}</code>
-                            </td>
-                            <td style="padding: 10px; border-bottom: 1px solid #444444; text-align: center;">
-                                <a href="${item.html_url}" target="_blank" 
-                                   style="display: inline-block; padding: 4px 12px; background: #1d7737; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 12px;">
-                                   View
-                                </a>
-                            </td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-    </div>
-`;
+    `;
 
-    return { html, text: `Found ${result.total_count || items.length} results for ${args.q}.` };
+    return { 
+      html, 
+      text: `Found ${result.total_count || items.length} results for ${args.q}.`,
+      raw: result // Ensure the full result is available for the Copy JSON button
+    };
   }
 
-  // ── ORIGINAL LOGIC: Fallback for other tools ──
+  // ── NEW: Specialized Formatter for SQLite Query Results ──
+  if (serverName === "sqlite" && (toolName === "execute_query" || toolName === "query_data")) {
+    // Determine rows: some servers return result.rows, others return the result directly as an array
+    let rows = result.rows || (Array.isArray(result) ? result : null);
+    
+    // If it's wrapped in MCP content text
+    if (!rows && result.content && result.content[0]?.text) {
+      try {
+        const parsed = JSON.parse(result.content[0].text);
+        rows = parsed.rows || (Array.isArray(parsed) ? parsed : null);
+      } catch (e) { /* not JSON */ }
+    }
+
+    if (rows && rows.length > 0) {
+      // Extract columns from the first row keys
+      const columns = Object.keys(rows[0]);
+      
+      const html = `
+        <div class="ai-sqlite-results" style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #e7e9ea;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">🗄️</span>
+                    <h3 style="margin: 0; color: #e7e9ea; font-size: 1.1rem;">Query Results: ${serverName}</h3>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <input type="text" 
+                        id="sqlite-filter" 
+                        placeholder="Search ${rows.length} rows..." 
+                        style="padding: 6px 12px; border: 1px solid #38444d; border-radius: 6px; font-size: 12px; width: 180px; background: #0f1419; color: #e7e9ea;"
+                    />
+                    <button 
+                        data-action="copy-json"
+                        style="padding: 6px 12px; background: #38444d; color: #e7e9ea; border: 1px solid #566370; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;"
+                    >📋 JSON</button>
+                </div>
+            </div>
+
+            <div style="max-height: 400px; overflow-y: auto; border: 1px solid #38444d; border-radius: 8px; background: #15202b;">
+                <table id="sqlite-results-table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                    <thead style="position: sticky; top: 0; background: #192734; z-index: 1; box-shadow: inset 0 -1px 0 #38444d;">
+                        <tr>
+                            ${columns.map(col => `
+                                <th style="padding: 10px; text-align: left; border-bottom: 2px solid #38444d; color: #8b98a5; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    ${col}
+                                </th>
+                            `).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr class="db-row">
+                                ${columns.map(col => {
+                                  const val = row[col];
+                                  const displayVal = val === null ? '<em style="color:#566370">null</em>' : val;
+                                  return `<td style="padding: 8px 10px; border-bottom: 1px solid #38444d; white-space: nowrap;">${displayVal}</td>`;
+                                }).join('')}
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+            <p style="color: #8b98a5; font-size: 11px; margin-top: 8px;">Showing ${rows.length} records from database.</p>
+        </div>
+      `;
+
+      return { html, text: `Successfully executed query on ${serverName}. Found ${rows.length} rows.`, raw: result };
+    }
+  }
+  // Fallback for other tools
   if (result.content && Array.isArray(result.content)) {
     const textParts = result.content.filter(c => c.type === "text").map(c => c.text);
-    if (textParts.length > 0) {
-      return `**📋 ${serverName}.${toolName} result:**\n\n${textParts.join("\n\n")}`;
-    }
+    if (textParts.length > 0) return `**📋 ${serverName}.${toolName} result:**\n\n${textParts.join("\n\n")}`;
   }
 
   return `**📋 ${serverName}.${toolName} result:**\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
