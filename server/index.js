@@ -51,12 +51,28 @@ app.use("/webhook/whatsapp", whatsappWebhook);
 // ============================================================
 // START SERVER
 // ============================================================
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log("\n" + "=".repeat(70));
   console.log("🤖 AI AGENT SERVER");
   console.log(`📡 http://localhost:${PORT}`);
   console.log(`📂 Project root: ${PROJECT_ROOT}`);
   console.log("=".repeat(70) + "\n");
+
+  // ── Auto-start ngrok tunnel for WhatsApp webhooks ──
+  if (process.env.WHATSAPP_TOKEN && process.env.NGROK_AUTHTOKEN) {
+    try {
+      const { webhookTunnel } = await import("./tools/webhookTunnel.js");
+      console.log("🔗 [startup] Opening ngrok tunnel for WhatsApp webhooks...");
+      const result = await webhookTunnel({ text: "open tunnel", context: { action: "open" } });
+      if (result.success) {
+        console.log(`✅ [startup] Tunnel active — update Meta webhook URL if needed`);
+      } else {
+        console.warn(`⚠️ [startup] Tunnel failed: ${result.error || "unknown"}`);
+      }
+    } catch (e) {
+      console.warn(`⚠️ [startup] Could not auto-start tunnel: ${e.message}`);
+    }
+  }
 });
 
 process.on("SIGINT", () => {

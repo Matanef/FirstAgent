@@ -55,13 +55,17 @@ function formatWeatherWA(result) {
 
 function formatNewsWA(result, label = "News") {
   if (!result?.success) return `❌ Could not fetch ${label}.`;
-  const items = result.data?.items || result.data?.articles || [];
+  // News tool returns data.summaries (scraped articles) and data.results[].items (raw feed items)
+  const summaries = result.data?.summaries || [];
+  const rawItems = (result.data?.results || []).flatMap(r => r.items || []);
+  const items = summaries.length > 0 ? summaries : rawItems;
   if (items.length === 0) return `No ${label} found.`;
-  const lines = items.slice(0, 6).map((item, i) => {
+  const lines = items.slice(0, 8).map((item, i) => {
     const title = item.title || "Untitled";
     const source = item.source ? ` _(${item.source})_` : "";
     const link = item.link ? `\n   ${item.link}` : "";
-    return `${i + 1}. *${title}*${source}${link}`;
+    const desc = item.summary ? `\n   ${item.summary.slice(0, 120)}${item.summary.length > 120 ? "..." : ""}` : "";
+    return `${i + 1}. *${title}*${source}${desc}${link}`;
   });
   return `📰 *${label}*\n\n${lines.join("\n\n")}`;
 }
@@ -181,6 +185,42 @@ router.post("/", async (req, res) => {
         await sendWhatsAppMessage(from, formatted);
       } catch (e) {
         await sendWhatsAppMessage(from, `❌ Could not fetch news: ${e.message}`);
+      }
+      return;
+    }
+
+    // ── STATEFUL: Email confirmation ("send it" / "cancel") ──
+    if (convState?.state === "awaiting_email_confirm") {
+      const draft = convState.data?.draft;
+      if (/\b(send\s*it|yes|confirm|go\s+ahead|approve|שלח)\b/i.test(lower)) {
+        console.log(`📱 [WhatsApp] Email confirm → sending draft to ${draft?.to}`);
+        clearState(from);
+        try {
+          const { sendConfirmedEmail } = await import("../tools/email.js");
+          const sendResult = await sendConfirmedEmail({
+            to: draft.to,
+            cc: draft.cc || [],
+            bcc: draft.bcc || [],
+            subject: draft.subject,
+            body: draft.body,
+            attachments: draft.attachments || [],
+            isHtml: draft.isHtml || false
+          });
+          if (sendResult.success) {
+            await sendWhatsAppMessage(from, `✅ Email sent to ${draft.to}!\nSubject: ${draft.subject}`);
+          } else {
+            await sendWhatsAppMessage(from, `❌ Failed to send email: ${sendResult.error || "unknown error"}`);
+          }
+        } catch (e) {
+          await sendWhatsAppMessage(from, `❌ Email send error: ${e.message}`);
+        }
+      } else if (/\b(cancel|discard|don'?t\s+send|never\s*mind|abort|ביטול)\b/i.test(lower)) {
+        console.log(`📱 [WhatsApp] Email cancelled by user`);
+        clearState(from);
+        await sendWhatsAppMessage(from, "✅ Email draft discarded.");
+      } else {
+        // Unrecognized reply while awaiting confirm — remind user
+        await sendWhatsAppMessage(from, '📧 You have a pending email draft. Say *"send it"* to send or *"cancel"* to discard.');
       }
       return;
     }
@@ -334,21 +374,31 @@ router.post("/", async (req, res) => {
     // ──────────────────────────────────────────────────────
     console.log(`🤖 [WhatsApp] Routing through agent pipeline: "${body.slice(0, 60)}..."`);
 
-    const { plan } = await import("../planner.js");
-    const { orchestrate } = await import("../utils/coordinator.js");
+    const { executeAgent } = await import("../utils/coordinator.js");
 
-    const steps = await plan({ message: body });
-    console.log(`🤖 [WhatsApp] Planned ${steps.length} step(s): ${steps.map(s => s.tool).join(" → ")}`);
+    const result = await executeAgent({
+      message: body,
+      conversationId: `whatsapp_${from}`,
+      clientIp: "whatsapp"
+    });
 
-    const results = await orchestrate(steps, body);
+    console.log(`🤖 [WhatsApp] Pipeline complete — tool: ${result.tool}, success: ${result.success}`);
+
+    // ── Intercept email drafts: save state so "send it" works ──
+    const pendingEmail = result?.data?.pendingEmail;
+    if (pendingEmail && pendingEmail.to) {
+      console.log(`📧 [WhatsApp] Email draft detected → saving state for confirmation`);
+      setState(from, "awaiting_email_confirm", { draft: pendingEmail });
+      const draftMsg = `📧 *Email Draft:*\n*To:* ${pendingEmail.to}\n*Subject:* ${pendingEmail.subject || "(no subject)"}\n*Message:*\n${pendingEmail.body || "(empty)"}\n\nSay *"send it"* to confirm, or *"cancel"* to discard.`;
+      await sendWhatsAppMessage(from, draftMsg);
+      return;
+    }
 
     // Extract response text
-    const lastResult = results?.[results.length - 1];
     let responseText =
-      lastResult?.output?.data?.plain ||
-      lastResult?.output?.data?.text ||
-      lastResult?.output?.text ||
-      lastResult?.data?.text ||
+      result?.data?.plain ||
+      result?.data?.text ||
+      result?.reply ||
       "I processed your request but couldn't generate a response.";
 
     // Strip HTML for WhatsApp

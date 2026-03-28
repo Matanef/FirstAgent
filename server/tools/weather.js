@@ -1,8 +1,71 @@
 // D:\local-llm-ui\server\tools\weather.js
+// Weather tool with temperature recording & seasonal history
 
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 import { getMemory } from "../memory.js";
+import fs from "fs/promises";
+import fsSync from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const HISTORY_DIR = path.resolve(__dirname, "..", "data", "weather");
+const HISTORY_FILE = path.join(HISTORY_DIR, "history.json");
+
+// ── History persistence ──
+
+function ensureHistoryDir() {
+  if (!fsSync.existsSync(HISTORY_DIR)) {
+    fsSync.mkdirSync(HISTORY_DIR, { recursive: true });
+  }
+}
+
+function loadHistory() {
+  ensureHistoryDir();
+  try {
+    if (fsSync.existsSync(HISTORY_FILE)) {
+      return JSON.parse(fsSync.readFileSync(HISTORY_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.warn("[weather] Could not load history:", e.message);
+  }
+  return { recordings: [] };
+}
+
+async function saveHistory(history) {
+  ensureHistoryDir();
+  const tmp = HISTORY_FILE + ".tmp";
+  await fs.writeFile(tmp, JSON.stringify(history, null, 2), "utf8");
+  await fs.rename(tmp, HISTORY_FILE);
+}
+
+async function recordTemperature(city, country, temp, feelsLike, humidity, windSpeed, description) {
+  try {
+    const history = loadHistory();
+    history.recordings.push({
+      city,
+      country,
+      temp,
+      feelsLike,
+      humidity,
+      windSpeed,
+      description,
+      ts: new Date().toISOString()
+    });
+    // Keep last 2000 recordings (~2 months at 30min intervals)
+    if (history.recordings.length > 2000) {
+      history.recordings = history.recordings.slice(-2000);
+    }
+    await saveHistory(history);
+    console.log(`🌡️ [weather] Recorded: ${city} ${temp}°C (${history.recordings.length} total)`);
+  } catch (e) {
+    console.warn("[weather] Failed to record temperature:", e.message);
+  }
+}
+
+// ── Query type detection ──
 
 function wantsForecast(query) {
   const text = typeof query === "string" ? query : query?.text || "";
@@ -16,6 +79,110 @@ function wantsForecast(query) {
   );
 }
 
+function wantsHistory(query) {
+  const text = typeof query === "string" ? query : query?.text || "";
+  const lower = text.toLowerCase();
+  return /\b(history|trend|graph|record|seasonal|compare|past|yesterday|last\s+week|last\s+month|temperature\s+over|temps?\s+over|how\s+warm\s+was|how\s+cold\s+was)\b/i.test(lower);
+}
+
+// ── History analysis ──
+
+function analyzeHistory(recordings, city, daysBack = 7) {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000);
+  const cityLower = city.toLowerCase();
+
+  // Filter to requested city and time window
+  const relevant = recordings.filter(r => {
+    if (r.city.toLowerCase() !== cityLower) return false;
+    return new Date(r.ts) >= cutoff;
+  });
+
+  if (relevant.length === 0) return null;
+
+  const temps = relevant.map(r => r.temp);
+  const min = Math.min(...temps);
+  const max = Math.max(...temps);
+  const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
+
+  // Group by date for daily stats
+  const byDate = {};
+  for (const r of relevant) {
+    const date = r.ts.split("T")[0];
+    if (!byDate[date]) byDate[date] = [];
+    byDate[date].push(r);
+  }
+
+  const dailyStats = Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).map(([date, recs]) => {
+    const dayTemps = recs.map(r => r.temp);
+    return {
+      date,
+      min: Math.min(...dayTemps),
+      max: Math.max(...dayTemps),
+      avg: +(dayTemps.reduce((a, b) => a + b, 0) / dayTemps.length).toFixed(1),
+      readings: recs.length,
+      conditions: [...new Set(recs.map(r => r.description).filter(Boolean))]
+    };
+  });
+
+  // Seasonal comparison: same period last year (if data exists)
+  const oneYearAgo = new Date(cutoff.getTime() - 365 * 24 * 60 * 60 * 1000);
+  const oneYearAgoEnd = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  const lastYearRecs = recordings.filter(r => {
+    if (r.city.toLowerCase() !== cityLower) return false;
+    const d = new Date(r.ts);
+    return d >= oneYearAgo && d <= oneYearAgoEnd;
+  });
+
+  let seasonal = null;
+  if (lastYearRecs.length > 0) {
+    const lyTemps = lastYearRecs.map(r => r.temp);
+    seasonal = {
+      avg: +(lyTemps.reduce((a, b) => a + b, 0) / lyTemps.length).toFixed(1),
+      min: Math.min(...lyTemps),
+      max: Math.max(...lyTemps),
+      readings: lastYearRecs.length,
+      diff: +(avg - lyTemps.reduce((a, b) => a + b, 0) / lyTemps.length).toFixed(1)
+    };
+  }
+
+  return {
+    city,
+    period: `${daysBack} day(s)`,
+    from: cutoff.toISOString().split("T")[0],
+    to: now.toISOString().split("T")[0],
+    totalReadings: relevant.length,
+    overall: { min: +min.toFixed(1), max: +max.toFixed(1), avg: +avg.toFixed(1) },
+    daily: dailyStats,
+    seasonal
+  };
+}
+
+function buildHistoryText(analysis) {
+  if (!analysis) return "No temperature history found for this city. History builds up automatically over time.";
+
+  let text = `🌡️ **Temperature History: ${analysis.city}**\n`;
+  text += `📅 ${analysis.from} → ${analysis.to} (${analysis.totalReadings} readings)\n\n`;
+  text += `**Overall:** Min ${analysis.overall.min}°C | Max ${analysis.overall.max}°C | Avg ${analysis.overall.avg}°C\n\n`;
+
+  text += `**Daily Breakdown:**\n`;
+  for (const day of analysis.daily) {
+    const conditions = day.conditions.length > 0 ? ` (${day.conditions.join(", ")})` : "";
+    text += `  ${day.date}: ${day.min}°C – ${day.max}°C (avg ${day.avg}°C, ${day.readings} readings)${conditions}\n`;
+  }
+
+  if (analysis.seasonal) {
+    const direction = analysis.seasonal.diff > 0 ? "warmer" : "cooler";
+    text += `\n**Seasonal Comparison (vs same period last year):**\n`;
+    text += `  Last year avg: ${analysis.seasonal.avg}°C | This year: ${analysis.overall.avg}°C\n`;
+    text += `  → ${Math.abs(analysis.seasonal.diff)}°C ${direction} than last year\n`;
+  }
+
+  return text;
+}
+
+// ── Main weather tool ──
+
 export async function weather(query) {
   if (!process.env.OPENWEATHER_KEY || !process.env.OPENWEATHER_KEY.trim()) {
     return {
@@ -28,6 +195,7 @@ export async function weather(query) {
 
   try {
     let city = query?.context?.city || null;
+    const text = typeof query === "string" ? query : query?.text || "";
 
     console.log("🌤️ Weather tool received:", { city, context: query?.context });
 
@@ -50,6 +218,28 @@ export async function weather(query) {
         success: false,
         final: true,
         error: "No location saved. Please specify a city (e.g., 'weather in London') or save your location with 'remember my location is [city]'."
+      };
+    }
+
+    // ── HISTORY MODE ──
+    if (wantsHistory(query)) {
+      const daysMatch = text.match(/(?:last|past)\s+(\d+)\s*days?/i);
+      const daysBack = daysMatch ? parseInt(daysMatch[1]) : (text.toLowerCase().includes("month") ? 30 : 7);
+      const history = loadHistory();
+      const analysis = analyzeHistory(history.recordings, city, daysBack);
+      const historyText = buildHistoryText(analysis);
+
+      return {
+        tool: "weather",
+        success: true,
+        final: true,
+        data: {
+          mode: "history",
+          city,
+          analysis,
+          text: historyText,
+          preformatted: true
+        }
       };
     }
 
@@ -121,6 +311,17 @@ export async function weather(query) {
       };
     }
 
+    // ── CURRENT WEATHER + AUTO-RECORD ──
+    const temp = data.main?.temp;
+    const feelsLike = data.main?.feels_like;
+    const humidity = data.main?.humidity;
+    const windSpeed = data.wind?.speed;
+    const description = data.weather?.[0]?.description;
+    const country = data.sys?.country;
+
+    // Record temperature in background (don't await — fire & forget)
+    recordTemperature(city, country, temp, feelsLike, humidity, windSpeed, description);
+
     return {
       tool: "weather",
       success: true,
@@ -128,12 +329,12 @@ export async function weather(query) {
       data: {
         mode: "current",
         city,
-        country: data.sys?.country,
-        temp: data.main?.temp,
-        feels_like: data.main?.feels_like,
-        humidity: data.main?.humidity,
-        wind_speed: data.wind?.speed,
-        description: data.weather?.[0]?.description,
+        country,
+        temp,
+        feels_like: feelsLike,
+        humidity,
+        wind_speed: windSpeed,
+        description,
         raw: data
       }
     };

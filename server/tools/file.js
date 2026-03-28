@@ -142,43 +142,15 @@ export async function file(request) {
     const stat = await fs.stat(resolved);
     let data = {};
 
-    // Handle directories
+// Handle directories (Delegated to folderAccess)
     if (stat.isDirectory()) {
-      const items = await fs.readdir(resolved, { withFileTypes: true });
-      
-      data.items = items.map(i => ({ 
-        name: i.name, 
-        type: i.isDirectory() ? "folder" : "file", 
-        icon: getFileIcon(i.name, i.isDirectory()) 
-      }));
-      
-      // Sort: folders first, then alphabetical
-      data.items.sort((a, b) => {
-        if (a.type === b.type) return a.name.localeCompare(b.name);
-        return a.type === "folder" ? -1 : 1;
-      });
-
-      data.path = cleaned || "root";
-      data.absolutePath = resolved;
-      
-      // Generate HTML table
-      data.html = `
-        <div class="ai-table-wrapper">
-          <p><strong>📂 Directory:</strong> ${cleaned || "root"}</p>
-          <p><strong>🗂️ Full path:</strong> ${resolved}</p>
-          <p><strong>📊 Total items:</strong> ${data.items.length}</p>
-          <table class="ai-table">
-            <thead>
-              <tr><th>Icon</th><th>Name</th><th>Type</th></tr>
-            </thead>
-            <tbody>
-              ${data.items.map(i => `<tr><td>${i.icon}</td><td>${i.name}</td><td>${i.type}</td></tr>`).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-      
-      data.text = `Directory: ${cleaned || "root"} (${data.items.length} items)\n${data.items.map(i => `${i.icon} ${i.type}: ${i.name}`).join("\n")}`;
+      return { 
+        tool: "file", 
+        success: false, 
+        final: true, 
+        error: `Path "${cleaned}" is a directory. The 'file' tool is for reading code. Please use the 'folderAccess' tool to browse directories.`, 
+        reasoning: "Delegated to folderAccess tool" 
+      };
     } 
     // Handle files
     else if (stat.isFile()) {

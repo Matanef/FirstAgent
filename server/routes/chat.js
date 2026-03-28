@@ -23,8 +23,8 @@ router.post("/chat", async (req, res) => {
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Missing or invalid message" });
     }
-    if (message.length > 2000) {
-      return res.status(400).json({ error: "Message too long (max 2000 characters)" });
+    if (message.length > 16000) {
+      return res.status(400).json({ error: "Message too long (max 16000 characters)" });
     }
 
     // Validate fileIds if present

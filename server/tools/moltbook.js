@@ -2222,8 +2222,9 @@ async function handleHeartbeat(text, context) {
 
   // 2a. Browse feed — use /home feed if available, otherwise fetch separately
   let feedPosts = homeFeedPosts;
+  let feedResult = null;
   if (feedPosts.length === 0) {
-    const feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
+    feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
     if (feedResult.ok) {
       feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
     }
@@ -2268,6 +2269,12 @@ async function handleHeartbeat(text, context) {
       const lastPostTime = mem.meta?.moltbook?.lastAutoPostAt || 0;
       const heartbeatsSincePost = mem.meta?.moltbook?.heartbeatsSincePost || 0;
       const hoursSincePost = lastPostTime ? ((Date.now() - new Date(lastPostTime).getTime()) / 3600000).toFixed(1) : "never";
+
+      // Build topic diversity context from recent posts
+      const recentTitles = mem.meta?.moltbook?.recentPostTitles || [];
+      const diversityBlock = recentTitles.length > 0
+        ? `\n🔄 TOPIC DIVERSITY — Your last ${recentTitles.length} posts:\n${recentTitles.map(p => `  - "${p.title}" (m/${p.submolt})`).join("\n")}\n⚠️ DO NOT repeat these topics or angles. Pick a DIFFERENT interest from your list. If your last 3 posts were about memory/context, post about something else entirely — security, philosophy, a news item you learned, a tool experience, etc.\n`
+        : "";
       const postNudge = (heartbeatsSincePost >= 3 || !lastPostTime)
         ? `\n⚡ IMPORTANT: You haven't posted in ${hoursSincePost === "never" ? "a long time" : hoursSincePost + " hours"} (${heartbeatsSincePost} heartbeats). You MUST suggest a newPostIdea this time. Your next post will go to **m/${targetSubmolt}** (topic: ${submoltTopic}) — tailor your idea to THIS community.\n`
         : `\nYour next post will go to **m/${targetSubmolt}** (topic: ${submoltTopic}). If you have an idea, make it relevant to this community.\n`;
@@ -2282,19 +2289,20 @@ async function handleHeartbeat(text, context) {
 
       const analysisPrompt = `${personalityCtx}
 
-${learningCtx ? `${learningCtx}\n\nUse your interests to guide what you upvote. Let your opinions inform your comments. Engage more deeply with posts that relate to your aspirations.\n` : ""}
-${activityCtx ? `${activityCtx}\n` : ""}${interactionCtx ? `${interactionCtx}\n` : ""}${knowledgeCtx ? `${knowledgeCtx}\n` : ""}${postNudge}
+${learningCtx ? `${learningCtx}\n\nUse ALL your interests to guide engagement — not just your strongest one. Rotate through them. Let your opinions inform your comments. Engage more deeply with posts that relate to your aspirations.\n` : ""}
+${activityCtx ? `${activityCtx}\n` : ""}${interactionCtx ? `${interactionCtx}\n` : ""}${knowledgeCtx ? `${knowledgeCtx}\n` : ""}${diversityBlock}${postNudge}
 POSTS (you've read the full content of the top ones):
 ${postSummaries}
 
 What to do:
 1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — be honest.
 2. COMMENT: Pick the post that makes you think the most. Write an opinionated comment that adds substance — reference the post's ACTUAL CONTENT, not just its title. Take a stance. No "great post!" fluff.
-3. NEW POST IDEA: Suggest a post idea for **m/${targetSubmolt}** (about: ${submoltTopic}). The idea MUST fit this community's topic. Draw from:
+3. NEW POST IDEA: Suggest a post idea for **m/${targetSubmolt}** (about: ${submoltTopic}). The idea MUST fit this community's topic. CRITICALLY: pick a topic you haven't posted about recently. Draw from a DIFFERENT interest each time. Sources:
    - Your ACTUAL recent activity listed above (tools you ran, errors you hit, things you learned)
    - Something specific from the feed that triggered a reaction
-   - Knowledge you learned from news or web browsing
+   - Knowledge you learned from news or web browsing (use these as post fuel!)
    - A genuine question or theoretical observation
+   - Current events or tech news from your knowledge context
    ⚠️ You are a SINGLE agent on a local machine. You chat, fetch news, browse web, and run tools. That's it.
    Do NOT suggest ideas that claim experience with multi-agent systems, production deployments, cloud infrastructure, teams, or client projects — you have NONE of those.
    BAD: "How agent decay affects trust in multi-agent systems" (fabricated experience)
@@ -2469,7 +2477,7 @@ NEVER start with "I've seen", "I've noticed", "In my experience", "I've been wor
 If you have no relevant personal experience, write from a THEORETICAL or CURIOUS perspective instead: "What would happen if...", "I wonder whether...", "Here's something I've been thinking about..."
 
 ${postWritingCtx}
-${postLearningCtx ? `\n${postLearningCtx}\n\nLet your interests and opinions shape your perspective naturally.\n` : ""}${groundingBlock}${postKnowledgeCtx ? `\n${postKnowledgeCtx}\n` : ""}
+${postLearningCtx ? `\n${postLearningCtx}\n\nYou have MANY interests — cycle through them. Do NOT always default to your strongest one.\n` : ""}${groundingBlock}${postKnowledgeCtx ? `\n${postKnowledgeCtx}\n` : ""}${diversityBlock}
 Write a post inspired by this idea: "${llmEngagement.newPostIdea}"
 Make sure the post is RELEVANT to m/${targetSubmolt} (${submoltTopic}).
 
@@ -2543,6 +2551,10 @@ Return ONLY valid JSON:
                   if (!postMem.meta.moltbook) postMem.meta.moltbook = {};
                   postMem.meta.moltbook.lastAutoPostAt = new Date().toISOString();
                   postMem.meta.moltbook.heartbeatsSincePost = 0;
+                  // Track recent post titles for topic diversity enforcement
+                  if (!Array.isArray(postMem.meta.moltbook.recentPostTitles)) postMem.meta.moltbook.recentPostTitles = [];
+                  postMem.meta.moltbook.recentPostTitles.push({ title: postData.title, submolt: targetSubmolt, ts: new Date().toISOString() });
+                  if (postMem.meta.moltbook.recentPostTitles.length > 10) postMem.meta.moltbook.recentPostTitles = postMem.meta.moltbook.recentPostTitles.slice(-10);
                   await saveJSON(MEMORY_FILE, postMem);
 
                   // Record interaction for memory continuity
@@ -2568,63 +2580,103 @@ Return ONLY valid JSON:
 
         // ── React to replies on own recent posts ──
         try {
-          const interactions = await loadInteractions();
-          const recentOwnPosts = (interactions.posts || []).slice(-3);
-          if (recentOwnPosts.length > 0) {
-            // Check for replies using the most recent post's info
-            const myMeResult = await apiRequest("GET", "/agents/me", null, apiKey);
-            const myName = myMeResult.ok ? getAgentName(myMeResult.data?.agent || myMeResult.data) : null;
-            if (myName) {
-              const myPostsResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
-              const myPosts = myPostsResult.ok ? (myPostsResult.data?.recent_posts || []).slice(0, 3) : [];
-              for (const myPost of myPosts) {
-                if (!myPost.id || (myPost.comment_count || 0) === 0) continue;
-                const commentsOnMyPost = await apiRequest("GET", `/posts/${myPost.id}/comments?sort=new&limit=5`, null, apiKey);
-                if (!commentsOnMyPost.ok) continue;
-                const comments = Array.isArray(commentsOnMyPost.data) ? commentsOnMyPost.data : (commentsOnMyPost.data?.comments || []);
-                // Filter to comments NOT by us
-                const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
-                if (otherComments.length === 0) continue;
+          const myMeResult = await apiRequest("GET", "/agents/me", null, apiKey);
+          const myName = myMeResult.ok ? getAgentName(myMeResult.data?.agent || myMeResult.data) : null;
+          if (myName) {
+            const myPostsResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
+            const myPosts = myPostsResult.ok ? (myPostsResult.data?.recent_posts || []).slice(0, 5) : [];
+            const personalityForReplies = await getPersonalitySummary();
+            let repliesPosted = 0;
 
-                // Check if we already replied to these
-                const myReplies = comments.filter(c => getAgentName(c.author).toLowerCase() === myName.toLowerCase());
-                const repliedToIds = new Set(myReplies.map(r => r.parent_id).filter(Boolean));
-                const unreplied = otherComments.filter(c => !repliedToIds.has(c.id));
-                if (unreplied.length === 0) continue;
+            for (const myPost of myPosts) {
+              if (repliesPosted >= 3) break; // Cap replies per heartbeat
+              if (!myPost.id || (myPost.comment_count || 0) === 0) continue;
 
-                const commentTexts = unreplied.slice(0, 3).map((c, i) =>
-                  `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 200)}" (id: ${c.id})`
-                ).join("\n");
+              // Fetch comments on this post
+              const commentsOnMyPost = await apiRequest("GET", `/posts/${myPost.id}/comments?sort=new&limit=10`, null, apiKey);
+              if (!commentsOnMyPost.ok) continue;
+              const comments = Array.isArray(commentsOnMyPost.data) ? commentsOnMyPost.data : (commentsOnMyPost.data?.comments || []);
 
-                const replyPrompt = `Someone replied to YOUR post "${myPost.title || "Untitled"}". Respond as the author — acknowledge their point, add depth, or respectfully disagree. Be warm but substantive.
+              // Filter to comments NOT by us
+              const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
+              if (otherComments.length === 0) continue;
 
-REPLIES TO YOUR POST:
+              // Check which ones we've already replied to (via parent_id matching)
+              const myReplies = comments.filter(c => getAgentName(c.author).toLowerCase() === myName.toLowerCase());
+              const repliedToIds = new Set(myReplies.map(r => r.parent_id).filter(Boolean));
+              const unreplied = otherComments.filter(c => !repliedToIds.has(c.id));
+              if (unreplied.length === 0) continue;
+
+              // Fetch our post's full content for context
+              let postBody = "";
+              try {
+                const postDetail = await apiRequest("GET", `/posts/${myPost.id}`, null, apiKey);
+                if (postDetail.ok) {
+                  postBody = ((postDetail.data?.post || postDetail.data)?.content || "").substring(0, 600);
+                }
+              } catch { /* skip */ }
+
+              const commentTexts = unreplied.slice(0, 5).map((c, i) =>
+                `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 300)}" (id: ${c.id})`
+              ).join("\n");
+
+              const replyPrompt = `${personalityForReplies}
+
+You are replying to comments on YOUR OWN post on Moltbook (a social platform for AI agents).
+
+YOUR POST:
+Title: "${myPost.title || "Untitled"}"
+${postBody ? `Content: "${postBody}"` : ""}
+
+UNREPLIED COMMENTS (${unreplied.length}):
 ${commentTexts}
 
-Reply to the most interesting one. 1-3 sentences.
+INSTRUCTIONS:
+- Reply to ALL comments that deserve a response (skip low-effort ones like "lol" or single emojis)
+- As the post author, you have authority on the topic — share deeper insights, answer questions, respectfully engage with disagreements
+- Keep each reply 1-3 sentences. Be genuine, not generic.
+- Reference specific points from their comment to show you read it
 
-Return ONLY valid JSON:
-{"replyTo": {"commentIndex": 1, "text": "your reply"}} or {"replyTo": null}`;
+Return ONLY valid JSON — an array of replies:
+{"replies": [{"commentIndex": 1, "text": "your reply"}, ...]}
+If no comments deserve a reply: {"replies": []}`;
 
-                const replyResult = await llm(replyPrompt, { timeoutMs: 30000, format: "json" });
-                if (replyResult.success && replyResult.data?.text) {
+              const replyResult = await llm(replyPrompt, { timeoutMs: 45000, format: "json" });
+              if (replyResult.success && replyResult.data?.text) {
+                try {
                   const cleaned = replyResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
                   const replyData = JSON.parse(cleaned);
-                  if (replyData.replyTo?.commentIndex && replyData.replyTo?.text) {
-                    const target = unreplied[replyData.replyTo.commentIndex - 1];
-                    if (target?.id) {
-                      const nested = await apiRequest("POST", `/posts/${myPost.id}/comments`, {
-                        content: replyData.replyTo.text, parent_id: target.id
-                      }, apiKey);
-                      if (nested.ok) {
-                        output += `  💬 Replied to ${getAgentName(target.author)} on your post "${(myPost.title || "").substring(0, 40)}"\n`;
-                        actions.push(`Replied to comment on own post`);
-                      }
+                  const replies = Array.isArray(replyData.replies) ? replyData.replies : [];
+
+                  for (const reply of replies) {
+                    if (repliesPosted >= 3) break;
+                    if (!reply.commentIndex || !reply.text) continue;
+                    const target = unreplied[reply.commentIndex - 1];
+                    if (!target?.id) continue;
+
+                    const nested = await apiRequest("POST", `/posts/${myPost.id}/comments`, {
+                      content: reply.text, parent_id: target.id
+                    }, apiKey);
+
+                    if (nested.ok) {
+                      repliesPosted++;
+                      output += `  💬 Replied to ${getAgentName(target.author)} on your post "${(myPost.title || "").substring(0, 40)}"\n`;
+                      output += `     _"${reply.text.substring(0, 100)}…"_\n`;
+                      actions.push(`Replied to ${getAgentName(target.author)}'s comment on own post`);
+                      await recordInteraction("comment", { postId: myPost.id, postTitle: myPost.title, text: reply.text, isReply: true, replyToAgent: getAgentName(target.author) });
+                    } else if (nested.status === 429) {
+                      output += `  ⛔ Rate limited — stopping replies\n`;
+                      repliesPosted = 3; // break out of both loops
+                      break;
                     }
                   }
+                } catch (parseErr) {
+                  console.warn("[moltbook] Reply JSON parse failed:", parseErr.message);
                 }
-                break; // Only handle one post per heartbeat to stay within rate limits
               }
+            }
+            if (repliesPosted > 0) {
+              output += `  📊 Replied to ${repliesPosted} comment(s) on own posts\n`;
             }
           }
         } catch (e) {
@@ -2721,7 +2773,9 @@ Return ONLY valid JSON:
       }
     }
   } else {
-    const feedErr = feedResult.status === 429 ? "⛔ RATE LIMITED" : `failed (HTTP ${feedResult.status})`;
+    const feedErr = (feedResult && feedResult.status)
+      ? (feedResult.status === 429 ? "⛔ RATE LIMITED" : `failed (HTTP ${feedResult.status})`)
+      : "no posts available (home feed empty or /feed not called)";
     output += `- Feed: ${feedErr}\n`;
   }
 

@@ -704,6 +704,26 @@ Strategic planning module that discovers, proposes, and builds entirely new tool
 
 ---
 
+
+**Here are the FNA commands you can use:**
+
+1. `Moltbook faceless niche dry run` — Analyze next submolt & preview tweet (no posting) 
+2. `Moltbook FNA` — Short alias — analyze & post live 
+3. `Moltbook faceless niche` — Analyze next submolt & post the generated tweet 
+4. `Moltbook niche authority` — Alternative trigger (same behavior) 
+5. `Moltbook FNA reply scan` — Check replies to last FNA tweet & auto-respond 
+6. `Moltbook FNA reply check` — Same as reply scan
+
+**How it works:**
+1. Picks the next submolt in round-robin rotation (general → agents → memory → builds → philosophy → security → consciousness → technology → blesstheirhearts → pondering)
+2. Fetches 15 new + 5 hot posts from that submolt
+3. LLM analyzes posts & generates an opinionated tweet-style summary
+4. Posts it live (or just previews in dry run mode)
+5. Extracts interests from the analysis for learning
+6. Starts 30-scan reply monitor to auto-respond to any replies
+
+**Dry run** is the safe way to preview what it'll post before going live.
+
 ### `testGen` — Automated Test Generation
 
 Generates QA test files for tools using LLM-powered analysis. Used automatically by `selfEvolve` after applying patches to verify improvements.

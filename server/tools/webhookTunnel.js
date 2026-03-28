@@ -12,7 +12,7 @@ import { PROJECT_ROOT } from "../utils/config.js";
 let activeServer = null;
 let activeTunnelUrl = null;
 let ngrokProcess = null; 
-const PORT = 5055; // Port 5055 avoids common Windows UDP/TCP collisions
+const PORT = 3000; // Port 5055 avoids common Windows UDP/TCP collisions
 
 export async function webhookTunnel(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
@@ -125,6 +125,24 @@ export async function webhookTunnel(request) {
             await fs.writeFile(logFile, JSON.stringify(events, null, 2));
             console.log(`[Webhook] Received ${req.method} from ${req.headers['user-agent'] || 'Unknown'}`);
           }
+
+          // ── PROXY to main Express server's /webhook/whatsapp route ──
+          // The actual agent pipeline (message parsing, tool routing, auto-reply)
+          // lives in the main server at port 3000. Forward the webhook there.
+          const mainPort = process.env.PORT || 3000;
+          try {
+            const proxyRes = await fetch(`http://127.0.0.1:${mainPort}/webhook/whatsapp`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: body,
+              signal: AbortSignal.timeout(30000)
+            });
+            if (!proxyRes.ok) {
+              console.warn(`[Webhook] Proxy to main server returned ${proxyRes.status}`);
+            }
+          } catch (proxyErr) {
+            console.warn(`[Webhook] Proxy to main server failed: ${proxyErr.message}`);
+          }
         } catch (e) {
           console.error("[Webhook] Payload processing error:", e.message);
         }
@@ -188,12 +206,55 @@ export async function webhookTunnel(request) {
       throw new Error("Native ngrok process started but failed to provide a Public URL within 12s.");
     }
 
+    // ── Auto-register with Meta WhatsApp webhook (if credentials available) ──
+    let metaStatus = "";
+    const waAppId = process.env.WHATSAPP_APP_ID || process.env.META_APP_ID;
+    const waAppSecret = process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
+    const waVerifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
+    if (waAppId && waAppSecret && waVerifyToken) {
+      try {
+        // Get app access token
+        const tokenRes = await fetch(`https://graph.facebook.com/oauth/access_token?client_id=${waAppId}&client_secret=${waAppSecret}&grant_type=client_credentials`);
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          const appToken = tokenData.access_token;
+          const callbackUrl = `${activeTunnelUrl}/webhook/whatsapp`;
+
+          // Subscribe to WhatsApp webhook
+          const subRes = await fetch(`https://graph.facebook.com/v21.0/${waAppId}/subscriptions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              object: "whatsapp_business_account",
+              callback_url: callbackUrl,
+              verify_token: waVerifyToken,
+              fields: "messages",
+              access_token: appToken
+            })
+          });
+          if (subRes.ok) {
+            metaStatus = `\n**Meta Webhook:** Auto-registered → ${callbackUrl}`;
+            console.log(`✅ [webhookTunnel] Meta webhook updated to: ${callbackUrl}`);
+          } else {
+            const err = await subRes.text();
+            metaStatus = `\n**Meta Webhook:** Registration failed (${subRes.status}) — update manually in Meta dashboard`;
+            console.warn(`⚠️ [webhookTunnel] Meta webhook registration failed: ${err}`);
+          }
+        }
+      } catch (e) {
+        metaStatus = `\n**Meta Webhook:** Auto-registration error — ${e.message}`;
+        console.warn(`⚠️ [webhookTunnel] Meta auto-registration error: ${e.message}`);
+      }
+    } else {
+      metaStatus = "\n**Meta Webhook:** Set WHATSAPP_APP_ID + WHATSAPP_APP_SECRET in .env for auto-registration, or update manually in Meta dashboard";
+    }
+
     return {
       tool: "webhookTunnel",
       success: true,
       final: true,
       data: {
-        text: `✅ **Webhook Tunnel Established**\n\n**Public URL:** ${activeTunnelUrl}\n**Local Port:** ${PORT}\n\nIncoming events are being logged to \`data/webhook_events.json\`.`,
+        text: `✅ **Webhook Tunnel Established**\n\n**Public URL:** ${activeTunnelUrl}\n**Local Port:** ${PORT}${metaStatus}\n\nIncoming events are being logged to \`data/webhook_events.json\`.`,
         preformatted: true
       }
     };

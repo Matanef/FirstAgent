@@ -187,6 +187,7 @@ function buildStats(flatFiles) {
  */
 function detectIntent(text) {
   const lower = text.toLowerCase();
+  if (/\b(compile\s+these\s+files|compile\s+files|compile)\b/.test(lower)) return "compile";
   if (/\b(read|open|view|show\s+content|cat|display)\b/.test(lower) && /\.(js|ts|py|json|md|txt|html|css|yaml|yml|jsx|tsx|toml|ini|cfg|xml)/i.test(lower)) {
     return "read";
   }
@@ -271,6 +272,98 @@ async function searchFiles(dirPath, query, maxDepth = MAX_DEPTH) {
 }
 
 /**
+ * Compile selected files — reads each file's content and writes a combined output file.
+ * Called when user clicks "Compile" in the folder browser UI.
+ */
+async function compileFiles(text) {
+  // Extract file paths from the request — accepts 'path' or "path" or bare absolute paths
+  const pathMatches = text.match(/(?:'([^']+)'|"([^"]+)"|([A-Za-z]:[\\\/][^\s,;']+))/g) || [];
+  const filePaths = pathMatches.map(p => p.replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
+
+  if (filePaths.length === 0) {
+    return {
+      tool: "folderAccess",
+      success: false,
+      final: true,
+      data: { message: "No file paths found in the compile request. Select files from the folder browser first." }
+    };
+  }
+
+  // Read each file and concatenate content
+  let compiledContent = "";
+  const successFiles = [];
+  const failedFiles = [];
+
+  for (const fp of filePaths) {
+    const cleanPath = fp.replace(/\\/g, "/");
+    try {
+      const stat = await fs.stat(cleanPath);
+      if (!stat.isFile()) {
+        failedFiles.push({ path: cleanPath, reason: "not a file" });
+        continue;
+      }
+      if (stat.size > MAX_FILE_SIZE) {
+        failedFiles.push({ path: cleanPath, reason: `too large (${formatSize(stat.size)}, limit ${formatSize(MAX_FILE_SIZE)})` });
+        continue;
+      }
+      const content = await fs.readFile(cleanPath, "utf8");
+      const ext = path.extname(cleanPath).slice(1) || "txt";
+      compiledContent += `\n\n${"═".repeat(70)}\n`;
+      compiledContent += `📄 File: ${cleanPath}\n`;
+      compiledContent += `${"═".repeat(70)}\n\n`;
+      compiledContent += `\`\`\`${ext}\n${content}\n\`\`\`\n`;
+      successFiles.push(cleanPath);
+    } catch (err) {
+      failedFiles.push({ path: cleanPath, reason: err.message });
+    }
+  }
+
+  if (successFiles.length === 0) {
+    return {
+      tool: "folderAccess",
+      success: false,
+      final: true,
+      data: { message: `Could not read any of the ${filePaths.length} files.\n${failedFiles.map(f => `  ❌ ${f.path}: ${f.reason}`).join("\n")}` }
+    };
+  }
+
+  // Write compiled output to downloads/ folder
+  const downloadsDir = path.resolve(PROJECT_ROOT, "downloads");
+  await fs.mkdir(downloadsDir, { recursive: true });
+  const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const outputFilename = `compiled_${dateStr}.md`;
+  const outputPath = path.join(downloadsDir, outputFilename);
+
+  const header = `# Compiled Files Report\n*Generated on ${new Date().toLocaleString()}*\n*Files: ${successFiles.length} compiled, ${failedFiles.length} failed*\n\n---\n`;
+  await fs.writeFile(outputPath, header + compiledContent, "utf8");
+
+  const outputPathClean = outputPath.replace(/\\/g, "/");
+  let resultText = `📝 **Compilation Complete**\n\n`;
+  resultText += `📁 **Output file:** \`${outputPathClean}\`\n`;
+  resultText += `✅ **Compiled:** ${successFiles.length} files\n`;
+  if (failedFiles.length > 0) {
+    resultText += `⚠️ **Failed:** ${failedFiles.length} files\n`;
+    for (const f of failedFiles) {
+      resultText += `  - ${path.basename(f.path)}: ${f.reason}\n`;
+    }
+  }
+  resultText += `\n📊 **Total size:** ${formatSize(Buffer.byteLength(header + compiledContent, "utf8"))}`;
+
+  return {
+    tool: "folderAccess",
+    success: true,
+    final: true,
+    data: {
+      preformatted: true,
+      text: resultText,
+      outputPath: outputPathClean,
+      compiledFiles: successFiles.length,
+      failedFiles: failedFiles.length
+    }
+  };
+}
+
+/**
  * Main tool entry point
  */
 export async function folderAccess(request) {
@@ -287,6 +380,22 @@ export async function folderAccess(request) {
   }
 
   const intent = context.action || detectIntent(text);
+
+  // Compile action works with file paths embedded in the text, not a single folder path.
+  // Short-circuit before the folder path validation.
+  if (intent === "compile") {
+    try {
+      return await compileFiles(text);
+    } catch (err) {
+      return {
+        tool: "folderAccess",
+        success: false,
+        final: true,
+        data: { message: `Compile failed: ${err.message}` }
+      };
+    }
+  }
+
   const folderPath = context.path || extractPath(text);
 
   if (!folderPath) {
@@ -451,18 +560,60 @@ export async function folderAccess(request) {
         const flatFiles = flattenTree(entries);
         const stats = buildStats(flatFiles);
 
-        let text = `📁 **${normalizedPath}** — ${flatFiles.length} files\n\n`;
-        // Show top-level items
-        for (const entry of entries.slice(0, 100)) {
-          if (entry.type === "directory") {
-            text += `  📁 ${entry.name}/ (${entry.childCount} items)\n`;
-          } else {
-            text += `  📄 ${entry.name} [${entry.sizeHuman || "?"}]\n`;
-          }
-        }
-        if (entries.length > 100) text += `  ... and ${entries.length - 100} more items\n`;
+        const tableRows = entries.map((i) => {
+          const isFile = i.type === 'file';
+          const icon = isFile ? (i.category === 'code' ? '📜' : '📄') : '📁';
+          const cleanPath = i.path.replace(/\\/g, '/');
+          const checkbox = isFile ? `<input type="checkbox" class="file-cb" value="${cleanPath}">` : '';
+          const sizeInfo = isFile ? i.sizeHuman : `${i.childCount} items`;
 
-        text += `\n📊 ${stats.totalFiles} files, ${stats.totalSizeHuman} total`;
+          return `<tr>
+            <td style="text-align: center; padding: 8px; border-bottom: 1px solid #38444d;">${checkbox}</td>
+            <td style="text-align: center; padding: 8px; border-bottom: 1px solid #38444d;">${icon}</td>
+            <td style="padding: 8px; border-bottom: 1px solid #38444d; font-size: 0.9rem;">${i.name}</td>
+            <td style="padding: 8px; border-bottom: 1px solid #38444d; font-size: 0.8rem; color: #888;">${sizeInfo}</td>
+          </tr>`;
+        }).join("");
+
+        // NOTE: onclick attributes are stripped by DOMPurify in the React frontend.
+        // Event handlers are attached client-side via useRef+useEffect in SmartContent.jsx.
+        // The data-action attributes are used as hooks for the React event binding.
+        const html = `
+        <div class="folder-browser-ui" style="background: #192734; border: 1px solid #38444d; border-radius: 10px; padding: 15px; margin: 10px 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div>
+              <h3 style="margin: 0; font-size: 1.1rem; color: #e7e9ea;">📂 ${path.basename(normalizedPath)}</h3>
+              <span style="font-size: 0.8rem; color: #8b98a5;">${flatFiles.length} files • ${stats.totalSizeHuman}</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+               <button type="button" data-action="toggle-all"
+                 style="background: #38444d; color: #e7e9ea; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                 Check/Uncheck All
+               </button>
+
+               <button type="button" data-action="compile"
+                 style="background: #1d9bf0; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                 📝 Compile
+               </button>
+            </div>
+          </div>
+
+          <div style="max-height: 400px; overflow-y: auto; border: 1px solid #38444d; border-radius: 6px; background: #0f1419;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead style="position: sticky; top: 0; background: #22303c; z-index: 1;">
+                <tr>
+                  <th style="width: 40px; padding: 8px; border-bottom: 2px solid #38444d;"></th>
+                  <th style="width: 40px; padding: 8px; border-bottom: 2px solid #38444d;">Type</th>
+                  <th style="text-align: left; padding: 8px; border-bottom: 2px solid #38444d;">Name</th>
+                  <th style="text-align: left; padding: 8px; border-bottom: 2px solid #38444d;">Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRows}
+              </tbody>
+            </table>
+          </div>
+        </div>`;
 
         return {
           tool: "folderAccess",
@@ -470,7 +621,8 @@ export async function folderAccess(request) {
           final: true,
           data: {
             preformatted: true,
-            text,
+            text: "",
+            html,
             path: normalizedPath,
             entries: entries.slice(0, 200),
             stats
