@@ -432,10 +432,21 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         { tool: lastFinalized?.tool, stepsCompleted: stateGraph.length }
     );
 
+    // Carry forward HTML widgets from intermediate steps (e.g., githubTrending → llm compound)
+    // so the frontend can render the rich widget above the text summary
+    let resultData = lastFinalized?.data || null;
+    if (stateGraph.length > 1) {
+        const htmlStep = stateGraph.find(s => s.rawData?.html && s.tool !== lastFinalized?.tool);
+        if (htmlStep?.rawData?.html) {
+            resultData = { ...(resultData || {}), html: htmlStep.rawData.html, htmlSource: htmlStep.tool };
+            console.log(`📊 Carrying forward HTML widget from intermediate step: ${htmlStep.tool}`);
+        }
+    }
+
     return {
         reply: finalReply,
         tool: lastFinalized?.tool || "unknown",
-        data: lastFinalized?.data || null,
+        data: resultData,
         reasoning: lastFinalized?.reasoning || "Execution finished.",
         success: lastFinalized?.success ?? true,
         final: true,

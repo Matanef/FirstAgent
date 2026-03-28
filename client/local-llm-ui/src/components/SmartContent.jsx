@@ -115,8 +115,11 @@ function detectContentType(content, data, tool) {
     if (content.includes("```") || tool === "calculator") return "code";
     if (tool === "file" && data?.items) return "filesystem";
     if (tool === "weather" && data?.temp) return "weather";
-    if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
+    // Tool-specific HTML — must come BEFORE generic html check to avoid being caught by <table>/<div class=> detection
     if (tool === "githubTrending" && data?.html) return "trendingHTML";
+    // Compound flow: intermediate step produced an HTML widget (e.g., githubTrending → llm)
+    if (data?.html && data?.htmlSource === "githubTrending") return "trendingWithSummary";
+    if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
     return "text";
 }
 
@@ -141,7 +144,12 @@ function TrendingPanel({ html, content }) {
     }, [html]);
 
     return (
-        <div ref={containerRef} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+        <div ref={containerRef} dangerouslySetInnerHTML={{
+            __html: DOMPurify.sanitize(html, {
+                ADD_ATTR: ['style', 'target', 'id'],
+                ADD_TAGS: ['style']
+            })
+        }} />
     );
 }
 function McpBridgePanel({ html, data, content }) {
@@ -356,13 +364,26 @@ export default function SmartContent({ message, conversationId }) {
                 </div>
             );
 
+        case "trendingHTML":
+            return <TrendingPanel html={message.data.html} content={message.content} />;
+
+        case "trendingWithSummary":
+            return (
+                <>
+                    <TrendingPanel html={message.data.html} content="" />
+                    {message.content && (
+                        <div className="message-text" style={{ marginTop: "0.75rem" }}>{message.content}</div>
+                    )}
+                </>
+            );
+
         case "html":
             return (
                 <div
                     className="rich-html-content"
-                    dangerouslySetInnerHTML={{ 
+                    dangerouslySetInnerHTML={{
                         // UPDATE THIS LINE TOO:
-                        __html: DOMPurify.sanitize(message.content, { ADD_TAGS: ["script"] }) 
+                        __html: DOMPurify.sanitize(message.content, { ADD_TAGS: ["script"] })
                     }}
                 />
             );
