@@ -55,6 +55,15 @@ const CHAT_PATTERNS = [
   /\byeah\b.*\b(but|though|right|exactly|totally|agree)\b/i,
   /\bwhat about you\b/i,
   /\byou (know|think|agree|reckon)\b/i,
+  // Requests to converse — "can we speak/talk/chat", "let's just talk", "I need to talk"
+  /\bcan we\s+(just\s+)?(speak|talk|chat|converse|hang)\b/i,
+  /\bI\s+(need|want|wanna)\s+to\s+(talk|vent|speak|chat)\b/i,
+  /\blet me\s+(tell|share|talk|vent)\b/i,
+  // Personal sharing / venting — emotional content, life events, distress
+  /\b(as you know|you know that)\b.*\b(i am|i'm|i live|i have|my)\b/i,
+  /\b(today was|today is|yesterday was)\s+(a\s+)?(tiring|hard|rough|tough|bad|terrible|awful|scary|stressful|exhausting|long|crazy|intense|horrible|devastating)\b/i,
+  /\b(i'?m?\s+(so\s+)?(tired|exhausted|scared|sad|angry|frustrated|stressed|upset|worried|anxious|depressed|devastated|shaken))\b/i,
+  /\b(missiles?|rockets?|bombs?|bombing|shelling|shrapnel|war|attack|shelter|sirens?|alarms?|earthquake|flood|fire|accident|died|killed|death|funeral|injured|wounded|casualt(?:y|ies)|devastation|destruction|destroyed|explosion|impact\s+sites?|evacuation|displaced|refugees?|cluster\s+(?:bomb|missile|munition))\b/i,
 ];
 
 /**
@@ -70,7 +79,7 @@ const TASK_PATTERNS = [
   /\b(improve|evolve|self[- ]?evolve|self[- ]?improve|upgrade)\b/i,
   /\b(weather|forecast|temperature)\s*(in|for|at|today|tomorrow|this\s+week)?\b/i,
   /\b(stock|share|ticker|price\s+of|market)\b/i,
-  /\b(news|headlines?|articles?)\b/i,
+  /(?<!\bon\s+the\s+)(?<!\bin\s+the\s+)\b(news|headlines?|articles?)\b/i,
   /\b(sport|score|match|fixture|standings?|nba|nfl|premier\s+league)\b/i,
   /\b(moltbook|heartbeat|submolt)\b/i,
   /\b(github|trending|repos?|repository)\b/i,
@@ -154,7 +163,11 @@ export function classifyIntent(message, recentHistory = []) {
   } else if (taskScore === 0 && chatScore === 0 && recentChatCount >= 3 && isRecentConversation) {
     chatScore += 1; // Ambiguous message during active chat — slight lean toward chat
   }
-  // NOTE: No boost if taskScore > 0 (user is requesting an action)
+  // When scores are tied AND we're in active chat, boost chat.
+  // The user is sharing/conversing — a casual "news" mention shouldn't override distress signals.
+  if (taskScore > 0 && chatScore > 0 && taskScore === chatScore && lastTurnWasChat && isRecentConversation) {
+    chatScore += 1; // Tie-break toward chat when actively conversing
+  }
   // NOTE: No boost if conversation is stale (>5 min) — user may have switched context
 
   // Decision
@@ -171,6 +184,12 @@ export function classifyIntent(message, recentHistory = []) {
     return { mode: "chat", confidence: 0.6 + (chatScore - taskScore) * 0.1, reason: `mixed_chat_dominant` };
   }
 
-  // Ambiguous — default to task (user expects actions)
+  // Ambiguous — but if we're in an active chat conversation, continue chatting
+  // rather than routing to taskAgent which has no personality/context
+  if (lastTurnWasChat && isRecentConversation) {
+    return { mode: "chat", confidence: 0.55, reason: "ambiguous_but_active_chat" };
+  }
+
+  // Default to task (user expects actions)
   return { mode: "task", confidence: 0.5, reason: "ambiguous_default_task" };
 }

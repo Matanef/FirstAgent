@@ -291,6 +291,12 @@ function extractTopic(query) {
 
   // Strip conversational noise before extracting topic
   let stripped = lower
+    // Strip scheduling phrases FIRST — "every 9 hours", "daily at 8am", "schedule", etc.
+    .replace(/\b(?:use\s+(?:the\s+)?scheduler\s+(?:tool\s+)?(?:to\s+)?)\b/gi, "")
+    .replace(/\b(?:schedule|scheduling|scheduled)\s+(?:a\s+)?(?:search\s+(?:for\s+)?)?/gi, "")
+    .replace(/[,;]?\s*every\s+\d+\s*(?:min(?:utes?)?|hours?|days?|secs?(?:onds?)?|weeks?)\b/gi, "")
+    .replace(/[,;]?\s*(?:every\s+(?:morning|evening|night|day|week|hour)|hourly|daily|weekly|monthly)\b/gi, "")
+    .replace(/[,;]?\s*(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/gi, "")
     // Strip "let's" first — apostrophe makes regex word boundaries tricky
     .replace(/let['\u2018\u2019]?s\b/gi, "")
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")

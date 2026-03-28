@@ -288,7 +288,9 @@ function isMemoryWriteCommand(text) {
 
 const WEATHER_KEYWORDS = [
   "weather", "forecast", "temperature", "temp", "rain", "raining",
-  "snow", "snowing", "humidity", "wind", "windy", "sunny", "cloudy"
+  "snow", "snowing", "humidity", "wind", "windy", "sunny", "cloudy",
+  "temperature history", "weather history", "weather trend", "seasonal weather",
+  "how warm was", "how cold was"
 ];
 
 const FORGET_SYNONYMS = ["forget", "forgot", "remove", "clear", "delete"];
@@ -436,10 +438,12 @@ EXAMPLES (correct routing):
 - "remind me to check emails at 9am" → scheduler
 - "list my schedules" → scheduler
 - "show me the folder structure of D:/project" → folderAccess
-- "code review D:/project/server" → codeReview
+- "code review D:/project/server" → codeReview (runs syntax+ESLint validation THEN LLM analysis)
 - "security audit of my server code" → codeReview
-- "refactor D:/project/utils.js" → codeTransform
+- "validate my code / check for errors" → codeReview (NOT a separate debugger — codeReview includes automated validation)
+- "refactor D:/project/utils.js" → codeTransform (applies surgical code fixes)
 - "add error handling to server.js" → codeTransform
+- "fix the bug in server.js" → codeTransform (codeTransform handles bug fixes)
 - "show dependency graph" → projectGraph
 - "find circular dependencies" → projectGraph
 - "index the project" → projectIndex
@@ -478,6 +482,8 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "schedule a task every hour" → scheduler (NOT tasks)
 - "refactor my code" → codeTransform (NOT review, NOT file)
 - "security review" → codeReview (NOT review)
+- "validate/lint/check my code for errors" → codeReview (NOT a separate debugger tool — codeReview runs automated syntax+ESLint checks)
+- "fix the bug in X.js" → codeTransform (codeTransform is the fix/debug tool)
 - "show project structure" → folderAccess (NOT file)
 - "improve yourself" → selfEvolve (NOT selfImprovement)
 - "scan github for patterns" → githubScanner (NOT github, NOT githubTrending)
@@ -491,8 +497,8 @@ RULES:
 6. "browse/visit [website]" → webBrowser
 7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
 8. When unsure, return "llm" (the safest fallback). NEVER return lotrJokes unless the user explicitly asks for a "Lord of the Rings joke"
-9. "refactor/optimize/rewrite code" → codeTransform (NOT review)
-10. "code review/security review/audit" → codeReview (NOT review)
+9. "refactor/optimize/rewrite/fix/debug code" → codeTransform (NOT review). codeTransform is the tool for applying code fixes and transformations.
+10. "code review/security review/audit/validate/lint/check for errors" → codeReview (NOT review). codeReview runs automated syntax+ESLint validation AND LLM analysis. There is NO separate debugger or validator tool — codeReview covers that.
 11. "folder structure/tree/scan directory" → folderAccess (NOT file)
 12. "dependency graph/circular deps/dead code" → projectGraph
 13. "evolve yourself/improve your code" → selfEvolve (NOT selfImprovement)
@@ -937,12 +943,21 @@ if (
     return [{ tool: "fileReview", input: trimmed, context: { fileIds: chatContext.fileIds }, reasoning: "certainty_file_review" }];
   }
 
-
+  // ──────────────────────────────────────────────────────────
+  // COMPILE FILES: read selected files and concatenate into output
+  // Must come BEFORE duplicateScanner because compile messages contain
+  // filenames like "duplicateScanner.js" which false-positive on the
+  // duplicate regex.
+  // ──────────────────────────────────────────────────────────
+  if (/\bcompile\s+(these\s+)?files?\b/i.test(lower)) {
+    console.log("[planner] certainty branch: folderAccess (compile)");
+    return [{ tool: "folderAccess", input: trimmed, context: { action: "compile" }, reasoning: "certainty_folder_compile" }];
+  }
 
   // ──────────────────────────────────────────────────────────
   // DUPLICATE SCANNER: detect duplicate scan requests
   // ──────────────────────────────────────────────────────────
-  if (/\b(duplicate|duplication|find\s+duplicate|scan\s+duplicate|duplicate\s+file)/i.test(lower)) {
+  if (/\b(duplicates?|duplication|find\s+duplicates?|scan\s+duplicates?|duplicate\s+files?)\b/i.test(lower)) {
     console.log("[planner] certainty branch: duplicateScanner");
     // Parse any context from the natural language
     const dupContext = {};
@@ -1058,12 +1073,15 @@ if (
   // Guard: skip if this is a moltbook notification, compound query, or conversational/meta message
   // "try again with the news idea" or "give yourself a headlines reporter username" should NOT route here
   const isNewsConversational = /\b(try\s+again|the\s+purpose|more\s+.{0,20}\s+like|give\s+(your\s*self|me)|as\s+a\s+.{0,30}\s+reporter|style|idea|concept|theme|approach|username|name\s+(your|the)|rename|rebrand)\b/i.test(lower);
+  // Guard: skip if user is asking to SCHEDULE news — that's a scheduler intent, not a direct news fetch
+  const isSchedulingNews = /\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily|weekly|recurring|cron|automate)\b/i.test(lower);
   if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
        /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
       !hasExplicitFilePath(trimmed) &&
       !/\bmoltbook\b/i.test(lower) &&
       !hasCompoundIntent(lower) &&
       !isNewsConversational &&
+      !isSchedulingNews &&
       !isPersonalConversation(lower, trimmed)) {
     console.log("[planner] certainty branch: news");
     return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
@@ -1214,7 +1232,9 @@ if (
   // ──────────────────────────────────────────────────────────
 
   // Meta-conversation: "how do you work", "what is your logic", "what can you do"
-  if (/\b(how do you (work|think|decide|choose)|what is your (logic|process|architecture)|what can you do|what tools|list.*tools|your capabilities)\b/i.test(lower)) {
+  // GUARD: Do NOT trigger if the user provides a file path or asks to list files.
+  if (!hasExplicitFilePath(trimmed) && !/\b(list\s+files?|files?\s+in)\b/i.test(lower) && 
+      /\b(how do you (work|think|decide|choose)|what is your (logic|process|architecture)|what can you do|what tools|list.*tools|your capabilities)\b/i.test(lower)) {
     console.log("[planner] certainty branch: meta_conversation");
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_meta_conversation" }];
   }
@@ -1409,10 +1429,10 @@ if (
     return [{ tool: "codeTransform", input: trimmed, context: ctContext, reasoning: "certainty_code_transform" }];
   }
 
-  // Deep Code Review — quality, security, performance analysis
-  // Expanded to explicitly catch "review... suggest improvement"
-  if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint|code\s+analysis|security\s+audit|code\s+audit)\b/i.test(lower) ||
-      (/\b(review|analyze|audit)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?)\b/i.test(lower))) {
+  // Deep Code Review — quality, security, performance analysis, validation
+  // Also catches "validate/lint/check for errors" — codeReview now runs objective syntax+ESLint checks
+  if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint\b|code\s+analysis|security\s+audit|code\s+audit|validate\s+code|check\s+for\s+errors|syntax\s+check|eslint)\b/i.test(lower) ||
+      (/\b(review|analyze|audit|validate|check)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint)\b/i.test(lower))) {
     console.log("[planner] certainty branch: codeReview");
     const crContext = {};
     if (/\bsecur/i.test(lower)) crContext.reviewType = "security";

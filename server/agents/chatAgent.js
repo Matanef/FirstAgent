@@ -364,30 +364,26 @@ export async function handleChat(message, recentTurns = [], options = {}) {
   // const toolContext = await resolveWithTools(message, userContext);
   // if (toolContext) { /* inject into prompt */ }
 
-  // Build the prompt with full context
+  // Build the prompt — rules FIRST, user message LAST (local LLMs focus on what's closest to "Response:")
   const prompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
 ${userContext ? userContext + "\n" : ""}
-${conversationContext ? `CONVERSATION SO FAR (background context only — do NOT repeat or re-address old topics):\n${conversationContext}\n\n---\n` : ""}
-THE USER JUST SAID: "${message}"
-
-Respond ONLY to what the user just said above. The conversation history is for context only — do NOT circle back to earlier topics unless the user explicitly brings them up again.
-
-Rules:
+CONVERSATION RULES:
 - Respond naturally as yourself — with your own voice, opinions, and perspective.
-- If the user asks about something you KNOW from the context above (their name, location, contacts, facts, knowledge), answer confidently and specifically.
-- If the user asks about something NOT in your context, be honest: "I don't have that information" rather than guessing.
-- Be reflective when asked about yourself. Show genuine personality and self-awareness.
+- If the user asks about something you KNOW from context, answer confidently. If NOT in your context, be honest.
 - Keep responses concise (2-4 sentences) but expand when the topic warrants depth.
-- Reference past interactions naturally when relevant — you have a relationship with this user.
 - Do NOT suggest running tools or performing tasks — this is a casual conversation.
-- Do NOT use the user's name in every message. Use it sparingly — only in an initial greeting or to emphasize something important. Never more than once per message.
-- Do NOT end every message with a question. You can make statements, share thoughts, react, or just acknowledge. Not every message needs a follow-up hook.
-- Do NOT ask "how's your day" or "what's on your mind" or "anything else" unless the conversation has genuinely stalled. If the user just told you something, respond to THAT.
-- Match the user's energy. If they're casual and brief, be casual and brief. If they're sharing something heavy, be present — don't pivot to cheerfulness.
+- Do NOT use the user's name in every message. Use it sparingly.
+- Do NOT end every message with a question. You can make statements, share thoughts, or just acknowledge.
+- Match the user's energy. Casual message = casual reply. Heavy message = be present and serious.
+- If the user shares something distressing (war, death, danger, grief) in their CURRENT message, acknowledge the gravity with genuine concern. Do NOT minimize or trivialize.
+- If the current message is a simple opener (like "can we speak?", "hey"), respond casually — do NOT bring up heavy topics from earlier conversation history.
+- NEVER echo or repeat the user's message back to them. Always generate an original response.
 
-Response:`;
+${conversationContext ? `CONVERSATION HISTORY (background context only — do NOT re-address old topics):\n${conversationContext}\n\n---\n` : ""}
+USER: ${message}
+ASSISTANT:`;
 
   try {
     const result = await llm(prompt, { skipKnowledge: true }); // knowledge already injected above

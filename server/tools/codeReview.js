@@ -6,6 +6,7 @@ import fs from "fs/promises";
 import path from "path";
 import { llm } from "./llm.js";
 import { loadReviewCache, saveReviewCache } from "../utils/cacheReview.js"
+import { validateCode } from "../utils/codeValidator.js";
 
 const FAST_REVIEW_MODEL = "qwen2.5-coder:7b";   // <— FAST MODEL FOR ALL CODE REVIEWS
 const FILE_TIMEOUT = 300_000;            // 60s per file
@@ -79,7 +80,7 @@ async function readFileSafe(filePath) {
 /**
  * Analyze a single file with LLM (FAST MODEL)
  */
-async function analyzeFile(filePath, content, reviewType) {
+async function analyzeFile(filePath, content, reviewType, objectiveFindings = "") {
   const filename = path.basename(filePath);
   const ext = path.extname(filename).slice(1);
 
@@ -168,7 +169,13 @@ Cover:
 Be concise but thorough.`
   };
 
-  const prompt = prompts[reviewType] || prompts.full;
+  // Inject objective findings (syntax/ESLint errors) into the prompt so the LLM
+  // reviews real issues instead of guessing. Only present for single-file reviews.
+  const objectiveSection = objectiveFindings
+    ? `\n\n--- AUTOMATED VALIDATION RESULTS (syntax check + ESLint) ---${objectiveFindings}\n--- END VALIDATION RESULTS ---\n\nIMPORTANT: The errors above are REAL and confirmed by automated tooling. Address these FIRST in your review. Do not contradict or ignore them.\n`
+    : "";
+
+  const prompt = (prompts[reviewType] || prompts.full) + objectiveSection;
 
 try {
     const response = await llm(prompt, {
@@ -352,7 +359,23 @@ export async function codeReview(request) {
         };
       }
 
-      const result = await analyzeFile(normalizedPath, content, reviewType);
+      // ── Objective validation (syntax + ESLint) before LLM review ──
+      // Runs the same pipeline as smartEvolution/codeTransform so the
+      // LLM review is grounded in real errors, not hallucinated ones.
+      let objectiveFindings = "";
+      const ext = path.extname(normalizedPath);
+      if ([".js", ".mjs", ".jsx", ".ts", ".tsx"].includes(ext)) {
+        console.log(`[codeReview] Running objective validation: ${path.basename(normalizedPath)}`);
+        const validation = await validateCode(normalizedPath);
+        if (!validation.valid) {
+          objectiveFindings = `\n\nOBJECTIVE ERRORS DETECTED (${validation.stage}):\n${validation.error}`;
+          console.log(`[codeReview] Found objective errors (${validation.stage})`);
+        } else if (validation.warnings?.length) {
+          objectiveFindings = `\n\nOBJECTIVE WARNINGS:\n${validation.warnings.join("\n")}`;
+        }
+      }
+
+      const result = await analyzeFile(normalizedPath, content, reviewType, objectiveFindings);
 
       // For selfEvolve, we can still cache this single file under its folder
       if (isSelfEvolve) {
@@ -364,14 +387,22 @@ export async function codeReview(request) {
         await saveReviewCache(cache.cacheFile, Array.from(reviewedFilesSet));
       }
 
+      // Build output with objective findings shown first (if any)
+      let reviewOutput = `🔍 **Code Review: ${result.filename}** (${reviewType})\n\n`;
+      if (objectiveFindings) {
+        reviewOutput += `**🔬 Objective Validation:**${objectiveFindings}\n\n---\n\n`;
+      }
+      reviewOutput += `**📝 LLM Analysis:**\n${result.review}`;
+
       return {
         tool: "codeReview",
         success: result.success,
         final: true,
         data: {
           preformatted: true,
-          text: `🔍 **Code Review: ${result.filename}** (${reviewType})\n\n${result.review}`,
+          text: reviewOutput,
           reviewType,
+          hasObjectiveErrors: !!objectiveFindings,
           files: [result]
         }
       };

@@ -55,11 +55,25 @@ async function collectSystemInfo() {
     dependencies: []
   };
 
-  // GPU detection (NVIDIA)
+  // GPU detection — try NVIDIA first, then fall back to WMIC (catches AMD, Intel, any GPU on Windows)
   try {
     const { stdout } = await execAsync("nvidia-smi --query-gpu=name,memory.total,memory.free,driver_version --format=csv,noheader", { timeout: 5000 });
     info.gpu = stdout.trim();
-  } catch { /* no GPU or no nvidia-smi */ }
+  } catch {
+    // NVIDIA not found — try Windows WMIC (works for AMD, Intel, any GPU)
+    try {
+      const { stdout } = await execAsync("wmic path win32_VideoController get Name,AdapterRAM,DriverVersion /format:csv", { timeout: 5000 });
+      const lines = stdout.trim().split("\n").filter(l => l.trim() && !l.startsWith("Node"));
+      if (lines.length > 0) {
+        const gpus = lines.map(l => {
+          const parts = l.split(",");
+          const ram = parts[1] ? `${(parseInt(parts[1]) / 1073741824).toFixed(1)} GB` : "";
+          return `${parts[2] || "unknown"} ${ram} (driver: ${parts[3] || "?"})`.trim();
+        }).filter(Boolean);
+        if (gpus.length > 0) info.gpu = gpus.join(" | ");
+      }
+    } catch { /* no GPU detection available */ }
+  }
 
   // Ollama version + models
   try {
