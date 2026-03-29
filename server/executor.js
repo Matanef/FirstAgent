@@ -14,6 +14,43 @@ import {
   getMessageText
 } from "./utils/uiUtils.js";
 import { getPersonalityContext } from "./personality.js";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SKILLS_DIR = path.join(__dirname, "skills");
+// This object holds our dynamically loaded plugin functions
+export const dynamicSkills = {};
+
+/**
+ * Scans the server/skills directory and dynamically imports any exported functions.
+ */
+export async function loadSkills() {
+    try {
+        await fs.mkdir(SKILLS_DIR, { recursive: true });
+        const files = await fs.readdir(SKILLS_DIR);
+
+        for (const file of files) {
+            if (file.endsWith(".js")) {
+                const filePath = path.join(SKILLS_DIR, file);
+                const fileUrl = pathToFileURL(filePath).href; 
+                
+                const skillModule = await import(fileUrl);
+
+                for (const [key, func] of Object.entries(skillModule)) {
+                    if (typeof func === "function") {
+                        dynamicSkills[key] = func;
+                        console.log(`🔌 [Skills] Dynamically loaded plugin: ${key}`);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.error("❌ [Skills] Failed to load dynamic skills:", err.message);
+    }
+}
 
 /* ============================================================
    BUILD LLM CONTEXT
@@ -402,10 +439,28 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
   // NORMAL TOOL EXECUTION
   message = normalizeCityAliases(message);
 
-  const toolKeys = Object.keys(TOOLS);
+const toolKeys = Object.keys(TOOLS);
   const actualToolKey = toolKeys.find(k => k.toLowerCase() === tool.toLowerCase());
 
   if (!actualToolKey) {
+    // ── DYNAMIC SKILL CHECK ──
+    const dynamicKey = Object.keys(dynamicSkills).find(k => k.toLowerCase() === tool.toLowerCase());
+    
+    if (dynamicKey) {
+      console.log(`⚙️ [executor] Routing to dynamic skill: ${dynamicKey}`);
+      // Pass the raw message object so the skill can parse it however it wants
+      const result = await dynamicSkills[dynamicKey](message);
+      
+      return {
+        tool: dynamicKey,
+        input: message,
+        output: result,
+        success: result.success,
+        final: result?.final ?? true
+      };
+    }
+
+    // ── TOOL TRULY NOT FOUND ──
     return {
       tool,
       input: message,

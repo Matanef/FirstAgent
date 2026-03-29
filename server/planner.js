@@ -9,6 +9,7 @@ import { llm } from "./tools/llm.js";
 import { getMemory } from "./memory.js";
 import { CONFIG } from "./utils/config.js";
 import { detectCorrection, logCorrection, buildCorrectionContext } from "./intentDebugger.js";
+import { dynamicSkills } from "./executor.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,17 +26,24 @@ const FINANCE_RESEARCH_QUESTION = /\b(why\s+(did|are|is|do|has|have|were|was)|wh
 let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null };
 
 // ============================================================
-// UTIL: list available tools (reads server/tools/*.js)
+// UTIL: list available tools (reads server/tools/*.js + dynamic skills)
 // ============================================================
 function listAvailableTools(toolsDir = path.resolve(__dirname, "tools")) {
   try {
+    // 1. Get standard tools
     const files = fs.readdirSync(toolsDir, { withFileTypes: true });
-    return files
+    const coreTools = files
       .filter(f => f.isFile() && f.name.endsWith(".js"))
       .map(f => f.name.replace(/\.js$/, ""));
+
+    // 2. Get dynamic skills
+    const dynTools = Object.keys(dynamicSkills || {});
+
+    // 3. Combine them and remove any accidental duplicates
+    return [...new Set([...coreTools, ...dynTools])];
   } catch (e) {
     console.warn("[planner] listAvailableTools failed:", e?.message || e);
-    return [];
+    return Object.keys(dynamicSkills || {});
   }
 }
 

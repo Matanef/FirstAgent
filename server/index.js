@@ -14,6 +14,7 @@ import duplicateRoutes from "./routes/duplicates.js";
 import oauthCallback from "./routes/oauthCallback.js";
 import browseRoutes from "./routes/browse.js";
 import whatsappWebhook from "./routes/whatsappWebhook.js";
+import { loadSkills } from "./executor.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -57,6 +58,8 @@ app.listen(PORT, async () => {
   console.log(`📡 http://localhost:${PORT}`);
   console.log(`📂 Project root: ${PROJECT_ROOT}`);
   console.log("=".repeat(70) + "\n");
+
+  await loadSkills();
 
   // ── Auto-start ngrok tunnel for WhatsApp webhooks ──
   if (process.env.WHATSAPP_TOKEN && process.env.NGROK_AUTHTOKEN) {
