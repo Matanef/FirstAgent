@@ -115,8 +115,8 @@ function detectContentType(content, data, tool) {
     if (content.includes("```") || tool === "calculator") return "code";
     if (tool === "file" && data?.items) return "filesystem";
     if (tool === "weather" && data?.temp) return "weather";
-    // Tool-specific HTML — must come BEFORE generic html check to avoid being caught by <table>/<div class=> detection
-    if (tool === "githubTrending" && data?.html) return "trendingHTML";
+// Tool-specific HTML — must come BEFORE generic html check to avoid being caught by <table>/<div class=> detection
+    if ((tool === "githubTrending" || tool === "githubScanner") && data?.html) return "trendingHTML";
     // Compound flow: intermediate step produced an HTML widget (e.g., githubTrending → llm)
     if (data?.html && data?.htmlSource === "githubTrending") return "trendingWithSummary";
     if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";

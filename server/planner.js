@@ -598,14 +598,6 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
   const contextSignals = extractContextSignals(trimmed);
   console.log("[planner] handleCompoundIntent: attempting LLM decomposition...");
 
-  // Extract numeric limit/count from the ORIGINAL query (before LLM rewrites it)
-  // Patterns: "top 20", "first 10", "latest 5", "20 repos", "50 articles"
-  const limitMatch = lower.match(/\b(?:first|top|latest|last|scan)\s+(\d+)\b|\b(\d+)\s+(?:articles?|results?|posts?|items?|headlines?|repos?|repositories?|tweets?)\b/);
-  const requestedLimit = limitMatch ? parseInt(limitMatch[1] || limitMatch[2], 10) : null;
-  if (requestedLimit) {
-    console.log(`[planner] handleCompoundIntent: extracted limit=${requestedLimit} from query`);
-  }
-
   const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
 
   if (decomposedSteps && decomposedSteps.length > 1) {
@@ -614,18 +606,10 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     for (const step of decomposedSteps) {
       const resolvedTool = resolveToolName(step.tool, availableTools);
       if (resolvedTool) {
-        const isFirstStep = resolvedSteps.length === 0;
-        const stepContext = isFirstStep ? {} : { useChainContext: true };
-
-        // Inject extracted limit into the first step's context (data-fetching step)
-        if (isFirstStep && requestedLimit) {
-          stepContext.limit = requestedLimit;
-        }
-
         resolvedSteps.push({
           tool: resolvedTool,
           input: step.input || trimmed,
-          context: stepContext,
+          context: resolvedSteps.length > 0 ? { useChainContext: true } : {},
           reasoning: step.reasoning || "compound_llm_decomposed"
         });
       } else {
@@ -634,7 +618,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     }
 
     if (resolvedSteps.length > 1) {
-      console.log(`[planner] handleCompoundIntent: ${resolvedSteps.map(s => s.tool).join(" → ")}${requestedLimit ? ` (limit: ${requestedLimit})` : ""}`);
+      console.log(`[planner] handleCompoundIntent: ${resolvedSteps.map(s => s.tool).join(" → ")}`);
       return resolvedSteps;
     }
   }
@@ -1400,6 +1384,18 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     console.log("[planner] certainty branch: calculator");
     return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
   }
+  // GitHub Scanner — scan repos for patterns, tool discovery, AI analysis
+  // Must come BEFORE general code review and evolving tools to catch "scan github for improvements"
+  if (/\b(scan\s+github|github\s+scan|analyze\s+github|discover\s+tool|find\s+new\s+tool|github\s+intelligence|repo\s+scan|scan\s+repos?\s+for|github\s+pattern)\b/i.test(lower) ||
+      (/\b(scan|analyze|check|review)\b/i.test(lower) && /\b(github|repositor(y|ies))\b/i.test(lower) && !hasExplicitFilePath(trimmed))) {
+    console.log("[planner] certainty branch: githubScanner");
+    const gsContext = {};
+    if (/\btrending|popular|hot\b/i.test(lower)) gsContext.action = "trending";
+    else if (/\bdiscover|find/i.test(lower)) gsContext.action = "discover";
+    else if (/\bpattern|practice/i.test(lower)) gsContext.action = "patterns";
+    else gsContext.action = "scan";
+    return [{ tool: "githubScanner", input: trimmed, context: gsContext, reasoning: "certainty_github_scanner" }];
+  }
 
 // ──────────────────────────────────────────────────────────
   // CODE GURU TOOLS — must come BEFORE general review to prevent collision
@@ -1488,10 +1484,11 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "codeTransform", input: trimmed, context: ctContext, reasoning: "certainty_code_transform" }];
   }
 
-  // Deep Code Review — quality, security, performance analysis, validation
+// Deep Code Review — quality, security, performance analysis, validation
   // Also catches "validate/lint/check for errors" — codeReview now runs objective syntax+ESLint checks
-  if (/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint\b|code\s+analysis|security\s+audit|code\s+audit|validate\s+code|check\s+for\s+errors|syntax\s+check|eslint)\b/i.test(lower) ||
-      (/\b(review|analyze|audit|validate|check)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint)\b/i.test(lower))) {
+  if ((/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint\b|code\s+analysis|security\s+audit|code\s+audit|validate\s+code|check\s+for\s+errors|syntax\s+check|eslint)\b/i.test(lower) ||
+      (/\b(review|analyze|audit|validate|check)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint)\b/i.test(lower))) &&
+      !/\b(github)\b/i.test(lower)) { // <-- GUARD: Ignore GitHub requests
     console.log("[planner] certainty branch: codeReview");
     const crContext = {};
     if (/\bsecur/i.test(lower)) crContext.reviewType = "security";
@@ -1547,17 +1544,6 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "projectIndex", input: trimmed, context: piContext, reasoning: "certainty_project_index" }];
   }
 
-  // GitHub Scanner — scan repos for patterns, tool discovery, AI analysis
-  // Must come BEFORE githubTrending to catch "scan github for improvements"
-  if (/\b(scan\s+github|github\s+scan|analyze\s+github|discover\s+tool|find\s+new\s+tool|github\s+intelligence|repo\s+scan|scan\s+repos?\s+for|github\s+pattern)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: githubScanner");
-    const gsContext = {};
-    if (/\btrending|popular|hot\b/i.test(lower)) gsContext.action = "trending";
-    else if (/\bdiscover|find/i.test(lower)) gsContext.action = "discover";
-    else if (/\bpattern|practice/i.test(lower)) gsContext.action = "patterns";
-    else gsContext.action = "scan";
-    return [{ tool: "githubScanner", input: trimmed, context: gsContext, reasoning: "certainty_github_scanner" }];
-  }
   // Explicit file path
   // Guard: skip if compound intent (e.g. "review file.js and create new version at path")
   if (hasExplicitFilePath(trimmed) && !hasCompoundIntent(lower)) {
@@ -1881,8 +1867,7 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     const sourceContext = {};
     if (requestedCount) sourceContext.limit = requestedCount;
 
-    const analysisInstruction = `Provide a detailed summary of the data found in the previous step. Highlight the most interesting items and provide your technical opinion on the trends you see.`;
-
+const analysisInstruction = `The user is already looking at a rich UI widget containing these results. DO NOT list the items or repeat their descriptions. Instead, provide a brief, conversational summary (2-3 sentences) of the overall technical trends you observe in this dataset, referencing only 1 or 2 standout items as examples.`;
     console.log(`[planner] Forced 2-step: ${sourceTool} → llm`);
     return [
       { tool: sourceTool, input: cleanSourceInput, context: sourceContext, reasoning: "compound_source_fetch" },

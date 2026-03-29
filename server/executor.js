@@ -504,11 +504,12 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     }
   }
 
-  // ── FIX: Add githubTrending to the HTML bypass ──
-  if ((tool === "mcpBridge" || tool === "githubTrending") && result.data?.html) {
+// ── FIX: Add githubTrending and githubScanner to the HTML bypass ──
+  if ((tool === "mcpBridge" || tool === "githubTrending" || tool === "githubScanner") && result.data?.html) {
       console.log(`[executor] ${tool} HTML detected — bypassing LLM summarization`);
       return { 
-        reply: result.data.text || "Results retrieved.", 
+        // Inject the HTML directly into the reply string so no downstream file can drop it
+        reply: (result.data.text || "Results retrieved.") + "\n\n" + result.data.html, 
         html: result.data.html, 
         tool, 
         data: result.data, 
@@ -557,7 +558,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     "webDownload", "webBrowser", "moltbook",
     "calendar", "documentQA", "contacts", 
     "duplicateScanner", "folderAccess", "codeReview",
-    "projectGraph", "projectIndex", "githubScanner", "scheduler",
+    "projectGraph", "projectIndex", "scheduler",
     "packageManager", "memorytool", "whatsapp", "mcpBridge"
   ];
 
