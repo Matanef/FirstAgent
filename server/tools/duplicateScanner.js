@@ -40,8 +40,11 @@ function isExecutable(filePath) {
 
 function sanitizePath(inputPath) {
     const normalized = path.resolve(inputPath);
-    if (inputPath.includes("..")) return null;
-    const allowed = ALLOWED_ROOTS.some(root => normalized.startsWith(root));
+    // Use path.relative() instead of startsWith() to prevent bypass attacks
+    const allowed = ALLOWED_ROOTS.some(root => {
+        const rel = path.relative(root, normalized);
+        return !rel.startsWith("..") && !path.isAbsolute(rel);
+    });
     return allowed ? normalized : null;
 }
 

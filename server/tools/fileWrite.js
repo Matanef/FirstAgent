@@ -11,19 +11,45 @@ const WRITABLE_SANDBOXES = [
   path.resolve("E:/testFolder")
 ];
 
+// ── SECURITY: Directories the agent must NEVER write to (kills RCE via dynamic skills) ──
+const PROTECTED_DIRS = [
+  path.resolve("D:/local-llm-ui/server"),
+  path.resolve("D:/local-llm-ui/client"),
+  path.resolve("D:/local-llm-ui/node_modules"),
+  path.resolve("D:/local-llm-ui/.git"),
+  path.resolve("D:/local-llm-ui/.env"),
+];
+
 // Critical files that should NEVER be overwritten without a backup
 const PROTECTED_FILES = [
   "package.json",
   "package-lock.json",
   ".env",
-  "memory.json"
+  ".env.local",
+  ".env.production",
+  "memory.json",
+  "service_account.json"
 ];
 
 /**
- * Validates if the path is within allowed directories.
+ * Validates if the path is within allowed directories and not in a protected zone.
+ * Uses path.relative() to prevent startsWith bypass (e.g. "D:/local-llm-uievil/").
+ * Blocks writes to server/, client/, node_modules/, .git/, and .env.
  */
 function isPathWritable(resolvedPath) {
-  return WRITABLE_SANDBOXES.some(root => resolvedPath.startsWith(root));
+  // Block protected infrastructure directories
+  for (const protDir of PROTECTED_DIRS) {
+    const rel = path.relative(protDir, resolvedPath);
+    if (!rel.startsWith("..") && !path.isAbsolute(rel)) return false;
+    // Also catch exact match (e.g. .env file itself)
+    if (resolvedPath === protDir) return false;
+  }
+
+  // Verify path is inside a writable sandbox (using path.relative to avoid startsWith bypass)
+  return WRITABLE_SANDBOXES.some(root => {
+    const rel = path.relative(root, resolvedPath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
 }
 
 /**

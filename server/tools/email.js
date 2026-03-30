@@ -189,17 +189,29 @@ export async function parseEmailRequest(query) {
 
 /**
  * Resolve a filename to an actual path in known folders.
+ * SECURITY: Only searches uploads/ and downloads/ — NOT project root.
+ * Blocks sensitive files (.env, config, service accounts, source code).
  */
 export async function findAttachment(filename) {
-  const searchPaths = [
-    path.resolve(PROJECT_ROOT, "uploads", filename),
-    path.resolve(PROJECT_ROOT, "downloads", filename),
-    path.resolve(PROJECT_ROOT, filename)
+  // Block sensitive filenames regardless of path
+  const BLOCKED_PATTERNS = /\.(env|pem|key|p12|pfx)$|^\.env|config\.js$|service_account|memory\.json|package\.json/i;
+  if (BLOCKED_PATTERNS.test(filename)) {
+    console.warn(`🛡️ [email] Blocked sensitive attachment: ${filename}`);
+    return null;
+  }
+
+  const SAFE_DIRS = [
+    path.resolve(PROJECT_ROOT, "uploads"),
+    path.resolve(PROJECT_ROOT, "downloads"),
   ];
-  for (const p of searchPaths) {
+  for (const dir of SAFE_DIRS) {
+    const resolved = path.resolve(dir, filename);
+    // Ensure resolved path is actually inside the safe dir (prevent ../../../ traversal)
+    const rel = path.relative(dir, resolved);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
     try {
-      await fs.access(p);
-      return p;
+      await fs.access(resolved);
+      return resolved;
     } catch {
       // try next
     }

@@ -25,25 +25,53 @@ const SKILLS_DIR = path.join(__dirname, "skills");
 export const dynamicSkills = {};
 
 /**
- * Scans the server/skills directory and dynamically imports any exported functions.
+ * Scans the server/skills directory and dynamically imports exported functions.
+ * SECURITY: Uses a MANIFEST.json allowlist — only skills explicitly listed are loaded.
+ * If no manifest exists, one is auto-generated from current files (first boot).
  */
 export async function loadSkills() {
     try {
         await fs.mkdir(SKILLS_DIR, { recursive: true });
+        const manifestPath = path.join(SKILLS_DIR, "MANIFEST.json");
+        let allowlist = null;
+
+        // Load or create manifest
+        try {
+            const raw = await fs.readFile(manifestPath, "utf8");
+            const manifest = JSON.parse(raw);
+            allowlist = new Set(manifest.allowed || []);
+            console.log(`🔌 [Skills] Manifest loaded: ${allowlist.size} allowed skills`);
+        } catch {
+            // No manifest — auto-generate from current files (first boot safety)
+            const files = await fs.readdir(SKILLS_DIR);
+            const jsFiles = files.filter(f => f.endsWith(".js"));
+            const manifest = {
+                _comment: "Only skills listed here will be loaded. Add new skill filenames to 'allowed' array.",
+                allowed: jsFiles
+            };
+            await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+            allowlist = new Set(jsFiles);
+            console.log(`🔌 [Skills] Auto-generated manifest with ${jsFiles.length} skills`);
+        }
+
         const files = await fs.readdir(SKILLS_DIR);
-
         for (const file of files) {
-            if (file.endsWith(".js")) {
-                const filePath = path.join(SKILLS_DIR, file);
-                const fileUrl = pathToFileURL(filePath).href; 
-                
-                const skillModule = await import(fileUrl);
+            if (!file.endsWith(".js")) continue;
+            // SECURITY: Only load files explicitly listed in the manifest
+            if (!allowlist.has(file)) {
+                console.warn(`🛡️ [Skills] BLOCKED unlisted skill: ${file} (not in MANIFEST.json)`);
+                continue;
+            }
 
-                for (const [key, func] of Object.entries(skillModule)) {
-                    if (typeof func === "function") {
-                        dynamicSkills[key] = func;
-                        console.log(`🔌 [Skills] Dynamically loaded plugin: ${key}`);
-                    }
+            const filePath = path.join(SKILLS_DIR, file);
+            const fileUrl = pathToFileURL(filePath).href;
+
+            const skillModule = await import(fileUrl);
+
+            for (const [key, func] of Object.entries(skillModule)) {
+                if (typeof func === "function") {
+                    dynamicSkills[key] = func;
+                    console.log(`🔌 [Skills] Loaded: ${key} (from ${file})`);
                 }
             }
         }

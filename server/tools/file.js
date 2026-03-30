@@ -11,7 +11,10 @@ const SANDBOX_ROOTS = [
 ];
 
 function isPathAllowed(resolvedPath) {
-  return SANDBOX_ROOTS.some(root => resolvedPath.startsWith(root));
+  return SANDBOX_ROOTS.some(root => {
+    const rel = path.relative(root, resolvedPath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
 }
 
 function findSandboxRoot(request) {

@@ -18,6 +18,32 @@ const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, "..");
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
+// ── SECURITY: Block writes to agent infrastructure (prevents RCE via skills injection) ──
+const BLOCKED_WRITE_DIRS = [
+  path.resolve(PROJECT_ROOT, "server/skills"),
+  path.resolve(PROJECT_ROOT, "node_modules"),
+  path.resolve(PROJECT_ROOT, ".git"),
+];
+const BLOCKED_WRITE_FILES = [".env", ".env.local", ".env.production", "service_account.json"];
+
+function isWritePathSafe(resolvedPath) {
+  // Block writes into dangerous directories
+  for (const dir of BLOCKED_WRITE_DIRS) {
+    const rel = path.relative(dir, resolvedPath);
+    if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+      console.warn(`🛡️ [codeTransform] BLOCKED write to protected dir: ${resolvedPath}`);
+      return false;
+    }
+  }
+  // Block overwriting sensitive files anywhere
+  const basename = path.basename(resolvedPath);
+  if (BLOCKED_WRITE_FILES.includes(basename)) {
+    console.warn(`🛡️ [codeTransform] BLOCKED write to sensitive file: ${basename}`);
+    return false;
+  }
+  return true;
+}
+
 /**
  * Read file safely
  */
@@ -788,6 +814,10 @@ export async function codeTransform(request) {
         if (generated.success && generated.content) {
           // ── STAGING FIX: Respect outputPath if provided ──
           const outPath = context.outputPath || normalizedPath;
+          // ── SECURITY: Block writes to protected directories ──
+          if (!isWritePathSafe(path.resolve(outPath))) {
+            return { tool: "codeTransform", success: false, final: true, error: `Security: write blocked to protected path: ${outPath}` };
+          }
           await fs.mkdir(path.dirname(outPath), { recursive: true });
           await fs.writeFile(outPath, generated.content, "utf8");
 
@@ -1021,6 +1051,10 @@ export async function codeTransform(request) {
       // Create backup and perform final write
       const backupPath = await createBackup(normalizedPath);
       const outPath = context.outputPath || normalizedPath;
+      // ── SECURITY: Block writes to protected directories ──
+      if (!isWritePathSafe(path.resolve(outPath))) {
+        return { tool: "codeTransform", success: false, final: true, error: `Security: write blocked to protected path: ${outPath}` };
+      }
       await fs.writeFile(outPath, finalNewContent, "utf8");
       
       const diff = generateDiffSummary(content, finalNewContent);

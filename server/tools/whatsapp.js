@@ -169,22 +169,30 @@ export async function sendWhatsAppMessage(to, text) {
 // ============================================================
 
 /**
- * Resolve a filename to its full path — checks uploads, downloads, and project root
+ * Resolve a filename to its full path — checks uploads and downloads ONLY.
+ * SECURITY: No longer searches project root or accepts absolute paths.
+ * Blocks sensitive files to prevent data exfiltration via WhatsApp.
  */
 function resolveFilePath(filename) {
-  const searchDirs = [
-    path.resolve(PROJECT_ROOT, "uploads"),
-    path.resolve(PROJECT_ROOT, "downloads"),
-    PROJECT_ROOT
-  ];
-
-  for (const dir of searchDirs) {
-    const fullPath = path.join(dir, filename);
-    if (fs.existsSync(fullPath)) return fullPath;
+  // Block sensitive filenames
+  const BLOCKED = /\.(env|pem|key|p12|pfx)$|^\.env|config\.js$|service_account|memory\.json|package\.json/i;
+  if (BLOCKED.test(filename)) {
+    console.warn(`🛡️ [whatsapp] Blocked sensitive file: ${filename}`);
+    return null;
   }
 
-  // Try as absolute path
-  if (path.isAbsolute(filename) && fs.existsSync(filename)) return filename;
+  const SAFE_DIRS = [
+    path.resolve(PROJECT_ROOT, "uploads"),
+    path.resolve(PROJECT_ROOT, "downloads"),
+  ];
+
+  for (const dir of SAFE_DIRS) {
+    const fullPath = path.resolve(dir, filename);
+    // Prevent path traversal: ensure resolved path stays inside safe dir
+    const rel = path.relative(dir, fullPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    if (fs.existsSync(fullPath)) return fullPath;
+  }
 
   return null;
 }

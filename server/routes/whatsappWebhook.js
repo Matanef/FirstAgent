@@ -4,9 +4,42 @@
 // STATEFUL CONVERSATIONS: greeting, weather, news categories, calendar, tasks
 
 import express from "express";
+import crypto from "crypto";
 import { getState, setState, clearState } from "../utils/whatsappState.js";
 
 const router = express.Router();
+
+// ── SECURITY: HMAC-SHA256 signature verification for incoming webhooks ──
+// Prevents spoofed requests from impersonating Meta/WhatsApp
+function verifyWebhookSignature(req, res, next) {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  // If no app secret configured, log warning but allow (dev mode)
+  if (!appSecret) {
+    console.warn("⚠️ [WhatsApp] WHATSAPP_APP_SECRET not set — webhook signature verification DISABLED");
+    return next();
+  }
+
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature) {
+    console.warn("🛡️ [WhatsApp] Rejected request: missing X-Hub-Signature-256 header");
+    return res.sendStatus(401);
+  }
+
+  const rawBody = JSON.stringify(req.body);
+  const expected = "sha256=" + crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+      console.warn("🛡️ [WhatsApp] Rejected request: invalid HMAC signature");
+      return res.sendStatus(401);
+    }
+  } catch {
+    console.warn("🛡️ [WhatsApp] Rejected request: signature comparison failed");
+    return res.sendStatus(401);
+  }
+
+  next();
+}
 
 // Track recently processed message IDs to prevent duplicate processing
 const processedMessages = new Set();
@@ -115,7 +148,7 @@ router.get("/", (req, res) => {
 // ============================================================
 // POST /  — Receive incoming WhatsApp messages (TWO-WAY LOOP)
 // ============================================================
-router.post("/", async (req, res) => {
+router.post("/", verifyWebhookSignature, async (req, res) => {
   // CRITICAL: Always respond 200 immediately — Meta retries aggressively on failure
   res.sendStatus(200);
 

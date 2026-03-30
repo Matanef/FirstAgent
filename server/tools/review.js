@@ -13,7 +13,10 @@ const SANDBOX_ROOTS = [
 const MAX_FILE_SIZE = 200 * 4096; // 200KB
 
 function isPathAllowed(resolvedPath) {
-  return SANDBOX_ROOTS.some(root => resolvedPath.startsWith(root));
+  return SANDBOX_ROOTS.some(root => {
+    const rel = path.relative(root, resolvedPath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
 }
 
 // Extract file path from natural language
