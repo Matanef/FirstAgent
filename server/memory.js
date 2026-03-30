@@ -4,10 +4,56 @@
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ── SECURITY: Optional encryption at rest for memory.json ──
+// Set MEMORY_ENCRYPTION_KEY in .env (must be exactly 32 hex chars = 16 bytes, or 64 hex = 32 bytes)
+// If unset, memory is stored in plaintext (backwards compatible).
+const ENCRYPTION_KEY = process.env.MEMORY_ENCRYPTION_KEY
+  ? Buffer.from(process.env.MEMORY_ENCRYPTION_KEY, "hex")
+  : null;
+
+if (ENCRYPTION_KEY && ![16, 32].includes(ENCRYPTION_KEY.length)) {
+  console.error("⚠️  [memory] MEMORY_ENCRYPTION_KEY must be 32 or 64 hex chars. Encryption DISABLED.");
+}
+
+const ALGO = "aes-256-gcm";
+
+function encryptString(plaintext) {
+  if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 32) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGO, ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(plaintext, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  const tag = cipher.getAuthTag().toString("hex");
+  return `ENC:${iv.toString("hex")}:${tag}:${encrypted}`;
+}
+
+function decryptString(ciphertext) {
+  if (!ciphertext || !ciphertext.startsWith("ENC:")) return ciphertext;
+  if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 32) {
+    console.warn("⚠️  [memory] Found encrypted data but no valid MEMORY_ENCRYPTION_KEY set");
+    return ciphertext; // Return raw — caller will see ENC: prefix
+  }
+  try {
+    const parts = ciphertext.split(":");
+    const iv = Buffer.from(parts[1], "hex");
+    const tag = Buffer.from(parts[2], "hex");
+    const data = parts[3];
+    const decipher = crypto.createDecipheriv(ALGO, ENCRYPTION_KEY, iv);
+    decipher.setAuthTag(tag);
+    let decrypted = decipher.update(data, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch (e) {
+    console.warn("⚠️  [memory] Decryption failed:", e.message);
+    return ciphertext;
+  }
+}
 
 export const MEMORY_FILE = path.resolve(__dirname, "..", "utils", "memory.json");
 export const DEFAULT_MEMORY = { conversations: {}, profile: {}, durable: [], meta: {} };
@@ -60,8 +106,26 @@ function validateMemoryShape(raw) {
   const safe = clone(DEFAULT_MEMORY);
   if (raw && typeof raw === "object") {
     if (raw.conversations && typeof raw.conversations === "object") safe.conversations = raw.conversations;
-    if (raw.profile && typeof raw.profile === "object") safe.profile = raw.profile;
-    if (Array.isArray(raw.durable)) safe.durable = raw.durable;
+
+    // ── SECURITY: Decrypt encrypted fields on load ──
+    if (raw.profile && typeof raw.profile === "object") {
+      if (raw.profile._encrypted) {
+        try {
+          safe.profile = JSON.parse(decryptString(raw.profile._encrypted));
+        } catch { safe.profile = {}; }
+      } else {
+        safe.profile = raw.profile;
+      }
+    }
+    if (Array.isArray(raw.durable)) {
+      if (raw.durable.length === 1 && raw.durable[0]?._encrypted) {
+        try {
+          safe.durable = JSON.parse(decryptString(raw.durable[0]._encrypted));
+        } catch { safe.durable = []; }
+      } else {
+        safe.durable = raw.durable;
+      }
+    }
     if (raw.meta && typeof raw.meta === "object") safe.meta = raw.meta;
   }
   return safe;
@@ -78,6 +142,15 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
     ensureMemoryDirAndFileSync();
     const tmp = `${file}.tmp.${Date.now()}`;
     const safeData = validateMemoryShape(obj);
+    // ── SECURITY: Encrypt sensitive fields before writing to disk ──
+    if (ENCRYPTION_KEY && ENCRYPTION_KEY.length === 32) {
+      if (safeData.profile && Object.keys(safeData.profile).length > 0) {
+        safeData.profile = { _encrypted: encryptString(JSON.stringify(safeData.profile)) };
+      }
+      if (Array.isArray(safeData.durable) && safeData.durable.length > 0) {
+        safeData.durable = [{ _encrypted: encryptString(JSON.stringify(safeData.durable)) }];
+      }
+    }
     const data = JSON.stringify(safeData, null, 2);
     await fs.writeFile(tmp, data, "utf8");
     // Windows EPERM workaround: retry rename up to 3 times with small delay

@@ -2,6 +2,7 @@
 // COMPLETE FIX #6: Intelligent path resolution with project awareness
 
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 
 // Multiple allowed sandbox roots
@@ -10,7 +11,15 @@ const SANDBOX_ROOTS = [
   path.resolve("E:/testFolder")
 ];
 
+// ── SECURITY: Sensitive files that must never be read (prevents credential leakage) ──
+const SENSITIVE_FILES = /^(\.env|\.env\.\w+|service_account\.json|.*\.pem|.*\.key|.*\.p12|.*\.pfx)$/i;
+
 function isPathAllowed(resolvedPath) {
+  // Block sensitive files regardless of location
+  if (SENSITIVE_FILES.test(path.basename(resolvedPath))) {
+    console.warn(`🛡️ [file] BLOCKED sensitive file: ${resolvedPath}`);
+    return false;
+  }
   return SANDBOX_ROOTS.some(root => {
     const rel = path.relative(root, resolvedPath);
     return !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -38,8 +47,10 @@ function resolveUserPath(request) {
       .trim(); 
       
     const sandboxRoot = findSandboxRoot(request);
-    const resolved = path.resolve(extracted); // Now 'resolved' uses the cleaned string
-  
+    let resolved = path.resolve(extracted);
+    // ── SECURITY: Resolve symlinks to prevent sandbox escape ──
+    try { resolved = fsSync.realpathSync(resolved); } catch { /* path may not exist */ }
+
     if (!isPathAllowed(resolved)) {
       throw new Error("Access outside allowed directories denied");
     }

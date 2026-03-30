@@ -20,6 +20,19 @@ const SKIP_DIRS = new Set([
   ".cache", ".next", "coverage", ".vscode", ".idea", "vendor"
 ]);
 
+// ── SECURITY: Sandbox boundaries for code review ──
+const ALLOWED_ROOTS = [
+  path.resolve("D:/local-llm-ui"),
+  path.resolve("E:/testFolder")
+];
+
+function isReviewPathAllowed(resolvedPath) {
+  return ALLOWED_ROOTS.some(root => {
+    const rel = path.relative(root, resolvedPath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
+}
+
 const CODE_EXTENSIONS = new Set([
   "js", "jsx", "ts", "tsx", "py", "java", "c", "cpp", "h", "hpp",
   "cs", "go", "rs", "rb", "php", "swift", "kt", "vue", "svelte"
@@ -341,7 +354,18 @@ export async function codeReview(request) {
     };
   }
 
-  const normalizedPath = path.resolve(targetPath);
+  let normalizedPath = path.resolve(targetPath);
+
+  // ── SECURITY: Resolve symlinks and enforce sandbox boundaries ──
+  try { normalizedPath = await fs.realpath(normalizedPath); } catch { /* proceed */ }
+  if (!isReviewPathAllowed(normalizedPath)) {
+    console.warn(`🛡️ [codeReview] BLOCKED path outside sandbox: ${normalizedPath}`);
+    return {
+      tool: "codeReview", success: false, final: true,
+      data: { message: `Access denied: "${targetPath}" is outside allowed project boundaries.` }
+    };
+  }
+
   const startTime = Date.now();
 
   try {

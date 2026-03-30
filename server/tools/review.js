@@ -12,7 +12,14 @@ const SANDBOX_ROOTS = [
 
 const MAX_FILE_SIZE = 200 * 4096; // 200KB
 
+// ── SECURITY: Sensitive files that must never be reviewed (prevents credential leakage) ──
+const SENSITIVE_FILES = /^(\.env|\.env\.\w+|service_account\.json|.*\.pem|.*\.key|.*\.p12|.*\.pfx)$/i;
+
 function isPathAllowed(resolvedPath) {
+  if (SENSITIVE_FILES.test(path.basename(resolvedPath))) {
+    console.warn(`🛡️ [review] BLOCKED sensitive file: ${resolvedPath}`);
+    return false;
+  }
   return SANDBOX_ROOTS.some(root => {
     const rel = path.relative(root, resolvedPath);
     return !rel.startsWith("..") && !path.isAbsolute(rel);
