@@ -15,7 +15,61 @@ import { logTelemetry } from "../telemetryAudit.js";
 
 const router = express.Router();
 
-router.post("/chat", async (req, res) => {
+// ── SECURITY: API key authentication middleware ──
+// Set AGENT_API_KEY in .env to enable. If unset, auth is disabled (local dev mode).
+const AGENT_API_KEY = process.env.AGENT_API_KEY || null;
+if (!AGENT_API_KEY) {
+  console.warn("⚠️  [security] AGENT_API_KEY not set — chat endpoint authentication DISABLED");
+}
+
+function requireAuth(req, res, next) {
+  if (!AGENT_API_KEY) return next(); // Dev mode — no key configured
+  const provided = req.headers["x-api-key"] || req.query.apiKey;
+  if (!provided) {
+    return res.status(401).json({ error: "Missing API key. Provide X-Api-Key header." });
+  }
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(AGENT_API_KEY))) {
+      return res.status(403).json({ error: "Invalid API key." });
+    }
+  } catch {
+    return res.status(403).json({ error: "Invalid API key." });
+  }
+  next();
+}
+
+// ── SECURITY: Simple in-memory rate limiter ──
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || "30", 10); // 30 req/min default
+
+function rateLimit(req, res, next) {
+  const ip = req.clientIp || req.ip || "unknown";
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW) {
+    rateLimitMap.set(ip, { windowStart: now, count: 1 });
+    return next();
+  }
+
+  entry.count++;
+  if (entry.count > RATE_LIMIT_MAX) {
+    console.warn(`🛡️ Rate limit exceeded for ${ip} (${entry.count}/${RATE_LIMIT_MAX} per min)`);
+    return res.status(429).json({ error: "Rate limit exceeded. Try again shortly." });
+  }
+  next();
+}
+
+// Clean up stale rate limit entries every 5 minutes
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW * 2;
+  for (const [ip, entry] of rateLimitMap) {
+    if (entry.windowStart < cutoff) rateLimitMap.delete(ip);
+  }
+}, 300_000);
+
+router.post("/chat", requireAuth, rateLimit, async (req, res) => {
   let heartbeatInterval; // Declare it here so it's visible to the whole function
   const startTime = Date.now();
   try {

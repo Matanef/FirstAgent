@@ -651,7 +651,11 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
     ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}`
     : "";
   // Sanitize Windows backslashes so they don't break strict JSON generation
-  const safeMessage = message.replace(/\\/g, "/");
+  // Also strip prompt injection patterns from user input that could manipulate the decomposer
+  const safeMessage = message.replace(/\\/g, "/")
+    .replace(/ignore\s+(all\s+)?previous\s+instructions/gi, "")
+    .replace(/you\s+are\s+now\s+in\s+\w+\s+mode/gi, "")
+    .replace(/system\s*:\s*(override|instruction|prompt)/gi, "");
   // Stricter prompt specifically tuned for local models to force valid JSON
   const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
