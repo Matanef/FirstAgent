@@ -1,0 +1,8 @@
+{
+  "_comment": "Only skills listed here will be loaded. Add new skill filenames to 'allowed' array.",
+  "allowed": [
+    "alarmTracker.js",
+    "hello.js",
+    "spotify.js"
+  ]
+}

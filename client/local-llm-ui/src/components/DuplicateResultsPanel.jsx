@@ -1,7 +1,9 @@
 // client/local-llm-ui/src/components/DuplicateResultsPanel.jsx
 // Renders duplicate scan results in a scrollable 700x500 panel inside chat messages
 
-const API_URL = "http://localhost:3000";
+import { API_URL, authHeaders } from "../api";
+
+const API_KEY = import.meta.env.VITE_AGENT_API_KEY || "";
 
 const EXECUTABLE_EXTENSIONS = new Set([
     ".exe", ".bat", ".cmd", ".sh", ".bash", ".py", ".pl", ".rb",
@@ -79,12 +81,12 @@ function FileRow({ file }) {
     function openFile(e) {
         e.preventDefault();
         if (isExec) return;
-        window.open(`${API_URL}/api/open-file?path=${encodeURIComponent(file.path)}`, "_blank");
+        window.open(`${API_URL}/api/open-file?path=${encodeURIComponent(file.path)}${API_KEY ? `&apiKey=${encodeURIComponent(API_KEY)}` : ""}`, "_blank");
     }
 
     function openFolder(e) {
         e.preventDefault();
-        window.open(`${API_URL}/api/open-folder?path=${encodeURIComponent(folder)}`, "_blank");
+        window.open(`${API_URL}/api/open-folder?path=${encodeURIComponent(folder)}${API_KEY ? `&apiKey=${encodeURIComponent(API_KEY)}` : ""}`, "_blank");
     }
 
     return (

@@ -1,4 +1,6 @@
-FileUploadZonefunction FileUploadZone() {
+import { apiFetch } from "../api";
+
+function FileUploadZone() {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
 
@@ -10,7 +12,7 @@ FileUploadZonefunction FileUploadZone() {
     droppedFiles.forEach(file => formData.append('files', file));
     
     setUploading(true);
-    const response = await fetch('/upload', {
+    const response = await apiFetch('/upload', {
       method: 'POST',
       body: formData
     });

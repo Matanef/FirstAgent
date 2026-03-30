@@ -3,8 +3,7 @@
 // Passes selected path to the agent input field
 
 import { useState, useRef, useEffect } from "react";
-
-const API_URL = "http://localhost:3000";
+import { API_URL, apiFetch } from "../api";
 
 export default function FolderPicker({ onSelectFolder, disabled }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -30,7 +29,7 @@ export default function FolderPicker({ onSelectFolder, disabled }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/browse`, {
+      const res = await apiFetch(`${API_URL}/api/browse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: dirPath })

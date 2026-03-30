@@ -2,8 +2,7 @@
 // Renders file review results: LLM summary text + collapsible file cards with "Show full file"
 
 import { useState } from "react";
-
-const API_URL = "http://localhost:3000";
+import { API_URL, apiFetch } from "../api";
 
 const FILE_ICONS = {
     js: "\u{1F4DC}", jsx: "\u{1F4DC}", ts: "\u{1F4DC}", tsx: "\u{1F4DC}",
@@ -36,7 +35,7 @@ function FileCard({ file }) {
         }
         setLoading(true);
         try {
-            const res = await fetch(`${API_URL}/api/file-content/${encodeURIComponent(file.id)}`);
+            const res = await apiFetch(`${API_URL}/api/file-content/${encodeURIComponent(file.id)}`);
             const text = await res.text();
             setFullContent(text);
             setExpanded(true);

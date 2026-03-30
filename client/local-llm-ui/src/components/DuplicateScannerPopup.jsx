@@ -2,8 +2,7 @@
 // Popup UI for configuring and triggering duplicate file scans
 
 import { useState } from "react";
-
-const API_URL = "http://localhost:3000";
+import { API_URL, apiFetch } from "../api";
 
 const FILE_TYPES = [
     { value: "", label: "All types" },
@@ -47,7 +46,7 @@ export default function DuplicateScannerPopup({ onClose, onResults }) {
             if (name.trim()) body.name = name.trim();
             if (fileType) body.type = fileType;
 
-            const response = await fetch(`${API_URL}/api/scan-duplicates`, {
+            const response = await apiFetch(`${API_URL}/api/scan-duplicates`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body)
@@ -99,7 +98,7 @@ export default function DuplicateScannerPopup({ onClose, onResults }) {
     async function cancelScan() {
         if (scanId) {
             try {
-                await fetch(`${API_URL}/api/scan-duplicates/cancel`, {
+                await apiFetch(`${API_URL}/api/scan-duplicates/cancel`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ scanId })

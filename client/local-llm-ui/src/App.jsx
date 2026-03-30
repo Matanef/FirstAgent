@@ -8,9 +8,8 @@ import TrainOfThought from "./components/TrainOfThought";
 import FileAttachmentBar from "./components/FileAttachmentBar";
 import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
 import FolderPicker from "./components/FolderPicker";
+import { API_URL, apiFetch } from "./api";
 import "./App.css";
-
-const API_URL = "http://localhost:3000";
 
 // MAIN APP COMPONENT
 function App() {
@@ -38,7 +37,7 @@ function App() {
     const toneNames = ["concise", "mediumWarm", "warm", "professional"];
     const toneName = toneNames[toneValue];
 
-    fetch(`${API_URL}/profile`, {
+    apiFetch(`${API_URL}/profile`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "tone", value: toneName })
@@ -103,7 +102,7 @@ async function sendMessage() {
       // Create AbortController for cancel support
       abortControllerRef.current = new AbortController();
 
-      const response = await fetch(`${API_URL}/chat`, {
+      const response = await apiFetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

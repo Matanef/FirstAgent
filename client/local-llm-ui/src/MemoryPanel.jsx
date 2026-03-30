@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { API_URL, apiFetch } from "./api";
 import "./MemoryPanel.css";
 
 export default function MemoryPanel() {
@@ -9,7 +10,7 @@ export default function MemoryPanel() {
   async function loadMemory() {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:3000/debug/memory");
+      const res = await apiFetch(`${API_URL}/debug/memory`);
       const data = await res.json();
       setMemory(data.memory);
     } catch (err) {
@@ -22,7 +23,7 @@ export default function MemoryPanel() {
     if (!window.confirm("Reset ALL memory? This cannot be undone.")) return;
 
     try {
-      await fetch("http://localhost:3000/debug/memory/reset", {
+      await apiFetch(`${API_URL}/debug/memory/reset`, {
         method: "POST"
       });
       await loadMemory();
