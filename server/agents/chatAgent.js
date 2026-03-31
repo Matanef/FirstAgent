@@ -385,6 +385,11 @@ ${conversationContext ? `CONVERSATION HISTORY (background context only — do NO
 USER: ${message}
 ASSISTANT:`;
 
+// 👇 ADD THESE 3 LINES RIGHT HERE 👇
+  console.log("\n🧠 [chatAgent] === INJECTING SELF-AWARENESS CONTEXT ===");
+  console.log(prompt);
+  console.log("=====================================================\n");
+
   try {
     const result = await llm(prompt, { skipKnowledge: true }); // knowledge already injected above
     const replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";

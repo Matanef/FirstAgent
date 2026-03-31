@@ -29,8 +29,24 @@ function App() {
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+useEffect(() => {
+    const currentChat = conversations[activeId];
+    if (!currentChat || currentChat.length === 0) return;
+
+    const lastMsg = currentChat[currentChat.length - 1];
+
+    if (lastMsg.role === "user" || lastMsg.loading) {
+      // 1. Keep scrolling to the bottom while the user sends or the agent is streaming
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (lastMsg.role === "assistant" && !lastMsg.loading) {
+      // 2. When the agent finishes, snap the view back to the TOP of its message
+      // so you don't have to scroll up past the "Reinforced" text or long widgets.
+      const msgElements = document.querySelectorAll('.message-entry');
+      const lastMsgElement = msgElements[msgElements.length - 1];
+      if (lastMsgElement) {
+        lastMsgElement.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
   }, [conversations, activeId]);
 
   useEffect(() => {

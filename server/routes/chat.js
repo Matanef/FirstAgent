@@ -16,14 +16,13 @@ import { logTelemetry } from "../telemetryAudit.js";
 const router = express.Router();
 
 // ── SECURITY: API key authentication middleware ──
-// Set AGENT_API_KEY in .env to enable. If unset, auth is disabled (local dev mode).
 const AGENT_API_KEY = process.env.AGENT_API_KEY || null;
 if (!AGENT_API_KEY) {
-  console.warn("⚠️  [security] AGENT_API_KEY not set — chat endpoint authentication DISABLED");
+  console.warn("⚠️ [security] AGENT_API_KEY not set — chat endpoint authentication DISABLED");
 }
 
 function requireAuth(req, res, next) {
-  if (!AGENT_API_KEY) return next(); // Dev mode — no key configured
+  if (!AGENT_API_KEY) return next(); 
   const provided = req.headers["x-api-key"] || req.query.apiKey;
   if (!provided) {
     return res.status(401).json({ error: "Missing API key. Provide X-Api-Key header." });
@@ -38,10 +37,10 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// ── SECURITY: Simple in-memory rate limiter ──
+// ── SECURITY: In-memory rate limiter ──
 const rateLimitMap = new Map();
-const RATE_LIMIT_WINDOW = 60_000; // 1 minute
-const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || "30", 10); // 30 req/min default
+const RATE_LIMIT_WINDOW = 60_000; 
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || "30", 10); 
 
 function rateLimit(req, res, next) {
   const ip = req.clientIp || req.ip || "unknown";
@@ -61,95 +60,79 @@ function rateLimit(req, res, next) {
   next();
 }
 
-// Clean up stale rate limit entries every 5 minutes
+// Memory Cleanup: Avoid map bloat
 setInterval(() => {
-  const cutoff = Date.now() - RATE_LIMIT_WINDOW * 2;
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW;
   for (const [ip, entry] of rateLimitMap) {
     if (entry.windowStart < cutoff) rateLimitMap.delete(ip);
   }
 }, 300_000);
 
 router.post("/chat", requireAuth, rateLimit, async (req, res) => {
-  let heartbeatInterval; // Declare it here so it's visible to the whole function
+  let heartbeatInterval; 
   const startTime = Date.now();
+  
   try {
     let { message, conversationId, fileIds } = req.body;
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Missing or invalid message" });
+    
+    // ── SECURITY: Strict Input Validation ──
+    if (!message || typeof message !== "string" || message.trim() === "") {
+      return res.status(400).json({ error: "Missing or invalid message payload" });
     }
     if (message.length > 16000) {
-      return res.status(400).json({ error: "Message too long (max 16000 characters)" });
+      return res.status(400).json({ error: "Message exceeds 16000 character limit" });
+    }
+    if (conversationId && !/^[a-zA-Z0-9_-]{8,64}$/.test(conversationId)) {
+      return res.status(400).json({ error: "Invalid conversationId format" });
+    }
+    if (fileIds) {
+      if (!Array.isArray(fileIds) || !fileIds.every(id => typeof id === "string")) {
+        return res.status(400).json({ error: "fileIds must be an array of strings" });
+      }
+      fileIds = fileIds.slice(0, 10);
     }
 
-    // Validate fileIds if present
-    if (fileIds && !Array.isArray(fileIds)) fileIds = undefined;
-    if (fileIds && fileIds.length > 10) fileIds = fileIds.slice(0, 10);
-
-    // Set Headers for SSE
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     console.log("\n" + "=".repeat(70));
-    console.log("💬 USER (STREAMING):", message);
+    console.log("💬 USER (STREAMING):", message.substring(0, 200) + (message.length > 200 ? "..." : ""));
 
-    // Load memory
     let memory = await getMemory();
-
-    // Ensure conversation exists
     const id = conversationId || crypto.randomUUID();
     memory.conversations[id] ??= [];
 
-    // Save user message (in-memory)
     memory.conversations[id].push({
       role: "user",
       content: message,
       timestamp: new Date().toISOString()
     });
 
-    // Simple inline profile updates
     const nameMatch = message.match(/remember(?: that)? my name is (.+)$/i);
-    if (nameMatch) {
-      const name = nameMatch[1].trim();
-      if (name) memory.profile.name = name;
-    }
+    if (nameMatch && nameMatch[1].trim()) memory.profile.name = nameMatch[1].trim();
+    
     const locationMatch = message.match(/remember(?: that)? my location is (.+)$/i);
-    if (locationMatch) {
-      const city = locationMatch[1].trim();
-      if (city) memory.profile.location = city;
-    }
+    if (locationMatch && locationMatch[1].trim()) memory.profile.location = locationMatch[1].trim();
 
-    // Send initial state
-    res.write(
-      `data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`
-    );
+    res.write(`data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`);
 
-    // server/routes/chat.js - Around Line 66
-    // SSE keepalive: send heartbeat every 15s to prevent connection timeout
+    // Only set the heartbeat ONCE here!
     heartbeatInterval = setInterval(() => {
       try { 
-        if (!res.writableEnded) {
-          res.write(`: heartbeat\n\n`); 
-        }
+        if (!res.writableEnded) res.write(`: heartbeat\n\n`); 
       } catch (err) { 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
       }
     }, 15_000);
 
-    // EXECUTE via Orchestrator (routes to chatAgent or taskAgent based on intent)
     const result = await orchestratorHandle({
       message,
       conversationId: id,
       clientIp: req.clientIp,
       fileIds: fileIds || [],
-      onChunk: (chunk) => {
-        res.write(
-          `data: ${JSON.stringify({ type: "chunk", chunk })}\n\n`
-        );
-      },
+      onChunk: (chunk) => res.write(`data: ${JSON.stringify({ type: "chunk", chunk })}\n\n`),
       onStep: (stepInfo) => {
-        // Train of Thought events pass through as-is (type: "thought"),
-        // legacy step events get wrapped with type: "step"
         if (stepInfo.type === "thought") {
           res.write(`data: ${JSON.stringify(stepInfo)}\n\n`);
         } else {
@@ -157,35 +140,37 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
         }
       }
     });
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
+
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
 
     console.log("🟢 [chat.js] Agent returned. Formatting response...");
 
     const elapsed = Date.now() - startTime;
     const reply = result.reply || "Task completed.";
-    const stateGraph = result.stateGraph;
+    const stateGraph = result.stateGraph || [];
     const confidence = calculateConfidence(stateGraph);
 
     try {
-      console.log("🟢 [chat.js] Stringifying JSON payload...");
       const payload = JSON.stringify({
         type: "done",
         reply,
-        stateGraph: stateGraph || [],
+        stateGraph,
         thoughtChain: result.thoughtChain || [],
         tool: result.tool || "unknown",
         data: result.data || null,
         success: result.success ?? true,
         confidence: confidence || 0.8,
         metadata: {
-          steps: stateGraph?.length || 1,
+          steps: stateGraph.length || 1,
           executionTime: elapsed,
           reasoning: result.reasoning || "Complete.",
           messageCount: 1
         }
       });
 
-      console.log("🟢 [chat.js] JSON stringified successfully. Sending to client...");
       res.write(`data: ${payload}\n\n`);
       res.end();
       console.log("🟢 [chat.js] Stream fully closed and sent!");
@@ -196,15 +181,11 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       res.end();
     }
 
-
     // ASYNC: Heavy I/O after stream closed
     try {
-      try {
-        memory = await reloadMemory();
-      } catch (e) {}
+      try { memory = await reloadMemory(); } catch (e) {}
       memory.conversations[id] ??= [];
 
-      // Save assistant reply
       memory.conversations[id].push({
         role: "assistant",
         content: reply,
@@ -226,17 +207,17 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
     } catch (saveErr) {
       console.error("⚠️ Post-response save error (non-blocking):", saveErr.message);
     }
+    
   } catch (err) {
-  if (heartbeatInterval) clearInterval(heartbeatInterval); // Use the new name here too
-  console.error("❌ CHAT ERROR:", err);
-    res.write(
-      `data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`
-    );
-    res.end();
+    if (heartbeatInterval) clearInterval(heartbeatInterval); 
+    console.error("❌ CHAT ERROR:", err);
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+      res.end();
+    }
   }
 });
 
-// ── Scheduler notifications endpoint ──
 router.get("/notifications", async (req, res) => {
   try {
     const { getNotifications, clearNotifications } = await import("../tools/scheduler.js");

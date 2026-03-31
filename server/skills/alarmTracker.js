@@ -69,17 +69,29 @@ export async function alarmTracker(request) {
 
             const rawOutput = xResult.data?.text || xResult.output || "";
 
-            // ── EXTRACTION & CLEANUP ──
-            // Notice the 'g' at the end of the regex? It means "Global" - find ALL tweets, not just the first one.
+// ── EXTRACTION & CLEANUP ──
             const tweetRegex = /<div class="x-tweet-text"[^>]*>([\s\S]*?)<\/div>/gi;
             let match;
             const fetchedTweets = [];
 
-            // Loop through every single tweet found in the HTML
+            // 1. Try to extract HTML tweets first
             while ((match = tweetRegex.exec(rawOutput)) !== null) {
                 const cleanText = match[1].replace(/<[^>]+>/g, "").replace(/\s{2,}/g, " ").trim();
                 if (cleanText && !cleanText.toLowerCase().includes("error")) {
                     fetchedTweets.push(cleanText);
+                }
+            }
+
+            // 2. FALLBACK: If HTML parsing found zero tweets, handle the raw text
+            if (fetchedTweets.length === 0) {
+                console.log(`⚠️ [alarmTracker] Zero HTML tweets found! Raw output snippet:`, rawOutput.substring(0, 150).replace(/\n/g, " "));
+                
+                // Strip all tags just in case, and clean it up
+                const fallbackText = rawOutput.replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim();
+                
+                // If it's a real message (not an error or empty), push it as one giant block
+                if (fallbackText.length > 10 && !fallbackText.toLowerCase().includes("error") && !fallbackText.toLowerCase().includes("no results")) {
+                    fetchedTweets.push(fallbackText);
                 }
             }
 

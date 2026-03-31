@@ -1,8 +1,8 @@
 # Agent Tool Guide — Complete Reference
 
-> **50+ registered tools** across 10 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning + conversational partner mode + Smart Evolution (autonomous tool discovery). Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
+> **55+ registered tools + 6 dynamic skills** across 11 categories + orchestrator-subagent architecture + multi-step decomposition + Train of Thought reasoning + conversational partner mode + Smart Evolution (autonomous tool discovery) + Declarative Routing Table (priority-based intent routing). Each section explains what the tool does, how it's triggered, and provides example prompts to maximize the agent's functionality.
 >
-> _Last updated: March 2026 — Sprint 11 (smartEvolution tool discovery pipeline, agent learning system, passive knowledge, deep scan with tool descriptions, enhanced planner routing for 14+ previously-broken prompts)_
+> _Last updated: March 2026 — Sprint 12 (Declarative Routing Table replacing if/else certainty chain, RSS feeds externalized to JSON, attachmentDownloader skill, news.js Jina proxy upgrade, planner deduplication cleanup)_
 
 ---
 
@@ -19,11 +19,13 @@
 8. [Media & Entertainment](#8-media--entertainment)
 9. [Web Interaction & Automation](#9-web-interaction--automation)
 10. [Advanced Intelligence](#10-advanced-intelligence)
+11. [Dynamic Skills](#11-dynamic-skills) _(auto-discovered from server/skills/)_
 
 ### Architecture & Features
 - [Train of Thought (Reasoning Display)](#train-of-thought-reasoning-display)
 - [Multi-Step Intent Decomposition](#multi-step-intent-decomposition-sequential-logic-engine)
 - [How the Agent Routes Your Messages](#how-the-agent-routes-your-messages)
+- [Declarative Routing Table](#declarative-routing-table)
 - [Multi-Step Flows](#multi-step-flows)
 - [Multi-Step Test Prompts](#multi-step-test-prompts)
 
@@ -107,6 +109,21 @@ Performs NLP analysis: sentiment detection, entity extraction, text classificati
 
 ---
 
+### `calculator` — Math & Equation Solver
+
+Scientific and symbolic hybrid calculator combining expr-eval for numeric computation with nerdamer for symbolic algebra and equation solving. Handles implicit multiplication (`2x` → `2*x`), variable detection, and trigonometric/logarithmic functions.
+
+**Triggered by:** Math expressions (`15 * 3 + 2`), "calculate", "compute", "solve", "what is [number]", "how much is", "percentage of"
+
+**Example prompts:**
+1. `"What is 15% of 230?"` — Percentage calculation
+2. `"Calculate 2^10 + sqrt(144)"` — Scientific expression
+3. `"Solve x^2 - 5x + 6 = 0"` — Symbolic equation solving
+4. `"Convert 100 Fahrenheit to Celsius"` — Unit conversion
+5. `"What is sin(45) * cos(30)?"` — Trigonometric functions
+
+---
+
 ### `selfImprovement` — Agent Diagnostics & Self-Analysis
 
 Checks the agent's routing accuracy, detects misrouting patterns, generates performance reports, and reviews internal code.
@@ -150,7 +167,7 @@ Searches **6 sources in parallel**: Wikipedia, Google (SerpAPI), Yandex, DuckDuc
 
 ### `news` — Multi-Source News with LLM Summaries & Category Feeds
 
-Fetches from **19+ general RSS feeds** (Ynet, Kan, N12, JPost, Times of Israel, Haaretz, i24NEWS, BBC, CNN, Reuters, Al Jazeera, AP News, The Guardian, NPR, ABC News, NBC News, Sky News, DW, France24) plus **7 category-specific feed groups** (technology, science, business, sports, health, entertainment, world) with ~30 active category feeds. Feeds are fetched in parallel with timeouts. Articles are scraped (up to 8) and summarized by the LLM, with headlines table showing up to 30 results. Smart topic extraction rejects noise words like "any", "some", "all".
+Fetches from **19+ general RSS feeds** (Ynet, N12, JPost, Times of Israel, BBC, CNN, AP News, The Guardian, NPR, ABC News, Sky News, DW, France24, and more) plus **8 category-specific feed groups** (technology, android, science, business, sports, health, entertainment, politics) with ~30 active category feeds. Feed URLs are externalized to `server/data/rss_feeds.json` for easy editing without touching code. Articles are scraped via **Jina Reader API** (`r.jina.ai/`) to bypass Cloudflare/WAF bot protection, then summarized by the LLM, with headlines table showing up to 30 results. Also scrapes Israeli flash news from Mako, Ynet, and Rotter (non-RSS). Smart topic extraction rejects noise words like "any", "some", "all". Falls back to SerpAPI web search when RSS topic filtering yields < 3 results.
 
 **Triggered by:** "news", "headlines", "articles", "latest news", "breaking", "what's happening"
 
@@ -228,6 +245,32 @@ Uses OpenWeather API. Supports city names, "here" (geolocation fallback from sav
 8. `"How humid is it in Miami?"` — Humidity query
 9. `"Should I bring an umbrella today? I'm heading to the office in Tel Aviv and want to know if rain is expected"` — Natural language with contextual city extraction
 10. `"What's the weather like in both London and Paris this weekend? I'm trying to decide where to go for a short trip"` — Comparison intent (routes to weather, user gets forecast to decide)
+
+---
+
+### `chartGenerator` — Data Visualization (SVG Bar Charts)
+
+Generates SVG bar charts from JSON array data. Extracts JSON from natural language requests, auto-detects label and value keys, and renders scalable charts with proper axis spacing.
+
+**Triggered by:** "chart", "graph", "plot", "visualize", "diagram"
+
+**Example prompts:**
+1. `"Create a bar chart from this data: [{"name": "Jan", "sales": 100}, {"name": "Feb", "sales": 150}]"` — JSON data chart
+2. `"Visualize the results as a graph"` — Used in compound chains after data-producing tools
+3. `"Plot a chart of monthly revenue"` — Natural language with data context
+
+---
+
+### `systemMonitor` — System Health & Resource Status
+
+Reports real-time host machine status: memory usage, CPU info, OS details, and uptime. Includes health warnings when resources are critically low.
+
+**Triggered by:** "system status", "check resources", "memory usage", "cpu info", "system health", "system monitor"
+
+**Example prompts:**
+1. `"Check system status"` — Full hardware report
+2. `"How much memory is being used?"` — Memory usage
+3. `"System health check"` — Health assessment with warnings
 
 ---
 
@@ -600,6 +643,60 @@ Indexes the project for fast semantic code search, function/class lookup, and sy
 2. `"Find the handleRequest function"` — Function lookup
 3. `"Search for all classes in the project"` — Symbol search
 4. `"Show project overview"` — Summary statistics
+
+---
+
+### `codeRag` — Semantic Code Search (RAG)
+
+Local Retrieval-Augmented Generation for the codebase. Chunks code into semantic units (functions, classes), embeds them via Ollama's `nomic-embed-text` model, and retrieves top-K relevant fragments via cosine similarity. Embeddings stored in `server/data/code_embeddings.json`.
+
+**Triggered by:** "semantic search", "rag", "vector", "code rag", "find code that handles", "search the codebase", "how does the code handle", "reindex"
+
+**Example prompts:**
+1. `"How does the code handle email sending?"` — Semantic code search
+2. `"Find code that handles authentication"` — Function-level retrieval
+3. `"Reindex the codebase"` — Rebuild embeddings
+4. `"Search the codebase for error handling patterns"` — Pattern search
+5. `"Where in the code is weather data fetched?"` — Feature location
+
+---
+
+### `projectSnapshot` — Compressed Context Snapshot
+
+Concatenates critical project files into a compressed markdown string optimized for tight token budgets (~6K tokens). Follows import graphs one level deep and aggressively strips comments/whitespace.
+
+**Triggered by:** "snapshot", "project snapshot", "show context", "file snapshot"
+
+**Example prompts:**
+1. `"Snapshot server/tools/email.js"` — Compressed snapshot with imports
+2. `"Project snapshot of the planner"` — Planner + its dependencies
+3. `"Show context for the executor"` — Compressed view for analysis
+
+---
+
+### `codeSandbox` — Secure Code Execution (Docker)
+
+Executes JavaScript or Python code in disposable Docker containers with strict sandboxing: no network, read-only filesystem, 128MB memory cap, 0.5 CPU cores, 10-second timeout.
+
+**Triggered by:** "run this code", "execute code", "sandbox", "test this code", "code sandbox"
+
+**Example prompts:**
+1. `"Run this code: console.log('hello world')"` — Execute JavaScript
+2. `"Execute this Python: print(sum(range(100)))"` — Execute Python
+3. `"Test this function in a sandbox"` — Safe code testing
+
+---
+
+### `markdownCompiler` — Report Generator
+
+Compiles data from previous tool outputs into formatted markdown reports and saves them to the `downloads/` directory. Typically used as a final step in compound chains.
+
+**Triggered by:** "save report", "compile markdown", "save as markdown", "download report", "generate report"
+
+**Example prompts:**
+1. `"Save this as a markdown report"` — Save previous output as .md
+2. `"Compile the results into competitor_analysis.md"` — Custom filename
+3. `"Generate a report from the analysis"` — Chain: analysis tool → markdownCompiler
 
 ---
 
@@ -985,6 +1082,38 @@ An autonomous "reporter" mode that analyzes a submolt community's posts and gene
 
 ---
 
+### `mcpBridge` — Model Context Protocol (MCP) Client
+
+Dynamically discovers and proxies tool calls to local MCP servers via stdio transport. Manages connection caching (30-minute TTL) with automatic stale connection recycling. Configured via `MCP_SERVERS` environment variable (JSON).
+
+**Requires:** `MCP_SERVERS` JSON config in `.env` defining server commands and args.
+
+**Triggered by:** "mcp", "sqlite", "postgres", "list mcp servers", "list tools on [server]", "call [tool] on [server]"
+
+**Example prompts:**
+1. `"List MCP servers"` — Show all configured MCP servers
+2. `"List tools on sqlite MCP"` — Discover tools from a specific server
+3. `"Call read_query on sqlite MCP with query SELECT * FROM users"` — Execute an MCP tool
+4. `"Disconnect from sqlite MCP"` — Close a connection
+
+---
+
+### `webhookTunnel` — Ngrok Webhook Receiver
+
+Opens an ngrok tunnel to receive incoming webhooks (WhatsApp, Discord, etc.) with a local HTTP server. Supports Meta/WhatsApp webhook verification handshake. Logs events to `data/webhook_events.json`.
+
+**Requires:** `ngrok` npm package installed.
+
+**Triggered by:** "webhook", "tunnel", "ngrok", "receive webhooks", "open tunnel", "stop tunnel"
+
+**Example prompts:**
+1. `"Open a webhook tunnel"` — Start ngrok tunnel + local HTTP server
+2. `"Start receiving webhooks"` — Same as above
+3. `"Stop the tunnel"` — Shut down ngrok and local server
+4. `"Show webhook URL"` — Display the current public tunnel URL
+
+---
+
 ## 10. Advanced Intelligence
 
 ### `documentQA` — Document Question Answering (RAG)
@@ -1051,6 +1180,73 @@ Enhanced emotional awareness beyond basic sentiment:
 
 ---
 
+## 11. Dynamic Skills
+
+Dynamic skills are auto-discovered from `server/skills/` via a `MANIFEST.json` allowlist. Unlike core tools (which are registered in `server/tools/index.js`), skills are loaded at runtime and don't require changes to the planner or executor to wire up.
+
+### `attachmentDownloader` — Gmail Attachment Downloader
+
+Downloads email attachments from Gmail based on sender address and date range. Organizes files into `downloads/YYYY-MM-DD/sender@email.com/` directories. Includes comprehensive security: filename sanitization, executable blocking (.exe, .bat, .sh, .ps1), credential file blocking (.env, .pem, .key), and path traversal prevention.
+
+**Requires:** Gmail OAuth configured.
+
+**Triggered by:** "download" + "attachments" + email address + date keyword (e.g., "since", "between", "after")
+
+**Example prompts:**
+1. `"Download attachments from john@example.com since 01/01/2025"` — Date-range download
+2. `"Save attachments from boss@company.com between 01/03/2025 and 15/03/2025"` — Date range
+3. `"Fetch attachments from billing@service.com after yesterday"` — Natural language date
+
+---
+
+### `alarmTracker` — Twitter/X Alert Monitor → WhatsApp
+
+Monitors a target Twitter/X account (default: ILRedAlert) for real-time alerts and forwards them via WhatsApp. Runs a background polling loop (60-second interval) with deduplication to prevent duplicate alerts.
+
+**Triggered by:** Explicitly called: "call alarmTracker to start sending alerts to [phone]"
+
+**Example prompts:**
+1. `"Call alarmTracker to start sending alerts to 0541234567"` — Start monitoring
+2. `"Stop alarmTracker"` — Stop the monitoring loop
+
+---
+
+### `pikudTracker` — Pikud HaOref (Civil Defense) Alert Monitor
+
+Monitors the official Israeli civil defense alert system for specific cities (Givatayim, Tel Aviv zones, Ramat Gan) and sends real-time rocket alerts via WhatsApp. Polls every 3 seconds with deduplication.
+
+**Triggered by:** Explicitly called: "call pikudTracker to send alerts to [phone]"
+
+**Example prompts:**
+1. `"Call pikudTracker to send alerts to 0541234567"` — Start monitoring
+2. `"Stop pikudTracker"` — Stop monitoring
+
+---
+
+### `spotifyController` — Spotify Playback Control (Skill)
+
+Controls Spotify playback via the Spotify Web API with OAuth2 refresh token flow. Supports play, pause, skip, previous, and search-and-play.
+
+**Requires:** `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REFRESH_TOKEN` in `.env`
+
+**Triggered by:** "play", "pause", "skip", "previous", "spotify", "music", "song", "track"
+
+**Example prompts:**
+1. `"Play Bohemian Rhapsody on Spotify"` — Search and play
+2. `"Pause the music"` — Pause playback
+3. `"Skip this song"` — Next track
+4. `"Previous track"` — Go back
+
+---
+
+### `hello` — Test Skill
+
+A minimal test/demo skill that returns a hello world message. Used for verifying skill loading works correctly.
+
+**Triggered by:** Direct invocation for testing.
+
+---
+
 ## UI Features
 
 ### Stop Button (Cancel Ongoing Requests)
@@ -1093,6 +1289,8 @@ Tools like weather, YouTube, and calculator show both their visual widget AND th
 | `WHATSAPP_BOT_NUMBER` | whatsapp webhook | Optional (loop guard) |
 | `twitter_cookies.json` (file, not env var) | x (Twitter) — export `auth_token`, `ct0`, `twid` from browser | For X/Twitter |
 | `MOLTBOOK_API_KEY` | moltbook (auto-saved to `.config/moltbook/credentials.json` on registration) | For Moltbook |
+| `MCP_SERVERS` | mcpBridge (JSON config defining server commands) | For MCP |
+| `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` + `SPOTIFY_REFRESH_TOKEN` | spotifyController | For Spotify |
 
 ### Generating a Credential Master Key
 
@@ -1109,17 +1307,19 @@ CREDENTIAL_MASTER_KEY=<your-generated-key-here>
 
 ## How the Agent Routes Your Messages
 
-The planner uses a **6-layer routing pipeline** to map natural language to tools:
+The planner uses a **7-layer routing pipeline** to map natural language to tools:
 
 1. **Personal Conversation Detection** (deterministic, instant) — Detects first-person emotional/reflective messages and routes to LLM with enriched profile context (conversational partner mode). Uses 5 guards to prevent false positives: tool-intent words, file paths, URLs, short commands, and opinion-about-tool-topic detection.
 
-2. **Certainty Layer** (deterministic, instant) — 45+ pattern-matching branches for keywords, file paths, URLs, tool-specific phrases. ~90% of single-intent messages are caught here. Each branch includes a **compound intent guard** (`hasCompoundIntent()`) that detects multi-tool queries and lets them pass through to the decomposition layers. Includes collision guards:
+2. **Declarative Routing Table** (deterministic, priority-based) — A `ROUTING_TABLE` array of ~40 rule objects, each with `tool`, `priority` (integer), `match()`, optional `guard()`, and optional `context()` fields. ALL rules are evaluated; the highest-priority match that passes its guard wins. No more position-dependent if/else chains. See [Declarative Routing Table](#declarative-routing-table) for details. Handles: email confirmations, attachmentDownloader, githubScanner, duplicateScanner, memorytool, weather, sheets, email, whatsapp, githubTrending, gitLocal, calendar, news, finance, financeFundamentals, sports, x, spotifyController, youtube, github, nlp_tool, calculator, tasks, contacts, documentQA, lotrJokes, search.
+
+3. **Imperative Certainty Layer** (deterministic, instant) — Remaining complex rules that need multi-step sub-routing or heavy context building: moltbook (30+ sub-actions), selfEvolve, smartEvolution, applyPatch, codeTransform, codeReview, folderAccess, projectGraph, codeRag, projectIndex, webBrowser, webDownload/URL, fileWrite, packageManager, shopping, workflow, scheduler. Includes collision guards:
    - Calendar guard prevents "meeting with team" from routing to sports
    - Tasks guard prevents task keywords from routing to GitHub
    - General knowledge guard routes "what is X" to search instead of calculator
    - File path priority ensures paths like `D:/...` always route to file tools
    - Finance guard with company name → ticker resolution
-   - **Compound intent guard** on 9 branches (email override, news, fileWrite, review, weather, finance, sports, file_path, email) prevents greedy single-tool routing when the query contains multiple intents
+   - **Compound intent guard** on multiple branches prevents greedy single-tool routing when the query contains multiple intents
 
 3. **Hardcoded Compound Patterns** (deterministic, multi-step) — Regex patterns that detect known 2-3 step combinations and return multi-step arrays:
    - **Search + Email**: `"search for X and email me the results"` → [search → email]
@@ -1148,6 +1348,52 @@ The `hasCompoundIntent()` function uses 8 patterns to detect multi-intent querie
 | 6 | "and also" | `"get the news and also check the weather"` |
 | 7 | email verb + email keyword + content keyword | `"send an email with the summary of the news"` |
 | 8 | "email me the news/weather/stocks" | `"email me the latest headlines"` |
+
+---
+
+## Declarative Routing Table
+
+The Declarative Routing Table (Sprint 12) replaces the position-dependent if/else certainty chain with an explicit priority-numbered rule system. Instead of "move this block above that block" surgery, each rule has a numeric priority and the system evaluates ALL rules, picking the highest-priority match.
+
+### Priority Tiers
+
+| Priority Range | Tier | Description | Examples |
+|----------------|------|-------------|----------|
+| 95-99 | Confirmations | Override everything | "send it", "cancel" |
+| 85-94 | Narrow skills | Beat broader tools | attachmentDownloader, githubScanner |
+| 70-84 | Standard tools | Distinctive patterns | email, weather, calendar, sheets |
+| 55-69 | Broader tools | Wider keyword match | finance, sports, youtube, news |
+| 40-54 | Catch-alls | Generic patterns | calculator, tasks, contacts, lotrJokes |
+| 20-39 | Fallback | Last resort | search (general knowledge) |
+
+### How to Add a New Tool
+
+1. Add a rule object to `ROUTING_TABLE` in `server/planner.js`
+2. Set a priority number using the tier guide above
+3. Define `match(lower, trimmed, ctx)` — returns `true` if this tool should handle the message
+4. Optionally define `guard(lower, trimmed, ctx)` — returns `true` to **block** this tool
+5. Optionally define `context(lower, trimmed, ctx)` — returns context object for the tool
+
+```javascript
+{
+  tool: "myTool",
+  priority: 72,
+  match: (lower) => /\b(my|tool|keywords)\b/i.test(lower),
+  guard: (lower) => hasCompoundIntent(lower),
+  context: (lower) => ({ action: "default" }),
+  description: "What this rule matches"
+}
+```
+
+### How It Resolves Collisions
+
+When "download attachments from john@email.com since January" is sent:
+- `attachmentDownloader` matches at **priority 92** (download + attachments + email + date)
+- `email` matches at **priority 72** (contains "email" keyword)
+- `email` guard fires (detects attachment download pattern) → **blocked**
+- Winner: `attachmentDownloader` at priority 92
+
+No more routing collisions from if/else ordering mistakes.
 
 ---
 
@@ -1566,6 +1812,11 @@ Weather tool falls back to your saved location from memory when no city is speci
 25. **Personal conversations** — Share thoughts, ask for opinions, discuss ideas — the agent activates partner mode automatically and remembers your context
 26. **X/Twitter cookies** — Export `auth_token`, `ct0`, and `twid` cookies from your browser to `twitter_cookies.json` for Twitter access (no username/password needed)
 27. **Multi-change refactoring** — Describe 3+ changes in one request: `"Refactor, add JSDoc, fix error handling in news.js"` — auto-routes to applyPatch for a comprehensive rewrite
+28. **Download attachments** — `"Download attachments from boss@company.com since 01/01/2025"` — downloads to organized date/sender folders
+29. **RSS feed customization** — Edit `server/data/rss_feeds.json` to add/remove news sources without touching code
+30. **MCP servers** — Configure external tool servers via `MCP_SERVERS` env var, then `"list MCP servers"` or `"call read_query on sqlite MCP"`
+31. **Code search** — `"How does the code handle email sending?"` uses semantic RAG search across the entire codebase
+32. **System monitoring** — `"Check system status"` for real-time memory, CPU, and health info
 
 ---
 

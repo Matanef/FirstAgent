@@ -3,6 +3,9 @@
   "allowed": [
     "alarmTracker.js",
     "hello.js",
-    "spotify.js"
+    "spotify.js",
+    "pikudTracker.js",
+    "trafficScanner.js",
+    "attachmentDownloader.js"
   ]
 }
