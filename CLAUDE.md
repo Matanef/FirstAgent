@@ -49,6 +49,15 @@ Never import API clients for LLMs. All AI generations inside tools MUST route th
 * **Memory:** Use `import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";`
 * **Project Boundary:** File operations must resolve paths against `PROJECT_ROOT`.
 
+## 🔒 Git Lock File Recovery
+This repo uses multiple Claude worktrees that share `.git/`. This causes `index.lock` race conditions.
+**When `git add` or `git commit` fails with "Unable to create index.lock":**
+1. Try `powershell -Command "Remove-Item '.git/index.lock' -Force"` (PowerShell bypasses POSIX busy-file errors)
+2. If that says "does not exist", the lock is ephemeral — retry the git command immediately after the PowerShell call in a single chained command
+3. If it persists, stage files one at a time in a `for` loop: `for f in file1 file2; do git add "$f" 2>/dev/null; done` — some will succeed between lock windows
+4. For any file that still fails, use the PowerShell-then-git pattern: `powershell -Command "Remove-Item '.git/index.lock' -Force; & git add <file>; Write-Host 'done'"`
+5. **Never** kill the bash/node processes listed in `Get-Process` — they are the agent server and other Claude sessions
+
 ## 🎭 Persona & Context Injection
 * **Agent Identity:** The agent's identity (Lanou) and worldview are managed dynamically via `server/personality.js`. 
 * **NEVER HARDCODE PERSONAS:** Do not write prompts that start with "You are a helpful AI...".
