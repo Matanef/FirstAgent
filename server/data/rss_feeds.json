@@ -7,6 +7,7 @@
     "walla": "https://rss.walla.co.il/feed/1",
     "bbc": "http://feeds.bbci.co.uk/news/rss.xml",
     "cnn": "http://rss.cnn.com/rss/edition.rss",
+    "CNN Top Stories": "http://rss.cnn.com/rss/cnn_topstories.rss",
     "guardian": "https://www.theguardian.com/world/rss",
     "nyt": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
     "wapo": "https://feeds.washingtonpost.com/rss/world",
@@ -28,20 +29,62 @@
       "hackernews": "https://hnrss.org/frontpage",
       "techcrunch": "https://techcrunch.com/feed/",
       "wired": "https://www.wired.com/feed/rss",
-      "engadget": "https://www.engadget.com/rss.xml"
+      "engadget": "https://www.engadget.com/rss.xml",
+      "Ynet":"https://www.ynet.co.il/Integration/StoryRss545.xml"
     },
     "android": {
       "androidauthority": "https://www.androidauthority.com/feed",
       "androidpolice": "https://www.androidpolice.com/feed",
       "droidlife": "https://www.droid-life.com/feed",
       "androidcentral": "https://www.androidcentral.com/feeds.xml",
-      "androidheadlines": "https://www.androidheadlines.com/feed"
+      "androidheadlines": "https://www.androidheadlines.com/feed",
+      "all_about_android": "https://feeds.twit.tv/aaa.xml",
+      "google_blog_android": "https://blog.google/products/android/rss",
+      "reddit_android": "https://www.reddit.com/r/android/.rss"
+    },
+    "android_dev": {
+      "android_developers": "https://www.youtube.com/feeds/videos.xml?user=androiddevelopers",
+      "android_developers_medium": "https://medium.com/feed/androiddevelopers",
+      "android_developers_backstage": "http://feeds.feedburner.com/blogspot/androiddevelopersbackstage",
+      "android_developers_blog": "http://feeds.feedburner.com/blogspot/hsDu",
+      "android_weekly": "https://us2.campaign-archive.com/feed?u=887caf4f48db76fd91e20a06d&id=4eb677ad19",
+      "instagram_eng_android": "https://instagram-engineering.com/feed/tagged/android",
+      "mindorks_android": "https://medium.com/feed/mindorks/tagged/android",
+      "airbnb_tech_android": "https://medium.com/feed/airbnb-engineering/tagged/android",
+      "android_arsenal": "https://feeds.feedburner.com/Android_Arsenal",
+      "zac_sweers": "https://www.zacsweers.dev/rss/",
+      "zarah_dominguez": "https://zarah.dev/feed.xml"
+    },
+    "apple": {
+      "Ars Technica":"https://feeds.arstechnica.com/arstechnica/apple/",
+      "macrumors": "https://feeds.macrumors.com/MacRumors-All",
+      "9to5mac": "https://9to5mac.com/feed/",
+      "appleinsider": "https://appleinsider.com/rss/news",
+      "cultofmac": "https://www.cultofmac.com/feed/",
+      "Apple Newsroom":"https://www.apple.com/newsroom/rss-feed.rss",
+      "MacRumors": "https://feeds.macrumors.com/MacRumors-Front"
     },
     "science": {
       "bbc_science": "http://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
       "livescience": "https://www.livescience.com/feeds/all",
       "sciencedaily": "https://www.sciencedaily.com/rss/all.xml",
-      "newscientist": "https://www.newscientist.com/section/news/feed/"
+      "newscientist": "https://www.newscientist.com/section/news/feed/",
+      "MIT news":"http://news.mit.edu/rss/feed/",
+      "MIT News » School of Architecture + Planning":"https://news.mit.edu/rss/school/architecture-and-planning",
+      "MIT News » School of Engineering": "https://news.mit.edu/rss/school/engineering",
+      "MIT News » School of Science":"https://news.mit.edu/rss/school/science",
+      "MIT News » Aeronautical and astronautical engineering":"https://news.mit.edu/rss/topic/aeronautics",
+      "MIT News » Neuroscience, neurology, and cognitive sciences":"https://news.mit.edu/rss/topic/neuroscience-neurology-and-cognitive-sciences"
+    },
+    "space": {
+      "space_com": "https://www.space.com/feeds/all",
+      "universetoday": "https://www.universetoday.com/feed/",
+      "nasa_breaking": "https://www.nasa.gov/rss/dyn/breaking_news.rss",
+      "Astronomy Magazine":"https://www.astronomy.com/feed/",
+      "Spaceflight Now":"https://spaceflightnow.com/feed/",
+      "sciencenews.org » Space":"https://www.sciencenews.org/topic/space/feed",
+      "CBS News » Space":"https://www.cbsnews.com/latest/rss/space"
+      
     },
     "business": {
       "bbc_business": "http://feeds.bbci.co.uk/news/business/rss.xml",
@@ -50,24 +93,105 @@
       "ft": "https://www.ft.com/?format=rss",
       "wsj": "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
     },
+    "personal_finance": {
+      "nerdwallet": "https://www.nerdwallet.com/blog/feed/",
+      "thepennyhoarder": "https://www.thepennyhoarder.com/feed/"
+    },
+    "startups": {
+      "ycombinator": "https://news.ycombinator.com/rss",
+      "venturebeat": "https://venturebeat.com/feed/"
+    },
+    "programming": {
+      "freecodecamp": "https://www.freecodecamp.org/news/rss/",
+      "raywenderlich": "https://www.raywenderlich.com/feed",
+      "sitepoint": "https://www.sitepoint.com/feed/"
+    },
+    "web_development": {
+      "a_list_apart": "https://alistapart.com/main/feed/",
+      "css_tricks": "https://css-tricks.com/feed/",
+      "code_wall": "https://www.codewall.co.uk/feed/",
+      "google_web_updates": "https://developers.google.com/web/updates/rss.xml"
+    },
+    "ui_ux": {
+      "nngroup": "https://www.nngroup.com/articles/subscribe/rss/",
+      "uxmatters": "https://www.uxmatters.com/index.xml"
+    },
     "sports": {
       "bbc_sport": "http://feeds.bbci.co.uk/sport/rss.xml",
       "espn": "https://www.espn.com/espn/rss/news",
       "skysports": "https://www.skysports.com/rss/12040"
+    },
+    "gaming": {
+      "polygon": "https://www.polygon.com/rss/index.xml",
+      "ign": "https://feeds.ign.com/ign/news",
+      "kotaku": "https://kotaku.com/rss",
+      "Ynet":"https://www.ynet.co.il/Integration/StoryRss571.xml",
+      "eurogamer": "https://www.eurogamer.net/feed/news"
+    },
+    "movies": {
+      "indiewire": "https://www.indiewire.com/feed/",
+      "slashfilm": "https://www.slashfilm.com/feed/",
+      "screenrant": "https://screenrant.com/feed/"
+    },
+    "television": {
+      "tvline": "https://tvline.com/feed/",
+      "hollywoodreporter": "https://www.hollywoodreporter.com/c/tv/tv-news/feed/"
+    },
+    "music": {
+      "pitchfork": "https://pitchfork.com/rss/news/",
+      "stereogum": "https://www.stereogum.com/feed/",
+      "consequence": "https://consequence.net/feed/"
+    },
+    "entertainment": {
+      "bbc_entertainment": "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+      "variety": "https://variety.com/feed/",
+      "rollingstone": "https://www.rollingstone.com/feed/"
+    },
+    "books": {
+      "lithub": "https://lithub.com/feed/",
+      "bookriot": "https://bookriot.com/feed/"
     },
     "health": {
       "bbc_health": "http://feeds.bbci.co.uk/news/health/rss.xml",
       "medicalnewstoday": "https://www.medicalnewstoday.com/newsfeeds/rss",
       "webmd": "https://rssfeeds.webmd.com/rss/rss.aspx?RSSSource=RSS_PUBLIC"
     },
-    "entertainment": {
-      "bbc_entertainment": "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-      "variety": "https://variety.com/feed/",
-      "hollywoodreporter": "https://www.hollywoodreporter.com/feed/",
-      "rollingstone": "https://www.rollingstone.com/feed/"
+    "food": {
+      "eater": "https://www.eater.com/rss/index.xml",
+      "seriouseats": "https://www.seriouseats.com/recipes/rss",
+      "smittenkitchen": "https://smittenkitchen.com/feed/"
+    },
+    "travel": {
+      "lonelyplanet": "https://www.lonelyplanet.com/news/feed",
+      "nomadicmatt": "https://www.nomadicmatt.com/travel-blogs/feed/"
+    },
+    "photography": {
+      "petapixel": "https://petapixel.com/feed/",
+      "dpreview": "https://www.dpreview.com/feeds/news.xml"
+    },
+    "cars": {
+      "jalopnik": "https://jalopnik.com/rss",
+      "motortrend": "https://www.motortrend.com/feed/",
+      "caranddriver": "https://www.caranddriver.com/rss"
+    },
+    "architecture": {
+      "archdaily": "https://www.archdaily.com/rss",
+      "dezeen": "https://www.dezeen.com/feed/",
+      "designboom": "https://www.designboom.com/feed/"
+    },
+    "diy": {
+      "makezine": "https://makezine.com/feed/",
+      "hackaday": "https://hackaday.com/blog/feed/"
+    },
+    "history": {
+      "MIT News » History":"https://news.mit.edu/rss/topic/history",
+      "history_extra": "https://www.historyextra.com/feed/",
+      "smithsonian": "https://www.smithsonianmag.com/rss/history/"
     },
     "politics": {
+      "The New York Times": "https://www.nytimes.com/svc/collections/v1/publish/https://www.nytimes.com/section/politics/rss.xml",
       "bbc_politics": "http://feeds.bbci.co.uk/news/politics/rss.xml",
+      
       "politico": "https://rss.politico.com/politics-news.xml",
       "thehill": "https://thehill.com/feed/"
     }

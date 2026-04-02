@@ -37,7 +37,10 @@ app.use(cors({
   methods: ["GET", "POST"],
   credentials: true
 }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, _res, buf) => { req.rawBody = buf; }  // Preserve raw bytes for webhook HMAC verification
+}));
 app.use("/", oauthCallback);
 
 

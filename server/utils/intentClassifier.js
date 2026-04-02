@@ -22,7 +22,8 @@ const CHAT_PATTERNS = [
   /\bwho (are|made|created) you\b/i,
   /\bwhat (can you|are you capable of)\b/i,
   /\b(thanks?|thank you|good job|well done|nice work|great job)\b/i,
-  /\b(hello|hey|hi|good morning|good evening|good night|good afternoon)(\s+(man|dude|pal|friend|buddy|bro|mate|fam|homie|guys?|there|everyone|all))?\b/i,
+  // Greeting must appear near start of message — avoids matching "hi" inside commands like "send msg saying hi"
+  /^[\s]*(?:oh\s+|so\s+)?(hello|hey|hi|good morning|good evening|good night|good afternoon)(\s+(man|dude|pal|friend|buddy|bro|mate|fam|homie|guys?|there|everyone|all))?\b/i,
   /\bhow was your (day|night|weekend)\b/i,
   /\bdo you have (feelings|emotions|consciousness|a soul)\b/i,
   /\bwhat makes you (different|special|unique)\b/i,
@@ -73,7 +74,12 @@ const CHAT_PATTERNS = [
 const TASK_PATTERNS = [
   // Explicit commands
   /\b(search|find|look\s+up|google|fetch|get|check|show|list|display|browse)\s+/i,
-  /\b(send|compose|write|draft|reply)\s+(an?\s+)?email\b/i,
+  /\b(send|compose|write|draft|reply)\s+(an?\s+)?(email|message|whatsapp|text|sms|dm)\b/i,
+  /\b(whatsapp|וואטסאפ|ווטסאפ)\b/i,
+  // Memory/identity queries — must be task, not chat
+  /\bwhat\s+do\s+you\s+(know|remember)\s+(about\s+me|about\s+my)\b/i,
+  /\bwho\s+am\s+i\b/i,
+  /\bmy\s+(contacts?|preferences|location|profile|email|phone)\b/i,
   /\b(create|add|schedule|book|set\s+up|make)\s+(an?\s+)?(event|meeting|appointment|task|reminder)\b/i,
   /\b(review|analyze|audit|inspect)\s+(the\s+|my\s+|this\s+)?(code|file|project)\b/i,
   /\b(improve|evolve|self[- ]?evolve|self[- ]?improve|upgrade)\b/i,

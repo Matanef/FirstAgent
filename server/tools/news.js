@@ -246,6 +246,9 @@ function extractTopic(query) {
     .replace(/[,;]?\s*every\s+\d+\s*(?:min(?:utes?)?|hours?|days?|secs?(?:onds?)?|weeks?)\b/gi, "")
     .replace(/[,;]?\s*(?:every\s+(?:morning|evening|night|day|week|hour)|hourly|daily|weekly|monthly)\b/gi, "")
     .replace(/[,;]?\s*(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/gi, "")
+    // Strip question words/phrases EARLY — "what's", "what are the", "how about", etc.
+    .replace(/\bwhat['\u2018\u2019]?s\b/gi, "")
+    .replace(/\b(what\s+(?:is|are|were)|where\s+(?:is|are)|who\s+(?:is|are|was|were)|how\s+(?:about|is|are))\s+(?:the\s+)?/gi, "")
     // Strip "let's" first — apostrophe makes regex word boundaries tricky
     .replace(/let['\u2018\u2019]?s\b/gi, "")
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
@@ -273,11 +276,13 @@ function extractTopic(query) {
     .replace(/^[,\s]+|[,\s]+$/g, "")
     .trim();
 
-  // Words that look like topics but aren't — quantifiers, pronouns, filler
+  // Words that look like topics but aren't — quantifiers, pronouns, filler, question words
   const topicNoiseWords = new Set([
     "some", "any", "all", "few", "more", "every", "many", "much", "several",
     "it", "its", "this", "that", "them", "their", "us", "me", "updated", "news", "headlines",
-    "the", "a", "an", "on", "in", "at", "to", "for", "of", "new"
+    "the", "a", "an", "on", "in", "at", "to", "for", "of", "new",
+    "what", "whats", "what's", "how", "who", "where", "when", "why", "which",
+    "is", "are", "was", "were", "do", "does", "did", "about"
   ]);
 
   function cleanTopic(raw) {
@@ -291,13 +296,14 @@ function extractTopic(query) {
 
   // Extract specific topic patterns — match first "about/regarding/on/for" + topic
   // Strip "news" before matching so "news about X" → "about X" → captures "X"
+  // Allow trailing punctuation (?!.) so "on stem cell?" still matches
   const forTopicMatch = stripped.replace(/\bnews\b/gi, "").trim();
-  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|[?!.]*$)/i);
   const cleanedTopic = cleanTopic(topicMatch?.[1]);
   if (cleanedTopic) return cleanedTopic;
 
   // Fallback: try "about X" from original (but still clean it)
-  const lowerTopicMatch = lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const lowerTopicMatch = lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|[?!.]*$)/i);
   const cleanedLowerTopic = cleanTopic(lowerTopicMatch?.[1]);
   if (cleanedLowerTopic) return cleanedLowerTopic;
 
@@ -312,7 +318,10 @@ function extractTopic(query) {
   }
 
   // Use the cleaned/stripped version if meaningful
-  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for", "on", "in"]);
+  const rejectWords = new Set([
+    "any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for", "on", "in",
+    "what", "whats", "how", "who", "where", "when", "why", "which", "is", "are", "was", "were", "do", "does"
+  ]);
   const words = stripped.split(/\s+/).filter(w => !rejectWords.has(w) && w.length > 1);
   if (words.length > 0 && words.length <= 6) {
     return words.join(" ");

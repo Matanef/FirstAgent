@@ -715,6 +715,16 @@ export async function selfEvolve(request) {
 
   try {
     switch (intent) {
+      case "conversation_only":
+        return { 
+          tool: "selfEvolve", 
+          success: true, 
+          final: true, 
+          data: { 
+            text: "I've been focusing on improving my error handling and refining my internal logic lately. Would you like me to run a formal self-evolution cycle to show you the technical details, or should we just keep chatting?",
+            isChatty: true 
+          } 
+        };
       case "history":
         const history = await showHistory();
         return { tool: "selfEvolve", success: true, final: true, data: { preformatted: true, text: history } };
@@ -753,6 +763,15 @@ export async function selfEvolve(request) {
 
 function detectIntent(text) {
   const lower = text.toLowerCase();
+  
+  // NEW: Detect if this is just a conversational question
+  const isQuestion = /\?$/.test(text.trim()) || /^(what|how|why|who|when|did|have)\b/i.test(lower);
+  const isConversational = /\b(learned|improved|done|changed|tell me|what have you)\b/i.test(lower);
+
+  if (isQuestion && isConversational && !/\b(run|execute|start|apply|force)\b/i.test(lower)) {
+    return "conversation_only";
+  }
+
   if (/\b(history|log)\b/.test(lower)) return "history";
   if (/\b(dry.?run|preview|plan)\b/.test(lower)) return "dryrun";
   return "run";
