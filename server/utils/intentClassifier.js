@@ -2,6 +2,30 @@
 // Intent classifier: determines whether a user message is "chat" (conversational)
 // or "task" (requires tool execution). Uses rule-based patterns with LLM fallback.
 
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { getDraft } from "./emailDrafts.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const TOOLS_DIR = path.resolve(__dirname, "..", "tools");
+
+// Dynamically load all tool names so we never have to hardcode them
+let DYNAMIC_TOOLS = [];
+try {
+  // Reads all filenames in the tools folder (e.g. "pikudTracker.js" -> "pikudtracker")
+  if (fs.existsSync(TOOLS_DIR)) {
+    DYNAMIC_TOOLS = fs.readdirSync(TOOLS_DIR)
+      .filter(file => file.endsWith(".js") && file !== "llm.js") // Ignore the sterile llm tool
+      .map(file => file.replace(".js", "").toLowerCase());
+  }
+  
+  // You can optionally add a few permanent split-word aliases here just in case
+  DYNAMIC_TOOLS.push("pikud", "moltbook", "spotify"); 
+} catch (e) {
+  console.warn("[intentClassifier] Could not dynamically load tools list:", e.message);
+}
 /**
  * Chat mode patterns — conversational, reflective, meta-questions
  * These should NOT trigger any tools; handled by chatAgent
@@ -72,9 +96,10 @@ const CHAT_PATTERNS = [
  * These require tool execution; handled by taskAgent
  */
 const TASK_PATTERNS = [
-  // Explicit commands
-  /\b(search|find|look\s+up|google|fetch|get|check|show|list|display|browse)\s+/i,
-  /\b(send|compose|write|draft|reply)\s+(an?\s+)?(email|message|whatsapp|text|sms|dm)\b/i,
+  // Explicit commands (Added run, call, execute, trigger, play)
+  /\b(search|find|look\s+up|google|fetch|get|check|show|list|display|browse|run|call|execute|start|trigger|play)\b/i,
+  // Fixed plural support for messages and emails
+  /\b(send|compose|write|draft|reply)\s+(an?\s+)?(emails?|messages?|whatsapp|texts?|sms|dms?)\b/i,
   /\b(whatsapp|וואטסאפ|ווטסאפ)\b/i,
   // Memory/identity queries — must be task, not chat
   /\bwhat\s+do\s+you\s+(know|remember)\s+(about\s+me|about\s+my)\b/i,
@@ -115,6 +140,27 @@ export function classifyIntent(message, recentHistory = []) {
   const trimmed = message.trim();
   const lower = trimmed.toLowerCase();
 
+  // ── STATE-AWARE ROUTING ──────────────────────────────────────
+  // Check for pending conversational states BEFORE anything else.
+  // "send it", "cancel", "confirm" etc. must route to task when a draft is pending.
+  const lastTool = recentHistory.length > 0 ? recentHistory[recentHistory.length - 1]?.tool : null;
+  const lastContent = recentHistory.length > 0 ? (recentHistory[recentHistory.length - 1]?.content || "") : "";
+  const hasPendingEmailContext = lastTool === "email" || /say\s+["']?send it["']?\s+to\s+confirm/i.test(lastContent);
+
+  if (hasPendingEmailContext) {
+    // Route send/cancel/confirm/yes/no to task when email draft is pending
+    if (/^(send(\s+it)?|yes[,.]?\s*send(\s+it)?|confirm|yes|sure|go\s+ahead|do\s+it)[!?.\s]*$/i.test(trimmed)) {
+      return { mode: "task", confidence: 0.99, reason: "pending_email_confirm" };
+    }
+    if (/^(cancel|discard|don'?t\s+send|abort|no|nah|never\s*mind|nevermind)[!?.\s]*$/i.test(trimmed)) {
+      return { mode: "task", confidence: 0.99, reason: "pending_email_cancel" };
+    }
+  }
+
+  // Initialize scores BEFORE any code that uses them
+  let taskScore = 0;
+  let taskReasons = [];
+
   // Very short messages in conversational context are likely chat
   if (trimmed.length < 25) {
     // Greetings
@@ -125,16 +171,30 @@ export function classifyIntent(message, recentHistory = []) {
     if (/^(thanks?|thank\s+you|ty|thx|cheers|appreciate\s+it)[!?.\s]*$/i.test(trimmed)) {
       return { mode: "chat", confidence: 0.9, reason: "gratitude" };
     }
-    // Yes/no responses in chat context
+    // Yes/no responses in chat context (only when NO pending state)
     if (/^(yes|no|yeah|nah|sure|ok|okay|yep|nope)[!?.\s]*$/i.test(trimmed)) {
       const lastMode = recentHistory.length > 0 ? recentHistory[recentHistory.length - 1]?.mode : null;
       return { mode: lastMode || "chat", confidence: 0.7, reason: "short_response_context" };
     }
+    // Dynamic tool name override for short messages
+    for (const tool of DYNAMIC_TOOLS) {
+      if (lower.includes(tool)) {
+        taskScore += 5;
+        taskReasons.push(`explicit_tool:${tool}`);
+      }
+    }
   }
 
-  // Check task patterns first (higher priority — actions should always be caught)
-  let taskScore = 0;
-  let taskReasons = [];
+  // Explicit tool name override (runs for ALL message lengths)
+  const EXPLICIT_TOOLS = ["pikud", "tracker", "spotify", "moltbook", "github", "sandbox", "alarm", "scheduler", "weather", "email", "news", "finance", "sports"];
+  for (const tool of EXPLICIT_TOOLS) {
+    if (lower.includes(tool)) {
+      taskScore += 5;
+      taskReasons.push(`explicit_tool:${tool}`);
+    }
+  }
+
+  // Check task patterns
   for (const pattern of TASK_PATTERNS) {
     if (pattern.test(lower)) {
       taskScore++;
@@ -150,6 +210,13 @@ export function classifyIntent(message, recentHistory = []) {
       chatScore++;
       chatReasons.push(pattern.source.substring(0, 30));
     }
+  }
+
+  // CONFLICT RESOLUTION: If task keywords are present alongside emotional/war keywords,
+  // the user is asking for information ABOUT the topic, not venting.
+  // e.g. "news about the war" = task (fetch news), NOT chat (emotional support about war)
+  if (taskScore > 0 && chatScore > 0 && taskReasons.some(r => r.includes("explicit_tool"))) {
+    chatScore = Math.max(0, chatScore - taskScore); // Suppress chat when explicit tools detected
   }
 
   // If in a chat conversation and no strong task signals, continue chatting

@@ -255,15 +255,27 @@ const TICKER_STOPWORDS = new Set([
 function extractTickers(message) {
   const tickers = new Set();
 
+  // Strip financial terms that look like tickers before extraction
+  // P/E, EPS, PE, ROI, ROE, YTD, etc.
+  const cleaned = message
+    .replace(/\bP\s*[\/\\]\s*E\b/g, "")     // P/E ratio
+    .replace(/\bEPS\b/g, "")                  // Earnings per share
+    .replace(/\bROI\b/g, "")                  // Return on investment
+    .replace(/\bROE\b/g, "")                  // Return on equity
+    .replace(/\bYTD\b/g, "")                  // Year to date
+    .replace(/\bIPO\b/g, "")                  // Initial public offering
+    .replace(/\bETF\b/g, "")                  // Exchange traded fund
+    .replace(/\bPE\b/g, "");                  // P/E without slash
+
   // Parenthesized tickers: (TSLA)
-  const parenMatches = message.match(/\(([A-Z]{1,5})\)/g) || [];
+  const parenMatches = cleaned.match(/\(([A-Z]{1,5})\)/g) || [];
   for (const m of parenMatches) {
     const t = m.replace(/[()]/g, "");
     if (!TICKER_STOPWORDS.has(t)) tickers.add(t);
   }
 
   // Uppercase word tickers (filtered)
-  const wordMatches = message.match(/\b[A-Z]{1,5}\b/g) || [];
+  const wordMatches = cleaned.match(/\b[A-Z]{1,5}\b/g) || [];
   for (const w of wordMatches) {
     if (!TICKER_STOPWORDS.has(w)) tickers.add(w);
   }
@@ -410,14 +422,30 @@ export async function financeFundamentals(message) {
   const fundamentals = {};
 
   for (const ticker of tickers) {
-    const [yahoo, fmp, alpha, finnhub, tv, searchFallback] = await Promise.all([
-      fetchYahooQuote(ticker),
+    // Tier 1: Direct finance APIs (fast, structured, low cost)
+    const [fmp, alpha, finnhub] = await Promise.all([
       fetchFMPFundamentals(ticker),
       fetchAlphaFundamentals(ticker),
-      fetchFinnhubFundamentals(ticker),
-      fetchTradingViewSnapshot(ticker),
-      fetchFromSearchFallback(ticker)
+      fetchFinnhubFundamentals(ticker)
     ]);
+
+    // Check if Tier 1 got enough data (at least marketCap or peRatio)
+    const tier1 = mergeFundamentals(ticker, { fmp, alpha, finnhub });
+    const hasCoreData = tier1.marketCap != null || tier1.peRatio != null;
+
+    // Tier 2: Only fetch Yahoo, TradingView, and search if Tier 1 is insufficient
+    let yahoo = null, tv = null, searchFallback = null;
+    if (!hasCoreData) {
+      console.log(`[financeFundamentals] Tier 1 insufficient for ${ticker}, fetching Tier 2...`);
+      [yahoo, tv, searchFallback] = await Promise.all([
+        fetchYahooQuote(ticker),
+        fetchTradingViewSnapshot(ticker),
+        fetchFromSearchFallback(ticker)
+      ]);
+    } else {
+      // Still try Yahoo for quote data (it's fast) but skip expensive search
+      yahoo = await fetchYahooQuote(ticker).catch(() => null);
+    }
 
     fundamentals[ticker] = mergeFundamentals(ticker, {
       yahoo,

@@ -317,7 +317,7 @@ export async function search(query) {
   // Generate raw summary text
   const summary = topResults.length > 0
     ? topResults
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Source: ${r.source} | ${r.url}`)
+        .map((r, i) => `${i + 1}. [${r.title}](${r.url})\n   ${r.snippet}\n   Source: ${r.source}`)
         .join("\n\n")
     : "No reliable results were found for this query from the sources I checked.";
 

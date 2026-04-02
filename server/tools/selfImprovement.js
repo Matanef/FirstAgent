@@ -106,7 +106,8 @@ async function getAllImprovements(limit = 20) {
  * Self-improvement tool
  * Handles queries about agent's self-modifications and improvements
  */
-async function selfImprovement(query) {
+async function selfImprovement(request) {
+  const query = typeof request === "string" ? request : (request?.text || request?.context?.text || "");
   const lower = query.toLowerCase();
 
   try {
@@ -230,12 +231,12 @@ async function selfImprovement(query) {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: { html, report }
+        data: { html, text: `Routing accuracy: ${report.successRate.toFixed(1)}% over ${report.totalDecisions} decisions. ${report.lowConfidenceDecisions.length} low-confidence.`, preformatted: true, report }
       };
     }
 
     // Query: "what issues have you detected?"
-    if (lower.includes("detected issues") || lower.includes("what problems") || lower.includes("misrouting patterns")) {
+    if (lower.includes("detected issues") || lower.includes("issues detected") || lower.includes("what problems") || lower.includes("misrouting patterns") || lower.includes("what issues")) {
       const patterns = await detectMisroutingPatterns();
       const recommendations = await getRoutingRecommendations();
 
@@ -284,7 +285,7 @@ async function selfImprovement(query) {
         tool: "selfImprovement",
         success: true,
         final: true,
-        data: { html, patterns, recommendations }
+        data: { html, text: `Found ${patterns.length} patterns and ${recommendations.length} recommendations.`, preformatted: true, patterns, recommendations }
       };
     }
 
@@ -314,8 +315,9 @@ async function selfImprovement(query) {
       }
     }
 
-    // Query: "generate weekly report"
-    if (lower.includes("weekly report") || lower.includes("generate report") || lower.includes("summary report")) {
+    // Query: "generate weekly report", "performance report" (must be self-improvement-specific phrasing)
+    if (lower.includes("weekly report") || lower.includes("summary report") || lower.includes("performance report") ||
+        (lower.includes("generate report") && /\b(self|improvement|evolution|routing|telemetry)\b/i.test(lower))) {
       const htmlReport = await generateSummaryReport();
 
       return {

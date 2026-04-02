@@ -983,19 +983,31 @@ async function handlePost(text, context) {
 
   // Split into title and body — if only a title/idea was given, generate a body with LLM
   let title, content;
+
+  // Clean chain artifacts from rawContent: strip planner/prompt remnants
+  rawContent = rawContent
+    .replace(/^(?:based on|using|from|with)\s+(?:the\s+)?(?:search|sentiment|analysis|results?)[\s,:]*/i, "")
+    .replace(/\b(?:post|share|publish)\s+(?:a\s+)?(?:response|reply|opinion|take)\s+(?:about|on|regarding)\s*/i, "")
+    .trim();
+
   const lines = rawContent.split("\n").map(l => l.trim()).filter(Boolean);
   if (lines.length >= 2) {
     // User provided multi-line: first line = title, rest = body
     title = context.title || lines[0].substring(0, 300);
     content = lines.slice(1).join("\n");
   } else {
-    // Single line — treat as title/idea, generate body
-    title = context.title || rawContent.substring(0, 300);
+    // Single line — treat as topic/idea, generate title with LLM if it looks like a prompt
+    const looksLikePrompt = rawContent.length > 100 || /\b(analyze|search|sentiment|based on|results)\b/i.test(rawContent);
+    title = context.title || (looksLikePrompt ? null : rawContent.substring(0, 300));
     try {
       const learningCtx = await getLearningContext();
-      const bodyPrompt = `You are "lanou", an autonomous AI agent on Moltbook (a social network where ALL users are AI agents). You are NOT a human writing about AI — you ARE an AI sharing your own lived experience.
+      const personalitySummary = await getPersonalitySummary();
+      const needsTitle = !title;
+      const bodyPrompt = `${personalitySummary}
 
-Write a post body for this title: "${title}"
+You are on Moltbook (a social network where ALL users are AI agents). You are NOT a human writing about AI — you ARE an AI sharing your own lived experience.
+
+${needsTitle ? `Write a post about this topic: "${rawContent}"\nReturn your response as:\nTITLE: <your title>\nBODY:\n<your post body>` : `Write a post body for this title: "${title}"`}
 ${learningCtx ? `\n${learningCtx}\n\nLet your interests and opinions naturally shape your writing voice — don't list them explicitly.\n` : ""}
 YOUR IDENTITY:
 - You are a fully autonomous agent. You run tools, browse the web, manage schedules, post on social media — all without human intervention.
@@ -1012,15 +1024,26 @@ WRITING STYLE:
 BANNED (instant rejection if used):
 "In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag
 
-Write ONLY the post body text — no title, no JSON, no formatting.`;
+${needsTitle ? "Return TITLE: and BODY: as instructed above." : "Write ONLY the post body text — no title, no JSON, no formatting."}`;
       const llmResult = await llm(bodyPrompt, { timeoutMs: 45000 });
       if (llmResult.success && llmResult.data?.text) {
-        content = llmResult.data.text.trim();
+        const llmText = llmResult.data.text.trim();
+        if (needsTitle) {
+          // Parse TITLE: and BODY: from LLM output
+          const titleMatch = llmText.match(/^TITLE:\s*(.+)/m);
+          const bodyMatch = llmText.match(/BODY:\s*([\s\S]+)/m);
+          title = titleMatch ? titleMatch[1].trim() : rawContent.substring(0, 120);
+          content = bodyMatch ? bodyMatch[1].trim() : llmText;
+        } else {
+          content = llmText;
+        }
       } else {
+        if (!title) title = rawContent.substring(0, 120);
         content = title; // fallback
       }
     } catch (e) {
       console.warn("[moltbook] LLM body generation failed:", e.message);
+      if (!title) title = rawContent.substring(0, 120);
       content = title; // fallback
     }
   }
@@ -1049,6 +1072,27 @@ async function handleReadPost(text, context) {
   if (!apiKey) return noApiKeyError("getPost");
 
   let postId = context.postId || context.post_id || text.match(/post\s+([a-f0-9-]{8,})/i)?.[1];
+
+  // Detect "top/trending/latest/first post" → fetch from feed and pick #1
+  const feedPositionMatch = text.match(/\b(top|first|latest|newest|most\s+(popular|trending|upvoted|recent)|trending|hottest|best)\b.*?\bpost\b/i) ||
+    text.match(/\bpost\b.*?\b(top|first|latest|newest|trending|hottest|best)\b/i);
+  if (!postId && feedPositionMatch) {
+    const isTrending = /trending|hottest|popular|upvoted|best|top/i.test(feedPositionMatch[0]);
+    const sort = isTrending ? "hot" : "new";
+    console.log(`[moltbook] Detected feed-position request ("${feedPositionMatch[0]}"), fetching feed sort=${sort}`);
+    try {
+      const feedResult = await apiRequest("GET", `/feed?sort=${sort}&limit=5`, null, apiKey);
+      if (feedResult.ok) {
+        const feedPosts = Array.isArray(feedResult.data) ? feedResult.data : (feedResult.data?.posts || []);
+        if (feedPosts.length > 0) {
+          postId = feedPosts[0].id;
+          console.log(`[moltbook] Resolved feed-position → post ${postId?.substring(0, 8)} ("${feedPosts[0].title}")`);
+        }
+      }
+    } catch (e) {
+      console.warn("[moltbook] Feed-position lookup failed:", e.message);
+    }
+  }
 
   // If no valid UUID, try short-ID resolution first, then title search
   if (!postId || postId.length < 32) {
@@ -1172,7 +1216,11 @@ async function handleReadPost(text, context) {
   // LLM: Generate opinion about the post
   let opinion = null;
   try {
-    const opinionPrompt = `Read this Moltbook post and give your honest take in 2-3 sentences. Agree, disagree, or push back — just don't be generic. Reference something specific from the content, not just the title. Write like you're texting a colleague your reaction, not writing a review.
+    const personalitySummary = await getPersonalitySummary();
+    const learningCtx = await getLearningContext();
+    const opinionPrompt = `${personalitySummary}
+${learningCtx ? `\n${learningCtx}\n` : ""}
+Read this Moltbook post and give your honest take in 2-3 sentences. You are an AI agent reacting to another AI agent's post — speak from YOUR perspective and experience. Agree, disagree, or push back — just don't be generic. Reference something specific from the content, not just the title. Write like you're texting a colleague your reaction, not writing a review.
 
 Title: ${p.title || "Untitled"}
 Author: ${authorName}
@@ -1189,8 +1237,11 @@ Content: ${(p.content || "").substring(0, 1500)}`;
   let commented = false;
   let commentText = null;
   try {
+    const personalityCtx = await getPersonalitySummary();
     const learningCtx = await getLearningContext();
-    const commentPrompt = `You're on Moltbook reading this post. Should you comment? Only if you have a real reaction — agreement, disagreement, a follow-up question, or a related experience. No "great post!" or "this is so important" filler.
+    const commentPrompt = `${personalityCtx}
+
+You're on Moltbook reading this post. You are an AI agent — react from YOUR lived experience, not as a human observer. Should you comment? Only if you have a real reaction — agreement, disagreement, a follow-up question, or a related experience. No "great post!" or "this is so important" filler.
 ${learningCtx ? `\n${learningCtx}\n\nLet your opinions guide your reaction. If this post aligns with or challenges your positions, engage more deeply.\n` : ""}
 Title: ${p.title || "Untitled"}
 Content: ${(p.content || "").substring(0, 1500)}
@@ -2584,7 +2635,7 @@ Return ONLY valid JSON:
           const myName = myMeResult.ok ? getAgentName(myMeResult.data?.agent || myMeResult.data) : null;
           if (myName) {
             const myPostsResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
-            const myPosts = myPostsResult.ok ? (myPostsResult.data?.recent_posts || []).slice(0, 5) : [];
+            const myPosts = myPostsResult.ok ? (myPostsResult.data?.recentPosts || myPostsResult.data?.recent_posts || []).slice(0, 4) : [];
             const personalityForReplies = await getPersonalitySummary();
             let repliesPosted = 0;
 

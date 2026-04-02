@@ -183,58 +183,52 @@ export async function generateSummaryReport(since = null) {
   const stats = await calculateToolStats();
   const anomalies = await detectAnomalies();
 
-  const html = `
-    <html>
-      <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h1 style="color: #1d9bf0;">🤖 AI Agent Weekly Report</h1>
-        
-        <h2>📊 Performance Statistics</h2>
-        <ul>
-          <li>Total operations: ${stats.totalCalls}</li>
-          <li>Success rate: ${stats.successRate.toFixed(1)}%</li>
-          <li>Average execution time: ${stats.averageExecutionTime}ms</li>
-        </ul>
+  // Filter out malformed improvement entries (missing category or action)
+  const validImprovements = recentImprovements.filter(imp => imp.category && imp.action);
 
-        <h2>🔧 Self-Improvements (${recentImprovements.length})</h2>
-        ${recentImprovements.length > 0 ? `
-          <ul>
-            ${recentImprovements.slice(0, 10).map(imp => `
-              <li>
-                <strong>${imp.category}:</strong> ${imp.action}
-                <br><small style="color: #666;">${imp.reason || ''}</small>
-              </li>
-            `).join('')}
-          </ul>
-        ` : '<p>No improvements recorded this week.</p>'}
+  const improvementItems = validImprovements.slice(0, 10).map(imp =>
+    `<li><strong>${imp.category}:</strong> ${imp.action}${imp.reason ? `<br><small style="color: #666;">${imp.reason}</small>` : ''}</li>`
+  ).join('\n');
 
-        <h2>⚠️ Detected Issues (${anomalies.length})</h2>
-        ${anomalies.length > 0 ? `
-          <ul>
-            ${anomalies.map(a => `
-              <li><strong>${a.type}:</strong> ${a.message}</li>
-            `).join('')}
-          </ul>
-        ` : '<p>No issues detected.</p>'}
+  const anomalyItems = anomalies.map(a =>
+    `<li><strong>${a.type || 'unknown'}:</strong> ${a.message || 'No details'}</li>`
+  ).join('\n');
 
-        <h2>🛠️ Most Used Tools</h2>
-        <ul>
-          ${Object.entries(stats.toolUsage)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([tool, count]) => `
-              <li>${tool}: ${count} calls</li>
-            `)
-      .join('')}
-        </ul>
+  const toolItems = Object.entries(stats.toolUsage)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([tool, count]) => `<li>${tool}: ${count} calls</li>`)
+    .join('\n');
 
-        <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
-        <p style="color: #666; font-size: 12px;">
-          Generated: ${new Date().toLocaleString()}<br>
-          Period: ${since.toLocaleDateString()} - ${new Date().toLocaleDateString()}
-        </p>
-      </body>
-    </html>
-  `;
+  const html = `<html>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h1 style="color: #1d9bf0;">🤖 AI Agent Weekly Report</h1>
+
+<h2>📊 Performance Statistics</h2>
+<ul>
+<li>Total operations: ${stats.totalCalls}</li>
+<li>Success rate: ${stats.successRate.toFixed(1)}%</li>
+<li>Average execution time: ${stats.averageExecutionTime}ms</li>
+</ul>
+
+<h2>🔧 Self-Improvements (${validImprovements.length})</h2>
+${validImprovements.length > 0 ? `<ul>\n${improvementItems}\n</ul>` : '<p>No improvements recorded this week.</p>'}
+
+<h2>⚠️ Detected Issues (${anomalies.length})</h2>
+${anomalies.length > 0 ? `<ul>\n${anomalyItems}\n</ul>` : '<p>No issues detected.</p>'}
+
+<h2>🛠️ Most Used Tools</h2>
+<ul>
+${toolItems}
+</ul>
+
+<hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
+<p style="color: #666; font-size: 12px;">
+Generated: ${new Date().toLocaleString()}<br>
+Period: ${since.toLocaleDateString()} - ${new Date().toLocaleDateString()}
+</p>
+</body>
+</html>`;
 
   return html;
 }

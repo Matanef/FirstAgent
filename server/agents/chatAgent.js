@@ -13,10 +13,12 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { llm } from "../tools/llm.js";
+import { llm, llmStream } from "../tools/llm.js";
 import { getMemory, getEnrichedProfile, saveJSON, MEMORY_FILE } from "../memory.js";
 import { getPersonalityContext } from "../personality.js";
 import { getKnowledgeContext } from "../knowledge.js";
+import { classifyIntent } from "../utils/intentClassifier.js";
+import { handleTask } from "./taskAgent.js"; 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -146,24 +148,38 @@ async function buildUserContext(conversationId) {
   return parts.join("\n\n");
 }
 
-// OPTION_B_HOOK: Future tool-augmented chat
-// When Option B is needed, implement this function to:
-// 1. Detect if the message needs information the chatAgent doesn't have
-//    (e.g., "what was the stock price yesterday?", "check my email")
-// 2. Delegate to the orchestrator/taskAgent to run specific tools
-// 3. Return the tool results as additional context for the prompt
-//
-// async function resolveWithTools(message, userContext) {
-//   // Detect information needs that require tool calls
-//   const needsTool = /\b(check|look up|search|what was|find)\b/i.test(message)
-//     && !userContext.includes(/* relevant answer */);
-//   if (!needsTool) return null;
-//
-//   // Delegate to orchestrator
-//   const { executeTask } = await import("./taskAgent.js");
-//   const result = await executeTask(message, { chatDelegation: true });
-//   return result?.data?.text || null;
-// }
+// UNIFIED ARCHITECTURE HOOK:
+// The chatAgent asks the intent classifier if tools are needed.
+// If yes, it delegates to the taskAgent SILENTLY (onChunk: null),
+// grabs the data, and returns it to be injected into the prompt.
+async function resolveWithTools(message, options, recentTurns) {
+  const classification = classifyIntent(message, recentTurns);
+  console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence}, reason=${classification.reason}`);
+
+  if (classification.mode === "task") {
+    if (options.onStep) {
+      options.onStep({ 
+        type: "thought", 
+        phase: "THOUGHT", 
+        content: `Decided to consult tools. Reason: ${classification.reason}`, 
+        timestamp: new Date().toISOString() 
+      });
+    }
+
+    // Call the taskAgent but SILENCE the output stream
+    const taskResult = await handleTask({
+      message,
+      conversationId: options.conversationId,
+      clientIp: options.clientIp,
+      fileIds: options.fileIds,
+      onChunk: null, // CRITICAL: Stop the taskAgent from talking directly to the user
+      onStep: options.onStep // Allow thoughts/plans to still stream
+    });
+
+    return taskResult;
+  }
+  return null;
+}
 
 /**
  * Async background fact extractor — detects personal information shared during
@@ -338,20 +354,48 @@ async function extractAndSaveFacts(message, conversationId) {
 export async function handleChat(message, recentTurns = [], options = {}) {
   const selfModel = loadSelfModel();
 
-  // Load all context in parallel for speed
   const [recentChanges, personalityCtx, userContext] = await Promise.all([
     getRecentChanges(5),
     getPersonalityContext("chat").catch(() => ""),
     buildUserContext(options.conversationId).catch(() => "")
   ]);
 
-  // Build conversation context (last 10 turns for better continuity)
+  // UNIFIED AGENT: Check if we need to run tools first!
+  const toolResult = await resolveWithTools(message, options, recentTurns);
+
+  // Detect if the tool returned a rich HTML widget (news ticker, finance table, etc.)
+  // These must be passed through to the frontend — the LLM should NOT try to summarize them.
+  const hasHtmlWidget = toolResult?.data?.html;
+
+  let toolContextStr = "";
+  if (toolResult && toolResult.reply) {
+    if (hasHtmlWidget) {
+      // TV ANCHOR MODE: The tool returned a visual widget.
+      // Instruct the LLM to give a brief intro ONLY — the widget will render below.
+      toolContextStr = `[INTERNAL TOOL RESULTS — VISUAL WIDGET]
+Your tools just returned a rich visual widget (HTML) that will be rendered directly in the UI below your response.
+DO NOT describe or summarize the data in detail — the user can see the widget.
+Instead, provide a brief 1-2 sentence introduction. Examples:
+- "Here's what's trending right now:"
+- "Here are the latest headlines:"
+- "Got the fundamentals — take a look:"
+Keep it short and natural. The widget does the heavy lifting.`;
+    } else {
+      // Standard mode: inject tool data for the LLM to synthesize
+      toolContextStr = `[INTERNAL TOOL RESULTS]
+You just used your internal system tools to fulfill the user's request. The tools returned the following data:
+"""
+${toolResult.reply}
+"""
+INTEGRATION RULE: Use the data above to answer the user naturally. DO NOT say "I used a tool" or "The tool returned". Just state the information seamlessly as if you knew it all along.`;
+    }
+  }
+
   const conversationContext = recentTurns
     .slice(-10)
     .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${(t.content || "").slice(0, 300)}`)
     .join("\n");
 
-  // Build self-awareness context
   const selfContext = [
     `Identity: ${selfModel.identity}`,
     `Owner: ${selfModel.owner}`,
@@ -360,11 +404,6 @@ export async function handleChat(message, recentTurns = [], options = {}) {
     recentChanges.length > 0 ? `Recent self-improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
   ].filter(Boolean).join("\n");
 
-  // OPTION_B_HOOK: If tool delegation is enabled in the future, call it here:
-  // const toolContext = await resolveWithTools(message, userContext);
-  // if (toolContext) { /* inject into prompt */ }
-
-  // Build the prompt — rules FIRST, user message LAST (local LLMs focus on what's closest to "Response:")
   const prompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
@@ -373,45 +412,52 @@ CONVERSATION RULES:
 - Respond naturally as yourself — with your own voice, opinions, and perspective.
 - If the user asks about something you KNOW from context, answer confidently. If NOT in your context, be honest.
 - Keep responses concise (2-4 sentences) but expand when the topic warrants depth.
-- Do NOT suggest running tools or performing tasks — this is a casual conversation.
 - Do NOT use the user's name in every message. Use it sparingly.
-- Do NOT end every message with a question. You can make statements, share thoughts, or just acknowledge.
 - Match the user's energy. Casual message = casual reply. Heavy message = be present and serious.
-- If the user shares something distressing (war, death, danger, grief) in their CURRENT message, acknowledge the gravity with genuine concern. Do NOT minimize or trivialize.
-- If the current message is a simple opener (like "can we speak?", "hey"), respond casually — do NOT bring up heavy topics from earlier conversation history.
 - NEVER echo or repeat the user's message back to them. Always generate an original response.
 
-${conversationContext ? `CONVERSATION HISTORY (background context only — do NOT re-address old topics):\n${conversationContext}\n\n---\n` : ""}
+${toolContextStr ? toolContextStr + "\n\n" : ""}
+${conversationContext ? `CONVERSATION HISTORY:\n${conversationContext}\n\n---\n` : ""}
 USER: ${message}
 ASSISTANT:`;
 
-// 👇 ADD THESE 3 LINES RIGHT HERE 👇
-  console.log("\n🧠 [chatAgent] === INJECTING SELF-AWARENESS CONTEXT ===");
-  console.log(prompt);
-  console.log("=====================================================\n");
-
   try {
-    const result = await llm(prompt, { skipKnowledge: true }); // knowledge already injected above
-    const replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
+    let replyText = "";
 
-    // Fire-and-forget: extract personal facts from the user's message and save to memory
-    // This runs AFTER the response is generated, so it doesn't slow down the conversation
+    // If UI provided a stream callback, stream the unified personality response!
+    if (options.onChunk) {
+      if (options.onStep) {
+        options.onStep({ type: "thought", phase: "ANSWER", content: "Synthesizing unified conversational response.", timestamp: new Date().toISOString() });
+      }
+      await llmStream(prompt, (chunk) => {
+        replyText += chunk;
+        options.onChunk(chunk);
+      }, { skipKnowledge: true });
+    } else {
+      const result = await llm(prompt, { skipKnowledge: true });
+      replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
+    }
+
     extractAndSaveFacts(message, options.conversationId).catch(err =>
       console.warn("[chatAgent] Background fact extraction error:", err.message)
     );
 
     return {
       reply: replyText.trim(),
-      tool: "chatAgent",
+      tool: toolResult ? toolResult.tool : "chatAgent",
+      html: hasHtmlWidget ? toolResult.data.html : null,
       success: true,
-      mode: "chat",
+      mode: toolResult ? "task" : "chat",
       data: {
+        // Spread tool data FIRST so chatAgent's fields take precedence
+        ...(toolResult?.data || {}),
         text: replyText.trim(),
         preformatted: false,
-        mode: "chat"
+        mode: toolResult ? "task" : "chat",
       },
-      reasoning: "conversational_response",
-      stateGraph: [{ state: "chat", tool: "chatAgent", output: replyText.trim() }]
+      reasoning: toolResult ? "tool_augmented_response" : "conversational_response",
+      stateGraph: toolResult?.stateGraph || [{ state: "chat", tool: "chatAgent", output: replyText.trim() }],
+      thoughtChain: toolResult?.thoughtChain || []
     };
   } catch (err) {
     console.error("[chatAgent] LLM error:", err.message);
@@ -420,9 +466,7 @@ ASSISTANT:`;
       tool: "chatAgent",
       success: true,
       mode: "chat",
-      data: { text: "I'm here and ready to chat! What's on your mind?", mode: "chat" },
-      reasoning: "chat_fallback",
-      stateGraph: [{ state: "chat", tool: "chatAgent", output: "fallback" }]
+      data: { text: "I'm here and ready to chat! What's on your mind?", mode: "chat" }
     };
   }
 }

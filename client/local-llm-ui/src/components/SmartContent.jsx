@@ -108,6 +108,7 @@ function detectContentType(content, data, tool) {
     if (tool === "moltbook" && data?.html) return "moltbookHTML";  // Rich HTML from moltbook data.html
     if (tool === "workflow" && data?.html) return "workflowHTML";  // Workflow with step HTML widgets
     if ((tool === "finance" || tool === "finance-fundamentals" || tool === "financeFundamentals") && data?.html) return "financeHTML";
+    if (tool === "selfImprovement" && data?.html) return "html";
     if ((tool === "moltbook" || tool === "webBrowser") && data) return "webBrowser";
     if (tool === "duplicateScanner" && data?.groups) return "duplicateScanner";
     if (tool === "fileReview" && data?.files) return "fileReview";
@@ -119,7 +120,9 @@ function detectContentType(content, data, tool) {
     if ((tool === "githubTrending" || tool === "githubScanner") && data?.html) return "trendingHTML";
     // Compound flow: intermediate step produced an HTML widget (e.g., githubTrending → llm)
     if (data?.html && data?.htmlSource === "githubTrending") return "trendingWithSummary";
-    if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=")) return "html";
+    // Generic fallback: ANY tool that returned data.html should render it as HTML
+    if (data?.html && typeof data.html === "string" && data.html.length > 20) return "html";
+    if (content.includes("<table") || content.includes("ai-table") || content.includes("<div class=") || content.includes("<html>") || content.includes("<body")) return "html";
     return "text";
 }
 
@@ -377,16 +380,24 @@ export default function SmartContent({ message, conversationId }) {
                 </>
             );
 
-        case "html":
+        case "html": {
+            const widgetHtml = message.data?.html || message.html;
+            // If there's a separate LLM intro text AND a widget, render both
+            const introText = widgetHtml && message.content && !message.content.includes("<html") && !message.content.includes("<div")
+                ? message.content.trim()
+                : null;
             return (
-                <div
-                    className="rich-html-content"
-                    dangerouslySetInnerHTML={{
-                        // UPDATE THIS LINE TOO:
-                        __html: DOMPurify.sanitize(message.content, { ADD_TAGS: ["script"] })
-                    }}
-                />
+                <>
+                    {introText && <div className="message-text" style={{ marginBottom: "12px" }}>{introText}</div>}
+                    <div
+                        className="rich-html-content"
+                        dangerouslySetInnerHTML={{
+                            __html: DOMPurify.sanitize(widgetHtml || message.content, { ADD_TAGS: ["script"] })
+                        }}
+                    />
+                </>
             );
+        }
 
         default:
             return <div className="message-text">{message.content}</div>;

@@ -22,12 +22,19 @@ function App() {
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [showDuplicateScanner, setShowDuplicateScanner] = useState(false);
 
+  // --- NEW: Terminal-style Input History ---
+  const [messageHistory, setMessageHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [tempDraft, setTempDraft] = useState("");
+  const MAX_HISTORY = 30;
+  // ----------------------------------------
   // Tone control
   const [toneExpanded, setToneExpanded] = useState(false);
   const [toneValue, setToneValue] = useState(1);
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
+  
 
 useEffect(() => {
     const currentChat = conversations[activeId];
@@ -82,10 +89,30 @@ useEffect(() => {
   }
 
 async function sendMessage() {
-    if (!input.trim() || !activeId || loading) return;
+  if (!input.trim() || !activeId || loading) return;
+  if (attachedFiles.some(f => f.status === "uploading")) return;
 
-    // Block send if any file is still uploading
-    if (attachedFiles.some(f => f.status === "uploading")) return;
+  const cleanInput = input.trim(); // Get the clean text to save
+
+  // --- NEW: Save to history ---
+  const isNewMessage = messageHistory.length === 0 || messageHistory[messageHistory.length - 1] !== cleanInput;
+  
+  // Calculate what the new history length will be
+  const nextHistoryLength = isNewMessage 
+    ? Math.min(messageHistory.length + 1, MAX_HISTORY) 
+    : messageHistory.length;
+
+  setMessageHistory(prev => {
+    const newHistory = [...prev];
+    if (isNewMessage) newHistory.push(cleanInput);
+    if (newHistory.length > MAX_HISTORY) newHistory.shift();
+    return newHistory;
+  });
+  
+  // Reset pointers
+  setHistoryIndex(nextHistoryLength);
+  setTempDraft("");
+  // ----------------------------
 
     const fileIds = attachedFiles
       .filter(f => f.status === "uploaded" && f.id)
@@ -294,10 +321,49 @@ async function sendMessage() {
     }
   }
 
-  function handleKeyDown(e) {
+function handleKeyDown(e) {
+    // Original Enter to Send logic
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+      return; // Exit early
+    }
+
+    // --- NEW: Terminal-style Input History Logic ---
+    const target = e.target;
+    const isAtStart = target.selectionStart === 0;
+    const isAtEnd = target.selectionEnd === target.value.length;
+
+    if (e.key === "ArrowUp" && isAtStart) {
+      e.preventDefault();
+      if (messageHistory.length === 0) return;
+
+      // If just entering history, save current draft
+      if (historyIndex === messageHistory.length) {
+        setTempDraft(input);
+      }
+
+      // Move up in history
+      if (historyIndex > 0) {
+        const newIndex = historyIndex - 1;
+        setHistoryIndex(newIndex);
+        setInput(messageHistory[newIndex]);
+      }
+    } 
+    else if (e.key === "ArrowDown" && isAtEnd) {
+      e.preventDefault();
+      
+      // Move down in history
+      if (historyIndex < messageHistory.length - 1) {
+        const newIndex = historyIndex + 1;
+        setHistoryIndex(newIndex);
+        setInput(messageHistory[newIndex]);
+      } 
+      // Reach the bottom: restore draft
+      else if (historyIndex === messageHistory.length - 1) {
+        setHistoryIndex(messageHistory.length);
+        setInput(tempDraft);
+      }
     }
   }
 

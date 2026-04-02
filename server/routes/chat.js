@@ -157,6 +157,7 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       const payload = JSON.stringify({
         type: "done",
         reply,
+        html: result.html || result.data?.html || null,
         stateGraph,
         thoughtChain: result.thoughtChain || [],
         tool: result.tool || "unknown",

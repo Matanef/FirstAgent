@@ -53,8 +53,19 @@ const TICKER_STOPWORDS = new Set([
 function extractTickers(text) {
   const tickers = [];
 
+  // Strip financial terms that look like tickers before extraction
+  const cleaned = text
+    .replace(/\bP\s*[\/\\]\s*E\b/g, "")     // P/E ratio
+    .replace(/\bEPS\b/g, "")                  // Earnings per share
+    .replace(/\bROI\b/g, "")                  // Return on investment
+    .replace(/\bROE\b/g, "")                  // Return on equity
+    .replace(/\bYTD\b/g, "")                  // Year to date
+    .replace(/\bIPO\b/g, "")                  // Initial public offering
+    .replace(/\bETF\b/g, "")                  // Exchange traded fund
+    .replace(/\bPE\b/g, "");                  // P/E without slash
+
   // 1. Direct ticker symbols (uppercase 1-5 letters, filtered)
-  const directMatches = text.match(/\b[A-Z]{1,5}\b/g) || [];
+  const directMatches = cleaned.match(/\b[A-Z]{1,5}\b/g) || [];
   for (const m of directMatches) {
     if (!TICKER_STOPWORDS.has(m) && !tickers.includes(m)) {
       tickers.push(m);

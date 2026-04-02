@@ -780,9 +780,22 @@ function detectIntent(text) {
 async function showHistory() {
   const log = await loadEvolutionLog();
   let output = `📈 **Self-Evolution History**\nTotal improvements: ${log.totalImprovements}\nLast run: ${log.lastRun || "never"}\n\n`;
-  const recent = log.runs.slice(-5).reverse();
+  const recent = log.runs.slice(-10).reverse();
   for (const run of recent) {
-    output += `**${run.timestamp}**: ${run.improvements?.filter(i => i.applied).length || 0} applied\n`;
+    const applied = run.improvements?.filter(i => i.applied) || [];
+    const failed = run.improvements?.filter(i => !i.applied && !i.dryRun) || [];
+    const dateStr = run.timestamp ? new Date(run.timestamp).toLocaleString() : "unknown";
+    output += `**${dateStr}** — ${applied.length} applied, ${failed.length} failed\n`;
+    for (const imp of applied) {
+      output += `  ✅ ${imp.description || "unnamed improvement"}${imp.file ? ` → \`${imp.file}\`` : ""}\n`;
+    }
+    for (const imp of failed) {
+      output += `  ❌ ${imp.description || "unnamed"}${imp.file ? ` → \`${imp.file}\`` : ""}: ${imp.error || "unknown error"}\n`;
+    }
+    if (run.aborted) {
+      output += `  🛑 Aborted: ${run.abortReason || "no reason"}\n`;
+    }
+    output += "\n";
   }
   return output;
 }

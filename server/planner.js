@@ -590,7 +590,10 @@ const ROUTING_TABLE = [
     match: (lower, trimmed) =>
       (/\b(stocks?|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO|stock\s+price)\b/i.test(lower) ||
        (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))),
-    guard: (lower) => hasCompoundIntent(lower) || FINANCE_RESEARCH_QUESTION.test(lower),
+    guard: (lower) =>
+      hasCompoundIntent(lower) || FINANCE_RESEARCH_QUESTION.test(lower) ||
+      // Yield to financeFundamentals for fundamentals-specific queries
+      /\b(fundamentals?|P\/E|p\/e|pe\s+ratio|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|revenue|quarterly|annual\s+report)\b/i.test(lower),
     context: (lower, trimmed) => {
       // Research questions without specific company → route to search instead
       const hasSpecificCompany = FINANCE_COMPANIES.test(lower) || /\b[A-Z]{2,5}\b/.test(trimmed);
@@ -604,20 +607,21 @@ const ROUTING_TABLE = [
     tool: "financeFundamentals",
     priority: 62,
     match: (lower) =>
-      /\b(fundamentals?|P\/E|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|quarterly|annual\s+report)\b/i.test(lower) ||
-      (FINANCE_COMPANIES.test(lower) && /\b(fundamentals?|financials?|report|analysis)\b/i.test(lower)),
-    description: "Financial fundamentals, P/E ratios, balance sheets"
+      /\b(fundamentals?|P\/E|pe\s+ratio|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|quarterly|annual\s+report|revenue|earnings|eps|dividend\s+yield|beta)\b/i.test(lower) ||
+      (FINANCE_COMPANIES.test(lower) && /\b(fundamentals?|financials?|report|analysis|revenue|earnings|market\s*cap)\b/i.test(lower)),
+    description: "Financial fundamentals, P/E ratios, balance sheets, market cap, revenue"
   },
   {
     tool: "sports",
     priority: 60,
     match: (lower) =>
-      /\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower),
+      /\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion|fixture|standings?|table)\b/i.test(lower) ||
+      (/\b(play\s+next|next\s+(match|game|fixture)|when\s+does?\s+\w+\s+play)\b/i.test(lower) && /\b(arsenal|chelsea|liverpool|tottenham|spurs|manchester|man\s+(utd?|city)|barcelona|real\s+madrid|juventus|bayern|lakers|celtics|warriors|yankees|cowboys|patriots)\b/i.test(lower)),
     guard: (lower, trimmed) =>
       hasExplicitFilePath(trimmed) ||
       /\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower) ||
       hasCompoundIntent(lower),
-    description: "Sports scores, matches, leagues"
+    description: "Sports scores, matches, leagues, fixtures"
   },
   {
     tool: "x",
@@ -644,11 +648,16 @@ const ROUTING_TABLE = [
     },
     description: "X/Twitter — trends, search, post, lead gen, sentiment"
   },
-  {
+{
     tool: "spotifyController",
     priority: 58,
     match: (lower) => /\b(play|pause|skip|previous|spotify|music|song|track)\b/i.test(lower),
-    guard: (lower) => hasCompoundIntent(lower),
+    guard: (lower) =>
+      hasCompoundIntent(lower) ||
+      // Guard: sports context — "when does Arsenal play next" is NOT spotify
+      /\b(arsenal|chelsea|liverpool|tottenham|spurs|manchester|man\s+(utd?|city)|barcelona|real\s+madrid|juventus|bayern|lakers|celtics|warriors|yankees|cowboys|patriots|score|match|game|league|fixture|standings?|nba|nfl|premier\s+league)\b/i.test(lower) ||
+      // Guard: tech/UI/chat/video context — "previous prompt", "play youtube video", "skip this step"
+      /\b(prompt|message|input|terminal|button|feature|step|youtube|video|movie)\b/i.test(lower),
     description: "Spotify playback control"
   },
   {
@@ -827,6 +836,14 @@ const ROUTING_TABLE = [
       else if (/\b(list|show|what|which)\b/i.test(lower) && /\btools?\b/i.test(lower)) ctx.action = "list_tools";
       else if (/\b(disconnect|close|stop|kill)\b/i.test(lower)) ctx.action = "disconnect";
       else if (/\b(call|run|execute|use|invoke|ask)\b/i.test(lower)) ctx.action = "call_tool";
+      // Extract server name from known MCP servers
+      const serverMatch = lower.match(/\b(sqlite|github|postgres|youtube)\b/i);
+      if (serverMatch) ctx.server = serverMatch[1].toLowerCase();
+      // Extract tool name for call_tool: "call read_query on sqlite"
+      if (ctx.action === "call_tool") {
+        const toolMatch = lower.match(/\b(?:call|run|execute|use|invoke)\s+(\w+)/i);
+        if (toolMatch) ctx.toolName = toolMatch[1];
+      }
       return ctx;
     },
     description: "MCP Bridge — Model Context Protocol server interactions"
@@ -1109,6 +1126,8 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "show project structure" → folderAccess (NOT file)
 - "improve yourself" → selfEvolve (NOT selfImprovement)
 - "scan github for patterns" → githubScanner (NOT github, NOT githubTrending)
+- "just checking a new feature, let's test it" → llm (NOT codeSandbox)
+- "testing the chat input" → llm (NOT codeSandbox)
 
 RULES:
 1. Casual conversation, greetings, opinions, explanations → llm
@@ -1128,6 +1147,8 @@ RULES:
 14. "stock/stocks/stock price/compare stocks" → finance. ONLY use financeFundamentals for explicit fundamentals requests (P/E, balance sheet, market cap analysis, EPS, dividends)
 15. "why did stocks drop/crash/fall" or "what caused the price drop" → search. These are RESEARCH questions needing web search, NOT finance price lookups
 16. "search for price drops" or "search for why stock fell" → search (NOT shopping — "price" in financial context is NOT a shopping query)
+17. CRITICAL: "search for X" or "search the latest X" → search (web search). ONLY use "x" when user explicitly says "X", "Twitter", "tweets", "trending on X", or "post on X". General knowledge questions like "who was X?", "search for X developments", "latest research on X" → search (NOT x)
+18. "codeSandbox" is ONLY for explicitly executing isolated scripts (Python/Node). Do NOT use it for conversation, testing the chat UI, or general "let's check it" statements.
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -1222,7 +1243,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     // Resolve and validate each step's tool name
     const resolvedSteps = [];
     for (const step of decomposedSteps) {
-      const resolvedTool = resolveToolName(step.tool, availableTools);
+      const resolvedTool = resolveToolName(step.tool, availableTools, trimmed);
       if (resolvedTool) {
         resolvedSteps.push({
           tool: resolvedTool,
@@ -1288,7 +1309,7 @@ CRITICAL RULES:
 6. APPLYATCH BIAS: If the request contains a comprehensive list of suggestions, review findings, or 3+ structural changes targeting a single file, route to "applyPatch" (full rewrite) — NOT "codeTransform" (surgical patch). codeTransform is for single targeted edits only.
 7. SELFEVOLVE RESTRAINT: The "selfEvolve" tool must NOT be used for cosmetic changes or quota-driven busywork. Only route to selfEvolve when the user explicitly asks for autonomous evolution or self-improvement cycles.
 8. Use "sheets" for Google Sheets operations (read, append, clear). Pass spreadsheetId and action in context. When chaining X search → LLM → sheets, the LLM step should categorize/summarize and the sheets step should receive the categorized data as rows.
-
+9. THE LLM ESCAPE HATCH: The "llm" tool is your primary conversational brain. If the user is providing commentary, making observations, talking about testing the system, or just having a "meta-conversation" about how you work, you MUST route to "llm". Do not attempt to run code or review files unless they explicitly ask you to modify a specific file or path.
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
 EXAMPLE OUTPUT:
@@ -1434,6 +1455,10 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
   if (tool === "lotrJokes" && originalMessage && !/\b(lotr|lord\s+of\s+the\s+rings|hobbit|gandalf|frodo)\b/i.test(originalMessage)) {
     console.log("🧠 Decomposer hallucinated lotrJokes. Overriding to llm.");
     return "llm"; 
+  }
+  if (tool === "codeSandbox" && originalMessage && !/\b(run|execute|compile|script|sandbox|python|node)\b/i.test(originalMessage)) {
+    console.log("🧠 Decomposer hallucinated codeSandbox for a chat/test message. Overriding to llm.");
+    return "llm";
   }
 
   return tool;
@@ -2370,7 +2395,7 @@ Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or
   const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
   console.log("[planner] Single-tool fallback classified:", detection.intent);
 
-  const tool = resolveToolName(detection.intent, availableTools);
+  const tool = resolveToolName(detection.intent, availableTools, trimmed);
 
   if (!tool || !availableTools.includes(tool)) {
     const rawIntent = detection.intent || "unknown";
