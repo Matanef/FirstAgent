@@ -1,5 +1,4 @@
 // server/tools/gitLocal.js
-// CRITICAL FIX: Proper handling of "nothing to commit" scenario
 
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -11,6 +10,8 @@ const execAsync = promisify(exec);
 
 /**
  * Executes a git command in the project root
+ * @param {string} command - The git command to execute
+ * @returns {Promise<{ success: boolean, stdout: string, stderr: string }>}
  */
 async function runGit(command) {
     try {
@@ -30,6 +31,7 @@ async function runGit(command) {
 
 /**
  * Check if there are any staged changes ready to commit
+ * @returns {Promise<boolean>}
  */
 async function hasStagedChanges() {
     const result = await runGit("diff --cached --name-only");
@@ -39,6 +41,8 @@ async function hasStagedChanges() {
 
 /**
  * Resolves a bare filename to its relative path from PROJECT_ROOT.
+ * @param {string} filename - The filename to resolve
+ * @returns {Promise<string>}
  */
 async function resolveRelativePath(filename) {
     if (!filename || filename === "." || filename.includes("/") || filename.includes("\\")) {
@@ -78,6 +82,8 @@ async function resolveRelativePath(filename) {
 /**
  * gitLocal Tool
  * Allows the agent to use git locally for self-management
+ * @param {string | { text: string, context?: any }} request - The request to process
+ * @returns {Promise<{ tool: string, success: boolean, final: boolean, data?: any }>}
  */
 export async function gitLocal(request) {
     try {
@@ -114,7 +120,7 @@ export async function gitLocal(request) {
         if (lowerAction === "status" || fullRequest.includes("git status")) {
             result = await runGit("status");
         } 
-        
+       
         // ADD
         else if (lowerAction === "add" || fullRequest.includes("git add") || lowerAction === "stage") {
             let target = params || ".";
@@ -138,7 +144,7 @@ export async function gitLocal(request) {
                 // Graceful handling: No changes to commit
                 return {
                     tool: "gitLocal",
-                    success: true, // Mark as success, not failure
+                    success: true,
                     final: true,
                     data: {
                         action: "commit",

@@ -83,9 +83,11 @@ function _releaseLock() {
   if (next) next();
 }
 
-// PERFORMANCE: Use native structuredClone (Node 17+) instead of slow JSON.parse(JSON.stringify)
+// SAFETY: JSON round-trip instead of structuredClone — silently drops non-serializable
+// values (Promises, functions, circular refs) that leak in from tool results saved
+// into memory.conversations.  structuredClone throws on those.
 function clone(obj) {
-  return typeof structuredClone === "function" ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
+  return JSON.parse(JSON.stringify(obj));
 }
 
 function ensureMemoryDirAndFileSync() {
@@ -120,17 +122,43 @@ function validateMemoryShape(raw) {
       if (raw.profile._encrypted) {
         try {
           safe.profile = JSON.parse(decryptString(raw.profile._encrypted));
-        } catch { safe.profile = {}; }
+        } catch {
+          // Decryption failed (key missing/changed) — fall back to meta.original
+          if (raw.meta?.original) {
+            console.warn("⚠️ [memory] Profile decryption failed — using meta.original fallback");
+            safe.profile = clone(raw.meta.original);
+          } else {
+            safe.profile = {};
+          }
+        }
       } else {
         safe.profile = raw.profile;
       }
+      // Merge meta.original into profile if profile is missing core fields
+      // This heals profiles that were encrypted after data was wiped
+      if (raw.meta?.original?.self && !safe.profile.self) {
+        console.log("🔧 [memory] Restoring profile.self from meta.original backup");
+        safe.profile.self = clone(raw.meta.original.self);
+      }
+      if (raw.meta?.original?.contacts && !safe.profile.contacts) {
+        console.log("🔧 [memory] Restoring profile.contacts from meta.original backup");
+        safe.profile.contacts = clone(raw.meta.original.contacts);
+      }
     }
-    
+
     if (Array.isArray(raw.durable)) {
       if (raw.durable.length === 1 && raw.durable[0]?._encrypted) {
         try {
           safe.durable = JSON.parse(decryptString(raw.durable[0]._encrypted));
-        } catch { safe.durable = []; }
+        } catch {
+          // Decryption failed — check meta.original for durable backup
+          if (raw.meta?.original?.durable) {
+            console.warn("⚠️ [memory] Durable decryption failed — using meta.original fallback");
+            safe.durable = Array.isArray(raw.meta.original.durable) ? raw.meta.original.durable : [];
+          } else {
+            safe.durable = [];
+          }
+        }
       } else {
         safe.durable = raw.durable;
       }
@@ -151,7 +179,10 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
     ensureMemoryDirAndFileSync();
     const tmp = `${file}.tmp.${Date.now()}`;
     const safeData = validateMemoryShape(obj);
-    
+
+    // CRITICAL: Cache the plaintext BEFORE encryption so getMemory() returns usable data
+    const plaintextForCache = clone(safeData);
+
     if (IS_ENCRYPTION_ENABLED) {
       if (safeData.profile && Object.keys(safeData.profile).length > 0) {
         safeData.profile = { _encrypted: encryptString(JSON.stringify(safeData.profile)) };
@@ -160,7 +191,7 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
         safeData.durable = [{ _encrypted: encryptString(JSON.stringify(safeData.durable)) }];
       }
     }
-    
+
     const data = JSON.stringify(safeData, null, 2);
     await fs.writeFile(tmp, data, "utf8");
     
@@ -178,7 +209,7 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
         throw renameErr;
       }
     }
-    _cache = safeData;
+    _cache = plaintextForCache;
     _cacheMtime = Date.now();
     return true;
   } catch (err) {

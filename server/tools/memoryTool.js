@@ -115,8 +115,21 @@ export async function memorytool(request) {
   ) {
     const memory = await getMemory();
     const profile = memory.profile || {};
+    // Support both flat (profile.name) and nested (profile.self.name) layouts
+    const self = profile.self || {};
 
-    if (Object.keys(profile).length === 0) {
+    const name = profile.name || self.name;
+    const location = profile.location || self.location;
+    const email = profile.email || self.email;
+    const phone = profile.phone || self.phone;
+    const whatsapp = profile.whatsapp || self.whatsapp;
+    const address = profile.address || self.address;
+    const tone = profile.tone || self.tone;
+    const contacts = profile.contacts || {};
+
+    const hasAnyData = name || location || email || phone || address || tone || Object.keys(contacts).length > 0;
+
+    if (!hasAnyData) {
       return {
         tool: "memorytool",
         success: true,
@@ -130,23 +143,24 @@ export async function memorytool(request) {
 
     // Build profile summary
     let summary = "📋 **Here's what I remember about you:**\n\n";
-    if (profile.name) summary += `• **Name:** ${profile.name}\n`;
-    if (profile.location) summary += `• **Location:** ${profile.location}\n`;
-    if (profile.email) summary += `• **Email:** ${profile.email}\n`;
-    if (profile.phone) summary += `• **Phone:** ${profile.phone}\n`;
-    if (profile.address) summary += `• **Address:** ${profile.address}\n`;
-    if (profile.tone) summary += `• **Preferred tone:** ${profile.tone}\n`;
+    if (name) summary += `• **Name:** ${name}\n`;
+    if (location) summary += `• **Location:** ${location}\n`;
+    if (email) summary += `• **Email:** ${email}\n`;
+    if (phone) summary += `• **Phone:** ${phone}\n`;
+    if (whatsapp && whatsapp !== phone) summary += `• **WhatsApp:** ${whatsapp}\n`;
+    if (address) summary += `• **Address:** ${address}\n`;
+    if (tone) summary += `• **Preferred tone:** ${tone}\n`;
 
     // Include contacts if any
-    if (profile.contacts && Object.keys(profile.contacts).length > 0) {
-      summary += `\n**Contacts saved:** ${Object.keys(profile.contacts).length}\n`;
-      const contactList = Object.entries(profile.contacts)
+    if (contacts && Object.keys(contacts).length > 0) {
+      summary += `\n**Contacts saved:** ${Object.keys(contacts).length}\n`;
+      const contactList = Object.entries(contacts)
         .slice(0, 5)
-        .map(([key, c]) => `• ${c.name}: ${c.email || c.phone || 'No details'}`)
+        .map(([key, c]) => `• ${c.name || key}: ${c.email || c.phone || c.relation || 'No details'}`)
         .join('\n');
       summary += contactList;
-      if (Object.keys(profile.contacts).length > 5) {
-        summary += `\n• ... and ${Object.keys(profile.contacts).length - 5} more`;
+      if (Object.keys(contacts).length > 5) {
+        summary += `\n• ... and ${Object.keys(contacts).length - 5} more`;
       }
     }
 

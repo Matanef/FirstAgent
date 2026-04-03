@@ -187,13 +187,24 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       try { memory = await reloadMemory(); } catch (e) {}
       memory.conversations[id] ??= [];
 
+      // Sanitize data before saving — strip large HTML blobs, non-serializable values
+      let safeData = null;
+      if (result.data) {
+        try {
+          const { html, content, plain, ...rest } = result.data;
+          safeData = {
+            ...rest,
+            text: (rest.text || "").slice(0, 500), // Cap stored text
+          };
+        } catch { safeData = { text: (result.data?.text || "").slice(0, 500) }; }
+      }
       memory.conversations[id].push({
         role: "assistant",
         content: reply,
         timestamp: new Date().toISOString(),
         confidence,
         tool: result.tool,
-        data: result.data,
+        data: safeData,
         metadata: { steps: stateGraph.length, reasoning: result.reasoning, thoughtChain: result.thoughtChain || [] }
       });
 

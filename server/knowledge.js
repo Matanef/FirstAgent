@@ -52,7 +52,7 @@ async function saveKnowledge(facts) {
  * If a fact with a similar topic exists, reinforce it (extend expiry, update details).
  * Ongoing events never expire.
  */
-export async function addFact({ topic, fact, source, ongoing = false, expiryDays }) {
+export async function addFact({ topic, fact, source, ongoing = false, permanent = false, expiryDays }) {
   const facts = await loadKnowledge();
   const topicLower = (topic || "").toLowerCase();
 
@@ -72,7 +72,11 @@ export async function addFact({ topic, fact, source, ongoing = false, expiryDays
     existing.source = source || existing.source;
     existing.lastSeen = new Date().toISOString().split("T")[0];
     existing.reinforced = (existing.reinforced || 0) + 1;
-    if (ongoing) {
+    if (permanent) {
+      existing.permanent = true;
+      existing.ongoing = true;
+      existing.expires = null;
+    } else if (ongoing) {
       existing.ongoing = true;
       existing.expires = null;
     } else if (existing.expires && !existing.ongoing) {
@@ -93,11 +97,12 @@ export async function addFact({ topic, fact, source, ongoing = false, expiryDays
       source: source || "unknown",
       learned: new Date().toISOString().split("T")[0],
       lastSeen: new Date().toISOString().split("T")[0],
-      expires: expiry,
-      ongoing: ongoing || false,
+      expires: permanent ? null : expiry,
+      ongoing: ongoing || permanent || false,
+      permanent: permanent || false,
       reinforced: 0,
     });
-    console.log(`[knowledge] Learned: "${topic}" (${ongoing ? "ongoing" : `expires ${expiry}`})`);
+    console.log(`[knowledge] Learned: "${topic}" (${permanent ? "PERMANENT" : ongoing ? "ongoing" : `expires ${expiry}`})`);
     result = { action: "learned", topic, ongoing };
   }
 
@@ -112,7 +117,7 @@ export async function pruneExpired() {
   const facts = await loadKnowledge();
   const today = new Date().toISOString().split("T")[0];
   const before = facts.length;
-  const pruned = facts.filter(f => f.ongoing || !f.expires || f.expires >= today);
+  const pruned = facts.filter(f => f.permanent || f.ongoing || !f.expires || f.expires >= today);
   if (pruned.length < before) {
     console.log(`[knowledge] Pruned ${before - pruned.length} expired fact(s)`);
     await saveKnowledge(pruned);
@@ -134,12 +139,22 @@ export async function getKnowledgeContext() {
     return new Date(b.lastSeen) - new Date(a.lastSeen);
   });
 
-  const lines = sorted.slice(0, 20).map(f => {
-    const tag = f.ongoing ? "[ONGOING]" : "";
-    return `- ${tag} ${f.fact} (source: ${f.source}, ${f.lastSeen})`;
-  });
+  // Separate permanent facts from regular ones
+  const permanent = sorted.filter(f => f.permanent);
+  const regular = sorted.filter(f => !f.permanent);
 
-  return `RECENT KNOWLEDGE (facts you've learned from news and search — use these to give informed, up-to-date answers):\n${lines.join("\n")}`;
+  const formatFact = (f) => {
+    const tags = [];
+    if (f.permanent) tags.push("[PERMANENT FACT]");
+    else if (f.ongoing) tags.push("[ONGOING]");
+    return `- ${tags.join(" ")} ${f.fact} (source: ${f.source}, ${f.lastSeen})`;
+  };
+
+  const lines = [...permanent, ...regular].slice(0, 25).map(formatFact);
+
+  return `RECENT KNOWLEDGE (facts you've learned from news, search, and web articles — this is YOUR knowledge, use it confidently when answering questions, forming opinions, and discussing current events):
+${lines.join("\n")}
+IMPORTANT: When a user asks about any topic covered above, reference this knowledge directly. Do NOT say "I don't know" about topics listed here.`;
 }
 
 /**
@@ -232,13 +247,15 @@ export async function extractFromSearch(results, synthesis, query) {
  * For short content, falls back to heuristic sentence extraction.
  * Returns array of { action, topic } describing what was learned.
  */
-export async function extractFromWebContent(pageTitle, plainText, url) {
+export async function extractFromWebContent(pageTitle, plainText, url, { permanent: forcePermament = false } = {}) {
   if (!plainText || plainText.length < 50) return [];
 
   const topic = pageTitle || (url ? new URL(url).pathname.replace(/[_\-\/]/g, " ").trim() : "web article");
   const source = url ? `web/${new URL(url).hostname}` : "web";
   const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop|massacre|protest|revolt|uprising)\b/i;
   const ongoing = ongoingKeywords.test(topic) || ongoingKeywords.test(plainText.substring(0, 2000));
+  // User-requested reads are permanent — they explicitly asked to learn this
+  const permanent = forcePermament || false;
 
   // For substantial articles (>500 chars), use LLM to extract multiple facts
   if (plainText.length > 500) {
@@ -268,6 +285,7 @@ Return ONLY valid JSON, no markdown:
               fact: f.fact.substring(0, 300),
               source,
               ongoing,
+              permanent,
             });
             if (r) learned.push(r);
           }
@@ -298,6 +316,7 @@ Return ONLY valid JSON, no markdown:
     fact: factText.substring(0, 300),
     source,
     ongoing,
+    permanent,
   });
   return r ? [r] : [];
 }
@@ -324,16 +343,16 @@ function _wordOverlap(a, b) {
 function _evictOne(facts) {
   // First try to evict expired
   const today = new Date().toISOString().split("T")[0];
-  const expiredIdx = facts.findIndex(f => !f.ongoing && f.expires && f.expires < today);
+  const expiredIdx = facts.findIndex(f => !f.ongoing && !f.permanent && f.expires && f.expires < today);
   if (expiredIdx >= 0) {
     facts.splice(expiredIdx, 1);
     return;
   }
-  // Then evict oldest non-ongoing, least reinforced
+  // Then evict oldest non-ongoing, non-permanent, least reinforced
   let weakestIdx = -1;
   let weakestScore = Infinity;
   for (let i = 0; i < facts.length; i++) {
-    if (facts[i].ongoing) continue;
+    if (facts[i].ongoing || facts[i].permanent) continue;
     const score = (facts[i].reinforced || 0) * 10 + (new Date(facts[i].lastSeen).getTime() / 1e10);
     if (score < weakestScore) {
       weakestScore = score;
