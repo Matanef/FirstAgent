@@ -90,43 +90,68 @@ export async function contacts(query) {
         }
 
         // ADD CONTACT
-        if (lower.includes("add") || lower.includes("save") || lower.includes("remember") && (lower.includes("contact") || lower.includes("name"))) {
-            // Parse: "add john smith as a contact, email: john@example.com, phone: +1234567890"
-            const nameMatch = queryText.match(/(?:add|save|remember)\s+(?:contact\s+)?(?:name[:\s]+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i) ||
-                queryText.match(/(?:add|save|remember)\s+(?:that\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:to\s+contacts|as\s+a\s+contact)/i);
+        if (lower.includes("add") || lower.includes("save") || (lower.includes("remember") && (lower.includes("contact") || lower.includes("name")))) {
+            // Parse labeled format: "add contact, email: john@example.com, phone: +1234567890"
+            const labeledEmailMatch = queryText.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
+            const labeledPhoneMatch = queryText.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
 
-            const emailMatch = queryText.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
-            const phoneMatch = queryText.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
+            // Parse CSV-style format: "Add contact: Name, email@example.com, 0541234567"
+            // Also handles: "Add contact: Name, email, phone" without labels
+            const csvMatch = queryText.match(/(?:add|save|remember)\s+contact[:\s]+\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*[,;]\s*([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\s*[,;]\s*([\+\d\s\(\)-]{7,})/i);
 
-            if (nameMatch || emailMatch) {
-                let name = nameMatch ? nameMatch[1].trim() : (emailMatch ? emailMatch[1].split('@')[0] : "Unknown");
-                const key = name.toLowerCase().replace(/\s+/g, "_");
+            // Parse labeled name format: "add contact name: John Smith"
+            const nameMatch = queryText.match(/(?:add|save|remember)\s+(?:contact[:\s]+\s*)?(?:name[:\s]+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i) ||
+                queryText.match(/(?:add|save|remember)\s+(?:that\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:to\s+contacts|as\s+a\s+contact)/i);
 
-                memory.profile.contacts[key] = {
-                    name: name,
-                    email: emailMatch ? emailMatch[1] : null,
-                    phone: phoneMatch ? phoneMatch[1].replace(/\s+/g, "") : null,
-                    aliases: [],
-                    dateAdded: new Date().toISOString()
-                };
+            // Auto-detect unlabeled email and phone anywhere in input
+            const anyEmailMatch = labeledEmailMatch || queryText.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b/i);
+            const anyPhoneMatch = labeledPhoneMatch || queryText.match(/\b((?:\+?\d[\d\s\-\(\)]{6,18}\d))\b/);
 
-                await saveJSON(MEMORY_FILE, memory);
+            let name, email, phone;
 
+            if (csvMatch) {
+                // CSV format: "Add contact: Rafi Efrati, rafi@gmail.com, 0523321756"
+                name = csvMatch[1].trim();
+                email = csvMatch[2].trim();
+                phone = csvMatch[3].replace(/\s+/g, "").trim();
+            } else if (nameMatch || anyEmailMatch) {
+                name = nameMatch ? nameMatch[1].trim() : (anyEmailMatch ? anyEmailMatch[1].split('@')[0] : "Unknown");
+                email = anyEmailMatch ? anyEmailMatch[1] : null;
+                phone = anyPhoneMatch ? anyPhoneMatch[1].replace(/\s+/g, "") : null;
+            } else {
+                // No parseable data
                 return {
                     tool: "contacts",
-                    success: true,
+                    success: false,
                     final: true,
-                    data: {
-                        action: "added",
-                        contact: memory.profile.contacts[key],
-                        message: `✅ Added contact: ${name}\n${emailMatch ? `📧 Email: ${emailMatch[1]}\n` : ""}${phoneMatch ? `📱 Phone: ${phoneMatch[1]}\n` : ""}\n\nYou can now reference "${name}" in messages and emails!`
-                    }
+                    error: "Could not parse contact details. Try:\n• \"Add contact: John Smith, john@example.com, 0541234567\"\n• \"Add contact name: John, email: john@example.com, phone: 0541234567\""
                 };
             }
+
+            const key = name.toLowerCase().replace(/\s+/g, "_");
+            memory.profile.contacts[key] = {
+                name,
+                email: email || null,
+                phone: phone || null,
+                aliases: [],
+                dateAdded: new Date().toISOString()
+            };
+
+            await saveJSON(MEMORY_FILE, memory);
+
+            return {
+                tool: "contacts",
+                success: true,
+                final: true,
+                data: {
+                    text: `✅ Added contact: ${name}\n${email ? `📧 Email: ${email}\n` : ""}${phone ? `📱 Phone: ${phone}\n` : ""}\nYou can now reference "${name}" in messages and emails!`,
+                    preformatted: true
+                }
+            };
         }
 
         // LIST CONTACTS
-        if (lower.includes("list") || (lower.includes("show") && lower.includes("contact"))) {
+        if (lower.includes("list") || lower.includes("all") || (lower.includes("show") && lower.includes("contact"))) {
             const contactList = Object.entries(memory.profile.contacts).map(([key, c]) => ({
                 key,
                 ...c
@@ -138,18 +163,27 @@ export async function contacts(query) {
                     success: true,
                     final: true,
                     data: {
-                        message: "📇 No contacts saved yet.\n\nAdd a contact with: 'add Mom as a contact, email: mom@example.com'"
+                        text: "📇 No contacts saved yet.\n\nAdd a contact with: 'Add contact: Name, email@example.com, 0541234567'",
+                        preformatted: true
                     }
                 };
             }
+
+            const formatted = contactList.map(c => {
+                const parts = [`• **${c.name}**`];
+                if (c.email) parts.push(`📧 ${c.email}`);
+                if (c.phone) parts.push(`📱 ${c.phone}`);
+                return parts.join(" — ");
+            }).join('\n');
 
             return {
                 tool: "contacts",
                 success: true,
                 final: true,
                 data: {
+                    text: `📇 **Contacts** (${contactList.length}):\n\n${formatted}`,
                     contacts: contactList,
-                    message: `Found ${contactList.length} contacts:\n${contactList.map(c => `• ${c.name}: ${c.email || c.phone || 'No details'}`).join('\n')}`
+                    preformatted: true
                 }
             };
         }
@@ -160,7 +194,8 @@ export async function contacts(query) {
             success: true,
             final: true,
             data: {
-                message: `📇 Contact Management\n\n**Commands:**\n• "add Mom as a contact, email: mom@example.com"\n• "list contacts"\n• "what's john's email?"\n• "delete contact john"`
+                text: `📇 **Contact Management**\n\n**Commands:**\n• "Add contact: Name, email@example.com, 0541234567"\n• "List all my contacts"\n• "What's John's email?"\n• "Delete contact John"`,
+                preformatted: true
             }
         };
 

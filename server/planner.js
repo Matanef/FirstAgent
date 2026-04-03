@@ -28,13 +28,24 @@ let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null };
 // ============================================================
 // UTIL: list available tools (reads server/tools/*.js + dynamic skills)
 // ============================================================
+// Utility-only modules in server/tools/ that are NOT routable tools.
+// These export helper functions used by actual tools — they should NEVER
+// appear in the LLM's available tool list or they'll cause hallucinated routing.
+const NON_ROUTABLE_MODULES = new Set([
+  "emailUtils",      // regex/sentiment helpers for email.js
+  "geminiValidator",  // code validation helper for codeTransform.js
+  "testGen",          // test generation utility
+  "index",            // the tool registry itself
+]);
+
 function listAvailableTools(toolsDir = path.resolve(__dirname, "tools")) {
   try {
-    // 1. Get standard tools
+    // 1. Get standard tools — filter out utility modules that aren't routable
     const files = fs.readdirSync(toolsDir, { withFileTypes: true });
     const coreTools = files
       .filter(f => f.isFile() && f.name.endsWith(".js"))
-      .map(f => f.name.replace(/\.js$/, ""));
+      .map(f => f.name.replace(/\.js$/, ""))
+      .filter(name => !NON_ROUTABLE_MODULES.has(name));
 
     // 2. Get dynamic skills
     const dynTools = Object.keys(dynamicSkills || {});
@@ -69,6 +80,13 @@ function isMathExpression(msg) {
 
   // Reject if message contains file paths (D:/, C:\, etc.)
   if (/[a-z]:[\\\/]/i.test(trimmed)) return false;
+
+  // Reject if message contains dates (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD)
+  if (/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(trimmed)) return false;
+  if (/\d{4}-\d{1,2}-\d{1,2}/.test(trimmed)) return false;
+
+  // Reject if message contains email addresses (user@example.com)
+  if (/[\w.+-]+@[\w.-]+\.\w{2,}/.test(trimmed)) return false;
 
   // Reject if parentheses contain words (natural language, not math)
   // e.g., "(about 100 words)" → reject; "(100 + 50)" → accept
@@ -342,6 +360,605 @@ function formatCity(city) {
 }
 
 // ============================================================
+// DECLARATIVE ROUTING TABLE
+// ============================================================
+// Instead of position-dependent if/else chains, this table uses explicit
+// priority numbers. Higher priority = wins when multiple rules match.
+//
+// HOW TO ADD A NEW TOOL:
+//   1. Add a rule object to ROUTING_TABLE below
+//   2. Set a priority number (see guide)
+//   3. Define match() — returns true if this tool should handle the message
+//   4. Optionally define guard() — returns true to BLOCK this tool (e.g., compound intent)
+//   5. Optionally define context() — returns the context object for the tool
+//
+// PRIORITY GUIDE:
+//   95-99  Confirmations & overrides (send-it, cancel, file attachments)
+//   85-94  Narrow-scope skills that beat broader tools (attachmentDownloader, githubScanner)
+//   70-84  Standard tools with distinctive patterns (email, weather, calendar, sheets)
+//   55-69  Broader tools (finance, sports, youtube, news)
+//   40-54  Generic catch-alls (calculator, file, review)
+//   20-39  Fallback routing (search, llm for general knowledge)
+//
+// The system evaluates ALL rules, picks the highest-priority match that
+// passes its guard. No more "move this block above that block" surgery.
+// ============================================================
+
+const ROUTING_TABLE = [
+  // ── TIER 1: Confirmations & overrides (95-99) ──────────────
+  {
+    tool: "email_confirm",
+    priority: 99,
+    match: (lower) => isSendItCommand(lower),
+    context: (lower, trimmed, ctx) => ({ action: "send_confirmed", sessionId: ctx?.sessionId || "default" }),
+    description: "Confirm and send email draft"
+  },
+  {
+    tool: "email_confirm",
+    priority: 98,
+    match: (lower) => isCancelCommand(lower),
+    context: (lower, trimmed, ctx) => ({ action: "cancel", sessionId: ctx?.sessionId || "default" }),
+    description: "Cancel/discard email draft"
+  },
+
+  // ── TIER 2: Narrow-scope skills (85-94) ────────────────────
+  {
+    tool: "attachmentDownloader",
+    priority: 92,
+    match: (lower, trimmed) =>
+      /\b(download|save|fetch|get)\b/i.test(lower) &&
+      /\battachments?\b/i.test(lower) &&
+      /[\w.+-]+@[\w.-]+\.\w{2,}/.test(trimmed) &&
+      /\b(since|between|after|before|from\s+\d|starting)\b/i.test(lower),
+    description: "Download email attachments by sender and date range"
+  },
+  {
+    tool: "githubScanner",
+    priority: 88,
+    match: (lower, trimmed) =>
+      /\b(scan\s+github|github\s+scan|analyze\s+github|discover\s+tool|find\s+new\s+tool|github\s+intelligence|repo\s+scan|scan\s+repos?\s+for|github\s+pattern)\b/i.test(lower) ||
+      (/\b(scan|analyze|check|review)\b/i.test(lower) && /\b(github|repositor(?:y|ies))\b/i.test(lower) && !hasExplicitFilePath(trimmed)),
+    context: (lower) => {
+      if (/\btrending|popular|hot\b/i.test(lower)) return { action: "trending" };
+      if (/\bdiscover|find/i.test(lower)) return { action: "discover" };
+      if (/\bpattern|practice/i.test(lower)) return { action: "patterns" };
+      return { action: "scan" };
+    },
+    description: "Scan GitHub repos for patterns, tool discovery, AI analysis"
+  },
+  {
+    tool: "duplicateScanner",
+    priority: 86,
+    match: (lower) => /\b(duplicates?|duplication|find\s+duplicates?|scan\s+duplicates?|duplicate\s+files?)\b/i.test(lower),
+    context: (lower, trimmed) => {
+      const ctx = {};
+      const pathMatch = trimmed.match(/(?:in|under|at|from)\s+([a-zA-Z]:[\\\/][^\s,]+|[.\/][^\s,]+)/i);
+      if (pathMatch) ctx.path = pathMatch[1];
+      const typeMatch = lower.match(/(?:that are|type)\s+(\.\w+|\w+)\s+files?/);
+      if (typeMatch) ctx.type = typeMatch[1];
+      const extMatch = lower.match(/\.(txt|js|jsx|ts|tsx|json|css|md|py|html|xml|csv)\b/);
+      if (!ctx.type && extMatch) ctx.type = extMatch[0];
+      const nameMatch = trimmed.match(/(?:named?|called)\s+["']?([^"'\s,]+)["']?/i);
+      if (nameMatch) ctx.name = nameMatch[1];
+      return ctx;
+    },
+    description: "Find duplicate files in a directory"
+  },
+
+  // ── TIER 3: Standard tools with distinctive patterns (70-84) ──
+  {
+    tool: "memorytool",
+    priority: 82,
+    match: (lower) => isMemoryWriteCommand(lower),
+    description: "Remember/save user info to memory"
+  },
+  {
+    tool: "memorytool",
+    priority: 81,
+    match: (lower) => locationWithForgetLike(lower),
+    context: () => ({ raw: "forget_location" }),
+    description: "Forget saved location from memory"
+  },
+  {
+    tool: "weather",
+    priority: 78,
+    match: (lower) => hereIndicatesWeather(lower),
+    context: () => ({ city: "__USE_GEOLOCATION__" }),
+    description: "Weather for current location (geolocation)"
+  },
+  {
+    tool: "weather",
+    priority: 75,
+    match: (lower) => containsKeyword(lower, WEATHER_KEYWORDS),
+    guard: (lower) =>
+      /\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate)\b/i.test(lower) ||
+      hasCompoundIntent(lower),
+    // NOTE: city extraction + memory lookup requires async — handled by wrapper in evaluateRoutingTable
+    contextAsync: true,
+    description: "Weather forecast with city detection"
+  },
+  {
+    tool: "sheets",
+    priority: 75,
+    match: (lower) => /\b(google\s*sheet|spreadsheet|sheet\s*id|batch\s*append)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    context: (lower, trimmed) => {
+      const ctx = {};
+      if (/\b(read|get|fetch|show|view)\b/i.test(lower)) ctx.action = "read";
+      else if (/\b(clear|wipe|empty)\b/i.test(lower)) ctx.action = "clear";
+      else ctx.action = "append";
+      const sheetIdMatch = lower.match(/(?:sheet\s*id\s*|spreadsheets\/d\/)([a-zA-Z0-9_-]{20,60})/i) || trimmed.match(/\b([a-zA-Z0-9_-]{25,60})\b/);
+      if (sheetIdMatch) ctx.spreadsheetId = sheetIdMatch[1];
+      return ctx;
+    },
+    description: "Google Sheets read/append/clear"
+  },
+  {
+    tool: "email",
+    priority: 72,
+    match: (lower) =>
+      /\b(emails?|e-mails?|mails?|inbox|send\s+to|draft\s+(an?\s+)?(emails?|messages?|letters?))\b/i.test(lower),
+    guard: (lower, trimmed) =>
+      (/\b(download|save|fetch|get)\b/i.test(lower) && /\battachments?\b/i.test(lower) && /\b(since|between|after|before|starting)\b/i.test(lower)) || // attachment download
+      isSendItCommand(lower) ||
+      hasCompoundIntent(lower) ||
+      /\/api\/v\d\/agents?\b/i.test(lower) ||
+      (/\b(set\s*up|setup|configure)\b/i.test(lower) && /\b(moltbook|owner[- ]?email)\b/i.test(lower)) ||
+      // Guard: "inspect/review email.js" is a code review, not email composition
+      (hasExplicitFilePath(trimmed || lower) && /\b(inspect|review|audit|check|security|analyz|vulnerabilit|bug|issue|improv)\b/i.test(lower)),
+    context: (lower) => {
+      const ctx = {};
+      if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) ctx.action = "browse";
+      else if (/\b(delete|trash|remove)\b/i.test(lower)) ctx.action = "delete";
+      else if (/\b(attachment|download)\b/i.test(lower)) ctx.action = "downloadAttachment";
+      return ctx;
+    },
+    description: "Email compose, browse, or delete"
+  },
+  {
+    tool: "whatsapp",
+    priority: 72,
+    match: (lower, trimmed) =>
+      /\bsend\b/i.test(lower) &&
+      /(?:\+?\d[\d\s\-()]{6,18}\d)/.test(trimmed) &&
+      !/\b(email|e-mail|mail)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "WhatsApp — phone number detected with send command"
+  },
+  {
+    tool: "whatsapp",
+    priority: 70,
+    match: (lower) =>
+      /\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
+      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "WhatsApp — explicit keyword with send intent"
+  },
+  {
+    tool: "githubTrending",
+    priority: 74,
+    match: (lower) =>
+      /\b(trending|popular|top)\b/i.test(lower) &&
+      /\b(repo|repository|github|project|open\s*source)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "Trending GitHub repositories"
+  },
+  {
+    tool: "gitLocal",
+    priority: 73,
+    match: (lower) => /\b(git\s+(status|log|diff|add|commit|branch|checkout|stash|push|pull|reset))\b/i.test(lower),
+    description: "Local git commands (status, log, diff, etc.)"
+  },
+  {
+    tool: "calendar",
+    priority: 71,
+    match: (lower, trimmed) =>
+      (/\b(extract|export|excel|xlsx|spreadsheet)\b/i.test(lower) ||
+       /(?:חלץ|ייצא|אקסל|סרוק|לאקסל|ייצוא)/u.test(trimmed)) &&
+      /\b(calendar|events?|לוח|אירוע|יומן)\b/iu.test(trimmed),
+    context: () => ({ action: "extract" }),
+    description: "Calendar extract/export to spreadsheet"
+  },
+  {
+    tool: "calendar",
+    priority: 70,
+    match: (lower) =>
+      /\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call|appointment|dentist|doctor)|what\s+events?\b|my\s+events|am\s+i\s+(free|busy|available)|free\s+(time|slot|tomorrow|today|this)|availab(le|ility)\s+(today|tomorrow|this|next))\b/i.test(lower),
+    guard: (lower) => /\b(score|match|game|league|football|soccer|basketball|nba|nfl|sports?\s+events?)\b/i.test(lower),
+    description: "Calendar — meetings, events, availability"
+  },
+
+  // ── TIER 4: Broader tools (55-69) ─────────────────────────
+  {
+    tool: "news",
+    priority: 65,
+    match: (lower) =>
+      /\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
+      /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower),
+    guard: (lower, trimmed) =>
+      hasExplicitFilePath(trimmed) ||
+      /\bmoltbook\b/i.test(lower) ||
+      hasCompoundIntent(lower) ||
+      /\b(try\s+again|the\s+purpose|more\s+.{0,20}\s+like|give\s+(your\s*self|me)|as\s+a\s+.{0,30}\s+reporter|style|idea|concept|theme|approach|username|name\s+(your|the)|rename|rebrand)\b/i.test(lower) ||
+      /\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily|weekly|recurring|cron|automate)\b/i.test(lower) ||
+      isPersonalConversation(lower, trimmed),
+    description: "News and headlines"
+  },
+  {
+    tool: "finance",
+    priority: 63,
+    match: (lower, trimmed) =>
+      (/\b(stocks?|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO|stock\s+price)\b/i.test(lower) ||
+       (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))),
+    guard: (lower) =>
+      hasCompoundIntent(lower) || FINANCE_RESEARCH_QUESTION.test(lower) ||
+      // Yield to financeFundamentals for fundamentals-specific queries
+      /\b(fundamentals?|P\/E|p\/e|pe\s+ratio|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|revenue|quarterly|annual\s+report)\b/i.test(lower),
+    context: (lower, trimmed) => {
+      // Research questions without specific company → route to search instead
+      const hasSpecificCompany = FINANCE_COMPANIES.test(lower) || /\b[A-Z]{2,5}\b/.test(trimmed);
+      const isExplanatoryQ = /\b(why|what\s+caused|what\s+happened|reason)\b/i.test(lower);
+      if (isExplanatoryQ && !hasSpecificCompany) return { __redirectTool: "search" };
+      return {};
+    },
+    description: "Stock prices, market data, ticker lookups"
+  },
+  {
+    tool: "financeFundamentals",
+    priority: 62,
+    match: (lower) =>
+      /\b(fundamentals?|P\/E|pe\s+ratio|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|quarterly|annual\s+report|revenue|earnings|eps|dividend\s+yield|beta)\b/i.test(lower) ||
+      (FINANCE_COMPANIES.test(lower) && /\b(fundamentals?|financials?|report|analysis|revenue|earnings|market\s*cap)\b/i.test(lower)),
+    description: "Financial fundamentals, P/E ratios, balance sheets, market cap, revenue"
+  },
+  {
+    tool: "sports",
+    priority: 60,
+    match: (lower) =>
+      /\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion|fixture|standings?|table)\b/i.test(lower) ||
+      (/\b(play\s+next|next\s+(match|game|fixture)|when\s+does?\s+\w+\s+play)\b/i.test(lower) && /\b(arsenal|chelsea|liverpool|tottenham|spurs|manchester|man\s+(utd?|city)|barcelona|real\s+madrid|juventus|bayern|lakers|celtics|warriors|yankees|cowboys|patriots)\b/i.test(lower)),
+    guard: (lower, trimmed) =>
+      hasExplicitFilePath(trimmed) ||
+      /\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower) ||
+      hasCompoundIntent(lower),
+    description: "Sports scores, matches, leagues, fixtures"
+  },
+  {
+    tool: "x",
+    priority: 60,
+    match: (lower) =>
+      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower),
+    guard: (lower, trimmed) => {
+      const isScheduling = /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower);
+      const isMultiToolChain = /\b(google\s*sheet|spreadsheet|append|aggregate|categorize\s+.*(save|write|sheet)|save\s+to\s+(sheet|sheets))\b/i.test(lower);
+      const isMetaQ = /\b(why\s+did\s+you|what\s+tool|which\s+tool|how\s+does\s+(this|the)\s+tool|explain\s+(this|the)\s+tool)\b/i.test(lower);
+      return isScheduling || isMultiToolChain || isMetaQ || hasCompoundIntent(lower) || isPersonalConversation(lower, trimmed);
+    },
+    context: (lower) => {
+      const ctx = {};
+      if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) ctx.action = "trends";
+      else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) ctx.action = "analyze";
+      else if (/\b(post|publish|compose)\s+(on|to)\s+(x|twitter)\b/i.test(lower)) ctx.action = "post";
+      else if (/\b(complaint|pain\s*point|frustrat|looking\s+for\s+(a\s+)?better|advanced\s+search)\b/i.test(lower)) ctx.action = "leadgen";
+      else ctx.action = "search";
+      const countryMatch = lower.match(/\bin\s+(?:the\s+)?(israel|uk|united\s+kingdom|britain|us|usa|united\s+states|america|canada|brazil|mexico|france|germany|spain|italy|netherlands|sweden|turkey|russia|japan|india|australia|south\s+korea|korea|singapore|indonesia|philippines|thailand|south\s+africa|nigeria|egypt|kenya|jerusalem|tel\s*aviv)\b/i);
+      if (countryMatch) ctx.country = countryMatch[1].toLowerCase().replace(/\s+/g, " ");
+      else if (/\b(israel|jerusalem|tel\s*aviv|ישראל)\b/i.test(lower)) ctx.country = "israel";
+      return ctx;
+    },
+    description: "X/Twitter — trends, search, post, lead gen, sentiment"
+  },
+{
+    tool: "spotifyController",
+    priority: 58,
+    match: (lower) => /\b(play|pause|skip|previous|spotify|music|song|track)\b/i.test(lower),
+    guard: (lower) =>
+      hasCompoundIntent(lower) ||
+      // Guard: sports context — "when does Arsenal play next" is NOT spotify
+      /\b(arsenal|chelsea|liverpool|tottenham|spurs|manchester|man\s+(utd?|city)|barcelona|real\s+madrid|juventus|bayern|lakers|celtics|warriors|yankees|cowboys|patriots|score|match|game|league|fixture|standings?|nba|nfl|premier\s+league)\b/i.test(lower) ||
+      // Guard: tech/UI/chat/video context — "previous prompt", "play youtube video", "skip this step"
+      /\b(prompt|message|input|terminal|button|feature|step|youtube|video|movie)\b/i.test(lower),
+    description: "Spotify playback control"
+  },
+  {
+    tool: "youtube",
+    priority: 57,
+    match: (lower) => /\b(youtube|video|watch|tutorial\s+video|how\s+to\s+video)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "YouTube video search"
+  },
+  {
+    tool: "github",
+    priority: 56,
+    match: (lower) =>
+      /\b(github|repo|repository|pull\s+requests?|PR|commit|merge|fork)\b/i.test(lower) ||
+      (/\b(issues?|branch)\b/i.test(lower) && /\b(github|repo|pr|open|close|assign|label|milestone|merge|checkout)\b/i.test(lower)),
+    guard: (lower, trimmed) => hasExplicitFilePath(trimmed) || hasCompoundIntent(lower),
+    description: "GitHub repos, issues, PRs, commits"
+  },
+  {
+    tool: "nlp_tool",
+    priority: 55,
+    match: (lower) => /\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "NLP text analysis, sentiment, entity extraction"
+  },
+
+  // ── TIER 5: Catch-all tools (40-54) ───────────────────────
+  {
+    tool: "shopping",
+    priority: 54,
+    match: (lower) =>
+      /\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) ||
+      (/\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(lower)) ||
+      (/\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)),
+    guard: (lower) =>
+      /\b(stock|share|invest|market|ticker|cybersecurity|crypto|bitcoin|earnings)\b/i.test(lower) ||
+      /\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower),
+    description: "Shopping — product search, price comparisons, deals"
+  },
+  {
+    tool: "chartGenerator",
+    priority: 53,
+    match: (lower) => /\b(chart|graph|plot|visualize|diagram|draw\s+a?\s*(bar|line|pie|scatter))\b/i.test(lower),
+    guard: (lower) => /\b(github|dependency|project)\b/i.test(lower),
+    description: "Chart/graph generation and visualization"
+  },
+  {
+    tool: "calculator",
+    priority: 52,
+    match: (lower) => isMathExpression(lower),
+    description: "Math expression evaluation"
+  },
+  {
+    tool: "calculator",
+    priority: 51,
+    match: (lower) => /\b(calculate|compute|solve|what\s+is\s+\d|how\s+much\s+is|convert\s+\d|percentage\s+of)\b/i.test(lower),
+    description: "Calculator — explicit keywords"
+  },
+  {
+    tool: "fileWrite",
+    priority: 49,
+    match: (lower, trimmed) =>
+      /\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
+      /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
+      (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed)),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "File write/create — generate new files"
+  },
+  {
+    tool: "llm",
+    priority: 48,
+    match: (lower) => isSimpleDateTime(lower),
+    description: "Date/time questions"
+  },
+  {
+    tool: "workflow",
+    priority: 47,
+    match: (lower) =>
+      /\b(run|execute|start|create|list|show|delete|remove)\s+(the\s+)?(a\s+)?(my\s+)?workflow/i.test(lower) ||
+      /\bworkflow\s+(named?|called)\b/i.test(lower) ||
+      /\b(morning\s+briefing|market\s+check|code\s+review\s+cycle)\b/i.test(lower),
+    description: "Workflow management — run, create, list saved workflows"
+  },
+  {
+    tool: "scheduler",
+    priority: 47,
+    match: (lower) =>
+      /\b(schedules?|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower),
+    guard: (lower) =>
+      /\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower) ||
+      /\b(performance\s+report|weekly\s+report|generate\s+.*report|summary\s+report|diagnostic\s+report)\b/i.test(lower) ||
+      /\bworkflow\b/i.test(lower),
+    context: (lower) => {
+      const ctx = {};
+      if (/\b(list|show|view|my)\s*(schedules?|recurring)/i.test(lower)) ctx.action = "list";
+      else if (/\b(cancel|stop|remove|delete)\s*(schedules?|timer|recurring)/i.test(lower)) ctx.action = "cancel";
+      else if (/\b(pause|disable)\b/i.test(lower)) ctx.action = "pause";
+      else if (/\b(resume|enable)\b/i.test(lower)) ctx.action = "resume";
+      return ctx;
+    },
+    description: "Scheduler — recurring tasks, cron jobs, automation"
+  },
+  {
+    tool: "tasks",
+    priority: 46,
+    match: (lower) => /\b(todo|task|reminder|add\s+task|my\s+tasks|to-do|checklist|pending\s+tasks|task\s+list|show\s+tasks)\b/i.test(lower),
+    guard: (lower) => /\b(github|repo|commit|issue|pull\s+request)\b/i.test(lower),
+    description: "Task and todo management"
+  },
+  {
+    tool: "packageManager",
+    priority: 50,
+    match: (lower) =>
+      /\b(npm\s+(install|uninstall|list|remove|update|info|outdated)|install\s+(package|[@a-z][\w\/-]*)|uninstall\s+(package|[@a-z][\w\/-]*)|remove\s+(the\s+)?(unused\s+)?package|list\s+(\w+\s+)?packages|update\s+(all\s+)?packages|package\s+manager|what\s+version\s+of\b|which\s+packages|installed\s+packages|outdated\s+packages|is\s+[@a-z][\w\/-]*\s+installed)\b/i.test(lower),
+    guard: (lower) => /\b(amazon|buy|shop|order)\b/i.test(lower),
+    context: (lower, trimmed) => {
+      const ctx = {};
+      // Determine action
+      if (/\binstall\b/i.test(lower) && !/\binstalled\b/i.test(lower)) ctx.action = "install";
+      else if (/\buninstall|remove\b/i.test(lower)) ctx.action = "uninstall";
+      else if (/\boutdated\b/i.test(lower)) ctx.action = "outdated";
+      else if (/\bupdate\b/i.test(lower)) ctx.action = "update";
+      else ctx.action = "list";
+      // Extract package name from action commands: "install axios", "uninstall lodash"
+      const actionMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z][\w\/-]*)/i);
+      if (actionMatch) { ctx.package = actionMatch[1]; return ctx; }
+      // Extract from "what version of X", "check X"
+      const versionMatch = trimmed.match(/(?:what\s+version\s+(?:of\s+)?|check\s+)([@a-z][\w\/-]*)/i);
+      if (versionMatch) { ctx.package = versionMatch[1]; return ctx; }
+      // Extract from "is X installed", "version of X"
+      const isMatch = trimmed.match(/\bis\s+([@a-z][\w\/-]*)\s+installed\b/i);
+      if (isMatch) { ctx.package = isMatch[1]; return ctx; }
+      const ofMatch = trimmed.match(/version\s+of\s+([@a-z][\w\/-]*)/i);
+      if (ofMatch) { ctx.package = ofMatch[1]; return ctx; }
+      return ctx;
+    },
+    validate: (ctx) => {
+      // Reject if extracted package name is a stopword (regex captured noise)
+      const PACKAGE_STOPWORDS = new Set([
+        "the", "a", "an", "all", "my", "our", "installed", "available", "used",
+        "packages", "package", "version", "versions", "latest", "current",
+        "outdated", "updated", "listed", "check", "checked"
+      ]);
+      if (ctx.package && PACKAGE_STOPWORDS.has(ctx.package.toLowerCase())) {
+        ctx.package = undefined; // Clear garbage, let tool run without filter
+      }
+      // install/uninstall without a package name is nonsensical
+      if ((ctx.action === "install" || ctx.action === "uninstall") && !ctx.package) return false;
+      return true;
+    },
+    description: "NPM package management — install, uninstall, list, update, version queries"
+  },
+  {
+    tool: "contacts",
+    priority: 46,
+    match: (lower) => /\b(contacts?|address\s*book|phone\s*(number|book)|my\s+contacts|add\s+contact|find\s+contact|who\s+is\s+\w+'\s*s?\s*(number|email|phone))\b/i.test(lower),
+    guard: (lower) => /\b(github|email\s+(to|about|regarding))\b/i.test(lower),
+    description: "Contacts management"
+  },
+  {
+    tool: "documentQA",
+    priority: 45,
+    match: (lower) => /\b(load\s+document|index\s+(this\s+)?document|knowledge\s+base|query\s+(the\s+)?document|ask\s+(the\s+)?document|document\s+qa|search\s+(in|within)\s+(the\s+)?document)\b/i.test(lower),
+    description: "Document QA — load and query knowledge base"
+  },
+  {
+    tool: "mcpBridge",
+    priority: 44,
+    match: (lower) =>
+      /\b(mcp|sqlite|postgres)\b/i.test(lower) &&
+      /\b(list|show|call|run|use|ask|connect|disconnect|close|tools?|servers?|bridge)\b/i.test(lower),
+    guard: (lower) => /\b(github|youtube)\b/i.test(lower) && !/\bmcp\b/i.test(lower),
+    context: (lower) => {
+      const ctx = {};
+      if (/\b(list|show|what|which|available)\b/i.test(lower) && /\bservers?\b/i.test(lower)) ctx.action = "list_servers";
+      else if (/\b(list|show|what|which)\b/i.test(lower) && /\btools?\b/i.test(lower)) ctx.action = "list_tools";
+      else if (/\b(disconnect|close|stop|kill)\b/i.test(lower)) ctx.action = "disconnect";
+      else if (/\b(call|run|execute|use|invoke|ask)\b/i.test(lower)) ctx.action = "call_tool";
+      // Extract server name from known MCP servers
+      const serverMatch = lower.match(/\b(sqlite|github|postgres|youtube)\b/i);
+      if (serverMatch) ctx.server = serverMatch[1].toLowerCase();
+      // Extract tool name for call_tool: "call read_query on sqlite"
+      if (ctx.action === "call_tool") {
+        const toolMatch = lower.match(/\b(?:call|run|execute|use|invoke)\s+(\w+)/i);
+        if (toolMatch) ctx.toolName = toolMatch[1];
+      }
+      return ctx;
+    },
+    description: "MCP Bridge — Model Context Protocol server interactions"
+  },
+  {
+    tool: "memorytool",
+    priority: 42,
+    match: (lower) =>
+      /\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower),
+    guard: (lower) => /\b(password|credential)\b/i.test(lower),
+    description: "Memory read — recall stored user info"
+  },
+  {
+    tool: "lotrJokes",
+    priority: 40,
+    match: (lower) =>
+      /\b(lotr|lord\s+of\s+the\s+rings?|hobbit|gandalf|frodo|aragorn|sauron|mordor)\b/i.test(lower) &&
+      /\b(joke|funny|humor|laugh|tell\s+me)\b/i.test(lower),
+    description: "Lord of the Rings jokes"
+  },
+
+  // ── TIER 6: Fallback (20-39) ──────────────────────────────
+  {
+    tool: "search",
+    priority: 30,
+    match: (lower) =>
+      /\b(what is|what are|who is|who was|who were|when did|where is|how many|how does|why do|why did|why are|why is|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+|search\s+for(?!\s+\w+\s+on\s+(?:x|twitter)))\b/i.test(lower),
+    guard: (lower, trimmed) =>
+      isMathExpression(trimmed) || hasExplicitFilePath(trimmed) ||
+      /\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting)\b/i.test(lower) ||
+      lower.length <= 10,
+    description: "General knowledge — search fallback"
+  },
+];
+
+// ── ROUTING TABLE EVALUATOR ──────────────────────────────────
+/**
+ * Evaluate all rules in the routing table and return the highest-priority match.
+ * Returns a plan step array or null if no rule matches.
+ */
+async function evaluateRoutingTable(lower, trimmed, chatContext) {
+  // Find all matching rules (pass match, fail guard)
+  const candidates = ROUTING_TABLE.filter(rule => {
+    try {
+      if (!rule.match(lower, trimmed, chatContext)) return false;
+      if (rule.guard && rule.guard(lower, trimmed, chatContext)) return false;
+      return true;
+    } catch (e) {
+      console.warn(`[planner] Routing rule error for "${rule.tool}":`, e.message);
+      return false;
+    }
+  });
+
+  if (candidates.length === 0) return null;
+
+  // Sort by priority descending — highest wins
+  candidates.sort((a, b) => b.priority - a.priority);
+
+  // Try candidates in priority order — if a validate() hook rejects,
+  // fall through to the next candidate instead of sending garbage context.
+  for (const winner of candidates) {
+    // Build context
+    let ctx = {};
+    if (winner.contextAsync && winner.tool === "weather") {
+      // Special async handling for weather city extraction + memory lookup
+      let extracted = extractCity(trimmed);
+      if (!extracted) {
+        try {
+          const memory = await getMemory();
+          const profile = memory.profile || {};
+          const savedLocation = profile.location || profile.city || null;
+          if (savedLocation) {
+            extracted = formatCity(savedLocation);
+            console.log(`[planner] Using saved location from memory: ${extracted}`);
+          }
+        } catch (e) {
+          console.warn("[planner] Could not read memory for location:", e.message);
+        }
+      }
+      ctx = extracted ? { city: extracted } : {};
+    } else if (winner.context) {
+      ctx = winner.context(lower, trimmed, chatContext || {});
+    }
+
+    // Validate extracted context — if the tool rejects it, try next candidate
+    if (winner.validate) {
+      try {
+        if (!winner.validate(ctx, lower, trimmed)) {
+          console.log(`[planner] routing table → ${winner.tool} REJECTED by validate (priority ${winner.priority}), trying next candidate`);
+          continue;
+        }
+      } catch (e) {
+        console.warn(`[planner] validate error for "${winner.tool}":`, e.message);
+        continue;
+      }
+    }
+
+    // Handle finance → search redirect
+    if (ctx.__redirectTool) {
+      const redirectTool = ctx.__redirectTool;
+      delete ctx.__redirectTool;
+      console.log(`[planner] routing table → ${winner.tool} redirected to ${redirectTool} (priority ${winner.priority})`);
+      return [{ tool: redirectTool, input: trimmed, context: ctx, reasoning: `routing_table_${winner.tool}_redirect` }];
+    }
+
+    console.log(`[planner] routing table → ${winner.tool} (priority ${winner.priority}, ${candidates.length} candidate${candidates.length > 1 ? "s" : ""})`);
+    return [{ tool: winner.tool, input: trimmed, context: ctx, reasoning: `routing_table_${winner.tool}` }];
+  }
+
+  // All candidates rejected by validate — no match
+  console.log(`[planner] routing table → all ${candidates.length} candidates rejected by validate`);
+  return null;
+}
+
+// ============================================================
 // DIAGNOSTIC / ACCURACY DETECTION
 // ============================================================
 
@@ -428,6 +1045,10 @@ EXAMPLES (correct routing):
 - "weather in Paris" → weather
 - "latest news about AI" → news
 - "search for React tutorials" → search
+- "search for the latest developments in quantum computing" → search (NOT x — this is a web search, not a Twitter search)
+- "who was Rommel?" → search (NOT x — this is a knowledge question)
+- "who was Napoleon Bonaparte?" → search
+- "search for the latest research on language models" → search (NOT x)
 - "email John saying meeting at 3pm" → email
 - "list repos" → github
 - "list D:/projects" → file
@@ -481,6 +1102,11 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "what should I do about X?" → llm (NOT lotrJokes)
 - "tell me a joke" → llm (NOT lotrJokes — lotrJokes is ONLY for explicit LOTR jokes)
 - "how accurate is your routing" → selfImprovement (NOT calculator, NOT weather)
+- "search for latest research on AI" → search (NOT x — "search for X" is a web search, NOT a Twitter search)
+- "who was Rommel" → search (NOT x — knowledge questions go to search)
+- "what issues have you detected?" → selfImprovement (NOT llm)
+- "generate a weekly performance report" → selfImprovement (NOT systemMonitor)
+- "how can you improve your tool selection?" → selfImprovement
 - "what's the weather like" → weather (NOT llm)
 - "tell me about stocks" → finance (NOT search, NOT financeFundamentals)
 - "show me their stocks" → finance (NOT financeFundamentals)
@@ -500,6 +1126,8 @@ NEGATIVE EXAMPLES (common mistakes to avoid):
 - "show project structure" → folderAccess (NOT file)
 - "improve yourself" → selfEvolve (NOT selfImprovement)
 - "scan github for patterns" → githubScanner (NOT github, NOT githubTrending)
+- "just checking a new feature, let's test it" → llm (NOT codeSandbox)
+- "testing the chat input" → llm (NOT codeSandbox)
 
 RULES:
 1. Casual conversation, greetings, opinions, explanations → llm
@@ -510,6 +1138,7 @@ RULES:
 6. "browse/visit [website]" → webBrowser
 7. "store/save password/credentials" → moltbook or webBrowser (NOT memorytool)
 8. When unsure, return "llm" (the safest fallback). NEVER return lotrJokes unless the user explicitly asks for a "Lord of the Rings joke"
+17. CRITICAL: "search for X" or "search the latest X" → search (web search). ONLY use "x" when user explicitly says "X", "Twitter", "tweets", "trending on X", or "post on X". General knowledge questions like "who was X?", "search for X developments", "latest research on X" → search (NOT x)
 9. "refactor/optimize/rewrite/fix/debug code" → codeTransform (NOT review). codeTransform is the tool for applying code fixes and transformations.
 10. "code review/security review/audit/validate/lint/check for errors" → codeReview (NOT review). codeReview runs automated syntax+ESLint validation AND LLM analysis. There is NO separate debugger or validator tool — codeReview covers that.
 11. "folder structure/tree/scan directory" → folderAccess (NOT file)
@@ -518,6 +1147,8 @@ RULES:
 14. "stock/stocks/stock price/compare stocks" → finance. ONLY use financeFundamentals for explicit fundamentals requests (P/E, balance sheet, market cap analysis, EPS, dividends)
 15. "why did stocks drop/crash/fall" or "what caused the price drop" → search. These are RESEARCH questions needing web search, NOT finance price lookups
 16. "search for price drops" or "search for why stock fell" → search (NOT shopping — "price" in financial context is NOT a shopping query)
+17. CRITICAL: "search for X" or "search the latest X" → search (web search). ONLY use "x" when user explicitly says "X", "Twitter", "tweets", "trending on X", or "post on X". General knowledge questions like "who was X?", "search for X developments", "latest research on X" → search (NOT x)
+18. "codeSandbox" is ONLY for explicitly executing isolated scripts (Python/Node). Do NOT use it for conversation, testing the chat UI, or general "let's check it" statements.
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
@@ -612,7 +1243,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
     // Resolve and validate each step's tool name
     const resolvedSteps = [];
     for (const step of decomposedSteps) {
-      const resolvedTool = resolveToolName(step.tool, availableTools);
+      const resolvedTool = resolveToolName(step.tool, availableTools, trimmed);
       if (resolvedTool) {
         resolvedSteps.push({
           tool: resolvedTool,
@@ -651,7 +1282,11 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
     ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}`
     : "";
   // Sanitize Windows backslashes so they don't break strict JSON generation
-  const safeMessage = message.replace(/\\/g, "/");
+  // Also strip prompt injection patterns from user input that could manipulate the decomposer
+  const safeMessage = message.replace(/\\/g, "/")
+    .replace(/ignore\s+(all\s+)?previous\s+instructions/gi, "")
+    .replace(/you\s+are\s+now\s+in\s+\w+\s+mode/gi, "")
+    .replace(/system\s*:\s*(override|instruction|prompt)/gi, "");
   // Stricter prompt specifically tuned for local models to force valid JSON
   const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
@@ -670,11 +1305,11 @@ CRITICAL RULES:
 2. Do NOT invent tools.
 3. If multiple actions are requested, order them logically (e.g., read first, then write).
 4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
-5. Use "x" for Twitter/X trends, tweet search, tweet sentiment analysis, lead generation search, and posting tweets. Do NOT use "twitter" — the tool name is "x". For lead-gen/complaint searches, pass action "leadgen" in context.
+5. Use "x" ONLY when the user explicitly mentions Twitter, X (the platform), tweets, or posting. Do NOT use "twitter" — the tool name is "x". IMPORTANT: Generic "search for X" or knowledge questions ("who was X?", "latest research on X", "developments in X") must use "search" (web search), NOT "x" (Twitter). Only use "x" for: trending on X, tweets about X, post on X, search X for complaints.
 6. APPLYATCH BIAS: If the request contains a comprehensive list of suggestions, review findings, or 3+ structural changes targeting a single file, route to "applyPatch" (full rewrite) — NOT "codeTransform" (surgical patch). codeTransform is for single targeted edits only.
 7. SELFEVOLVE RESTRAINT: The "selfEvolve" tool must NOT be used for cosmetic changes or quota-driven busywork. Only route to selfEvolve when the user explicitly asks for autonomous evolution or self-improvement cycles.
 8. Use "sheets" for Google Sheets operations (read, append, clear). Pass spreadsheetId and action in context. When chaining X search → LLM → sheets, the LLM step should categorize/summarize and the sheets step should receive the categorized data as rows.
-
+9. THE LLM ESCAPE HATCH: The "llm" tool is your primary conversational brain. If the user is providing commentary, making observations, talking about testing the system, or just having a "meta-conversation" about how you work, you MUST route to "llm". Do not attempt to run code or review files unless they explicitly ask you to modify a specific file or path.
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
 EXAMPLE OUTPUT:
@@ -821,6 +1456,10 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
     console.log("🧠 Decomposer hallucinated lotrJokes. Overriding to llm.");
     return "llm"; 
   }
+  if (tool === "codeSandbox" && originalMessage && !/\b(run|execute|compile|script|sandbox|python|node)\b/i.test(originalMessage)) {
+    console.log("🧠 Decomposer hallucinated codeSandbox for a chat/test message. Overriding to llm.");
+    return "llm";
+  }
 
   return tool;
 }
@@ -918,10 +1557,10 @@ if (
     }];
   }
 
-  // 2. SELF-IMPROVEMENT: Reporting, Accuracy, and Telemetry Audit
-  // Triggers for "how accurate", "telemetry", "what have you improved lately".
+  // 2. SELF-IMPROVEMENT: Reporting, Accuracy, Telemetry Audit, and Diagnostics
+  // Triggers for "how accurate", "telemetry", "what have you improved lately", "what issues detected", etc.
   if (
-    /\b(accuracy|telemetry|misrouting|routing\s+report|what\s+have\s+you\s+improved|recent\s+changes)\b/i.test(lower)
+    /\b(accuracy|telemetry|misrouting|routing\s+report|what\s+have\s+you\s+improved|recent\s+changes|issues?\s+(?:have\s+you\s+)?detected|(?:weekly|daily|performance)\s+report|how\s+can\s+you\s+improve|improve\s+your\s+(?:tool|routing)|tool\s+selection)\b/i.test(lower)
   ) {
     console.log("[planner] technical override: forcing selfImprovement tool");
     return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "technical_intent_audit" }];
@@ -1038,105 +1677,20 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
   }
 
   // ──────────────────────────────────────────────────────────
-  // SINGLE-STEP: Certainty Layer (deterministic short commands)
+  // DECLARATIVE ROUTING TABLE (evaluated first — priority-based)
+  // See ROUTING_TABLE definition above for all rules and priorities.
+  // ──────────────────────────────────────────────────────────
+  const routingResult = await evaluateRoutingTable(lower, trimmed, chatContext);
+  if (routingResult) return routingResult;
+
+  // ──────────────────────────────────────────────────────────
+  // IMPERATIVE CERTAINTY LAYER (handles complex rules not yet in the table)
+  // Rules below are for tools with complex sub-routing, multi-step flows,
+  // or async context building that doesn't fit cleanly into the table.
   // ──────────────────────────────────────────────────────────
 
-  // Math
-  if (isMathExpression(trimmed)) {
-    console.log("[planner] certainty branch: math");
-    return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_math" }];
-  }
-
-  // DateTime
-  if (isSimpleDateTime(trimmed)) {
-    console.log("[planner] certainty branch: datetime");
-    return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_datetime" }];
-  }
-
-  // Email confirmation
-  if (isSendItCommand(lower)) {
-    console.log("[planner] certainty branch: email_confirm");
-    return [{ tool: "email_confirm", input: trimmed, context: { action: "send_confirmed", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_email_confirm" }];
-  }
-
-  // Cancel / discard
-  if (isCancelCommand(lower)) {
-    console.log("[planner] certainty branch: cancel");
-    return [{ tool: "email_confirm", input: trimmed, context: { action: "cancel", sessionId: chatContext?.sessionId || "default" }, reasoning: "certainty_cancel" }];
-  }
-
-  // Memory write ("remember my email is X", "remember that X")
-  if (isMemoryWriteCommand(lower)) {
-    console.log("[planner] certainty branch: memory_write");
-    return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_memory_write" }];
-  }
-
-  // Forget location
-  if (locationWithForgetLike(lower)) {
-    console.log("[planner] certainty branch: forget_location");
-    return [{ tool: "memorytool", input: trimmed, context: { raw: "forget_location" }, reasoning: "certainty_forget_location" }];
-  }
-
-  // Weather here
-  if (hereIndicatesWeather(lower)) {
-    console.log("[planner] certainty branch: here_weather");
-    return [{ tool: "weather", input: trimmed, context: { city: "__USE_GEOLOCATION__" }, reasoning: "certainty_here_weather" }];
-  }
-
-  // Weather with city (or from memory)
-  // Guard: skip if this is a scheduling/recurring request or a compound query
-  if (containsKeyword(lower, WEATHER_KEYWORDS) &&
-      !/\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|book\s+.+\s+every)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    let extracted = extractCity(trimmed);
-    // If no city extracted, check memory for saved location
-    if (!extracted) {
-      try {
-        const memory = await getMemory();
-        const profile = memory.profile || {};
-        const savedLocation = profile.location || profile.city || null;
-        if (savedLocation) {
-          extracted = formatCity(savedLocation);
-          console.log(`[planner] Using saved location from memory: ${extracted}`);
-        }
-      } catch (e) {
-        console.warn("[planner] Could not read memory for location:", e.message);
-      }
-    }
-    const context = extracted ? { city: extracted } : {};
-    console.log("[planner] certainty branch: weather, city:", extracted || "none");
-    return [{ tool: "weather", input: trimmed, context, reasoning: "certainty_weather" }];
-  }
-
-  // News keywords (before file path and sports to avoid misroute)
-  // Guard: skip if this is a moltbook notification, compound query, or conversational/meta message
-  // "try again with the news idea" or "give yourself a headlines reporter username" should NOT route here
-  const isNewsConversational = /\b(try\s+again|the\s+purpose|more\s+.{0,20}\s+like|give\s+(your\s*self|me)|as\s+a\s+.{0,30}\s+reporter|style|idea|concept|theme|approach|username|name\s+(your|the)|rename|rebrand)\b/i.test(lower);
-  // Guard: skip if user is asking to SCHEDULE news — that's a scheduler intent, not a direct news fetch
-  const isSchedulingNews = /\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily|weekly|recurring|cron|automate)\b/i.test(lower);
-  if ((/\b(latest|recent|breaking|today'?s)?\s*(news|headlines?|articles?)\b/i.test(lower) ||
-       /\bwhat'?s\s+(happening|going\s+on|new)\b/i.test(lower)) &&
-      !hasExplicitFilePath(trimmed) &&
-      !/\bmoltbook\b/i.test(lower) &&
-      !hasCompoundIntent(lower) &&
-      !isNewsConversational &&
-      !isSchedulingNews &&
-      !isPersonalConversation(lower, trimmed)) {
-    console.log("[planner] certainty branch: news");
-    return [{ tool: "news", input: trimmed, context: {}, reasoning: "certainty_news" }];
-  }
-
-  // MCP Bridge — Model Context Protocol server interactions
-  // Matches: "list mcp servers", "mcp tools on sqlite", "call read_query on sqlite mcp", "ask mcp to..."
-  if (/\b(mcp|sqlite|github|postgres|youtube)\b/i.test(lower) && /\b(list|show|call|run|use|ask|connect|disconnect|close|tools?|servers?|bridge)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: mcpBridge");
-    const mcpContext = {};
-    if (/\b(list|show|what|which|available)\b/i.test(lower) && /\bservers?\b/i.test(lower)) mcpContext.action = "list_servers";
-    else if (/\b(list|show|what|which)\b/i.test(lower) && /\btools?\b/i.test(lower)) mcpContext.action = "list_tools";
-    else if (/\b(disconnect|close|stop|kill)\b/i.test(lower)) mcpContext.action = "disconnect";
-    else if (/\b(call|run|execute|use|invoke|ask)\b/i.test(lower)) mcpContext.action = "call_tool";
-    return [{ tool: "mcpBridge", input: trimmed, context: {}, reasoning: "certainty_mcp" }];
-  }
+  // MCP Bridge — now handled by ROUTING_TABLE (priority 44)
+  // See mcpBridge entry in ROUTING_TABLE.
 
   // ──────────────────────────────────────────────────────────
   // CREDENTIAL SAFETY GUARD: prevent passwords from going to memory tool
@@ -1267,15 +1821,8 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "webDownload", input: trimmed, context, reasoning: "certainty_url" }];
   }
 
-  // File write/create — must come BEFORE explicit file path (which routes to read-only file tool)
-  // Guard: skip if compound intent detected (e.g. "review X and create a better version")
-  if ((/\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
-      /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
-      (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: fileWrite");
-    return [{ tool: "fileWrite", input: trimmed, context: {}, reasoning: "certainty_file_write" }];
-  }
+  // File write — now handled by ROUTING_TABLE (priority 49)
+  // See fileWrite entry in ROUTING_TABLE.
 
 
   // ──────────────────────────────────────────────────────────
@@ -1303,107 +1850,13 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "llm", input: trimmed, context: {}, reasoning: "certainty_casual" }];
   }
 
-  // "Send <phone_number> <message>" without WhatsApp keyword → route to whatsapp
-  // Must come BEFORE email to prevent "send 0587426393 hello" → email
-  if (/\bsend\b/i.test(lower) &&
-      /(?:\+?\d[\d\s\-()]{6,18}\d)/.test(trimmed) &&
-      !/\b(email|e-mail|mail)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: whatsapp (phone number detected)");
-    return [{ tool: "whatsapp", input: trimmed, context: {}, reasoning: "certainty_whatsapp_phone" }];
-  }
-
-  // Email keywords: compose, browse/read, or draft
-  // Guard: skip if compound intent (e.g. "send email with summary of the news")
-  // Guard: skip if this looks like a moltbook API request (e.g., "POST /api/v1/agents/me/setup-owner-email")
-  if (/\b(email|e-mail|mail|inbox|send\s+to|draft\s+(an?\s+)?(email|message|letter))\b/i.test(lower) &&
-      !isSendItCommand(lower) &&
-      !hasCompoundIntent(lower) &&
-      !/\/api\/v\d\/agents?\b/i.test(lower) &&
-      !(/\b(set\s*up|setup|configure)\b/i.test(lower) && /\b(moltbook|owner[- ]?email)\b/i.test(lower))) {
-    const emailContext = {};
-    if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) {
-      emailContext.action = "browse";
-    } else if (/\b(delete|trash|remove)\b/i.test(lower)) {
-      emailContext.action = "delete";
-    } else if (/\b(attachment|download)\b/i.test(lower)) {
-      emailContext.action = "downloadAttachment";
-    }
-    console.log("[planner] certainty branch: email" + (emailContext.action ? ` (${emailContext.action})` : ""));
-    return [{ tool: "email", input: trimmed, context: emailContext, reasoning: "certainty_email" }];
-  }
-
-  // X (Twitter) — trends, tweet search, tweet sentiment analysis, lead gen, post
-  // Guard: skip if scheduling intent, compound intent, multi-tool chain, or conversational/meta question
-  const isMultiToolChain = /\b(google\s*sheet|spreadsheet|append|aggregate|categorize\s+.*(save|write|sheet)|save\s+to\s+(sheet|sheets))\b/i.test(lower);
-  // Meta-questions about the tool itself: "why did you use this tool?", "what tool is this?"
-  const isXMetaQuestion = /\b(why\s+did\s+you|what\s+tool|which\s+tool|how\s+does\s+(this|the)\s+tool|explain\s+(this|the)\s+tool|what\s+is\s+this\s+tool)\b/i.test(lower);
-  if (!isSchedulingIntent && !isMultiToolChain && !isXMetaQuestion &&
-      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower) &&
-      !hasCompoundIntent(lower) &&
-      !isPersonalConversation(lower, trimmed)) {
-    console.log("[planner] certainty branch: x");
-    const xContext = {};
-    if (/\b(trends?|trending|popular|hot)\b/i.test(lower)) xContext.action = "trends";
-    else if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) xContext.action = "analyze";
-    else if (/\b(post|publish|compose)\s+(on|to)\s+(x|twitter)\b/i.test(lower)) xContext.action = "post";
-    else if (/\b(complaint|pain\s*point|frustrat|looking\s+for\s+(a\s+)?better|advanced\s+search)\b/i.test(lower)) xContext.action = "leadgen";
-    else xContext.action = "search";
-    // Detect country/region for trends (x.js has full WOEID map, just pass the key)
-    const countryMatch = lower.match(/\bin\s+(?:the\s+)?(israel|uk|united\s+kingdom|britain|us|usa|united\s+states|america|canada|brazil|mexico|france|germany|spain|italy|netherlands|sweden|turkey|russia|japan|india|australia|south\s+korea|korea|singapore|indonesia|philippines|thailand|south\s+africa|nigeria|egypt|kenya|jerusalem|tel\s*aviv)\b/i);
-    if (countryMatch) {
-      xContext.country = countryMatch[1].toLowerCase().replace(/\s+/g, " ");
-    } else if (/\b(israel|jerusalem|tel\s*aviv|ישראל)\b/i.test(lower)) {
-      xContext.country = "israel";
-    }
-    return [{ tool: "x", input: trimmed, context: xContext, reasoning: "certainty_x" }];
-  }
-
-  // Google Sheets — read, append, clear
-  if (/\b(google\s*sheet|spreadsheet|sheet\s*id|batch\s*append)\b/i.test(lower) && !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: sheets");
-    const sheetsContext = {};
-    if (/\b(read|get|fetch|show|view)\b/i.test(lower)) sheetsContext.action = "read";
-    else if (/\b(clear|wipe|empty)\b/i.test(lower)) sheetsContext.action = "clear";
-    else sheetsContext.action = "append";
-    // Extract sheet ID
-    const sheetIdMatch = lower.match(/(?:sheet\s*id\s*|spreadsheets\/d\/)([a-zA-Z0-9_-]{20,60})/i) || trimmed.match(/\b([a-zA-Z0-9_-]{25,60})\b/);
-    if (sheetIdMatch) sheetsContext.spreadsheetId = sheetIdMatch[1];
-    return [{ tool: "sheets", input: trimmed, context: sheetsContext, reasoning: "certainty_sheets" }];
-  }
-
-  // WhatsApp — send single or bulk messages
-  if (/\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
-      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: whatsapp");
-    return [{ tool: "whatsapp", input: trimmed, context: {}, reasoning: "certainty_whatsapp" }];
-  }
-
-  // NLP / text analysis keywords
-  // Guard: skip if compound intent detected (e.g. "search X for topic, analyze sentiment, send to whatsapp")
-  if (/\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower) && !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: nlp_tool");
-    return [{ tool: "nlp_tool", input: trimmed, context: {}, reasoning: "certainty_nlp" }];
-  }
-
-  // Calculator keywords (beyond math expressions)
-  if (/\b(calculate|compute|solve|what\s+is\s+\d|how\s+much\s+is|convert\s+\d|percentage\s+of)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: calculator");
-    return [{ tool: "calculator", input: trimmed, context: {}, reasoning: "certainty_calculator_keyword" }];
-  }
-  // GitHub Scanner — scan repos for patterns, tool discovery, AI analysis
-  // Must come BEFORE general code review and evolving tools to catch "scan github for improvements"
-  if (/\b(scan\s+github|github\s+scan|analyze\s+github|discover\s+tool|find\s+new\s+tool|github\s+intelligence|repo\s+scan|scan\s+repos?\s+for|github\s+pattern)\b/i.test(lower) ||
-      (/\b(scan|analyze|check|review)\b/i.test(lower) && /\b(github|repositor(y|ies))\b/i.test(lower) && !hasExplicitFilePath(trimmed))) {
-    console.log("[planner] certainty branch: githubScanner");
-    const gsContext = {};
-    if (/\btrending|popular|hot\b/i.test(lower)) gsContext.action = "trending";
-    else if (/\bdiscover|find/i.test(lower)) gsContext.action = "discover";
-    else if (/\bpattern|practice/i.test(lower)) gsContext.action = "patterns";
-    else gsContext.action = "scan";
-    return [{ tool: "githubScanner", input: trimmed, context: gsContext, reasoning: "certainty_github_scanner" }];
-  }
+  // NOTE: The following tools are now handled by the ROUTING_TABLE above:
+  // attachmentDownloader, email_confirm, cancel, memorytool, weather, news,
+  // email, whatsapp, x, sheets, nlp_tool, calculator, githubScanner,
+  // githubTrending, github, gitLocal, sports, finance, financeFundamentals,
+  // calendar, spotifyController, youtube, tasks, contacts, documentQA,
+  // lotrJokes, memory_read, duplicateScanner, search (general_knowledge).
+  // Only complex rules with multi-step flows or heavy sub-routing remain below.
 
 // ──────────────────────────────────────────────────────────
   // CODE GURU TOOLS — must come BEFORE general review to prevent collision
@@ -1494,8 +1947,10 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
 
 // Deep Code Review — quality, security, performance analysis, validation
   // Also catches "validate/lint/check for errors" — codeReview now runs objective syntax+ESLint checks
+  // Also catches "inspect X.js for security issues" when a file path is present
   if ((/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint\b|code\s+analysis|security\s+audit|code\s+audit|validate\s+code|check\s+for\s+errors|syntax\s+check|eslint)\b/i.test(lower) ||
-      (/\b(review|analyze|audit|validate|check)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint)\b/i.test(lower))) &&
+      (/\b(review|analyze|audit|validate|check|inspect)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint|issues?)\b/i.test(lower)) ||
+      (/\b(inspect)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
       !/\b(github)\b/i.test(lower)) { // <-- GUARD: Ignore GitHub requests
     console.log("[planner] certainty branch: codeReview");
     const crContext = {};
@@ -1559,267 +2014,20 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "file", input: trimmed, context: {}, reasoning: "certainty_file_path" }];
   }
   // ──────────────────────────────────────────────────────────
-  // ORIGINAL TOOL ROUTING CONTINUES BELOW
+  // REMAINING IMPERATIVE RULES (not yet migrated to routing table)
+  // These have complex sub-routing or context-building that doesn't
+  // fit cleanly into the table's match/guard/context pattern.
   // ──────────────────────────────────────────────────────────
 
-  // Code review keywords — expanded to catch "tool", "implementation", "flow", "logic"
-  // Must come BEFORE finance/sports/github to prevent "examine the search tool" → search
-  // Guard: skip if compound intent detected (e.g. "review X and create new version")
-  if ((/\b(review|inspect|examine|audit|analyze)\s+(this\s+)?(code|file|function|module|script|tool|implementation|flow|logic)\b/i.test(lower) ||
-      (/\b(review|inspect|examine|audit|analyze)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: review");
-    return [{ tool: "review", input: trimmed, context: {}, reasoning: "certainty_review" }];
-  }
+  // Package manager — now handled by ROUTING_TABLE (priority 50)
+  // Kept as comment for traceability. See packageManager entry in ROUTING_TABLE.
 
-  // Finance keywords — with company name → ticker resolution
-  // FINANCE_COMPANIES and FINANCE_INTENT are now module-level constants (top of file)
-  // Guard 1: skip if compound intent detected (e.g. "get stock prices and email me")
-  // Guard 2: skip "why" research questions (e.g. "why are stocks dropping?") → those need search
-  // Guard 3: skip if no specific ticker/company mentioned and it's a general "why" question
-  if ((/\b(stocks?|share\s+price|ticker|market|portfolio|invest|dividend|earnings|S&P\s*500|nasdaq|dow\s+jones|trading|IPO|stock\s+price)\b/i.test(lower) ||
-      (FINANCE_COMPANIES.test(lower) && FINANCE_INTENT.test(lower))) &&
-      !hasCompoundIntent(lower) &&
-      !FINANCE_RESEARCH_QUESTION.test(lower)) {
-    // Extra guard: if message has stock keywords but NO specific ticker/company, and starts
-    // with a "why/what caused" pattern, this is a research question → skip to search
-    const hasSpecificCompany = FINANCE_COMPANIES.test(lower) || /\b[A-Z]{2,5}\b/.test(trimmed);
-    const isExplanatoryQuestion = /\b(why|what\s+caused|what\s+happened|reason)\b/i.test(lower);
-    if (isExplanatoryQuestion && !hasSpecificCompany) {
-      console.log("[planner] finance keywords found but this is a research question without specific tickers → routing to search");
-      return [{ tool: "search", input: trimmed, context: {}, reasoning: "finance_research_to_search" }];
-    }
-    console.log("[planner] certainty branch: finance");
-    return [{ tool: "finance", input: trimmed, context: {}, reasoning: "certainty_finance" }];
-  }
-
-  // Financial fundamentals — must come AFTER general finance
-  if (/\b(fundamentals?|P\/E|balance\s*sheet|income\s+statement|cash\s*flow|market\s*cap|quarterly|annual\s+report)\b/i.test(lower) ||
-      (FINANCE_COMPANIES.test(lower) && /\b(fundamentals?|financials?|report|analysis)\b/i.test(lower))) {
-    console.log("[planner] certainty branch: financeFundamentals");
-    return [{ tool: "financeFundamentals", input: trimmed, context: {}, reasoning: "certainty_fundamentals" }];
-  }
-
-  // Calendar extract/export — bilingual (English + Hebrew)
-  // Must come BEFORE general calendar branch
-  if ((/\b(extract|export|excel|xlsx|spreadsheet)\b/i.test(lower) ||
-       /(?:חלץ|ייצא|אקסל|סרוק|לאקסל|ייצוא)/u.test(trimmed)) &&
-      /\b(calendar|events?|לוח|אירוע|יומן)\b/iu.test(trimmed)) {
-    console.log("[planner] certainty branch: calendar extract");
-    return [{ tool: "calendar", input: trimmed, context: { action: "extract" }, reasoning: "certainty_calendar_extract" }];
-  }
-
-  // Calendar keywords — must come BEFORE sports to prevent "meeting with team" → sports
-  if (/\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call|appointment|dentist|doctor)|what\s+events?\b|my\s+events|am\s+i\s+(free|busy|available)|free\s+(time|slot|tomorrow|today|this)|availab(le|ility)\s+(today|tomorrow|this|next))\b/i.test(lower) &&
-      !/\b(score|match|game|league|football|soccer|basketball|nba|nfl|sports?\s+events?)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: calendar");
-    return [{ tool: "calendar", input: trimmed, context: {}, reasoning: "certainty_calendar" }];
-  }
-
-  // Sports keywords — with calendar guard to prevent "meeting with the team" → sports
-  // Guard: skip if compound intent detected (e.g. "get scores and email me")
-  if (/\b(score|match|game|league|team|player|football|soccer|basketball|nba|nfl|premier\s+league|champion)\b/i.test(lower) &&
-      !hasExplicitFilePath(trimmed) &&
-      !/\b(meeting|calendar|appointment|set\s+a|book\s+a|with\s+the\s+team)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: sports");
-    return [{ tool: "sports", input: trimmed, context: {}, reasoning: "certainty_sports" }];
-  }
-
-  // Spotify / Music Controller
-  if (/\b(play|pause|skip|previous|spotify|music|song|track)\b/i.test(lower) && 
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: spotifyController");
-    return [{ tool: "spotifyController", input: trimmed, context: {}, reasoning: "certainty_spotify" }];
-  }
-
-  // YouTube keywords
-  // Guard: skip if compound intent detected (e.g. "find a video and email me the link")
-  if (/\b(youtube|video|watch|tutorial\s+video|how\s+to\s+video)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: youtube");
-    return [{ tool: "youtube", input: trimmed, context: {}, reasoning: "certainty_youtube" }];
-  }
-
-  // GitHub Trending — must come BEFORE general github
-  // Guard: skip if compound intent detected (e.g. "search trending repos and send to whatsapp")
-  if (/\b(trending|popular|top)\b/i.test(lower) && /\b(repo|repository|github|project|open\s*source)\b/i.test(lower) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: githubTrending");
-    return [{ tool: "githubTrending", input: trimmed, context: {}, reasoning: "certainty_github_trending" }];
-  }
-
-  // GitHub keywords
-  // Guard: "issue" alone is too generic — require GitHub context or plural "issues"
-  // Guard: skip if compound intent detected (e.g. "check github issues and email me")
-  const isGithubIntent = /\b(github|repo|repository|pull\s+requests?|PR|commit|merge|fork)\b/i.test(lower) ||
-    /\b(issues?|branch)\b/i.test(lower) && /\b(github|repo|pr|open|close|assign|label|milestone|merge|checkout)\b/i.test(lower);
-  if (isGithubIntent &&
-      !hasExplicitFilePath(trimmed) &&
-      !hasCompoundIntent(lower)) {
-    console.log("[planner] certainty branch: github");
-    return [{ tool: "github", input: trimmed, context: {}, reasoning: "certainty_github" }];
-  }
-
-  // Git local keywords
-  if (/\b(git\s+(status|log|diff|add|commit|branch|checkout|stash|push|pull|reset))\b/i.test(lower)) {
-    console.log("[planner] certainty branch: gitLocal");
-    return [{ tool: "gitLocal", input: trimmed, context: {}, reasoning: "certainty_git_local" }];
-  }
-
-  // Package manager keywords — expanded to catch bare "install axios", "update all packages", etc.
-  if (/\b(npm\s+(install|uninstall|list|remove|update|info|outdated)|install\s+(package|[@a-z][\w\/-]*)|uninstall\s+(package|[@a-z][\w\/-]*)|remove\s+(the\s+)?(unused\s+)?package|list\s+(\w+\s+)?packages|update\s+(all\s+)?packages|package\s+manager|what\s+version\s+of\s+\w+\s+is\s+installed|which\s+packages|installed\s+packages|outdated\s+packages)\b/i.test(lower) &&
-      !/\b(amazon|buy|shop|order)\b/i.test(lower)) {
-    const pkgContext = {};
-    if (/\binstall\b/i.test(lower)) pkgContext.action = "install";
-    else if (/\buninstall|remove\b/i.test(lower)) pkgContext.action = "uninstall";
-    else if (/\boutdated\b/i.test(lower)) pkgContext.action = "outdated";
-    else if (/\bupdate\b/i.test(lower)) pkgContext.action = "update";
-    else if (/\blist|show|installed|what\s+version|which\b/i.test(lower)) pkgContext.action = "list";
-    const pkgMatch = trimmed.match(/(?:install|uninstall|remove|update)\s+([@a-z][\w\/-]*)/i);
-    if (pkgMatch) pkgContext.package = pkgMatch[1];
-    console.log("[planner] certainty branch: packageManager");
-    return [{ tool: "packageManager", input: trimmed, context: pkgContext, reasoning: "certainty_package_manager" }];
-  }
-
-  // Shopping keywords — includes "best X" product queries
-  // Guard: "price drop/drops/dropped" in financial context is NOT shopping
-  if ((/\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) ||
-       /\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(lower) ||
-       /\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)) &&
-      !/\b(stock|share|invest|market|ticker|cybersecurity|crypto|bitcoin|earnings)\b/i.test(lower) &&
-      !/\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: shopping");
-    return [{ tool: "shopping", input: trimmed, context: {}, reasoning: "certainty_shopping" }];
-  }
-
-  // Workflow management — "run morning briefing workflow", "list workflows", "create workflow"
-  // Must come BEFORE scheduler to prevent "run workflow" → scheduler
-  if (/\b(run|execute|start|create|list|show|delete|remove)\s+(the\s+)?(a\s+)?(my\s+)?workflow/i.test(lower) ||
-      /\bworkflow\s+(named?|called)\b/i.test(lower) ||
-      /\b(morning\s+briefing|market\s+check|code\s+review\s+cycle)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: workflow");
-    return [{ tool: "workflow", input: trimmed, context: {}, reasoning: "certainty_workflow" }];
-  }
-
-  // Scheduler / recurring tasks
-  // Must come BEFORE task management to prevent "schedule X every Y" → tasks
-  // Removed "workflow" keyword — that now routes to the workflow tool above
-  // Guard: "weekly report" / "generate a weekly performance report" → selfImprovement, not scheduler
-  if (/\b(schedules?|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate|set\s+up\s+a?\s*recurring|remind\s+me\s+(to|about)\s+.+\s+(every|at\s+\d|in\s+\d))\b/i.test(lower) &&
-      !/\b(add\s+task|my\s+tasks|todo|to-do|checklist)\b/i.test(lower) &&
-      !/\b(performance\s+report|weekly\s+report|generate\s+.*report|summary\s+report|diagnostic\s+report)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: scheduler");
-    const schedContext = {};
-    if (/\b(list|show|view|my)\s*(schedules?|recurring)/i.test(lower)) schedContext.action = "list";
-    else if (/\b(cancel|stop|remove|delete)\s*(schedules?|timer|recurring)/i.test(lower)) schedContext.action = "cancel";
-    else if (/\b(pause|disable)\b/i.test(lower)) schedContext.action = "pause";
-    else if (/\b(resume|enable)\b/i.test(lower)) schedContext.action = "resume";
-    return [{ tool: "scheduler", input: trimmed, context: schedContext, reasoning: "certainty_scheduler" }];
-  }
-
-  // Task management keywords — expanded with github guard
-  if (/\b(todo|task|reminder|add\s+task|my\s+tasks|to-do|checklist|pending\s+tasks|task\s+list|show\s+tasks)\b/i.test(lower) &&
-      !/\b(github|repo|commit|issue|pull\s+request)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: tasks");
-    return [{ tool: "tasks", input: trimmed, context: {}, reasoning: "certainty_tasks" }];
-  }
-
-  // Contacts management
-  if (/\b(contacts?|address\s*book|phone\s*(number|book)|my\s+contacts|add\s+contact|find\s+contact|who\s+is\s+\w+'\s*s?\s*(number|email|phone))\b/i.test(lower) &&
-      !/\b(github|email\s+(to|about|regarding))\b/i.test(lower)) {
-    console.log("[planner] certainty branch: contacts");
-    return [{ tool: "contacts", input: trimmed, context: {}, reasoning: "certainty_contacts" }];
-  }
-
-  // Document QA — load/query document knowledge base
-  if (/\b(load\s+document|index\s+(this\s+)?document|knowledge\s+base|query\s+(the\s+)?document|ask\s+(the\s+)?document|document\s+qa|search\s+(in|within)\s+(the\s+)?document)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: documentQA");
-    return [{ tool: "documentQA", input: trimmed, context: {}, reasoning: "certainty_document_qa" }];
-  }
-
-  // LOTR Jokes — fun easter egg
-  if (/\b(lotr|lord\s+of\s+the\s+rings?|hobbit|gandalf|frodo|aragorn|sauron|mordor)\b/i.test(lower) &&
-      /\b(joke|funny|humor|laugh|tell\s+me)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: lotrJokes");
-    return [{ tool: "lotrJokes", input: trimmed, context: {}, reasoning: "certainty_lotr_jokes" }];
-  }
-
-  // Memory read keywords (what do you know about me, my name, etc.)
-  if (/\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower) &&
-      !/\b(password|credential)\b/i.test(lower)) {
-    console.log("[planner] certainty branch: memory_read");
-    return [{ tool: "memorytool", input: trimmed, context: {}, reasoning: "certainty_memory_read" }];
-  }
-
-  // Self-improvement keywords — expanded patterns
-  if (/\b(self[- ]?improv|what have you improved|your accuracy|your performance|weekly report|telemetry|misrouting|what issues|performance report|diagnose|diagnostic report|how well are you doing|improve\s+your\s+(tool|routing|selection|accuracy|performance|code)|review\s+your\s+(\w+\s+)?(code|logic|routing|planner|executor))\b/i.test(lower)) {
-    console.log("[planner] certainty branch: selfImprovement");
-    return [{ tool: "selfImprovement", input: trimmed, context: {}, reasoning: "certainty_self_improvement" }];
-  }
-
-  // General knowledge questions — route to search instead of unreliable LLM classifier
-  // Catches "what is X", "who is X", "how does X work", "tell me about X" etc.
-  // NOTE: "stock/price" are NOT excluded here — "why did stocks drop?" is a search question.
-  // Finance certainty above already catches actual price lookup requests with specific tickers.
-  if (/\b(what is|what are|who is|who was|when did|where is|how many|how does|why do|why did|why are|why is|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+)\b/i.test(lower) &&
-      !isMathExpression(trimmed) && !hasExplicitFilePath(trimmed) &&
-      !/\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting|npm|install|buy|shop|product|deal|best\s+\w+\s+(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair))\b/i.test(lower) &&
-      lower.length > 15) {
-    console.log("[planner] certainty branch: general_knowledge → search");
-    return [{ tool: "search", input: trimmed, context: {}, reasoning: "certainty_general_knowledge" }];
-  }
+  // Shopping — now handled by ROUTING_TABLE (priority 54)
+  // Workflow — now handled by ROUTING_TABLE (priority 47)
+  // Scheduler — now handled by ROUTING_TABLE (priority 47)
+  // See respective entries in ROUTING_TABLE.
 
   // ──────────────────────────────────────────────────────────
-  // MULTI-STEP: Compound query detection
-  // Decomposes compound intents into sequential tool steps
-  // (reached when hasCompoundIntent() guard skipped a certainty branch above)
-  // ──────────────────────────────────────────────────────────
-  if (hasCompoundIntent(lower)) {
-    console.log("[planner] compound intent detected, checking compound patterns...");
-  }
-
-  // Pattern: "review X and create/generate a [better/new/improved] version" → review + fileWrite
-  if (/\b(review|analyze)\b.*\b(create|generate|produce|make|write)\s+(a\s+)?(\w+\s+)?(version|copy|file|variant|output)\b/i.test(lower)) {
-    // Extract source file — try absolute path first, then relative/filename
-    const absPathMatch = trimmed.match(/(?:review|analyze)\s+([A-Za-z]:[\\\/][^\s"']+)/i);
-    const relPathMatch = trimmed.match(/(?:review|analyze)\s+([^\s]+\.\w{1,5})/i);
-    const sourceFile = absPathMatch ? absPathMatch[1] : (relPathMatch ? relPathMatch[1] : "the code");
-    // Extract source filename (basename) for output naming
-    const sourceBasename = sourceFile.replace(/^.*[\\\/]/, ""); // "planner.js" from full path
-
-    // Extract destination directory/path (after "at/to/in")
-    const destMatch = trimmed.match(/(?:at|to|in)\s+([A-Za-z]:[\\\/][^\s"']+|\/[^\s"']+)/i);
-    let destDir = destMatch ? destMatch[1] : null;
-
-    // Generate smart filename: <name>.agent.<timestamp>.<ext>
-    // e.g. planner.agent.20260312-014700.js
-    const now = new Date();
-    const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 14).replace(/^(\d{8})(\d{6})/, "$1-$2");
-    const extMatch = sourceBasename.match(/(\.\w+)$/);
-    const ext = extMatch ? extMatch[1] : ".js";
-    const nameOnly = sourceBasename.replace(/\.\w+$/, "");
-    const smartFilename = `${nameOnly}.agent.${ts}${ext}`;
-    const targetPath = destDir ? `${destDir.replace(/[\\\/]$/, "")}/${smartFilename}` : smartFilename;
-
-    const destContext = {
-      useChainContext: true,
-      targetPath,
-      sourceFile,
-      generateImproved: true
-    };
-    console.log(`[planner] Compound: review "${sourceFile}" → generate "${targetPath}"`);
-    return [
-      // Pass the FULL user request so the Reviewer reads your custom instructions
-      { tool: "review", input: trimmed, context: {}, reasoning: "compound_review_source" },
-      
-      // Pass the FULL user request so the Writer executes your custom instructions
-      { tool: "fileWrite", input: trimmed, context: destContext, reasoning: "compound_generate_improved" }
-    ];
-  }
-
-
-// ──────────────────────────────────────────────────────────
   // MULTI-STEP: Compound query detection
   // Decomposes compound intents into sequential tool steps
   // (reached when hasCompoundIntent() guard skipped a certainty branch above)
@@ -2187,7 +2395,7 @@ Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or
   const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
   console.log("[planner] Single-tool fallback classified:", detection.intent);
 
-  const tool = resolveToolName(detection.intent, availableTools);
+  const tool = resolveToolName(detection.intent, availableTools, trimmed);
 
   if (!tool || !availableTools.includes(tool)) {
     const rawIntent = detection.intent || "unknown";

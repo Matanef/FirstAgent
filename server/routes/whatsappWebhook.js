@@ -4,9 +4,44 @@
 // STATEFUL CONVERSATIONS: greeting, weather, news categories, calendar, tasks
 
 import express from "express";
-import { getState, setState, clearState } from "../utils/whatsappState.js";
+import crypto from "crypto";
+import { getState, setState, clearState, touchConversationWindow } from "../utils/whatsappState.js";
 
 const router = express.Router();
+
+// ── SECURITY: HMAC-SHA256 signature verification for incoming webhooks ──
+// Prevents spoofed requests from impersonating Meta/WhatsApp
+function verifyWebhookSignature(req, res, next) {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  // If no app secret configured, log warning but allow (dev mode)
+  if (!appSecret) {
+    console.warn("⚠️ [WhatsApp] WHATSAPP_APP_SECRET not set — webhook signature verification DISABLED");
+    return next();
+  }
+
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature) {
+    console.warn("🛡️ [WhatsApp] Rejected request: missing X-Hub-Signature-256 header");
+    return res.sendStatus(401);
+  }
+
+  // Use the original raw bytes (preserved by express.json verify callback) — NOT re-serialized JSON,
+  // which may differ in key ordering/whitespace from what Meta actually signed.
+  const rawBody = req.rawBody || JSON.stringify(req.body);
+  const expected = "sha256=" + crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+      console.warn("🛡️ [WhatsApp] Rejected request: invalid HMAC signature");
+      return res.sendStatus(401);
+    }
+  } catch {
+    console.warn("🛡️ [WhatsApp] Rejected request: signature comparison failed");
+    return res.sendStatus(401);
+  }
+
+  next();
+}
 
 // Track recently processed message IDs to prevent duplicate processing
 const processedMessages = new Set();
@@ -115,7 +150,7 @@ router.get("/", (req, res) => {
 // ============================================================
 // POST /  — Receive incoming WhatsApp messages (TWO-WAY LOOP)
 // ============================================================
-router.post("/", async (req, res) => {
+router.post("/", verifyWebhookSignature, async (req, res) => {
   // CRITICAL: Always respond 200 immediately — Meta retries aggressively on failure
   res.sendStatus(200);
 
@@ -152,6 +187,9 @@ router.post("/", async (req, res) => {
     }
     trackMessage(messageId);
 
+    // ── 24-HOUR WINDOW: record that this user messaged us ──
+    touchConversationWindow(from);
+
     // ── LOOP GUARD ──
     const botNumber = process.env.WHATSAPP_BOT_NUMBER || process.env.WHATSAPP_PHONE_ID;
     if (from === botNumber) {
@@ -166,7 +204,9 @@ router.post("/", async (req, res) => {
     console.log(`📱 [WhatsApp] From: ${contactName} (${from}) → "${body}"`);
     console.log("─".repeat(60));
 
-    const { sendWhatsAppMessage } = await import("../tools/whatsapp.js");
+    const { sendWhatsAppMessage: _sendWA } = await import("../tools/whatsapp.js");
+    // All webhook replies are responses to an incoming message — window is guaranteed open.
+    const sendWhatsAppMessage = (to, text) => _sendWA(to, text, { skipWindowCheck: true });
     const lower = body.trim().toLowerCase();
 
     // ──────────────────────────────────────────────────────
@@ -221,69 +261,6 @@ router.post("/", async (req, res) => {
       } else {
         // Unrecognized reply while awaiting confirm — remind user
         await sendWhatsAppMessage(from, '📧 You have a pending email draft. Say *"send it"* to send or *"cancel"* to discard.');
-      }
-      return;
-    }
-
-    // ──────────────────────────────────────────────────────
-    // GREETING: hi/hello/morning → comprehensive response
-    // ──────────────────────────────────────────────────────
-    if (/^(hi|hello|hey|morning|good\s+morning|good\s+evening|good\s+afternoon|בוקר\s+טוב|שלום|ערב\s+טוב)\b/i.test(lower) && lower.length < 40) {
-      console.log(`📱 [WhatsApp] Greeting detected → comprehensive response`);
-      try {
-        const TOOLS = await loadTools();
-        const city = await getSavedCity();
-        const parts = ["👋 *Good day!*\n"];
-
-        // Weather
-        try {
-          const weatherResult = await TOOLS.weather({ text: "weather today", context: { city: city || "__USE_GEOLOCATION__" } });
-          parts.push(formatWeatherWA(weatherResult));
-        } catch { parts.push("🌤️ Weather: unavailable"); }
-
-        // Tech news (4 links)
-        try {
-          const techNews = await TOOLS.news({ text: "latest technology news", context: {} });
-          const items = techNews?.data?.items || techNews?.data?.articles || [];
-          if (items.length > 0) {
-            parts.push("\n📱 *Tech News*");
-            items.slice(0, 4).forEach((item, i) => {
-              parts.push(`${i + 1}. ${item.title || "Untitled"}${item.link ? `\n   ${item.link}` : ""}`);
-            });
-          }
-        } catch { /* skip */ }
-
-        // Regional news (6 links)
-        try {
-          const regionalNews = await TOOLS.news({ text: "Israel news", context: {} });
-          const items = regionalNews?.data?.items || regionalNews?.data?.articles || [];
-          if (items.length > 0) {
-            parts.push("\n🌍 *Regional News*");
-            items.slice(0, 6).forEach((item, i) => {
-              parts.push(`${i + 1}. ${item.title || "Untitled"}${item.link ? `\n   ${item.link}` : ""}`);
-            });
-          }
-        } catch { /* skip */ }
-
-        // X Trends (if available)
-        try {
-          const { CONFIG } = await import("../utils/config.js");
-          if (CONFIG.isXAvailable()) {
-            const xResult = await TOOLS.x({ text: "trending", context: { action: "trends" } });
-            if (xResult?.success && xResult?.data?.raw?.trends?.length > 0) {
-              parts.push("\n🔥 *Trending on X*");
-              xResult.data.raw.trends.slice(0, 5).forEach(t => {
-                parts.push(`• ${t.name}`);
-              });
-            }
-          }
-        } catch { /* skip */ }
-
-        const greeting = parts.join("\n");
-        await sendWhatsAppMessage(from, greeting.length > 4000 ? greeting.slice(0, 4000) + "\n..." : greeting);
-      } catch (e) {
-        console.error("[WhatsApp] Greeting response error:", e.message);
-        await sendWhatsAppMessage(from, "👋 Hello! I'm your AI assistant. How can I help?");
       }
       return;
     }

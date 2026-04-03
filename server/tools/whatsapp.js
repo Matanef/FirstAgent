@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import fs from "fs";
 import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
+import { getConversationWindow } from "../utils/whatsappState.js";
 
 const WHATSAPP_API = "https://graph.facebook.com/v18.0";
 
@@ -127,7 +128,76 @@ function detectWhatsAppIntent(text) {
 // SEND A SINGLE WHATSAPP MESSAGE
 // ============================================================
 
-export async function sendWhatsAppMessage(to, text) {
+/**
+ * Send a template message (works outside the 24-hour window).
+ * Uses WHATSAPP_TEMPLATE_NAME env var, or falls back to "hello_world".
+ * Template messages are pre-approved by Meta and can initiate conversations.
+ *
+ * If the template supports body parameters, the message text is passed as the
+ * first body parameter (parameter type "text"). Templates without parameters
+ * (like "hello_world") will send the template's fixed text and the custom
+ * message will be logged but not delivered inline.
+ */
+async function sendTemplateMessage(cleanedNumber, text) {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "hello_world";
+  const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en_US";
+
+  const url = `${WHATSAPP_API}/${phoneId}/messages`;
+
+  // Build template payload — include body parameter if message text is provided
+  const templatePayload = {
+    messaging_product: "whatsapp",
+    to: cleanedNumber,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: templateLang },
+    }
+  };
+
+  // If we have a custom message and a user-configured template (not the default hello_world),
+  // pass the text as a body parameter so it appears in the template.
+  if (text && templateName !== "hello_world") {
+    templatePayload.template.components = [
+      {
+        type: "body",
+        parameters: [{ type: "text", text: text.slice(0, 1024) }]
+      }
+    ];
+  }
+
+  try {
+    const response = await axios.post(url, templatePayload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      }
+    });
+    const messageId = response.data?.messages?.[0]?.id;
+    console.log(`✅ [WhatsApp] Template "${templateName}" sent to ${cleanedNumber} (id: ${messageId})`);
+    return { success: true, to: cleanedNumber, messageId, usedTemplate: templateName };
+  } catch (err) {
+    const errorMsg = err.response?.data?.error?.message || err.message;
+    console.error(`❌ [WhatsApp] Template send failed to ${cleanedNumber}: ${errorMsg}`);
+    return { success: false, to: cleanedNumber, error: errorMsg, usedTemplate: templateName };
+  }
+}
+
+/**
+ * Send a WhatsApp message. Checks the 24-hour conversation window first:
+ * - If INSIDE window → sends freeform text message (normal)
+ * - If OUTSIDE window → sends a template message to initiate conversation,
+ *   then follows up with the freeform text if the template succeeds.
+ *
+ * @param {string} to - Phone number
+ * @param {string} text - Message body
+ * @param {object} [opts] - Options
+ * @param {boolean} [opts.forceTemplate] - Force template even if window is open
+ * @param {boolean} [opts.skipWindowCheck] - Skip window check (used by webhook auto-replies where we KNOW the window is open)
+ */
+export async function sendWhatsAppMessage(to, text, opts = {}) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_ID;
 
@@ -136,6 +206,71 @@ export async function sendWhatsAppMessage(to, text) {
     return { success: false, to, error: `Invalid phone number: "${to}"` };
   }
 
+  // ── Check 24-hour conversation window ──
+  const window = getConversationWindow(cleanedNumber);
+  const needsTemplate = opts.forceTemplate || (!opts.skipWindowCheck && !window.open);
+
+  if (needsTemplate) {
+    const remainingH = window.open ? Math.round(window.remainingMs / 3600000) : 0;
+    console.log(`📱 [WhatsApp] No active 24h window for ${cleanedNumber} — using template message`);
+
+    const templateResult = await sendTemplateMessage(cleanedNumber, text);
+    if (!templateResult.success) {
+      return {
+        success: false,
+        to: cleanedNumber,
+        error: `Cannot reach ${cleanedNumber}: no active conversation window (user hasn't messaged in 24h) and template "${templateResult.usedTemplate}" failed: ${templateResult.error}. The user needs to message the bot first to open a conversation window.`
+      };
+    }
+
+    // Template sent successfully. If we have a custom template (not hello_world),
+    // the message was included as a parameter. If using hello_world, send the
+    // actual message as a follow-up (the template opened the window).
+    if (templateResult.usedTemplate === "hello_world" && text) {
+      // Small delay to let the template open the conversation
+      await new Promise(r => setTimeout(r, 1500));
+      // Now try sending the actual text as a follow-up
+      try {
+        const url = `${WHATSAPP_API}/${phoneId}/messages`;
+        const followUp = await axios.post(
+          url,
+          {
+            messaging_product: "whatsapp",
+            to: cleanedNumber,
+            type: "text",
+            text: { body: text }
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        const followUpId = followUp.data?.messages?.[0]?.id;
+        console.log(`✅ [WhatsApp] Follow-up text sent to ${cleanedNumber} (id: ${followUpId})`);
+        return { success: true, to: cleanedNumber, messageId: followUpId, note: "Sent via template + follow-up (no active window)" };
+      } catch (err) {
+        // Follow-up failed, but template was sent
+        console.warn(`⚠️ [WhatsApp] Template sent but follow-up text failed: ${err.response?.data?.error?.message || err.message}`);
+        return {
+          success: true,
+          to: cleanedNumber,
+          messageId: templateResult.messageId,
+          note: `Template "${templateResult.usedTemplate}" sent, but follow-up message could not be delivered. Consider setting up a custom WHATSAPP_TEMPLATE_NAME with a body parameter.`
+        };
+      }
+    }
+
+    return {
+      success: true,
+      to: cleanedNumber,
+      messageId: templateResult.messageId,
+      note: `Sent via template "${templateResult.usedTemplate}" (no active 24h window)`
+    };
+  }
+
+  // ── Inside 24h window: send normal freeform text ──
   try {
     const url = `${WHATSAPP_API}/${phoneId}/messages`;
     const response = await axios.post(
@@ -159,6 +294,12 @@ export async function sendWhatsAppMessage(to, text) {
     return { success: true, to: cleanedNumber, messageId };
   } catch (err) {
     const errorMsg = err.response?.data?.error?.message || err.message;
+    // Check if the error is specifically about the conversation window
+    const errCode = err.response?.data?.error?.code;
+    if (errCode === 131047 || /re-engage/i.test(errorMsg) || /24/i.test(errorMsg)) {
+      console.warn(`⚠️ [WhatsApp] Window expired mid-send for ${cleanedNumber}, retrying with template`);
+      return sendTemplateMessage(cleanedNumber, text);
+    }
     console.error(`❌ [WhatsApp] Failed to send to ${cleanedNumber}: ${errorMsg}`);
     return { success: false, to: cleanedNumber, error: errorMsg };
   }
@@ -169,22 +310,30 @@ export async function sendWhatsAppMessage(to, text) {
 // ============================================================
 
 /**
- * Resolve a filename to its full path — checks uploads, downloads, and project root
+ * Resolve a filename to its full path — checks uploads and downloads ONLY.
+ * SECURITY: No longer searches project root or accepts absolute paths.
+ * Blocks sensitive files to prevent data exfiltration via WhatsApp.
  */
 function resolveFilePath(filename) {
-  const searchDirs = [
-    path.resolve(PROJECT_ROOT, "uploads"),
-    path.resolve(PROJECT_ROOT, "downloads"),
-    PROJECT_ROOT
-  ];
-
-  for (const dir of searchDirs) {
-    const fullPath = path.join(dir, filename);
-    if (fs.existsSync(fullPath)) return fullPath;
+  // Block sensitive filenames
+  const BLOCKED = /\.(env|pem|key|p12|pfx)$|^\.env|config\.js$|service_account|memory\.json|package\.json/i;
+  if (BLOCKED.test(filename)) {
+    console.warn(`🛡️ [whatsapp] Blocked sensitive file: ${filename}`);
+    return null;
   }
 
-  // Try as absolute path
-  if (path.isAbsolute(filename) && fs.existsSync(filename)) return filename;
+  const SAFE_DIRS = [
+    path.resolve(PROJECT_ROOT, "uploads"),
+    path.resolve(PROJECT_ROOT, "downloads"),
+  ];
+
+  for (const dir of SAFE_DIRS) {
+    const fullPath = path.resolve(dir, filename);
+    // Prevent path traversal: ensure resolved path stays inside safe dir
+    const rel = path.relative(dir, fullPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    if (fs.existsSync(fullPath)) return fullPath;
+  }
 
   return null;
 }
@@ -413,12 +562,13 @@ export async function whatsapp(request) {
 
         const result = await sendWhatsAppMessage(parsed.to, parsed.message);
         if (result.success) {
+          const note = result.note ? `\n📋 ${result.note}` : "";
           return {
             tool: "whatsapp",
             success: true,
             final: true,
             data: {
-              text: `✅ Successfully sent WhatsApp message to ${result.to}`,
+              text: `✅ Successfully sent WhatsApp message to ${result.to}${note}`,
               to: result.to,
               messageId: result.messageId
             }

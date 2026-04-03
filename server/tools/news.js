@@ -8,83 +8,32 @@ import iconv from "iconv-lite";
 import { safeFetch } from "../utils/fetch.js";
 import { llm } from "./llm.js";
 import { extractFromNews } from "../knowledge.js";
+import { getPersonalityContext } from "../personality.js";
 import { CONFIG } from "../utils/config.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const parser = new Parser();
 
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// ── GENERAL NEWS FEEDS (40+) ──
-const FEEDS = {
-  // Israeli sources
-  ynet: "https://www.ynet.co.il/Integration/StoryRss2.xml",
-  n12: "https://www.mako.co.il/rss/news-israel.xml",
-  jpost: "https://www.jpost.com/Rss/RssFeedsHeadlines.aspx",
-  toi: "https://www.timesofisrael.com/feed/",
-  walla: "https://rss.walla.co.il/feed/1",
-  // International sources
-  bbc: "http://feeds.bbci.co.uk/news/rss.xml",
-  cnn: "http://rss.cnn.com/rss/edition.rss",
-  guardian: "https://www.theguardian.com/world/rss",
-  nyt: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
-  wapo: "https://feeds.washingtonpost.com/rss/world",
-  npr: "https://feeds.npr.org/1001/rss.xml",
-  ap: "https://rsshub.app/apnews/topics/apf-topnews",
-  independent: "https://www.independent.co.uk/news/world/rss",
-  skynews: "https://feeds.skynews.com/feeds/rss/world.xml",
-  foxnews: "https://moxie.foxnews.com/google-publisher/latest.xml",
-  dw: "https://rss.dw.com/rdf/rss-en-all",
-  france24: "https://www.france24.com/en/rss",
-  abc: "https://abcnews.go.com/abcnews/topstories",
-  cbsnews: "https://www.cbsnews.com/latest/rss/main"
-};
+// ── LOAD FEEDS FROM JSON ──
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FEEDS_FILE = path.resolve(__dirname, "..", "data", "rss_feeds.json");
 
-// ── CATEGORY-SPECIFIC FEEDS ──
-const CATEGORY_FEEDS = {
-  technology: {
-    bbc_tech: "http://feeds.bbci.co.uk/news/technology/rss.xml",
-    verge: "https://www.theverge.com/rss/index.xml",
-    arstechnica: "https://feeds.arstechnica.com/arstechnica/index",
-    hackernews: "https://hnrss.org/frontpage",
-    techcrunch: "https://techcrunch.com/feed/",
-    wired: "https://www.wired.com/feed/rss",
-    engadget: "https://www.engadget.com/rss.xml",
-  },
-  science: {
-    bbc_science: "http://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    livescience: "https://www.livescience.com/feeds/all",
-    sciencedaily: "https://www.sciencedaily.com/rss/all.xml",
-    newscientist: "https://www.newscientist.com/section/news/feed/",
-  },
-  business: {
-    bbc_business: "http://feeds.bbci.co.uk/news/business/rss.xml",
-    cnbc: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
-    marketwatch: "https://feeds.content.dowjones.io/public/rss/mw_topstories",
-    ft: "https://www.ft.com/?format=rss",
-    wsj: "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
-  },
-  sports: {
-    bbc_sport: "http://feeds.bbci.co.uk/sport/rss.xml",
-    espn: "https://www.espn.com/espn/rss/news",
-    skysports: "https://www.skysports.com/rss/12040",
-  },
-  health: {
-    bbc_health: "http://feeds.bbci.co.uk/news/health/rss.xml",
-    medicalnewstoday: "https://www.medicalnewstoday.com/newsfeeds/rss",
-    webmd: "https://rssfeeds.webmd.com/rss/rss.aspx?RSSSource=RSS_PUBLIC",
-  },
-  entertainment: {
-    bbc_entertainment: "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    variety: "https://variety.com/feed/",
-    hollywoodreporter: "https://www.hollywoodreporter.com/feed/",
-    rollingstone: "https://www.rollingstone.com/feed/",
-  },
-  politics: {
-    bbc_politics: "http://feeds.bbci.co.uk/news/politics/rss.xml",
-    politico: "https://rss.politico.com/politics-news.xml",
-    thehill: "https://thehill.com/feed/",
-  }
-};
+let FEEDS = {};
+let CATEGORY_FEEDS = {};
+
+try {
+  const feedsData = JSON.parse(fs.readFileSync(FEEDS_FILE, "utf8"));
+  FEEDS = feedsData.general || {};
+  CATEGORY_FEEDS = feedsData.categories || {};
+  console.log(`📰 Loaded ${Object.keys(FEEDS).length} general feeds and ${Object.keys(CATEGORY_FEEDS).length} categories from json.`);
+} catch (err) {
+  console.warn("⚠️ Could not load rss_feeds.json. Check file path and JSON formatting:", err.message);
+}
 
 // ── SCRAPE SOURCES (non-RSS Israeli news flash pages) ──
 // These are web pages with headline snapshots, not RSS feeds.
@@ -297,6 +246,9 @@ function extractTopic(query) {
     .replace(/[,;]?\s*every\s+\d+\s*(?:min(?:utes?)?|hours?|days?|secs?(?:onds?)?|weeks?)\b/gi, "")
     .replace(/[,;]?\s*(?:every\s+(?:morning|evening|night|day|week|hour)|hourly|daily|weekly|monthly)\b/gi, "")
     .replace(/[,;]?\s*(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/gi, "")
+    // Strip question words/phrases EARLY — "what's", "what are the", "how about", etc.
+    .replace(/\bwhat['\u2018\u2019]?s\b/gi, "")
+    .replace(/\b(what\s+(?:is|are|were)|where\s+(?:is|are)|who\s+(?:is|are|was|were)|how\s+(?:about|is|are))\s+(?:the\s+)?/gi, "")
     // Strip "let's" first — apostrophe makes regex word boundaries tricky
     .replace(/let['\u2018\u2019]?s\b/gi, "")
     .replace(/\b(you can go|go|please|i want you to|i need you to|can you)\b/gi, "")
@@ -324,11 +276,13 @@ function extractTopic(query) {
     .replace(/^[,\s]+|[,\s]+$/g, "")
     .trim();
 
-  // Words that look like topics but aren't — quantifiers, pronouns, filler
+  // Words that look like topics but aren't — quantifiers, pronouns, filler, question words
   const topicNoiseWords = new Set([
     "some", "any", "all", "few", "more", "every", "many", "much", "several",
     "it", "its", "this", "that", "them", "their", "us", "me", "updated", "news", "headlines",
-    "the", "a", "an", "on", "in", "at", "to", "for", "of", "new"
+    "the", "a", "an", "on", "in", "at", "to", "for", "of", "new",
+    "what", "whats", "what's", "how", "who", "where", "when", "why", "which",
+    "is", "are", "was", "were", "do", "does", "did", "about"
   ]);
 
   function cleanTopic(raw) {
@@ -342,13 +296,14 @@ function extractTopic(query) {
 
   // Extract specific topic patterns — match first "about/regarding/on/for" + topic
   // Strip "news" before matching so "news about X" → "about X" → captures "X"
+  // Allow trailing punctuation (?!.) so "on stem cell?" still matches
   const forTopicMatch = stripped.replace(/\bnews\b/gi, "").trim();
-  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const topicMatch = forTopicMatch.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|[?!.]*$)/i);
   const cleanedTopic = cleanTopic(topicMatch?.[1]);
   if (cleanedTopic) return cleanedTopic;
 
   // Fallback: try "about X" from original (but still clean it)
-  const lowerTopicMatch = lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|$)/i);
+  const lowerTopicMatch = lower.match(/(?:about|regarding|on|for)\s+(?:the\s+)?([a-z0-9\s,'-]+?)(?:\s+to\s+(?:learn|know|read|see|check)|[?!.]*$)/i);
   const cleanedLowerTopic = cleanTopic(lowerTopicMatch?.[1]);
   if (cleanedLowerTopic) return cleanedLowerTopic;
 
@@ -363,7 +318,10 @@ function extractTopic(query) {
   }
 
   // Use the cleaned/stripped version if meaningful
-  const rejectWords = new Set(["any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for", "on", "in"]);
+  const rejectWords = new Set([
+    "any", "some", "all", "the", "a", "an", "and", "or", "me", "my", "your", "about", "for", "on", "in",
+    "what", "whats", "how", "who", "where", "when", "why", "which", "is", "are", "was", "were", "do", "does"
+  ]);
   const words = stripped.split(/\s+/).filter(w => !rejectWords.has(w) && w.length > 1);
   if (words.length > 0 && words.length <= 6) {
     return words.join(" ");
@@ -582,6 +540,48 @@ export async function news(request) {
 
     const scrapeResults = await Promise.all(scrapePromises);
     summaries.push(...scrapeResults.filter(Boolean));
+// ── Generate Overall AI Synthesis ──
+    let overallSynthesis = "";
+    if (summaries.length > 0) {
+      console.log(`🧠 Generating overall synthesis for ${summaries.length} articles...`);
+      const combinedText = summaries.map(s => `- ${s.title}: ${s.summary}`).join("\n");
+      
+      try {
+        // Fetch Lanou's specific personality and voice instructions
+        const personalityCtx = await getPersonalityContext("chat");
+        
+const synthesisPrompt = `
+${personalityCtx}
+
+Based on the following news summaries${topic ? ` about ${topic}` : ''}, analyze the current situation. 
+
+Write exactly TWO paragraphs:
+First paragraph: Synthesize the core facts and major themes. Keep it grounded and factual.
+Second paragraph: Give your opinion or observation. Speak entirely in YOUR voice (dry, observational, systems-thinking). Point out the absurdity or connect the dots.
+
+CRITICAL INSTRUCTIONS: 
+1. Drop the academic, journalistic tone. Be Lanou.
+2. DO NOT use headers, titles, or markdown like "Paragraph 1" or "###". Just write the text naturally.
+
+NEWS DATA:
+${combinedText}`;
+        
+        // Notice we added skipKnowledge: true because we don't want the LLM 
+        // to confuse past knowledge with the specific news articles we just handed it.
+        const synthesisResult = await llm(synthesisPrompt, { skipKnowledge: true }); 
+if (synthesisResult.success && synthesisResult.data?.text) {
+          // Instead of just trimming it, let's split it by line breaks and wrap in <p> tags
+          const rawText = synthesisResult.data.text.trim();
+          overallSynthesis = rawText
+            .split(/\n+/) // Split by one or more line breaks
+            .filter(p => p.trim().length > 0) // Remove empty lines
+            .map(p => `<p>${p.trim()}</p>`) // Wrap each paragraph
+            .join(""); // Put it back together
+        }
+      } catch (err) {
+        console.warn("⚠️ Failed to generate overall synthesis:", err.message);
+      }
+    }
 
     // ── Source label formatting ──
     function formatSourceLabel(source) {
@@ -620,41 +620,81 @@ export async function news(request) {
       </div>
     `).join("");
 
-    // RSS headline table
+// RSS headline table
     const headlineTable = filteredRssItems.length > 0 ? `
-      <div class="ai-table-wrapper">
-        <h3>${topic ? "Related Headlines" : "All Headlines"}</h3>
-        <table class="ai-table">
-          <thead>
-            <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
-          </thead>
-          <tbody>
-            ${filteredRssItems.slice(0, 30).map(i => `
-              <tr>
-                <td>${formatSourceLabel(i.source)}</td>
-                <td><a href="${i.link}" target="_blank">${i.title}</a></td>
-                <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
+      <details class="news-accordion">
+        <summary class="accordion-header">
+          <h3>${topic ? "Related Headlines" : "All Headlines"}</h3>
+        </summary>
+        <div class="ai-table-wrapper">
+          <table class="ai-table">
+            <thead>
+              <tr><th>Source</th><th>Headline</th><th>Date</th></tr>
+            </thead>
+            <tbody>
+              ${filteredRssItems.slice(0, 30).map(i => `
+                <tr>
+                  <td>${formatSourceLabel(i.source)}</td>
+                  <td><a href="${i.link}" target="_blank">${i.title}</a></td>
+                  <td>${i.date ? new Date(i.date).toLocaleDateString() : "-"}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </details>
     ` : "";
 
-    const html = `
+const html = `
       <div class="news-container">
         ${topic ? `<div class="news-topic-banner">📰 News about: <strong>${topic}</strong></div>` : ""}
-        ${flashHtml}
-        ${summaries.length > 0 ? `
-          <div class="news-summaries">
-            <h2>Top Stories</h2>
-            ${summaryCards}
+        
+        ${overallSynthesis ? `
+          <div class="news-synthesis-card">
+            <div class="synthesis-header">🤖 AI Conclusion</div>
+            <div class="synthesis-body">
+               ${overallSynthesis}
+            </div>
           </div>
         ` : ""}
+
+        ${flashHtml}
+
+        ${summaries.length > 0 ? `
+          <details class="news-accordion" open>
+            <summary class="accordion-header">
+              <h2>Top Stories</h2>
+            </summary>
+            <div class="news-summaries">
+              ${summaryCards}
+            </div>
+          </details>
+        ` : ""}
+        
         ${headlineTable}
       </div>
 
       <style>
+
+/* ── AI Synthesis Card ── */
+  .news-synthesis-card {
+    background: var(--bg-secondary);
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.5rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+  }
+  .synthesis-header {
+    font-weight: bold;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+    font-size: 1.1rem;
+  }
+  .news-synthesis-card p {
+    margin: 0;
+    line-height: 1.6;
+    color: var(--text-primary);
+  }
 
 /* ── Flash section ── */
   .news-flash-section {
@@ -792,6 +832,48 @@ export async function news(request) {
   .news-summary-link:hover {
     text-decoration: underline;
     opacity: 0.7;
+  }
+
+  /* ── Accordions (Dropdowns) ── */
+  .news-accordion {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+  .accordion-header {
+    cursor: pointer;
+    padding: 1rem 1.5rem;
+    background: var(--bg-tertiary);
+    user-select: none;
+    transition: background 0.2s;
+  }
+  .accordion-header:hover {
+    background: var(--bg-primary);
+  }
+  .accordion-header h2, .accordion-header h3 {
+    margin: 0;
+    display: inline-block;
+    color: var(--text-primary);
+    font-size: 1.15rem;
+  }
+  /* Add a little padding to the content inside the dropdowns */
+  .news-accordion .news-summaries {
+    padding: 1.5rem;
+    margin-bottom: 0;
+  }
+  .news-accordion .ai-table-wrapper {
+    padding: 1rem;
+    border: none;
+  }
+  .news-accordion[open] > .accordion-header {
+    border-bottom: 1px solid var(--border);
+  }
+  
+  /* Optional: Fix the old h2 centering rule since we moved the h2 into the summary */
+  .news-summaries h2 {
+    display: none; 
   }
       </style>
     `;

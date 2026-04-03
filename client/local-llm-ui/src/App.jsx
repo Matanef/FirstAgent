@@ -8,9 +8,8 @@ import TrainOfThought from "./components/TrainOfThought";
 import FileAttachmentBar from "./components/FileAttachmentBar";
 import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
 import FolderPicker from "./components/FolderPicker";
+import { API_URL, apiFetch } from "./api";
 import "./App.css";
-
-const API_URL = "http://localhost:3000";
 
 // MAIN APP COMPONENT
 function App() {
@@ -23,22 +22,45 @@ function App() {
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [showDuplicateScanner, setShowDuplicateScanner] = useState(false);
 
+  // --- NEW: Terminal-style Input History ---
+  const [messageHistory, setMessageHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [tempDraft, setTempDraft] = useState("");
+  const MAX_HISTORY = 30;
+  // ----------------------------------------
   // Tone control
   const [toneExpanded, setToneExpanded] = useState(false);
   const [toneValue, setToneValue] = useState(1);
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
+  
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+useEffect(() => {
+    const currentChat = conversations[activeId];
+    if (!currentChat || currentChat.length === 0) return;
+
+    const lastMsg = currentChat[currentChat.length - 1];
+
+    if (lastMsg.role === "user" || lastMsg.loading) {
+      // 1. Keep scrolling to the bottom while the user sends or the agent is streaming
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (lastMsg.role === "assistant" && !lastMsg.loading) {
+      // 2. When the agent finishes, snap the view back to the TOP of its message
+      // so you don't have to scroll up past the "Reinforced" text or long widgets.
+      const msgElements = document.querySelectorAll('.message-entry');
+      const lastMsgElement = msgElements[msgElements.length - 1];
+      if (lastMsgElement) {
+        lastMsgElement.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
   }, [conversations, activeId]);
 
   useEffect(() => {
     const toneNames = ["concise", "mediumWarm", "warm", "professional"];
     const toneName = toneNames[toneValue];
 
-    fetch(`${API_URL}/profile`, {
+    apiFetch(`${API_URL}/profile`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "tone", value: toneName })
@@ -67,10 +89,30 @@ function App() {
   }
 
 async function sendMessage() {
-    if (!input.trim() || !activeId || loading) return;
+  if (!input.trim() || !activeId || loading) return;
+  if (attachedFiles.some(f => f.status === "uploading")) return;
 
-    // Block send if any file is still uploading
-    if (attachedFiles.some(f => f.status === "uploading")) return;
+  const cleanInput = input.trim(); // Get the clean text to save
+
+  // --- NEW: Save to history ---
+  const isNewMessage = messageHistory.length === 0 || messageHistory[messageHistory.length - 1] !== cleanInput;
+  
+  // Calculate what the new history length will be
+  const nextHistoryLength = isNewMessage 
+    ? Math.min(messageHistory.length + 1, MAX_HISTORY) 
+    : messageHistory.length;
+
+  setMessageHistory(prev => {
+    const newHistory = [...prev];
+    if (isNewMessage) newHistory.push(cleanInput);
+    if (newHistory.length > MAX_HISTORY) newHistory.shift();
+    return newHistory;
+  });
+  
+  // Reset pointers
+  setHistoryIndex(nextHistoryLength);
+  setTempDraft("");
+  // ----------------------------
 
     const fileIds = attachedFiles
       .filter(f => f.status === "uploaded" && f.id)
@@ -103,7 +145,7 @@ async function sendMessage() {
       // Create AbortController for cancel support
       abortControllerRef.current = new AbortController();
 
-      const response = await fetch(`${API_URL}/chat`, {
+      const response = await apiFetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -279,10 +321,49 @@ async function sendMessage() {
     }
   }
 
-  function handleKeyDown(e) {
+function handleKeyDown(e) {
+    // Original Enter to Send logic
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+      return; // Exit early
+    }
+
+    // --- NEW: Terminal-style Input History Logic ---
+    const target = e.target;
+    const isAtStart = target.selectionStart === 0;
+    const isAtEnd = target.selectionEnd === target.value.length;
+
+    if (e.key === "ArrowUp" && isAtStart) {
+      e.preventDefault();
+      if (messageHistory.length === 0) return;
+
+      // If just entering history, save current draft
+      if (historyIndex === messageHistory.length) {
+        setTempDraft(input);
+      }
+
+      // Move up in history
+      if (historyIndex > 0) {
+        const newIndex = historyIndex - 1;
+        setHistoryIndex(newIndex);
+        setInput(messageHistory[newIndex]);
+      }
+    } 
+    else if (e.key === "ArrowDown" && isAtEnd) {
+      e.preventDefault();
+      
+      // Move down in history
+      if (historyIndex < messageHistory.length - 1) {
+        const newIndex = historyIndex + 1;
+        setHistoryIndex(newIndex);
+        setInput(messageHistory[newIndex]);
+      } 
+      // Reach the bottom: restore draft
+      else if (historyIndex === messageHistory.length - 1) {
+        setHistoryIndex(messageHistory.length);
+        setInput(tempDraft);
+      }
     }
   }
 

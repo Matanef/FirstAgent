@@ -3,7 +3,7 @@
 
 import { useRef } from "react";
 
-const API_URL = "http://localhost:3000";
+import { API_URL, applyAuthToXHR } from "../api";
 
 const MAX_FILES = 10;
 const MAX_SIZE = 10 * 1024 * 1024; // 10MB
@@ -99,6 +99,7 @@ export default function FileAttachmentBar({ files, setFiles, disabled }) {
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", `${API_URL}/upload`);
+            applyAuthToXHR(xhr);
 
             xhr.upload.onprogress = (e) => {
                 if (e.lengthComputable) {

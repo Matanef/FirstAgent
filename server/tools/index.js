@@ -52,7 +52,6 @@ import { codeSandbox } from "./codeSandbox.js";
 import { codeRag } from "./codeRag.js";
 import { projectSnapshot } from "./projectSnapshot.js";
 import { chartGenerator } from "./chartGenerator.js";
-import { spotifyController } from "./spotify.js";
 import { mcpBridge } from "./mcpBridge.js";
 
 export const TOOLS = {
@@ -70,7 +69,6 @@ export const TOOLS = {
   financeFundamentals,
   search,
   sports,
-  spotifyController,
   youtube,
   shopping,
   news,

@@ -22,8 +22,25 @@ const PORT = process.env.PORT || 3000;
 // ============================================================
 // MIDDLEWARE
 // ============================================================
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+// ── SECURITY: Restrict CORS to localhost and configured origins ──
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+  : ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    console.warn(`🛡️ CORS blocked origin: ${origin}`);
+    callback(new Error("CORS: origin not allowed"));
+  },
+  methods: ["GET", "POST"],
+  credentials: true
+}));
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, _res, buf) => { req.rawBody = buf; }  // Preserve raw bytes for webhook HMAC verification
+}));
 app.use("/", oauthCallback);
 
 

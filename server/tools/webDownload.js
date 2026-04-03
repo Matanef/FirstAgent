@@ -219,7 +219,7 @@ export async function webDownload(request) {
     let learnedFacts = [];
     if (plainText && plainText.length > 50) {
       try {
-        learnedFacts = await extractFromWebContent(extractedTitle || path.basename(result.filepath), plainText, url) || [];
+        learnedFacts = await extractFromWebContent(extractedTitle || path.basename(result.filepath), plainText, url, { permanent: true }) || [];
       } catch (e) {
         console.warn("[webDownload] Knowledge extraction failed:", e.message);
       }
@@ -234,7 +234,11 @@ export async function webDownload(request) {
         size: result.size,
         sizeFormatted: `${(result.size / 1024).toFixed(2)} KB`,
         content: contentPreview,
-        plain: plainText || contentPreview,
+        plain: plainText
+          ? (plainText.length > 25000
+            ? plainText.slice(0, 25000) + `\n\n... (truncated from ${plainText.length} chars to fit LLM context)`
+            : plainText)
+          : contentPreview,
         text: contentPreview
           ? `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)\n\nContent:\n${contentPreview}`
           : `Downloaded ${path.basename(result.filepath)} (${(result.size / 1024).toFixed(2)} KB)`,

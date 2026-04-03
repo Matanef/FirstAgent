@@ -9,7 +9,10 @@ import { PROJECT_ROOT } from "../utils/config.js";
 // AUTH & CLIENT (lazy initialization)
 // ============================================================
 
-const KEY_FILE = path.join(PROJECT_ROOT, ".config", "google", "service_account.json");
+// ── SECURITY: Service account key path configurable via env var ──
+// Prefer GOOGLE_SERVICE_ACCOUNT_PATH env var over hardcoded location
+const KEY_FILE = process.env.GOOGLE_SERVICE_ACCOUNT_PATH
+  || path.join(PROJECT_ROOT, ".config", "google", "service_account.json");
 let sheetsClient = null;
 
 async function ensureClient() {

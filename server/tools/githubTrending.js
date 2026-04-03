@@ -63,23 +63,17 @@ export async function githubTrending(request) {
         const limit = context.limit || (countMatch ? parseInt(countMatch[1]) : 15);
 
         if (query && query.trim()) {
-            // Clean the query: strip routing prefixes, tool keywords, numbers, and stop words
+            // Clean the query: strip common routing prefixes and noise words
             let cleanQuery = query
-                .replace(/^.*?\b(show|list|find|get|search|display|fetch|scan)\s+/i, "")
+                .replace(/^.*?\b(show|list|find|get|search|display|fetch|scan|the)\s+/i, "")
                 .replace(/\b(trending|on\s+github|github|repos?|repositories?|popular|top|open\s*source|frameworks?|libraries?|projects?)\b/gi, "")
+                .replace(/\b(the|a|an|some|all|current)\b/gi, "") // <-- ADD THIS to globally remove articles
                 .replace(/\b(\d+|first|last|top)\b/gi, "")
-                // Strip common English stop words that pollute the GitHub search query
-                .replace(/\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by|from|is|are|was|were|be|been|it|its|them|they|this|that|those|these|me|my|summarize|summarise|analyze|analyse|explain|about)\b/gi, "")
                 .replace(/\s{2,}/g, " ")
                 .trim();
+            if (cleanQuery.length < 2) cleanQuery = query.trim(); // fallback to original if over-stripped
 
-            // If over-stripped (generic "trending repos" request), use general trending
-            if (cleanQuery.length < 2) {
-                console.log(`🌏 Query over-stripped to "${cleanQuery}" — falling back to general trending (limit: ${limit})`);
-                return await fetchTrendingRepos('past week', limit);
-            }
-
-            console.log(`🔍 Searching GitHub for trending topic: "${cleanQuery}" (raw: "${query}", limit: ${limit})...`);
+            console.log(`🔍 Searching GitHub for trending topic: ${cleanQuery} (raw: ${query})...`);
             // Use GitHub Search API (publicly accessible for simple GET)
             const searchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(cleanQuery)}+stars:>100&sort=stars&order=desc&per_page=${limit}`;
             const response = await fetch(searchUrl, {
@@ -94,7 +88,7 @@ export async function githubTrending(request) {
                     description: repo.description,
                     stars: repo.stargazers_count
                 };
-            }).filter(repo => repo !== null);
+}).filter(repo => repo !== null);
 
             return {
                 tool: "githubTrending",
@@ -103,19 +97,19 @@ export async function githubTrending(request) {
                 data: {
                     count: repos.length,
                     repositories: repos,
-                    topic: cleanQuery || "GitHub Trending",
+                    topic: cleanQuery,
                     timestamp: new Date().toISOString(),
-                    html: generateTrendingHTML(repos, cleanQuery || "GitHub Trending"),
+                    html: generateTrendingHTML(repos, cleanQuery),
                     plain: JSON.stringify(repos, null, 2), // <--- THIS FEEDS THE LLM IN STEP 2
                     preformatted: true,
-                    text: `I found ${repos.length} trending repositories${cleanQuery ? ` for "${cleanQuery}"` : ""}. You can review them in the specialized window above.`
+                    text: `I found ${repos.length} trending repositories for "${cleanQuery}". You can review them in the specialized window above.`
                 },
-                reasoning: `Found ${repos.length} top repositories${cleanQuery ? ` for topic "${cleanQuery}"` : ""}.`
+                reasoning: `Found ${repos.length} top repositories for topic "${cleanQuery}".`
             };
 
         }
 
-        return await fetchTrendingRepos('past week', limit);
+        return await fetchTrendingRepos('past week');
     } catch (err) {
         console.error("❌ GitHub Trending Error:", err);
         return {
@@ -127,20 +121,20 @@ export async function githubTrending(request) {
     }
 }
 
-async function fetchTrendingRepos(timeframe, limit = 15) {
-    console.log(`🌏 Fetching GitHub Trending via Search API (${timeframe}, limit: ${limit})...`);
+async function fetchTrendingRepos(timeframe) {
+    console.log(`🌏 Fetching GitHub Trending via Search API (${timeframe})...`);
     const oneWeekAgo = timeframe === 'past week' ? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] : '';
-    const searchUrl = `https://api.github.com/search/repositories?q=stars:>500${oneWeekAgo ? `+pushed:>${oneWeekAgo}` : ''}&sort=stars&order=desc&per_page=${limit}`;
+    const searchUrl = `https://api.github.com/search/repositories?q=stars:>500${oneWeekAgo ? `+pushed:>${oneWeekAgo}` : ''}&sort=stars&order=desc&per_page=15`;
     const response = await fetch(searchUrl, {
         headers: { 'Accept': 'application/vnd.github.v3+json' }
     });
-
+    
     if (!response.ok) {
         throw new Error(`GitHub API error: HTTP ${response.status}`);
     }
-
+    
     const data = await response.json();
-    const repos = (data.items || []).slice(0, limit).map(repo => ({
+    const repos = (data.items || []).slice(0, 15).map(repo => ({
         name: repo.full_name,
         url: repo.html_url,
         description: repo.description,

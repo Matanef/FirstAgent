@@ -188,18 +188,74 @@ export async function parseEmailRequest(query) {
 }
 
 /**
+ * List all attachments for a given Gmail message ID.
+ * Returns array of { filename, mimeType, attachmentId, size }.
+ * Useful for previewing what's available before triggering a download.
+ */
+export async function listAttachmentsForMessage(messageId) {
+  const auth = await getAuthorizedClient();
+  const gmail = google.gmail({ version: "v1", auth });
+
+  const detail = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+
+  const attachments = [];
+  function walk(parts) {
+    if (!parts) return;
+    for (const part of parts) {
+      if (part.filename && part.body?.attachmentId) {
+        attachments.push({
+          filename: part.filename,
+          mimeType: part.mimeType || "application/octet-stream",
+          attachmentId: part.body.attachmentId,
+          size: part.body.size || 0,
+        });
+      }
+      if (part.parts) walk(part.parts);
+    }
+  }
+  walk(detail.data.payload?.parts);
+  // Handle single-part messages where the payload itself is the attachment
+  if (detail.data.payload?.body?.attachmentId && detail.data.payload?.filename) {
+    attachments.push({
+      filename: detail.data.payload.filename,
+      mimeType: detail.data.payload.mimeType || "application/octet-stream",
+      attachmentId: detail.data.payload.body.attachmentId,
+      size: detail.data.payload.body.size || 0,
+    });
+  }
+
+  return attachments;
+}
+
+/**
  * Resolve a filename to an actual path in known folders.
+ * SECURITY: Only searches uploads/ and downloads/ — NOT project root.
+ * Blocks sensitive files (.env, config, service accounts, source code).
  */
 export async function findAttachment(filename) {
-  const searchPaths = [
-    path.resolve(PROJECT_ROOT, "uploads", filename),
-    path.resolve(PROJECT_ROOT, "downloads", filename),
-    path.resolve(PROJECT_ROOT, filename)
+  // Block sensitive filenames regardless of path
+  const BLOCKED_PATTERNS = /\.(env|pem|key|p12|pfx)$|^\.env|config\.js$|service_account|memory\.json|package\.json/i;
+  if (BLOCKED_PATTERNS.test(filename)) {
+    console.warn(`🛡️ [email] Blocked sensitive attachment: ${filename}`);
+    return null;
+  }
+
+  const SAFE_DIRS = [
+    path.resolve(PROJECT_ROOT, "uploads"),
+    path.resolve(PROJECT_ROOT, "downloads"),
   ];
-  for (const p of searchPaths) {
+  for (const dir of SAFE_DIRS) {
+    const resolved = path.resolve(dir, filename);
+    // Ensure resolved path is actually inside the safe dir (prevent ../../../ traversal)
+    const rel = path.relative(dir, resolved);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
     try {
-      await fs.access(p);
-      return p;
+      await fs.access(resolved);
+      return resolved;
     } catch {
       // try next
     }

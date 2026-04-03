@@ -1,6 +1,6 @@
 // server/tools/folderAccess.js
-// Full filesystem access tool — recursive folder listing, file reading, tree building
-// Supports ANY drive/path (not sandboxed like file.js)
+// Filesystem access tool — recursive folder listing, file reading, tree building
+// SECURITY: Restricted to ALLOWED_ROOTS sandboxes with symlink resolution
 
 import fs from "fs/promises";
 import fsSync from "fs";
@@ -14,6 +14,26 @@ const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const MAX_DEPTH = 10;
 const MAX_FILES = 2000;
 const MAX_FILE_SIZE = 512 * 1024; // 512 KB read limit per file
+
+// ── SECURITY: Sandbox boundaries ──
+const ALLOWED_ROOTS = [
+  PROJECT_ROOT,
+  path.resolve("E:/testFolder")
+];
+
+// Files that must never be read or listed (prevents credential leakage)
+const SENSITIVE_FILES = /^(\.env|\.env\.\w+|service_account\.json|.*\.pem|.*\.key|.*\.p12|.*\.pfx)$/i;
+
+function isPathAllowed(resolvedPath) {
+  return ALLOWED_ROOTS.some(root => {
+    const rel = path.relative(root, resolvedPath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
+}
+
+function isSensitiveFile(filename) {
+  return SENSITIVE_FILES.test(filename);
+}
 
 // File extensions grouped by category
 const CATEGORY = {
@@ -430,6 +450,32 @@ export async function folderAccess(request) {
         } catch { /* not found here, keep looking */ }
       }
     } catch { /* can't read PROJECT_ROOT, proceed with original */ }
+  }
+
+  // ── SECURITY: Resolve symlinks and enforce sandbox boundaries ──
+  try {
+    normalizedPath = await fs.realpath(normalizedPath);
+  } catch { /* path may not exist yet, proceed with resolved path */ }
+
+  if (!isPathAllowed(normalizedPath)) {
+    console.warn(`🛡️ [folderAccess] BLOCKED path outside sandbox: ${normalizedPath}`);
+    return {
+      tool: "folderAccess",
+      success: false,
+      final: true,
+      data: { message: `Access denied: "${folderPath}" is outside the allowed project boundaries.` }
+    };
+  }
+
+  // Block reading sensitive files directly
+  if (intent === "read" && isSensitiveFile(path.basename(normalizedPath))) {
+    console.warn(`🛡️ [folderAccess] BLOCKED sensitive file read: ${normalizedPath}`);
+    return {
+      tool: "folderAccess",
+      success: false,
+      final: true,
+      data: { message: `Access denied: "${path.basename(normalizedPath)}" is a protected file.` }
+    };
   }
 
   // Verify path exists

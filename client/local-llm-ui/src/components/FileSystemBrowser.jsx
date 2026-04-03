@@ -1,7 +1,6 @@
 // client/local-llm-ui/src/components/FileSystemBrowser.jsx
 import { useState } from "react";
-
-const API_URL = "http://localhost:3000";
+import { API_URL, apiFetch } from "../api";
 
 export default function FileSystemBrowser({ data, conversationId }) {
     const [selectedFiles, setSelectedFiles] = useState(new Set());
@@ -32,7 +31,7 @@ export default function FileSystemBrowser({ data, conversationId }) {
                     : name
             );
 
-            const res = await fetch(`${API_URL}/compile-files`, {
+            const res = await apiFetch(`${API_URL}/compile-files`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

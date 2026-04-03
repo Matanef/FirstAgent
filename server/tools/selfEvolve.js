@@ -715,6 +715,16 @@ export async function selfEvolve(request) {
 
   try {
     switch (intent) {
+      case "conversation_only":
+        return { 
+          tool: "selfEvolve", 
+          success: true, 
+          final: true, 
+          data: { 
+            text: "I've been focusing on improving my error handling and refining my internal logic lately. Would you like me to run a formal self-evolution cycle to show you the technical details, or should we just keep chatting?",
+            isChatty: true 
+          } 
+        };
       case "history":
         const history = await showHistory();
         return { tool: "selfEvolve", success: true, final: true, data: { preformatted: true, text: history } };
@@ -753,6 +763,15 @@ export async function selfEvolve(request) {
 
 function detectIntent(text) {
   const lower = text.toLowerCase();
+  
+  // NEW: Detect if this is just a conversational question
+  const isQuestion = /\?$/.test(text.trim()) || /^(what|how|why|who|when|did|have)\b/i.test(lower);
+  const isConversational = /\b(learned|improved|done|changed|tell me|what have you)\b/i.test(lower);
+
+  if (isQuestion && isConversational && !/\b(run|execute|start|apply|force)\b/i.test(lower)) {
+    return "conversation_only";
+  }
+
   if (/\b(history|log)\b/.test(lower)) return "history";
   if (/\b(dry.?run|preview|plan)\b/.test(lower)) return "dryrun";
   return "run";
@@ -761,9 +780,22 @@ function detectIntent(text) {
 async function showHistory() {
   const log = await loadEvolutionLog();
   let output = `📈 **Self-Evolution History**\nTotal improvements: ${log.totalImprovements}\nLast run: ${log.lastRun || "never"}\n\n`;
-  const recent = log.runs.slice(-5).reverse();
+  const recent = log.runs.slice(-10).reverse();
   for (const run of recent) {
-    output += `**${run.timestamp}**: ${run.improvements?.filter(i => i.applied).length || 0} applied\n`;
+    const applied = run.improvements?.filter(i => i.applied) || [];
+    const failed = run.improvements?.filter(i => !i.applied && !i.dryRun) || [];
+    const dateStr = run.timestamp ? new Date(run.timestamp).toLocaleString() : "unknown";
+    output += `**${dateStr}** — ${applied.length} applied, ${failed.length} failed\n`;
+    for (const imp of applied) {
+      output += `  ✅ ${imp.description || "unnamed improvement"}${imp.file ? ` → \`${imp.file}\`` : ""}\n`;
+    }
+    for (const imp of failed) {
+      output += `  ❌ ${imp.description || "unnamed"}${imp.file ? ` → \`${imp.file}\`` : ""}: ${imp.error || "unknown error"}\n`;
+    }
+    if (run.aborted) {
+      output += `  🛑 Aborted: ${run.abortReason || "no reason"}\n`;
+    }
+    output += "\n";
   }
   return output;
 }

@@ -2,7 +2,7 @@
 // Tool: scans directories for duplicate files using two-stage hash detection
 
 import fs from "fs/promises";
-import { createReadStream } from "fs";
+import fsSync, { createReadStream } from "fs";
 import path from "path";
 import crypto from "crypto";
 import { PROJECT_ROOT } from "../utils/config.js";
@@ -39,9 +39,14 @@ function isExecutable(filePath) {
 }
 
 function sanitizePath(inputPath) {
-    const normalized = path.resolve(inputPath);
-    if (inputPath.includes("..")) return null;
-    const allowed = ALLOWED_ROOTS.some(root => normalized.startsWith(root));
+    let normalized = path.resolve(inputPath);
+    // ── SECURITY: Resolve symlinks to prevent sandbox escape ──
+    try { normalized = fsSync.realpathSync(normalized); } catch { /* path may not exist */ }
+    // Use path.relative() instead of startsWith() to prevent bypass attacks
+    const allowed = ALLOWED_ROOTS.some(root => {
+        const rel = path.relative(root, normalized);
+        return !rel.startsWith("..") && !path.isAbsolute(rel);
+    });
     return allowed ? normalized : null;
 }
 
