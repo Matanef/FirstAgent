@@ -1,14 +1,8 @@
-// server/tools/llm.js
-// Safe, timeout-protected LLM wrapper for Ollama
-
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 import { getKnowledgeContext } from "../knowledge.js";
 import { getPersonalityContext } from "../personality.js";
 
-/**
- * Internal helper: perform a POST to Ollama with timeout + abort
- */
 async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -37,23 +31,14 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   }
 }
 
-/**
- * Non-streaming LLM call
- */
 export async function llm(prompt, configOptions = {}) {
-  // Use the passed timeout, or default to 10 minutes (600,000ms) for safety
   const timeoutMs = configOptions.timeoutMs || 600_000;
   
-  const {
-    model = CONFIG.LLM_MODEL,
-    format, 
-    options = {} 
-  } = configOptions;
+  const { model = CONFIG.LLM_MODEL, format, options = {} } = configOptions;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
   try {
-    // Inject personality + knowledge for user-facing prompts (not internal JSON tool calls)
     let finalPrompt = prompt;
     if (!configOptions.skipKnowledge && !configOptions.format) {
       try {
@@ -76,13 +61,11 @@ export async function llm(prompt, configOptions = {}) {
       stream: false,
       ...(format ? { format } : {}),
       options: {
-        num_ctx: 8192, // <--- Hard cap to prevent VRAM overflow on 8GB cards
+        num_ctx: 8192, // Hard cap to prevent VRAM overflow on 8GB cards
         ...options
       }
     };
     
-    // ... rest of the function stays exactly the same
-
     const response = await fetchWithTimeout(url, body, timeoutMs);
 
     const text =
@@ -109,6 +92,7 @@ export async function llm(prompt, configOptions = {}) {
     };
 
   } catch (err) {
+    console.error("[llm] Error:", err);
     return {
       tool: "llm",
       success: false,
@@ -118,19 +102,11 @@ export async function llm(prompt, configOptions = {}) {
   }
 }
 
-/**
- * Streaming LLM call with chunk guard + timeout
- * Robust against multiple JSON objects per chunk and partial lines.
- */
 export async function llmStream(prompt, onChunk, configOptions = {}) {
-  // Pull these out so they can be overridden, with much safer defaults
-  const timeoutMs = configOptions.timeoutMs || 300_000; // 5 minutes
-  const maxChunks = configOptions.maxChunks || 10000;   // <--- HUGE increase from 200!
+  const timeoutMs = configOptions.timeoutMs || 300_000;
+  const maxChunks = configOptions.maxChunks || 10000;
   
-  const {
-    model = CONFIG.LLM_MODEL,
-    options = {} // Allow passing Ollama specific options like num_ctx
-  } = configOptions;
+  const { model = CONFIG.LLM_MODEL, options = {} } = configOptions;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
@@ -138,12 +114,12 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-const body = {
+    const body = {
       model,
       prompt,
       stream: true,
       options: {
-        num_ctx: 8192, // <--- Keep normal chat streams fast!
+        num_ctx: 8192, // Keep normal chat streams fast!
         ...options
       }
     };
@@ -204,6 +180,7 @@ const body = {
     return { success: true };
 
   } catch (err) {
+    console.error("[llmStream] Error:", err);
     if (err.name === "AbortError") {
       return { success: false, error: `LLM stream timed out after ${timeoutMs}ms` };
     }

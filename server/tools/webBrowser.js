@@ -5,6 +5,7 @@
 import * as cheerio from "cheerio";
 import { createHttpClient } from "../utils/httpClient.js";
 import { storeCredential, getCredential } from "../utils/credentialStore.js";
+import { extractFromWebContent } from "../knowledge.js";
 
 const MAX_CONTENT = 8000;
 const MAX_LINKS = 50;
@@ -248,6 +249,16 @@ async function handleBrowse(client, url, sessionName) {
   const page = parsePage(html, url);
   const loginStatus = detectLoginStatus(html);
 
+  // Learn from browsed content (non-blocking)
+  let learnedFacts = [];
+  if (page.textContent && page.textContent.length > 100) {
+    try {
+      learnedFacts = await extractFromWebContent(page.title, page.textContent, url) || [];
+    } catch (e) {
+      console.warn("[webBrowser] Knowledge extraction failed:", e.message);
+    }
+  }
+
   return {
     tool: "webBrowser",
     success: true,
@@ -264,7 +275,8 @@ async function handleBrowse(client, url, sessionName) {
       statusCode: response.status,
       sessionActive: loginStatus === "logged_in",
       loginStatus,
-      session: sessionName
+      session: sessionName,
+      learnedFacts
     }
   };
 }

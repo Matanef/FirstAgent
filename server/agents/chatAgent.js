@@ -360,12 +360,50 @@ export async function handleChat(message, recentTurns = [], options = {}) {
     buildUserContext(options.conversationId).catch(() => "")
   ]);
 
-  // UNIFIED AGENT: Check if we need to run tools first!
-  const toolResult = await resolveWithTools(message, options, recentTurns);
+// UNIFIED AGENT: Check if we need to run tools first!
+const toolResult = await resolveWithTools(message, options, recentTurns);
 
-  // Detect if the tool returned a rich HTML widget (news ticker, finance table, etc.)
-  // These must be passed through to the frontend — the LLM should NOT try to summarize them.
-  const hasHtmlWidget = toolResult?.data?.html;
+// =========================================================================
+// 🚀 FIX: BYPASS LLM SYNTHESIS FOR PREFORMATTED TOOL OUTPUTS
+// =========================================================================
+if (toolResult && (toolResult.final || toolResult.data?.preformatted)) {
+  console.log(`[chatAgent] Bypassing LLM synthesis for preformatted tool output (${toolResult.tool}).`);
+
+  if (options.onStep) {
+    options.onStep({ 
+      type: "thought", 
+      phase: "ANSWER", 
+      content: `Returning preformatted output from ${toolResult.tool} directly without LLM synthesis.`, 
+      timestamp: new Date().toISOString() 
+    });
+  }
+
+  // Stream the preformatted text directly back to the UI
+  if (options.onChunk && toolResult.data?.text) {
+    options.onChunk(toolResult.data.text);
+  }
+
+  // Run the background facts extractor so we don't lose memory capabilities
+  extractAndSaveFacts(message, options.conversationId).catch(err =>
+    console.warn("[chatAgent] Background fact extraction error:", err.message)
+  );
+
+  return {
+    reply: toolResult.data?.text || "Task completed.",
+    tool: toolResult.tool,
+    html: toolResult.data?.html || null,
+    success: toolResult.success,
+    mode: "task",
+    data: toolResult.data,
+    reasoning: "preformatted_tool_bypass",
+    stateGraph: toolResult.stateGraph || [],
+    thoughtChain: toolResult.thoughtChain || []
+  };
+}
+// =========================================================================
+
+// Detect if the tool returned a rich HTML widget (news ticker, finance table, etc.)
+const hasHtmlWidget = toolResult?.data?.html;
 
   let toolContextStr = "";
   if (toolResult && toolResult.reply) {

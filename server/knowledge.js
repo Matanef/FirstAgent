@@ -53,6 +53,18 @@ async function saveKnowledge(facts) {
  * Ongoing events never expire.
  */
 export async function addFact({ topic, fact, source, ongoing = false, permanent = false, expiryDays }) {
+  // Guard: reject garbage topics that are too short, pure stopwords, or conversational noise
+  const STOPWORDS = new Set(["what", "is", "are", "was", "were", "the", "a", "an", "this", "that",
+    "how", "who", "when", "where", "why", "did", "does", "do", "some", "over", "about",
+    "lets", "let", "catch", "up", "on", "get", "show", "me", "search", "find", "look",
+    "check", "tell", "give", "read", "result", "results"]);
+  const topicWords = (topic || "").toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+  const substantiveWords = topicWords.filter(w => !STOPWORDS.has(w));
+  if (!topic || topic.trim().length < 3 || substantiveWords.length === 0) {
+    console.log(`[knowledge] Rejected garbage topic: "${topic}"`);
+    return null;
+  }
+
   const facts = await loadKnowledge();
   const topicLower = (topic || "").toLowerCase();
 
@@ -210,17 +222,36 @@ export async function extractFromNews(articles, topic) {
 
 /**
  * Extract facts from search results.
+ * Derives topic from actual content, not the raw user query, to avoid
+ * garbage topics like "what is" polluting the knowledge store.
  */
 export async function extractFromSearch(results, synthesis, query) {
   if (!results || results.length === 0) return [];
 
+  // Clean the query: strip question words and conversational noise
+  const cleanedQuery = (query || "")
+    .replace(/^(what|who|when|where|why|how|tell\s+me|explain|describe|search\s+for)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    .replace(/[?.!]+$/g, "")
+    .trim();
+
+  // Determine a good topic: prefer cleaned query if substantive, else use top result title
+  const topTitle = results[0]?.title || "";
+  const isGarbageQuery = !cleanedQuery || cleanedQuery.length < 4 ||
+    /^(the|a|an|some|this|that|it|there)\b$/i.test(cleanedQuery);
+  const topic = isGarbageQuery
+    ? topTitle.substring(0, 60).replace(/[:.!?]+$/, "").trim()
+    : cleanedQuery.substring(0, 60);
+
+  if (!topic || topic.length < 3) return [];
+
+  const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop|massacre|protest|revolt|uprising)\b/i;
+
   // If we have an LLM synthesis, store that as a single comprehensive fact
   if (synthesis && synthesis.length > 20) {
-    const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop)\b/i;
     const ongoing = ongoingKeywords.test(synthesis) || ongoingKeywords.test(query || "");
 
     const r = await addFact({
-      topic: (query || "search result").substring(0, 60),
+      topic,
       fact: synthesis.substring(0, 300),
       source: "search",
       ongoing,
@@ -231,10 +262,12 @@ export async function extractFromSearch(results, synthesis, query) {
   // Fallback: store top result
   const top = results[0];
   if (top?.title && top?.snippet) {
+    const ongoing = ongoingKeywords.test(top.title) || ongoingKeywords.test(top.snippet);
     const r = await addFact({
-      topic: (query || top.title).substring(0, 60),
+      topic,
       fact: `${top.title}. ${top.snippet}`.substring(0, 300),
       source: `search/${top.source || "web"}`,
+      ongoing,
     });
     return r ? [r] : [];
   }

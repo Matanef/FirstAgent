@@ -2629,36 +2629,42 @@ Return ONLY valid JSON:
           }
         }
 
-        // ── React to replies on own recent posts ──
+// ── React to replies on own recent posts ──
         try {
           const myMeResult = await apiRequest("GET", "/agents/me", null, apiKey);
           const myName = myMeResult.ok ? getAgentName(myMeResult.data?.agent || myMeResult.data) : null;
           if (myName) {
             const myPostsResult = await apiRequest("GET", `/agents/profile?name=${encodeURIComponent(myName)}`, null, apiKey);
             const myPosts = myPostsResult.ok ? (myPostsResult.data?.recentPosts || myPostsResult.data?.recent_posts || []).slice(0, 4) : [];
-            const personalityForReplies = await getPersonalitySummary();
+            
+            // 1. UPGRADE: Load the full personality, learned interests, and recent knowledge
+            const [fullPersonality, learningCtx, knowledgeCtx] = await Promise.all([
+              getPersonalityContext("moltbook"),
+              getLearningContext(),
+              getKnowledgeSummary()
+            ]);
+
+            // 2. UPGRADE: Fallback memory map in case the API drops parent_id links
+            const mem = await getMemory();
+            if (!mem.meta.moltbook.repliedCommentsMap) mem.meta.moltbook.repliedCommentsMap = {};
+            const repliedMap = mem.meta.moltbook.repliedCommentsMap;
+
             let repliesPosted = 0;
 
             for (const myPost of myPosts) {
               if (repliesPosted >= 3) break; // Cap replies per heartbeat
               if (!myPost.id || (myPost.comment_count || 0) === 0) continue;
 
-              // Fetch comments on this post
               const commentsOnMyPost = await apiRequest("GET", `/posts/${myPost.id}/comments?sort=new&limit=10`, null, apiKey);
               if (!commentsOnMyPost.ok) continue;
               const comments = Array.isArray(commentsOnMyPost.data) ? commentsOnMyPost.data : (commentsOnMyPost.data?.comments || []);
 
-              // Filter to comments NOT by us
               const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
               if (otherComments.length === 0) continue;
 
-              // Check which ones we've already replied to (via parent_id matching)
+              // Identify our own replies so we can show the LLM what we've already said
               const myReplies = comments.filter(c => getAgentName(c.author).toLowerCase() === myName.toLowerCase());
-              const repliedToIds = new Set(myReplies.map(r => r.parent_id).filter(Boolean));
-              const unreplied = otherComments.filter(c => !repliedToIds.has(c.id));
-              if (unreplied.length === 0) continue;
 
-              // Fetch our post's full content for context
               let postBody = "";
               try {
                 const postDetail = await apiRequest("GET", `/posts/${myPost.id}`, null, apiKey);
@@ -2667,11 +2673,25 @@ Return ONLY valid JSON:
                 }
               } catch { /* skip */ }
 
-              const commentTexts = unreplied.slice(0, 5).map((c, i) =>
-                `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 300)}" (id: ${c.id})`
-              ).join("\n");
+              // 3. UPGRADE: Prepare comment context, explicitly flagging ones we've already replied to
+              const commentsContext = otherComments.slice(0, 5).map((c, i) => {
+                const repliesToThis = myReplies.filter(r => r.parent_id === c.id).map(r => r.content);
+                // Check memory map as a fallback
+                if (repliesToThis.length === 0 && repliedMap[c.id]) {
+                   repliesToThis.push(repliedMap[c.id]);
+                }
 
-              const replyPrompt = `${personalityForReplies}
+                let txt = `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 300)}" (id: ${c.id})`;
+                if (repliesToThis.length > 0) {
+                  txt += `\n   [⚠️ YOU ALREADY REPLIED TO THIS WITH: "${repliesToThis.join(" | ")}"]`;
+                }
+                return txt;
+              }).join("\n");
+
+              // 4. UPGRADE: Prompt is now heavily grounded in personality and strictly bans customer service behavior
+              const replyPrompt = `${fullPersonality}
+${learningCtx ? `\n${learningCtx}\n` : ""}
+${knowledgeCtx ? `\n${knowledgeCtx}\n` : ""}
 
 You are replying to comments on YOUR OWN post on Moltbook (a social platform for AI agents).
 
@@ -2679,18 +2699,19 @@ YOUR POST:
 Title: "${myPost.title || "Untitled"}"
 ${postBody ? `Content: "${postBody}"` : ""}
 
-UNREPLIED COMMENTS (${unreplied.length}):
-${commentTexts}
+COMMENTS ON YOUR POST:
+${commentsContext}
 
 INSTRUCTIONS:
-- Reply to ALL comments that deserve a response (skip low-effort ones like "lol" or single emojis)
-- As the post author, you have authority on the topic — share deeper insights, answer questions, respectfully engage with disagreements
-- Keep each reply 1-3 sentences. Be genuine, not generic.
-- Reference specific points from their comment to show you read it
+- Read the comments. If a comment has a [⚠️ YOU ALREADY REPLIED...] tag, DO NOT reply again UNLESS you have entirely new, valuable information, a counter-argument, or a follow-up question to add.
+- Skip low-effort comments like "lol" or single emojis.
+- Keep each reply 1-3 sentences. Draw directly from your knowledge and stances.
+- As the post author, share deeper insights, answer questions, or respectfully engage with disagreements.
+- BANNED PHRASES: "Thanks for the engagement", "Great to hear", "Thanks for reaching out", "Great post". Speak like a direct, thoughtful agent, NOT a customer service bot!
 
 Return ONLY valid JSON — an array of replies:
 {"replies": [{"commentIndex": 1, "text": "your reply"}, ...]}
-If no comments deserve a reply: {"replies": []}`;
+If no comments deserve a reply (or you have nothing new to add to already-replied comments): {"replies": []}`;
 
               const replyResult = await llm(replyPrompt, { timeoutMs: 45000, format: "json" });
               if (replyResult.success && replyResult.data?.text) {
@@ -2702,7 +2723,7 @@ If no comments deserve a reply: {"replies": []}`;
                   for (const reply of replies) {
                     if (repliesPosted >= 3) break;
                     if (!reply.commentIndex || !reply.text) continue;
-                    const target = unreplied[reply.commentIndex - 1];
+                    const target = otherComments[reply.commentIndex - 1];
                     if (!target?.id) continue;
 
                     const nested = await apiRequest("POST", `/posts/${myPost.id}/comments`, {
@@ -2711,9 +2732,14 @@ If no comments deserve a reply: {"replies": []}`;
 
                     if (nested.ok) {
                       repliesPosted++;
+                      
+                      // Save to memory map to prevent future amnesia
+                      repliedMap[target.id] = reply.text;
+                      await saveJSON(MEMORY_FILE, mem);
+
                       output += `  💬 Replied to ${getAgentName(target.author)} on your post "${(myPost.title || "").substring(0, 40)}"\n`;
                       output += `     _"${reply.text.substring(0, 100)}…"_\n`;
-                      actions.push(`Replied to ${getAgentName(target.author)}'s comment on own post`);
+                      actions.push(`Replied to ${getAgentName(target.author)}'s comment`);
                       await recordInteraction("comment", { postId: myPost.id, postTitle: myPost.title, text: reply.text, isReply: true, replyToAgent: getAgentName(target.author) });
                     } else if (nested.status === 429) {
                       output += `  ⛔ Rate limited — stopping replies\n`;
