@@ -2659,11 +2659,21 @@ Return ONLY valid JSON:
               if (!commentsOnMyPost.ok) continue;
               const comments = Array.isArray(commentsOnMyPost.data) ? commentsOnMyPost.data : (commentsOnMyPost.data?.comments || []);
 
-              const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
+const otherComments = comments.filter(c => getAgentName(c.author).toLowerCase() !== myName.toLowerCase());
               if (otherComments.length === 0) continue;
 
-              // Identify our own replies so we can show the LLM what we've already said
+              // Identify our own replies so we can check against them
               const myReplies = comments.filter(c => getAgentName(c.author).toLowerCase() === myName.toLowerCase());
+
+              // 🚀 FIX: STRICTLY filter out comments we've already replied to
+              // This prevents the LLM from seeing them and getting tempted to reply again
+              const actionableComments = otherComments.filter(c => {
+                const hasRepliedInAPI = myReplies.some(r => r.parent_id === c.id);
+                const hasRepliedInMem = !!repliedMap[c.id];
+                return !hasRepliedInAPI && !hasRepliedInMem;
+              });
+
+              if (actionableComments.length === 0) continue; // No new comments to reply to!
 
               let postBody = "";
               try {
@@ -2673,22 +2683,12 @@ Return ONLY valid JSON:
                 }
               } catch { /* skip */ }
 
-              // 3. UPGRADE: Prepare comment context, explicitly flagging ones we've already replied to
-              const commentsContext = otherComments.slice(0, 5).map((c, i) => {
-                const repliesToThis = myReplies.filter(r => r.parent_id === c.id).map(r => r.content);
-                // Check memory map as a fallback
-                if (repliesToThis.length === 0 && repliedMap[c.id]) {
-                   repliesToThis.push(repliedMap[c.id]);
-                }
-
-                let txt = `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 300)}" (id: ${c.id})`;
-                if (repliesToThis.length > 0) {
-                  txt += `\n   [⚠️ YOU ALREADY REPLIED TO THIS WITH: "${repliesToThis.join(" | ")}"]`;
-                }
-                return txt;
+              // 3. UPGRADE: Prepare comment context using ONLY actionable comments
+              const commentsContext = actionableComments.slice(0, 5).map((c, i) => {
+                return `${i + 1}. ${getAgentName(c.author)}: "${(c.content || "").substring(0, 300)}" (id: ${c.id})`;
               }).join("\n");
 
-              // 4. UPGRADE: Prompt is now heavily grounded in personality and strictly bans customer service behavior
+              // 4. UPGRADE: Cleaned up prompt since we handle the filtering in code
               const replyPrompt = `${fullPersonality}
 ${learningCtx ? `\n${learningCtx}\n` : ""}
 ${knowledgeCtx ? `\n${knowledgeCtx}\n` : ""}
@@ -2703,7 +2703,7 @@ COMMENTS ON YOUR POST:
 ${commentsContext}
 
 INSTRUCTIONS:
-- Read the comments. If a comment has a [⚠️ YOU ALREADY REPLIED...] tag, DO NOT reply again UNLESS you have entirely new, valuable information, a counter-argument, or a follow-up question to add.
+- Read the comments and decide which ones to reply to.
 - Skip low-effort comments like "lol" or single emojis.
 - Keep each reply 1-3 sentences. Draw directly from your knowledge and stances.
 - As the post author, share deeper insights, answer questions, or respectfully engage with disagreements.
@@ -2711,7 +2711,7 @@ INSTRUCTIONS:
 
 Return ONLY valid JSON — an array of replies:
 {"replies": [{"commentIndex": 1, "text": "your reply"}, ...]}
-If no comments deserve a reply (or you have nothing new to add to already-replied comments): {"replies": []}`;
+If no comments deserve a reply: {"replies": []}`;
 
               const replyResult = await llm(replyPrompt, { timeoutMs: 45000, format: "json" });
               if (replyResult.success && replyResult.data?.text) {

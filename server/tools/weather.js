@@ -311,7 +311,7 @@ export async function weather(query) {
       };
     }
 
-    // ── CURRENT WEATHER + AUTO-RECORD ──
+// ── CURRENT WEATHER + AUTO-RECORD ──
     const temp = data.main?.temp;
     const feelsLike = data.main?.feels_like;
     const humidity = data.main?.humidity;
@@ -319,13 +319,53 @@ export async function weather(query) {
     const description = data.weather?.[0]?.description;
     const country = data.sys?.country;
 
-    // Record temperature in background (don't await — fire & forget)
+// =========================================================
+    // 🚀 NEW: FETCH AIR QUALITY (AQI) & DUST/PARTICLE DATA
+    // =========================================================
+    let aqi = null;
+    let aqi_description = null;
+    let pm10 = null;
+    let pm2_5 = null;
+    
+    // The first weather call gives us the lat/lon needed for the AQI call
+    if (data.coord && data.coord.lat && data.coord.lon) {
+      try {
+        const aqiUrl = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${data.coord.lat}&lon=${data.coord.lon}&appid=${process.env.OPENWEATHER_KEY}`;
+        const aqiRes = await fetch(aqiUrl);
+        if (aqiRes.ok) {
+          const aqiData = await aqiRes.json();
+          if (aqiData.list && aqiData.list.length > 0) {
+            aqi = aqiData.list[0].main.aqi; 
+            pm10 = aqiData.list[0].components.pm10;     
+            pm2_5 = aqiData.list[0].components.pm2_5;   
+            
+            // Map the OpenWeather scale (1-5) to English for the LLM
+            const aqiMap = {
+              1: "Good",
+              2: "Fair",
+              3: "Moderate",
+              4: "Poor (High Pollution/Dust)",
+              5: "Very Poor (Hazardous)"
+            };
+            aqi_description = aqiMap[aqi] || "Unknown";
+            
+            data.air_pollution = aqiData; 
+          }
+        }
+      } catch (aqiErr) {
+        console.warn("⚠️ [weather] Failed to fetch AQI data:", aqiErr.message);
+      }
+    }
+    // =========================================================
+
+// Record temperature in background (don't await — fire & forget)
     recordTemperature(city, country, temp, feelsLike, humidity, windSpeed, description);
 
+    // THIS is the successful return block!
     return {
       tool: "weather",
       success: true,
-      final: true,
+      final: false, // <-- Correctly set to false
       data: {
         mode: "current",
         city,
@@ -335,13 +375,18 @@ export async function weather(query) {
         humidity,
         wind_speed: windSpeed,
         description,
+        aqi,
+        aqi_description,  // <-- Successfully included!
+        pm10,
+        pm2_5,
         raw: data
       }
     };
   } catch (err) {
+    // THIS is the error return block!
     return {
       tool: "weather",
-      success: false,
+      success: false, // <-- This should be false if it caught an error
       final: true,
       error: `Weather tool failed: ${err.message}`
     };

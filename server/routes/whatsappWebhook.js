@@ -214,22 +214,8 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     // ──────────────────────────────────────────────────────
     const convState = getState(from);
 
-    if (convState?.state === "awaiting_news_category") {
-      console.log(`📱 [WhatsApp] Continuing news flow: category = "${body.trim()}"`);
-      clearState(from);
-      try {
-        const TOOLS = await loadTools();
-        const category = body.trim();
-        const result = await TOOLS.news({ text: `${category} news`, context: {} });
-        const formatted = formatNewsWA(result, `${category} News`);
-        await sendWhatsAppMessage(from, formatted);
-      } catch (e) {
-        await sendWhatsAppMessage(from, `❌ Could not fetch news: ${e.message}`);
-      }
-      return;
-    }
-
     // ── STATEFUL: Email confirmation ("send it" / "cancel") ──
+    // Keeping this because WhatsApp requires explicit confirmation out-of-band
     if (convState?.state === "awaiting_email_confirm") {
       const draft = convState.data?.draft;
       if (/\b(send\s*it|yes|confirm|go\s+ahead|approve|שלח)\b/i.test(lower)) {
@@ -266,88 +252,7 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     }
 
     // ──────────────────────────────────────────────────────
-    // WEATHER: direct weather queries
-    // ──────────────────────────────────────────────────────
-    if (/\b(weather|forecast|temperature|מזג\s+אוויר|what'?s?\s+the\s+weather)\b/i.test(lower)) {
-      console.log(`📱 [WhatsApp] Weather query detected`);
-      try {
-        const TOOLS = await loadTools();
-        const city = await getSavedCity();
-        const result = await TOOLS.weather({ text: body, context: { city: city || "__USE_GEOLOCATION__" } });
-        await sendWhatsAppMessage(from, formatWeatherWA(result));
-      } catch (e) {
-        await sendWhatsAppMessage(from, `❌ Weather error: ${e.message}`);
-      }
-      return;
-    }
-
-    // ──────────────────────────────────────────────────────
-    // NEWS: show categories → stateful flow
-    // ──────────────────────────────────────────────────────
-    if (/\b(news|חדשות|latest\s+news|headlines|what'?s?\s+happening)\b/i.test(lower) &&
-        !/\b(tech|technology|sport|business|science|world|israel)\b/i.test(lower)) {
-      console.log(`📱 [WhatsApp] News query → showing categories`);
-      setState(from, "awaiting_news_category");
-      await sendWhatsAppMessage(from,
-        "📰 *News Categories*\n\n" +
-        "1️⃣ Technology\n" +
-        "2️⃣ Business\n" +
-        "3️⃣ Sports\n" +
-        "4️⃣ Science\n" +
-        "5️⃣ World\n" +
-        "6️⃣ Israel\n\n" +
-        "Reply with a category name:"
-      );
-      return;
-    }
-
-    // News with specific category (direct)
-    if (/\b(tech|technology|sport|business|science|world|israel)\s*(news|headlines)?\b/i.test(lower)) {
-      console.log(`📱 [WhatsApp] Specific news category detected`);
-      try {
-        const TOOLS = await loadTools();
-        const category = lower.match(/\b(tech|technology|sport|business|science|world|israel)\b/i)?.[0] || "general";
-        const result = await TOOLS.news({ text: `${category} news`, context: {} });
-        await sendWhatsAppMessage(from, formatNewsWA(result, `${category} News`));
-      } catch (e) {
-        await sendWhatsAppMessage(from, `❌ News error: ${e.message}`);
-      }
-      return;
-    }
-
-    // ──────────────────────────────────────────────────────
-    // CALENDAR: set/schedule/book events
-    // ──────────────────────────────────────────────────────
-    if (/\b(set|schedule|book|appointment|meeting|conference|event|פגישה|תזכורת)\b/i.test(lower) &&
-        /\b(at|on|for|ב|ל)\b/i.test(lower)) {
-      console.log(`📱 [WhatsApp] Calendar intent detected`);
-      try {
-        const TOOLS = await loadTools();
-        const result = await TOOLS.calendar({ text: body, context: {} });
-        await sendWhatsAppMessage(from, formatCalendarWA(result));
-      } catch (e) {
-        await sendWhatsAppMessage(from, `❌ Calendar error: ${e.message}`);
-      }
-      return;
-    }
-
-    // ──────────────────────────────────────────────────────
-    // TASKS: add/list/mark/remove tasks
-    // ──────────────────────────────────────────────────────
-    if (/\b(add\s+task|my\s+tasks|current\s+tasks|mark.*done|remove.*task|tasks?\s+due|what\s+tasks|todo|to-do)\b/i.test(lower)) {
-      console.log(`📱 [WhatsApp] Task intent detected`);
-      try {
-        const TOOLS = await loadTools();
-        const result = await TOOLS.tasks({ text: body, context: {} });
-        await sendWhatsAppMessage(from, formatTasksWA(result));
-      } catch (e) {
-        await sendWhatsAppMessage(from, `❌ Task error: ${e.message}`);
-      }
-      return;
-    }
-
-    // ──────────────────────────────────────────────────────
-    // GENERIC: Route through full agent pipeline (fallback)
+    // GENERIC: Route through full agent pipeline
     // ──────────────────────────────────────────────────────
     console.log(`🤖 [WhatsApp] Routing through agent pipeline: "${body.slice(0, 60)}..."`);
 

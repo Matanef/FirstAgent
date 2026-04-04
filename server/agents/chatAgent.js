@@ -366,7 +366,7 @@ const toolResult = await resolveWithTools(message, options, recentTurns);
 // =========================================================================
 // 🚀 FIX: BYPASS LLM SYNTHESIS FOR PREFORMATTED TOOL OUTPUTS
 // =========================================================================
-if (toolResult && (toolResult.final || toolResult.data?.preformatted)) {
+if (toolResult && toolResult.tool !== "weather" && (toolResult.final || toolResult.data?.preformatted)) {
   console.log(`[chatAgent] Bypassing LLM synthesis for preformatted tool output (${toolResult.tool}).`);
 
   if (options.onStep) {
@@ -403,13 +403,19 @@ if (toolResult && (toolResult.final || toolResult.data?.preformatted)) {
 // =========================================================================
 
 // Detect if the tool returned a rich HTML widget (news ticker, finance table, etc.)
-const hasHtmlWidget = toolResult?.data?.html;
+  const hasHtmlWidget = toolResult?.data?.html;
 
   let toolContextStr = "";
-  if (toolResult && toolResult.reply) {
+  // Check for .reply OR .data
+  if (toolResult && (toolResult.reply || toolResult.data)) {
+    // Convert the data object to a string so the LLM can read the parameters (like AQI)
+    const toolPayload = JSON.stringify({ 
+      summary: toolResult.reply, 
+      raw_data: toolResult.data 
+    });
+
     if (hasHtmlWidget) {
       // TV ANCHOR MODE: The tool returned a visual widget.
-      // Instruct the LLM to give a brief intro ONLY — the widget will render below.
       toolContextStr = `[INTERNAL TOOL RESULTS — VISUAL WIDGET]
 Your tools just returned a rich visual widget (HTML) that will be rendered directly in the UI below your response.
 DO NOT describe or summarize the data in detail — the user can see the widget.
@@ -423,13 +429,13 @@ Keep it short and natural. The widget does the heavy lifting.`;
       toolContextStr = `[INTERNAL TOOL RESULTS — YOU HAVE THIS DATA]
 Your internal system tools successfully retrieved the following data. This is real, verified content that you now possess:
 """
-${toolResult.reply}
+${toolPayload}
 """
 CRITICAL INTEGRATION RULES:
 1. This data IS your knowledge now. Present it confidently as information you know.
 2. NEVER say "I used a tool", "The tool returned", "I can't access external links", or "Could you provide the key points". YOU ALREADY HAVE THE DATA ABOVE.
 3. If the user asked you to read a URL, you DID read it — the content is above. Summarize, analyze, or discuss it directly.
-4. Add your own perspective, opinions, and connections. Don't just parrot the data — engage with it as a thoughtful agent.`;
+4. Add your own perspective, opinions, and recommendations based on the data. Don't just parrot the data — engage with it as a thoughtful agent.`;
     }
   }
 

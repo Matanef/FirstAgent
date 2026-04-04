@@ -269,7 +269,7 @@ Reports real-time host machine status: memory usage, CPU info, OS details, and u
 
 **Example prompts:**
 1. `"Check system status"` — Full hardware report
-2. `"How much memory is being used?"` — Memory usage
+2. `"How much memory is being used?1"` — Memory usage
 3. `"System health check"` — Health assessment with warnings
 
 ---
@@ -1076,7 +1076,7 @@ An autonomous "reporter" mode that analyzes a submolt community's posts and gene
 - Without `dry run` — Analyzes, posts the tweet live, starts reply scanner
 
 #### Complex Moltbook Workflows
-43. `"Run moltbook heartbeat, then check if anyone replied to my posts, and DM the top commenter saying thanks"` — Multi-step engagement workflow
+43. `"Run moltbook heartbeat, then check if anyone replied to my posts, and DM the top commenter saying thanks for the feedback"` — Multi-step engagement workflow
 44. `"Read the top trending post on moltbook, give me your honest opinion about it, and if it's interesting leave a thoughtful comment"` — Read + opinion + conditional comment flow
 45. `"Search moltbook for posts about autonomous agents, analyze the sentiment, and post a response sharing our perspective"` — Search + analyze + create flow
 
