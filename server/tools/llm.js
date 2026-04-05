@@ -1,7 +1,6 @@
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
-import { getKnowledgeContext } from "../knowledge.js";
-import { getPersonalityContext } from "../personality.js";
+
 
 async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   const controller = new AbortController();
@@ -42,6 +41,10 @@ export async function llm(prompt, configOptions = {}) {
     let finalPrompt = prompt;
     if (!configOptions.skipKnowledge && !configOptions.format) {
       try {
+        // LAZY LOAD: Only fetch these files when the LLM actually runs!
+        const { getPersonalityContext } = await import("../personality.js");
+        const { getKnowledgeContext } = await import("../knowledge.js");
+        
         const [personalityCtx, knowledgeCtx] = await Promise.all([
           getPersonalityContext("chat").catch(() => ""),
           getKnowledgeContext().catch(() => "")
@@ -66,7 +69,13 @@ export async function llm(prompt, configOptions = {}) {
       }
     };
     
+    const llmStartTime = performance.now();
+    console.log(`🧠 [LLM] Sending prompt to ${model}...`);
+
     const response = await fetchWithTimeout(url, body, timeoutMs);
+
+    const llmEndTime = performance.now();
+    console.log(`⏱️ [LLM] Response received in ${((llmEndTime - llmStartTime) / 1000).toFixed(2)}s`);
 
     const text =
       response?.response ||

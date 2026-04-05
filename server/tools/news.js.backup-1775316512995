@@ -387,9 +387,7 @@ async function scrapeArticle(url) {
 async function summarizeArticle(title, content) {
   if (!content) return null;
   
-  const prompt = `You are a strict data processor. Summarize the following text in 2-3 sentences. 
-If the text is extremely short, just rephrase the core fact. 
-CRITICAL: DO NOT apologize. DO NOT say "I don't know". DO NOT mention your knowledge cutoff. Output ONLY the summary.
+  const prompt = `Summarize this news article in 2-3 sentences. Be concise and factual.
 
 Title: ${title}
 
@@ -399,13 +397,7 @@ ${content}
 Summary (2-3 sentences):`;
 
   try {
-    // FIX: Isolate this call from the chat history and weather context
-    const result = await llm(prompt, { 
-      skipKnowledge: true,
-      skipHistory: true, 
-      systemOverride: "You are a strict data summarizer. Do not converse or apologize. Output ONLY the summary."
-    });
-    
+    const result = await llm(prompt);
     if (result.success && result.data?.text) {
       return result.data.text.trim();
     }
@@ -564,21 +556,19 @@ ${personalityCtx}
 Based on the following news summaries${topic ? ` about ${topic}` : ''}, analyze the current situation. 
 
 Write exactly TWO paragraphs:
-First paragraph: Synthesize the core facts. If the data is sparse, summarize exactly what is there.
-Second paragraph: Give your opinion or observation. Speak entirely in YOUR voice (dry, observational, systems-thinking).
+First paragraph: Synthesize the core facts and major themes. Keep it grounded and factual.
+Second paragraph: Give your opinion or observation. Speak entirely in YOUR voice (dry, observational, systems-thinking). Point out the absurdity or connect the dots.
 
 CRITICAL INSTRUCTIONS: 
-1. DO NOT apologize for "incomplete information" or missing data. Work with what you have.
-2. DO NOT mention your AI nature, knowledge cutoffs, or inability to browse.
-3. DO NOT use headers, titles, or markdown like "Paragraph 1". Just write the text naturally.
+1. Drop the academic, journalistic tone. Be Lanou.
+2. DO NOT use headers, titles, or markdown like "Paragraph 1" or "###". Just write the text naturally.
 
 NEWS DATA:
 ${combinedText}`;
         
         // Notice we added skipKnowledge: true because we don't want the LLM 
         // to confuse past knowledge with the specific news articles we just handed it.
-        const synthesisResult = await llm(synthesisPrompt, { skipKnowledge: true, 
-          skipHistory: true }); 
+        const synthesisResult = await llm(synthesisPrompt, { skipKnowledge: true }); 
 if (synthesisResult.success && synthesisResult.data?.text) {
           // Instead of just trimming it, let's split it by line breaks and wrap in <p> tags
           const rawText = synthesisResult.data.text.trim();

@@ -361,6 +361,33 @@ export async function weather(query) {
 // Record temperature in background (don't await — fire & forget)
     recordTemperature(city, country, temp, feelsLike, humidity, windSpeed, description);
 
+    // =========================================================
+    // 🎨 NEW: GENERATE THE WEATHER HTML WIDGET
+    // =========================================================
+    const weatherHtml = `
+      <div class="weather-widget" style="background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
+          <div style="font-size: 1.25rem; font-weight: 600; color: var(--text-primary);">📍 ${city}, ${country || ''}</div>
+          <div style="font-size: 0.95rem; color: var(--text-secondary); text-transform: capitalize;">${description}</div>
+          
+          <div style="font-size: 0.85rem; color: var(--text-secondary); display: flex; gap: 1rem; margin-top: 0.5rem;">
+            <span>💧 Humidity: ${humidity}%</span>
+            <span>💨 Wind: ${windSpeed} m/s</span>
+          </div>
+          
+          ${aqi_description ? `
+          <div style="font-size: 0.85rem; color: var(--text-primary); margin-top: 0.3rem; background: var(--bg-secondary); padding: 0.3rem 0.6rem; border-radius: 4px; display: inline-block; width: fit-content; border: 1px solid var(--border);">
+            🍃 Air Quality: <strong>${aqi_description}</strong> ${pm10 ? `| PM10: ${pm10}` : ''}
+          </div>` : ''}
+        </div>
+        
+        <div style="text-align: right;">
+          <div style="font-size: 2.8rem; font-weight: bold; color: var(--accent); line-height: 1;">${Math.round(temp)}°C</div>
+          <div style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.4rem;">Feels like ${Math.round(feelsLike)}°C</div>
+        </div>
+      </div>
+    `;
+
     // THIS is the successful return block!
     return {
       tool: "weather",
@@ -376,10 +403,12 @@ export async function weather(query) {
         wind_speed: windSpeed,
         description,
         aqi,
-        aqi_description,  // <-- Successfully included!
+        aqi_description,
         pm10,
         pm2_5,
-        raw: data
+        raw: data,
+        html: weatherHtml, // <-- We now pass the widget to the coordinator!
+        text: `Current weather in ${city}: ${temp}°C, ${description}. AQI: ${aqi_description || 'Unknown'}.`
       }
     };
   } catch (err) {

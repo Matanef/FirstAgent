@@ -3,7 +3,15 @@
 // dead code identification, module relationship mapping
 
 import fs from "fs/promises";
+import fsSync from "fs";           // <--- ADD THIS LINE
 import path from "path";
+import { fileURLToPath } from "url";
+
+// <--- Add these 3 lines --->
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", "__pycache__",
@@ -43,6 +51,7 @@ async function collectFiles(dirPath, depth = 0, maxDepth = 8) {
   return files;
 }
 
+
 /**
  * Extract imports from a file
  */
@@ -56,74 +65,95 @@ async function extractImports(filePath) {
 
   const imports = [];
   const exports = [];
+  const lineCount = content.split("\n").length;
 
-  // ES module imports
-  const esImportRegex = /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?['"]([^'"]+)['"]/g;
+  // 1. Strip comments to avoid false positive matches
+  const cleanContent = content
+    .replace(/\/\*[\s\S]*?\*\//g, "") // Remove block comments
+    .replace(/\/\/.*$/gm, "");        // Remove line comments
+
+  // 2. ES module imports (with strict boundaries to avoid matching JS strings)
+  // Matches: import { x } from "y" | import x from "y"
+  const esImportFromRegex = /\bimport\s+(?:type\s+)?[a-zA-Z0-9_{},\s*]+\s+from\s+['"]([^'"]+)['"]/g;
   let match;
-  while ((match = esImportRegex.exec(content)) !== null) {
-    imports.push({ type: "import", source: match[1], raw: match[0].trim() });
+  while ((match = esImportFromRegex.exec(cleanContent)) !== null) {
+    imports.push({ type: "import", source: match[1] });
   }
 
-  // Dynamic imports
-  const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((match = dynamicImportRegex.exec(content)) !== null) {
+  // Matches bare imports: import "style.css" (must be start of line or after ;)
+  const bareImportRegex = /(?:^|[\r\n;])\s*import\s+['"]([^'"]+)['"]/g;
+  while ((match = bareImportRegex.exec(cleanContent)) !== null) {
+    imports.push({ type: "import", source: match[1] });
+  }
+
+  // 3. Dynamic imports: import("y")
+  const dynamicImportRegex = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((match = dynamicImportRegex.exec(cleanContent)) !== null) {
     imports.push({ type: "dynamic", source: match[1] });
   }
 
-  // CommonJS requires
-  const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((match = requireRegex.exec(content)) !== null) {
+  // 4. CommonJS requires: require("y")
+  const requireRegex = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((match = requireRegex.exec(cleanContent)) !== null) {
     imports.push({ type: "require", source: match[1] });
   }
 
-  // Exports
-  if (/export\s+default\b/.test(content)) exports.push("default");
-  const namedExportRegex = /export\s+(?:async\s+)?(?:function|const|let|var|class)\s+(\w+)/g;
-  while ((match = namedExportRegex.exec(content)) !== null) {
+  // 5. Exports and Re-exports
+  if (/export\s+default\b/.test(cleanContent)) exports.push("default");
+  
+  const namedExportRegex = /\bexport\s+(?:async\s+)?(?:function|const|let|var|class)\s+(\w+)/g;
+  while ((match = namedExportRegex.exec(cleanContent)) !== null) {
     exports.push(match[1]);
   }
-  const reExportRegex = /export\s+\{([^}]+)\}/g;
-  while ((match = reExportRegex.exec(content)) !== null) {
+  
+  const reExportRegex = /\bexport\s+\{([^}]+)\}/g;
+  while ((match = reExportRegex.exec(cleanContent)) !== null) {
     const names = match[1].split(",").map(n => n.trim().split(/\s+as\s+/)[0].trim());
     exports.push(...names);
   }
 
-  return { imports, exports, lineCount: content.split("\n").length };
+  const exportFromRegex = /\bexport\s+(?:type\s+)?[a-zA-Z0-9_{},\s*]+\s+from\s+['"]([^'"]+)['"]/g;
+  while ((match = exportFromRegex.exec(cleanContent)) !== null) {
+    imports.push({ type: "import", source: match[1] }); // Treat re-exports as dependencies
+  }
+
+  return { imports, exports, lineCount };
 }
 
 /**
  * Resolve import path to absolute file path
  */
 function resolveImport(importSource, fromFile, projectRoot) {
-  // Skip external/node modules
+  // Skip external packages, CSS, and assets
   if (!importSource.startsWith(".") && !importSource.startsWith("/")) {
     return { type: "external", name: importSource };
+  }
+  if (/\.(css|scss|less|svg|png|jpg|jpeg|gif)$/i.test(importSource)) {
+    return { type: "asset", name: importSource };
   }
 
   const fromDir = path.dirname(fromFile);
   let resolved = path.resolve(fromDir, importSource);
 
-  // Try with extensions
-  const extensions = [".js", ".jsx", ".ts", ".tsx", ".mjs", "/index.js", "/index.ts"];
+  const extensions = [
+    "", ".js", ".jsx", ".ts", ".tsx", ".mjs", 
+    "/index.js", "/index.jsx", "/index.ts", "/index.tsx"
+  ];
+  
   for (const ext of extensions) {
     const fullPath = resolved + ext;
     try {
-      if (require("fs").existsSync(fullPath)) {
-        return { type: "local", path: fullPath };
+      // FIX: Use fsSync instead of require("fs")
+      if (fsSync.existsSync(fullPath)) {
+        if (fsSync.statSync(fullPath).isFile()) {
+          return { type: "local", path: fullPath };
+        }
       }
     } catch { /* continue */ }
   }
 
-  // Try exact path
-  try {
-    if (require("fs").existsSync(resolved)) {
-      return { type: "local", path: resolved };
-    }
-  } catch { /* continue */ }
-
   return { type: "unresolved", source: importSource };
 }
-
 /**
  * Detect circular dependencies using DFS
  */
@@ -177,6 +207,7 @@ function findDeadCode(graph, allFiles, projectRoot) {
   }
 
   // Entry points that are expected not to be imported
+// Entry points that are expected not to be imported
   const entryPatterns = [
     /index\.(js|ts|jsx|tsx)$/,
     /main\.(js|ts|jsx|tsx)$/,
@@ -184,7 +215,9 @@ function findDeadCode(graph, allFiles, projectRoot) {
     /app\.(js|ts|jsx|tsx)$/,
     /\.config\.(js|ts)$/,
     /\.test\.(js|ts|jsx|tsx)$/,
-    /\.spec\.(js|ts|jsx|tsx)$/
+    /\.spec\.(js|ts|jsx|tsx)$/,
+    /[\\\/]skills[\\\/].*\.js$/,
+    /^[^\\\/]+\.(js|mjs)$/
   ];
 
   const dead = [];
@@ -261,47 +294,31 @@ export async function projectGraph(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
 
-  if (!text.trim()) {
-    return {
-      tool: "projectGraph",
-      success: false,
-      final: true,
-      data: { message: "Please specify a project path. Example: 'analyze dependencies in D:/local-llm-ui'" }
-    };
-  }
-
   const intent = context.action || detectIntent(text);
-  const targetPath = context.path || extractPath(text);
-
-  if (!targetPath) {
-    return {
-      tool: "projectGraph",
-      success: false,
-      final: true,
-      data: { message: "Please provide a project folder path. Example: 'dependency graph for D:/my-project'" }
-    };
-  }
-
+  
+  // Extract path, or default to the agent's root directory!
+  const targetPath = context.path || extractPath(text) || DEFAULT_PROJECT_ROOT;
   const projectRoot = path.resolve(targetPath);
 
   try {
     const stat = await fs.stat(projectRoot);
     if (!stat.isDirectory()) {
-      return { tool: "projectGraph", success: false, final: true, data: { message: `${projectRoot} is not a directory.` } };
+      return { tool: "projectGraph", success: false, final: false, error: `${projectRoot} is not a directory.` };
     }
   } catch (err) {
-    return { tool: "projectGraph", success: false, final: true, data: { message: `Cannot access ${projectRoot}: ${err.message}` } };
+    return { tool: "projectGraph", success: false, final: false, error: `Cannot access ${projectRoot}: ${err.message}` };
   }
 
   try {
     // Collect all code files
     const files = await collectFiles(projectRoot);
     if (files.length === 0) {
-      return { tool: "projectGraph", success: false, final: true, data: { message: `No JavaScript/TypeScript files found in ${projectRoot}` } };
+      return { tool: "projectGraph", success: false, final: false, error: `No JavaScript/TypeScript files found in ${projectRoot}` };
     }
 
-    // Build dependency graph
+// Build dependency graph
     const graph = {};
+    const staticGraph = {}; // <--- NEW: Graph just for strict cycles
     const externalDeps = new Set();
     const fileData = {};
 
@@ -311,12 +328,19 @@ export async function projectGraph(request) {
 
       fileData[relPath] = { exports, lineCount };
       graph[relPath] = [];
+      staticGraph[relPath] = []; // <--- NEW
 
       for (const imp of imports) {
         const resolved = resolveImport(imp.source, filePath, projectRoot);
         if (resolved.type === "local") {
           const relDep = path.relative(projectRoot, resolved.path).replace(/\\/g, "/");
-          graph[relPath].push(relDep);
+          
+          graph[relPath].push(relDep); // Keep metrics accurate
+          
+          // Only flag strict static cycles!
+          if (imp.type !== "dynamic") {
+            staticGraph[relPath].push(relDep); 
+          }
         } else if (resolved.type === "external") {
           externalDeps.add(resolved.name);
         }
@@ -324,10 +348,9 @@ export async function projectGraph(request) {
     }
 
     // Compute analyses
-    const circularDeps = findCircularDeps(graph);
+    const circularDeps = findCircularDeps(staticGraph); // <--- Use staticGraph here!
     const deadCode = findDeadCode(graph, files, projectRoot);
     const metrics = calculateMetrics(graph);
-
     // Build output based on intent
     let output = "";
 
@@ -407,11 +430,11 @@ export async function projectGraph(request) {
       }
     };
   } catch (err) {
-    return {
-      tool: "projectGraph",
-      success: false,
-      final: true,
-      data: { message: `Error building project graph: ${err.message}` }
-    };
+      return {
+        tool: "projectGraph",
+        success: false,
+        final: false,
+        error: `Error building project graph: ${err.message}`
+      };
+    }
   }
-}

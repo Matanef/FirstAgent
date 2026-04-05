@@ -68,7 +68,7 @@ export const CONFIG = {
   NODE_ENV: process.env.NODE_ENV || 'development',
 
   // LLM
-  LLM_MODEL: process.env.LLM_MODEL || 'qwen2.5-coder:14b',
+  LLM_MODEL: process.env.LLM_MODEL || 'qwen2.5:7b',
   LLM_API_URL: process.env.LLM_API_URL || 'http://localhost:11434/',
 
   // Agent Limits

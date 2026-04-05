@@ -125,8 +125,10 @@ function getEmotionalAdaptation(frustration, sentiment) {
  * Manages the multi-step execution loop for the agent.
  */
 export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep }) {
+    const startTime = performance.now();
     const queryText = typeof message === "string" ? message : message?.text || "";
-
+    console.log(`\n🚀 [PIPELINE START] Task: "${queryText.substring(0, 50)}..."`);
+    
     // ── Train of Thought: collect reasoning events ──
     const thoughtChain = [];
     const PHASE_ICONS = { THOUGHT: "🧠", PLAN: "📋", EXECUTION: "⚙️", OBSERVATION: "🔍", ANSWER: "✨" };
@@ -389,10 +391,14 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             });
         }
 
-        // Stop on failure
-        if (!finalized.success) {
-            console.log(`⚠️ Step ${stepNumber} failed, stopping execution`);
+// Stop on failure ONLY if it's a critical tool
+        const CRITICAL_TOOLS = ['fileWrite', 'applyPatch', 'moltbook', 'email_confirm', 'codeTransform'];
+        if (!finalized.success && CRITICAL_TOOLS.includes(step.tool)) {
+            console.log(`⚠️ Critical step ${stepNumber} (${step.tool}) failed, stopping execution`);
             break;
+        } else if (!finalized.success) {
+            console.log(`⚠️ Non-critical step ${stepNumber} (${step.tool}) failed, continuing to next step...`);
+            // We don't break here, so the loop continues to the next step (e.g., News)
         }
     }
 
@@ -443,6 +449,8 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         }
     }
 
+    const endTime = performance.now();
+    console.log(`🏁 [PIPELINE END] Total Execution Time: ${((endTime - startTime) / 1000).toFixed(2)} seconds\n`);
     return {
         reply: finalReply,
         tool: lastFinalized?.tool || "unknown",

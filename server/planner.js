@@ -277,6 +277,9 @@ function hasCompoundIntent(text) {
   if (/\b(?:twitter|tweet|x\s+trends?|trending\s+on\s+x)\b/i.test(lower) &&
       /\b(?:email|whatsapp|send)\b/i.test(lower)) return true;
 
+  // Pattern 12: Comma-separated list of distinct questions ("what is X, what is Y, and what is Z")
+  if (/\b(?:what|how|check|show|get|list)\b.*?,.*?\b(?:what|how|check|show|get|list)\b/i.test(lower)) return true;
+
   return false;
 }
 
@@ -344,14 +347,28 @@ function hereIndicatesWeather(text) {
 }
 
 function extractCity(message) {
-  // Strip trailing punctuation before matching
-  const lower = (message || "").toLowerCase().trim().replace(/[?.!,;:]+$/, '');
-  // Strip temporal words from the end before extracting city
-  const cleaned = lower.replace(/\s+(today|tonight|tomorrow|this\s+week|this\s+weekend|next\s+week|right\s+now|currently|later|soon)\s*$/i, '');
-  const inMatch = cleaned.match(/\bin\s+([a-zA-Z\s\-]+)$/);
-  if (inMatch) return formatCity(inMatch[1]);
-  const forMatch = cleaned.match(/\bfor\s+([a-zA-Z\s\-]+)$/);
-  if (forMatch) return formatCity(forMatch[1]);
+  if (!message) return null;
+  
+  // 1. Initial cleanup: strip punctuation and common temporal "noise"
+  let cleaned = message.toLowerCase().trim()
+    .replace(/[?.!,;:]+$/, '')
+    .replace(/\s+(today|tonight|tomorrow|this\s+week|this\s+weekend|next\s+week|right\s+now|currently|later|soon)\s*$/i, '');
+
+  // 2. The "Greedy" Match: Look for keywords + city name, 
+  // but STOP at conjunctions (and, then) or common temporal words.
+  const match = cleaned.match(/\b(?:in|at|for|weather|forecast|of)\s+([a-z\s\-]+?)(?:\s+(?:and|then|today|now|right|$))/i);
+  
+  if (match) {
+    return formatCity(match[1]);
+  }
+
+  // 3. Fallback: Your original "End of Sentence" logic 
+  // (just in case the greedy match missed a specific phrasing)
+  const fallbackMatch = cleaned.match(/\b(?:in|for)\s+([a-zA-Z\s\-]+)$/);
+  if (fallbackMatch) {
+    return formatCity(fallbackMatch[1]);
+  }
+
   return null;
 }
 
@@ -1153,7 +1170,10 @@ RULES:
 Respond with ONLY the tool name (one word, no explanation).`;
 
   try {
-    const response = await llm(prompt);
+    const response = await llm(prompt, { 
+      model: "qwen2.5:1.5b", 
+      timeoutMs: 30000 
+    });
     if (!response.success || !response.data?.text) {
       return { intent: "llm", reason: "fallback" };
     }
@@ -1303,13 +1323,17 @@ Each object in the JSON array MUST have exactly these keys:
 CRITICAL RULES:
 1. Your entire response MUST start with [ and end with ].
 2. Do NOT invent tools.
-3. If multiple actions are requested, order them logically (e.g., read first, then write).
-4. Do NOT use the "documentQA" tool unless the user explicitly asks to "load a document", search the "knowledge base", or query "indexed files". It is NOT for code review.
+3. MULTI-STEP BIAS: If the user uses words like "and", "then", "also", or "after", you MUST generate at least 2 objects in the JSON array.
+4. SEQUENTIAL LOGIC: For "Check X and then Y", Step 1 MUST be X, and Step 2 MUST be Y. Do not merge them.
 5. Use "x" ONLY when the user explicitly mentions Twitter, X (the platform), tweets, or posting. Do NOT use "twitter" — the tool name is "x". IMPORTANT: Generic "search for X" or knowledge questions ("who was X?", "latest research on X", "developments in X") must use "search" (web search), NOT "x" (Twitter). Only use "x" for: trending on X, tweets about X, post on X, search X for complaints.
 6. APPLYATCH BIAS: If the request contains a comprehensive list of suggestions, review findings, or 3+ structural changes targeting a single file, route to "applyPatch" (full rewrite) — NOT "codeTransform" (surgical patch). codeTransform is for single targeted edits only.
 7. SELFEVOLVE RESTRAINT: The "selfEvolve" tool must NOT be used for cosmetic changes or quota-driven busywork. Only route to selfEvolve when the user explicitly asks for autonomous evolution or self-improvement cycles.
 8. Use "sheets" for Google Sheets operations (read, append, clear). Pass spreadsheetId and action in context. When chaining X search → LLM → sheets, the LLM step should categorize/summarize and the sheets step should receive the categorized data as rows.
-9. THE LLM ESCAPE HATCH: The "llm" tool is your primary conversational brain. If the user is providing commentary, making observations, talking about testing the system, or just having a "meta-conversation" about how you work, you MUST route to "llm". Do not attempt to run code or review files unless they explicitly ask you to modify a specific file or path.
+9. NO MERGING: Never merge "Weather" and "News" into one step. They use different tools. Output two separate objects.
+10. TOOL NAMES: Use exactly "weather" and "news". Do not use "codeReview" unless the user provides a code file path.
+11. AIR QUALITY: Requests for "air quality" or "pollution" must always use the "weather" tool.
+12. EXTRACTION: When using the "weather" tool, you MUST extract the city name and include it in the "input" field (e.g., {"tool": "weather", "input": "Givatayim"}).
+13. ZERO-SHOT RESPONSIBILITY: Do not assume another system will catch the second half. If you see two actions, you MUST return two JSON objects. Failure to do so results in logic breakdown.
 EXAMPLE INPUT:
 "review D:/project/news.js and create a fixed version at E:/testFolder/"
 EXAMPLE OUTPUT:
@@ -1359,6 +1383,7 @@ OUTPUT ONLY THE JSON ARRAY:`;
 
   try {
     const response = await llm(prompt, { 
+      model: "qwen2.5:1.5b", // Force a tiny, fast model for routing
       timeoutMs: 90000, // Give it 90 seconds to think
       format: "json"    // Force strict JSON output!
     });
@@ -1470,6 +1495,31 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
 
 export async function plan({ message, chatContext = {} }) {
   const result = await _planInternal({ message, chatContext });
+
+  // --- FINAL CONTEXT BRIDGE ---
+  // Ensure the city is extracted even if the brain/regex missed it
+  if (Array.isArray(result)) {
+    for (let i = 0; i < result.length; i++) {
+      if (result[i].tool === "weather" && !result[i].context?.city) {
+        // Initialize context if it's missing
+        if (!result[i].context) result[i].context = {};
+        
+        // Try extracting from the specific step input first
+        const extractedCity = extractCity(result[i].input);
+        if (extractedCity) {
+          console.log(`[planner] 🌉 Bridge: Extracted "${extractedCity}" from step input`);
+          result[i].context.city = extractedCity;
+        } else {
+          // Fallback: try extracting from the original full message
+          const globalCity = extractCity(message);
+          if (globalCity) {
+            console.log(`[planner] 🌉 Bridge: Extracted "${globalCity}" from global message`);
+            result[i].context.city = globalCity;
+          }
+        }
+      }
+    }
+  }
 
   // Track the routing decision for user correction feedback
   if (result && result.length > 0 && !result[0]?.context?.correctionLogged) {
@@ -1949,9 +1999,9 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
   // Also catches "validate/lint/check for errors" — codeReview now runs objective syntax+ESLint checks
   // Also catches "inspect X.js for security issues" when a file path is present
   if ((/\b(code\s+review|security\s+review|performance\s+review|quality\s+review|architecture\s+review|full\s+review|peer\s+review|code\s+quality|code\s+smell|lint\b|code\s+analysis|security\s+audit|code\s+audit|validate\s+code|check\s+for\s+errors|syntax\s+check|eslint)\b/i.test(lower) ||
-      (/\b(review|analyze|audit|validate|check|inspect)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint|issues?)\b/i.test(lower)) ||
-      (/\b(inspect)\b/i.test(lower) && hasExplicitFilePath(trimmed))) &&
-      !/\b(github)\b/i.test(lower)) { // <-- GUARD: Ignore GitHub requests
+      ((/\b(review|analyze|audit|validate|check|inspect)\b/i.test(lower) && /\b(quality|security|performance|architecture|smell|vulnerabilit|dead\s+code|improvements?|errors?|syntax|lint|issues?)\b/i.test(lower)) && 
+       (hasExplicitFilePath(trimmed) || /\b(code|file|script|js|py|function|module)\b/i.test(lower) || /\.[a-z]{2,4}\b/i.test(lower)))) &&
+      !/\b(github)\b/i.test(lower)) { 
     console.log("[planner] certainty branch: codeReview");
     const crContext = {};
     if (/\bsecur/i.test(lower)) crContext.reviewType = "security";
