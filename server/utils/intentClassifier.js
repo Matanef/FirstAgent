@@ -107,6 +107,9 @@ const TASK_PATTERNS = [
   /\bmy\s+(contacts?|preferences|location|profile|email|phone)\b/i,
   /\b(create|add|schedule|book|set\s+up|make)\s+(an?\s+)?(event|meeting|appointment|task|reminder)\b/i,
   /\b(review|analyze|audit|inspect)\s+(the\s+|my\s+|this\s+)?(code|file|project)\b/i,
+  /\b(rewrite|edit|correct|proofread|modify|update)\s+(the\s+|my\s+|this\s+)?(file|document|text|guide|code|script)\b/i,
+  /\b(rewrite|edit|correct|proofread)\s+\w+\.\w{1,5}\b/i,
+  /\b(fix|correct)\s+(the\s+)?(grammar|spelling|syntax|typos?)\b/i,
   /\b(improve|evolve|self[- ]?evolve|self[- ]?improve|upgrade)\b/i,
   /\b(weather|forecast|temperature)\s*(in|for|at|today|tomorrow|this\s+week)?\b/i,
   /\b(stock|share|ticker|price\s+of|market)\b/i,
@@ -130,9 +133,10 @@ const TASK_PATTERNS = [
  * Classify user intent as "chat" or "task"
  * @param {string} message - The user's message
  * @param {Array} recentHistory - Last 5 conversation turns [{role, content, mode}]
+ * @param {Array} fileIds - IDs of files attached via drag-and-drop
  * @returns {{ mode: "chat"|"task", confidence: number, reason: string }}
  */
-export function classifyIntent(message, recentHistory = []) {
+export function classifyIntent(message, recentHistory = [], fileIds = []) {
   if (!message || typeof message !== "string") {
     return { mode: "task", confidence: 0.5, reason: "empty_message" };
   }
@@ -192,6 +196,12 @@ export function classifyIntent(message, recentHistory = []) {
       taskScore += 5;
       taskReasons.push(`explicit_tool:${tool}`);
     }
+  }
+
+  // File attachments — if the user dragged files in, they want something DONE with them
+  if (fileIds && fileIds.length > 0) {
+    taskScore += 2;
+    taskReasons.push(`attached_files:${fileIds.length}`);
   }
 
   // Check task patterns

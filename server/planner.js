@@ -1683,9 +1683,20 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
   console.log("[planner] availableTools:", availableTools.join(", "));
 
   // ──────────────────────────────────────────────────────────
-  // FILE REVIEW: route to fileReview when files are attached
+  // FILE OPERATIONS: route based on intent when files are attached
   // ──────────────────────────────────────────────────────────
   if (chatContext.fileIds && chatContext.fileIds.length > 0) {
+    // If the user wants to EDIT/REWRITE the uploaded file, route to fileWrite with chunked mode
+    const isEditIntent = /\b(rewrite|edit|correct|proofread|fix|modify|update|clean\s+up|translate|grammar|improve)\b/i.test(lower);
+    if (isEditIntent) {
+      console.log(`[planner] certainty branch: fileWrite (edit uploaded file, chunked mode, ${chatContext.fileIds.length} files)`);
+      return [{ tool: "fileWrite", input: trimmed, context: {
+        chunked: true,
+        fileIds: chatContext.fileIds,
+        mode: "chunked"
+      }, reasoning: "certainty_file_edit_uploaded" }];
+    }
+    // Default: review/analyze the uploaded file
     console.log(`[planner] certainty branch: fileReview (${chatContext.fileIds.length} files)`);
     return [{ tool: "fileReview", input: trimmed, context: { fileIds: chatContext.fileIds }, reasoning: "certainty_file_review" }];
   }

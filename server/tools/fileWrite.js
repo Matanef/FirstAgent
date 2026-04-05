@@ -4,6 +4,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { llm } from "./llm.js";
+import { getFile } from "../utils/fileRegistry.js";
 
 // Sandboxes where agent can write
 const WRITABLE_SANDBOXES = [
@@ -401,12 +402,25 @@ function splitIntoChunks(text, maxChars = CHUNK_SIZE) {
  * Each chunk gets the same editing instructions; results are reassembled.
  */
 async function handleChunkedProseWrite(text, context) {
-  const sourceFile = context.sourceFile || context.targetPath;
+  let sourceFile = context.sourceFile || context.targetPath;
+  let originalContent;
+  let originalName;
+
+  // Resolve uploaded files via fileIds
+  if (context.fileIds && context.fileIds.length > 0) {
+    const fileEntry = await getFile(context.fileIds[0]);
+    if (!fileEntry) {
+      return { tool: "fileWrite", success: false, final: true, error: `Uploaded file not found in registry: ${context.fileIds[0]}` };
+    }
+    sourceFile = fileEntry.path;
+    originalName = fileEntry.originalName;
+    console.log(`📝 [fileWrite] Resolved uploaded file: ${originalName} → ${sourceFile}`);
+  }
+
   if (!sourceFile) {
     return { tool: "fileWrite", success: false, final: true, error: "No source file specified for chunked processing." };
   }
 
-  let originalContent;
   try {
     originalContent = await fs.readFile(path.resolve(sourceFile), "utf-8");
   } catch {
@@ -462,7 +476,12 @@ ${chunk}`;
   }
 
   const finalContent = processedChunks.join("\n\n");
-  const targetPath = context.targetPath || `${sourceFile}.processed`;
+  // Default output: downloads folder with "_fixed" suffix using original name
+  const baseName = originalName || path.basename(sourceFile);
+  const ext = path.extname(baseName);
+  const nameWithoutExt = baseName.slice(0, -ext.length || undefined);
+  const defaultOutput = path.resolve("D:/local-llm-ui/downloads", `${nameWithoutExt}_fixed${ext}`);
+  const targetPath = context.targetPath || defaultOutput;
 
   console.log(`📝 [fileWrite] Reassembled ${processedChunks.length} chunks → ${finalContent.length} chars (${failed} failed, kept original)`);
 
