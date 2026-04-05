@@ -153,7 +153,7 @@ async function buildUserContext(conversationId) {
 // If yes, it delegates to the taskAgent SILENTLY (onChunk: null),
 // grabs the data, and returns it to be injected into the prompt.
 async function resolveWithTools(message, options, recentTurns) {
-  const classification = classifyIntent(message, recentTurns);
+  const classification = classifyIntent(message, recentTurns, options.fileIds);
   console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence}, reason=${classification.reason}`);
 
   if (classification.mode === "task") {
