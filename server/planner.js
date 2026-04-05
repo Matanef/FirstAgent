@@ -1995,13 +1995,22 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
   if (isProseIntent(trimmed) && (hasExplicitFilePath(trimmed) || /\.[a-z]{2,4}\b/i.test(lower)) &&
       /\b(rewrite|correct|edit|improve|translate|proofread|fix|update|modify|clean\s+up|grammar)\b/i.test(lower)) {
     console.log("[planner] certainty branch: fileWrite (prose editing, chunked mode)");
-    // Extract the target file path from the message
-    const fileMatch = trimmed.match(/(?:[A-Za-z]:[\\/][^\s,]+|\.{0,2}\/?[\w.-]+\/[\w.-]+\.\w{1,5})/);
-    const targetPath = fileMatch ? fileMatch[0] : null;
+    // Extract file paths from the message — first is source, second (if present) is target
+    const allPaths = [...trimmed.matchAll(/(?:[A-Za-z]:[\\/][^\s,]+|\.{0,2}\/?[\w.-]+\/[\w.-]+\.\w{1,5})/g)].map(m => m[0]);
+    const sourceFile = allPaths[0] || null;
+    // If user said "save it to <path>" or provided two paths, use the second as target
+    const targetPath = allPaths.length >= 2 ? allPaths[1] : null;
+    // Extract the editing instruction — strip file paths and "save to" clauses to get clean task
+    const editInstruction = trimmed
+      .replace(/(?:[A-Za-z]:[\\/][^\s,]+|\.{0,2}\/?[\w.-]+\/[\w.-]+\.\w{1,5})/g, "")
+      .replace(/\b(and\s+)?(save|write|output|export)\s+(it\s+)?(to|as|at|in)\s*/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
     return [{ tool: "fileWrite", input: trimmed, context: {
       chunked: true,
-      sourceFile: targetPath,
+      sourceFile,
       targetPath,
+      editInstruction,
       mode: "chunked"
     }, reasoning: "certainty_prose_edit_chunked" }];
   }
