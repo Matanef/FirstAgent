@@ -58,6 +58,14 @@ This repo uses multiple Claude worktrees that share `.git/`. This causes `index.
 4. For any file that still fails, use the PowerShell-then-git pattern: `powershell -Command "Remove-Item '.git/index.lock' -Force; & git add <file>; Write-Host 'done'"`
 5. **Never** kill the bash/node processes listed in `Get-Process` — they are the agent server and other Claude sessions
 
+## 🔀 Pull Request Workflow
+`gh` CLI is **not authenticated** on this machine — never use `gh pr create`.
+1. Create a branch from the commit(s): `git checkout -b <branch-name>`
+2. Push: `git push -u origin <branch-name>`
+3. Provide the direct link: `https://github.com/Matanef/FirstAgent/pull/new/<branch-name>`
+4. **Always include a ready-to-paste PR description** with a `## Summary` (bullet points of what changed and why) and `## Test plan` (checkboxes). GitHub's "new PR" page doesn't auto-populate the body, so the user needs this text to paste in.
+5. Switch back: `git checkout main`
+
 ## 🎭 Persona & Context Injection
 * **Agent Identity:** The agent's identity (Lanou) and worldview are managed dynamically via `server/personality.js`. 
 * **NEVER HARDCODE PERSONAS:** Do not write prompts that start with "You are a helpful AI...".

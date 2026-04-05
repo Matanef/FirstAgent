@@ -197,6 +197,25 @@ function isSimpleDateTime(msg) {
   );
 }
 
+/**
+ * Detect if the intent is prose/text editing rather than code editing.
+ * Returns true when the target is clearly a non-code document or the request
+ * uses prose-specific language (e.g., "rewrite this article", "correct grammar").
+ */
+function isProseIntent(text) {
+  const lower = (text || "").toLowerCase();
+  // Non-code file extensions — if the only extension mentioned is one of these, it's prose
+  const proseExtRe = /\.(md|txt|doc|docx|rtf|pdf|csv|html?)\b/i;
+  const codeExtRe = /\.(js|jsx|ts|tsx|py|rb|go|rs|java|c|cpp|cs|php|sh|bash|zsh|ps1|sql|vue|svelte|yaml|yml|json|toml|ini|cfg)\b/i;
+  const hasProse = proseExtRe.test(text);
+  const hasCode = codeExtRe.test(text);
+  // If only prose extensions are found (no code extensions), it's prose
+  if (hasProse && !hasCode) return true;
+  // Prose-specific verbs/nouns that don't apply to code
+  if (/\b(grammar|proofread|spell.?check|copy.?edit|copywrite|prose|article|essay|blog\s*post|document|manuscript|hebrew|arabic|translate|translation|rewrite\s+(this|the|my)\s+(text|article|document|guide|post|page|paragraph|chapter|section))\b/i.test(lower)) return true;
+  return false;
+}
+
 function hasExplicitFilePath(text) {
   if (!text) return false;
   // Absolute paths: D:/..., C:\...
@@ -1960,11 +1979,29 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "selfEvolve", input: trimmed, context: evolveContext, reasoning: "certainty_self_evolve" }];
   }
 
+  // Prose/Text Editing — rewrite, correct, translate non-code documents
+  // Routes to fileWrite with chunked mode for large files
+  if (isProseIntent(trimmed) && (hasExplicitFilePath(trimmed) || /\.[a-z]{2,4}\b/i.test(lower)) &&
+      /\b(rewrite|correct|edit|improve|translate|proofread|fix|update|modify|clean\s+up|grammar)\b/i.test(lower)) {
+    console.log("[planner] certainty branch: fileWrite (prose editing, chunked mode)");
+    // Extract the target file path from the message
+    const fileMatch = trimmed.match(/(?:[A-Za-z]:[\\/][^\s,]+|\.{0,2}\/?[\w.-]+\/[\w.-]+\.\w{1,5})/);
+    const targetPath = fileMatch ? fileMatch[0] : null;
+    return [{ tool: "fileWrite", input: trimmed, context: {
+      chunked: true,
+      sourceFile: targetPath,
+      targetPath,
+      mode: "chunked"
+    }, reasoning: "certainty_prose_edit_chunked" }];
+  }
+
   // applyPatch — Multi-change architectural requests (3+ distinct changes) → full rewrite, not surgical patch
   // GUARD: Requires a file target AND multiple distinct action verbs or numbered list
+  // GUARD: Skip prose/text targets — these should go to fileWrite, not code tools
   if (
+    !isProseIntent(trimmed) &&
     !/\b(review|suggest|examine|inspect)\b/i.test(lower) &&
-    (hasExplicitFilePath(trimmed) || /\.[a-z]{2,4}\b/i.test(lower)) &&
+    (hasExplicitFilePath(trimmed) || /\.\b(js|jsx|ts|tsx|py|rb|go|rs|java|c|cpp|cs|php|sh|vue|svelte|sql)\b/i.test(lower)) &&
     (
       /(?:1\.|first|step\s*1)[\s\S]*(?:2\.|second|step\s*2)[\s\S]*(?:3\.|third|step\s*3)/i.test(lower) ||
       (lower.match(/\b(refactor|add|fix|remove|rename|update|implement|move|extract)\b/gi) || []).length >= 3
@@ -1976,9 +2013,11 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
 
   // Code Transform — refactor, optimize, rewrite, improve code in a file
   // GUARD: Skip if prompt contains "review/suggest", UNLESS it also contains a strong explicit edit verb.
+  // GUARD: Skip prose/text targets — prose editing falls through to fileWrite or LLM chat
   const hasStrongEditVerb = /\b(modify|update|refactor|rewrite|codetransform)\b/i.test(lower);
-  
+
   if (
+    !isProseIntent(trimmed) &&
     (hasStrongEditVerb || !/\b(review|suggest|examine|inspect)\b/i.test(lower)) &&
     (/\b(codetransform)\b/i.test(lower) ||
     (/\b(refactor|rewrite|transform|optimize|improve|modify|update|clean\s+up|add)\b/i.test(lower) &&

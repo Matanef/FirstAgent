@@ -328,6 +328,150 @@ AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the impr
   }
 }
 
+// ── CHUNKED PROSE PROCESSING ──
+// For large text/prose files that exceed LLM output token limits.
+// Splits by headings or paragraph blocks, processes each chunk, reassembles.
+
+const CHUNK_SIZE = 3000; // ~750 tokens — safe for 7B models with 2k output limit
+
+/**
+ * Split text into logical chunks by headings, then by paragraph blocks.
+ * Preserves document structure so sections aren't split mid-paragraph.
+ */
+function splitIntoChunks(text, maxChars = CHUNK_SIZE) {
+  // First try splitting by headings (markdown # or underline-style)
+  const headingRe = /^(#{1,6}\s.+|.+\n[=\-]{3,})$/gm;
+  const sections = [];
+  let lastIdx = 0;
+
+  for (const match of text.matchAll(headingRe)) {
+    if (match.index > lastIdx) {
+      sections.push(text.slice(lastIdx, match.index));
+    }
+    lastIdx = match.index;
+  }
+  if (lastIdx < text.length) {
+    sections.push(text.slice(lastIdx));
+  }
+
+  // If no headings found, split by double-newlines (paragraph breaks)
+  if (sections.length <= 1) {
+    const paragraphs = text.split(/\n\s*\n/);
+    sections.length = 0;
+    sections.push(...paragraphs.map(p => p.trim()).filter(Boolean));
+  }
+
+  // Merge small sections and split oversized ones
+  const chunks = [];
+  let current = "";
+
+  for (const section of sections) {
+    if (current.length + section.length + 2 > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = "";
+    }
+
+    if (section.length > maxChars) {
+      // Section too large even alone — force-split by lines
+      if (current.length > 0) {
+        chunks.push(current.trim());
+        current = "";
+      }
+      const lines = section.split("\n");
+      let lineBuf = "";
+      for (const line of lines) {
+        if (lineBuf.length + line.length + 1 > maxChars && lineBuf.length > 0) {
+          chunks.push(lineBuf.trim());
+          lineBuf = "";
+        }
+        lineBuf += (lineBuf ? "\n" : "") + line;
+      }
+      if (lineBuf.trim()) current = lineBuf;
+    } else {
+      current += (current ? "\n\n" : "") + section;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+
+  return chunks;
+}
+
+/**
+ * Process a large prose file in chunks through the LLM.
+ * Each chunk gets the same editing instructions; results are reassembled.
+ */
+async function handleChunkedProseWrite(text, context) {
+  const sourceFile = context.sourceFile || context.targetPath;
+  if (!sourceFile) {
+    return { tool: "fileWrite", success: false, final: true, error: "No source file specified for chunked processing." };
+  }
+
+  let originalContent;
+  try {
+    originalContent = await fs.readFile(path.resolve(sourceFile), "utf-8");
+  } catch {
+    try {
+      originalContent = await fs.readFile(path.resolve("D:/local-llm-ui", sourceFile), "utf-8");
+    } catch {
+      return { tool: "fileWrite", success: false, final: true, error: `Could not read source file: ${sourceFile}` };
+    }
+  }
+
+  const chunks = splitIntoChunks(originalContent);
+  console.log(`📝 [fileWrite] Chunked processing: ${originalContent.length} chars → ${chunks.length} chunks`);
+
+  const processedChunks = [];
+  let failed = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    console.log(`📝 [fileWrite] Processing chunk ${i + 1}/${chunks.length} (${chunk.length} chars)...`);
+
+    const chunkPrompt = `You are a text editor processing part ${i + 1} of ${chunks.length} of a document.
+
+TASK: ${text}
+
+INSTRUCTIONS:
+- Apply the task ONLY to the text below.
+- Output ONLY the processed text. No explanations, no markdown fences, no preamble.
+- Preserve ALL formatting, headings, lists, and structure.
+- Do NOT add content that wasn't in the original.
+- Do NOT truncate or summarize — output the FULL processed version of this section.
+
+TEXT TO PROCESS:
+${chunk}`;
+
+    try {
+      const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true });
+      const output = result?.data?.text || result?.text || "";
+
+      if (!output || output.length < chunk.length * 0.3) {
+        console.warn(`📝 [fileWrite] Chunk ${i + 1} output suspiciously short (${output.length} vs ${chunk.length}), keeping original`);
+        processedChunks.push(chunk);
+        failed++;
+      } else {
+        // Strip any markdown fences the LLM might have added
+        const clean = output.replace(/^```[a-z]*\n?/im, "").replace(/\n?```$/im, "").trim();
+        processedChunks.push(clean);
+      }
+    } catch (err) {
+      console.warn(`📝 [fileWrite] Chunk ${i + 1} failed: ${err.message}, keeping original`);
+      processedChunks.push(chunk);
+      failed++;
+    }
+  }
+
+  const finalContent = processedChunks.join("\n\n");
+  const targetPath = context.targetPath || `${sourceFile}.processed`;
+
+  console.log(`📝 [fileWrite] Reassembled ${processedChunks.length} chunks → ${finalContent.length} chars (${failed} failed, kept original)`);
+
+  const writeResult = await performWrite(targetPath, finalContent, "write");
+  writeResult.data.text += `\n\nChunked processing: ${chunks.length} sections, ${failed} kept original due to errors.`;
+
+  return writeResult;
+}
+
 /**
  * Main Tool Export
  */
@@ -340,6 +484,10 @@ export async function fileWrite(request) {
 
     // 2. Message Object (from coordinator) with text but no explicit path/content
     if (request && request.text && !request.path) {
+      // Chunked prose processing — explicitly requested or auto-detected for large prose files
+      if (request.context?.chunked || request.context?.mode === "chunked") {
+        return await handleChunkedProseWrite(request.text, request.context);
+      }
       return await handleNaturalLanguageWrite(request.text, request.context);
     }
 

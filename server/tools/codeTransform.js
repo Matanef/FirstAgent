@@ -790,6 +790,27 @@ export async function codeTransform(request) {
   }
   // ── END UNIVERSAL PATH RESOLUTION ──
 
+  // ── PROSE FILE GUARD ──
+  // If the target is a non-code file, bail out with a helpful redirect.
+  // codeTransform's <<<< ==== >>>> patch format doesn't work for prose.
+  const proseExtensions = new Set([".md", ".txt", ".doc", ".docx", ".rtf", ".csv", ".html", ".htm"]);
+  const targetExt = path.extname(normalizedPath).toLowerCase();
+  if (proseExtensions.has(targetExt)) {
+    console.log(`[codeTransform] Redirecting: "${targetExt}" is a prose file, not code`);
+    return {
+      tool: "codeTransform",
+      success: false,
+      final: true,
+      data: {
+        text: `"${path.basename(normalizedPath)}" is a text/prose file (${targetExt}), not code. ` +
+              `For prose editing, use the fileWrite tool with chunked mode. ` +
+              `Example: "rewrite ${path.basename(normalizedPath)} to fix grammar"`,
+        message: "Prose files should be edited with fileWrite, not codeTransform.",
+        redirectTo: "fileWrite"
+      }
+    };
+  }
+
   try {
     let stat;
     try {
