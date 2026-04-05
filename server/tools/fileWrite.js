@@ -441,19 +441,28 @@ async function handleChunkedProseWrite(text, context) {
     const chunk = chunks[i];
     console.log(`📝 [fileWrite] Processing chunk ${i + 1}/${chunks.length} (${chunk.length} chars)...`);
 
-    const chunkPrompt = `You are a text editor processing part ${i + 1} of ${chunks.length} of a document.
+    // Use the clean editing instruction (stripped of file paths) if available
+    const taskDescription = context.editInstruction || text;
 
-TASK: ${text}
+    const chunkPrompt = `### STRICT MODE: TEXT EDITOR — NOT A CHATBOT ###
+You are editing section ${i + 1} of ${chunks.length} of a document.
 
-INSTRUCTIONS:
-- Apply the task ONLY to the text below.
-- Output ONLY the processed text. No explanations, no markdown fences, no preamble.
-- Preserve ALL formatting, headings, lists, and structure.
-- Do NOT add content that wasn't in the original.
-- Do NOT truncate or summarize — output the FULL processed version of this section.
+YOUR JOB: ${taskDescription}
 
-TEXT TO PROCESS:
-${chunk}`;
+RULES:
+1. You MUST actually modify the text. Do NOT return it unchanged.
+2. Fix every grammar, spelling, punctuation, and syntax error you find.
+3. Improve sentence structure and flow where needed.
+4. Keep the same meaning, tone, and intent as the original.
+5. Keep all headings, bullet points, numbered lists, and formatting structure intact.
+6. Output ONLY the corrected text. No explanations, no commentary, no "Here is the corrected version", no markdown fences.
+7. Do NOT skip, summarize, or truncate any part — output the FULL corrected section.
+8. If the text is in a non-English language (e.g. Hebrew, Arabic), fix grammar IN THAT LANGUAGE. Do NOT translate.
+
+ORIGINAL TEXT TO EDIT:
+${chunk}
+
+CORRECTED TEXT:`;
 
     try {
       const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true });
@@ -464,8 +473,12 @@ ${chunk}`;
         processedChunks.push(chunk);
         failed++;
       } else {
-        // Strip any markdown fences the LLM might have added
-        const clean = output.replace(/^```[a-z]*\n?/im, "").replace(/\n?```$/im, "").trim();
+        // Strip markdown fences and chatty preamble the LLM might have added
+        let clean = output
+          .replace(/^```[a-z]*\n?/im, "")
+          .replace(/\n?```$/im, "")
+          .replace(/^(Here is|Below is|Sure|Okay|The corrected|Corrected)[^\n]*:\s*\n?/i, "")
+          .trim();
         processedChunks.push(clean);
       }
     } catch (err) {
