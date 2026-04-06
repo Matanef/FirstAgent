@@ -492,6 +492,58 @@ async function handleChunkedProseWrite(text, context) {
     }
   }
 
+  // ── GEMINI FAST PATH: Send entire file in one request (1M token context window) ──
+  const modelForContent = pickModelForContent(originalContent);
+  if (modelForContent === "gemini") {
+    console.log(`📝 [fileWrite] Gemini mode: sending entire file (${originalContent.length} chars) in one request`);
+    const taskDescription = context.editInstruction || text;
+
+    const geminiPrompt = `You are an expert native proofreader and editor.
+
+TASK: ${taskDescription}
+
+RULES:
+- Fix all grammar, spelling, punctuation, and syntax errors.
+- Improve sentence structure and flow while preserving the original meaning.
+- Keep all formatting (headings, bullet points, numbered lists) intact.
+- Output ONLY the corrected text. No commentary, no explanations, no markdown fences.
+- If the text is in Hebrew, Arabic, or any non-English language, edit IN THAT LANGUAGE. Do NOT translate.
+- Your output must contain the COMPLETE corrected document. Do NOT truncate or summarize.
+
+DOCUMENT TO EDIT:
+${originalContent}`;
+
+    try {
+      const result = await llm(geminiPrompt, { model: "gemini", timeoutMs: 300_000, skipKnowledge: true });
+      const output = result?.data?.text || "";
+
+      if (!output || output.length < originalContent.length * 0.5) {
+        console.warn(`📝 [fileWrite] Gemini output too short (${output.length} vs ${originalContent.length}), falling back to chunked mode`);
+        // Fall through to chunked processing below
+      } else {
+        // Clean output
+        let clean = output
+          .replace(/^```[a-z]*\n?/im, "").replace(/\n?```$/im, "")
+          .replace(/^(Here is|Below is|Sure|Okay|The corrected|Corrected)[^\n]*:\s*\n?/i, "")
+          .trim();
+
+        // Write the result
+        const baseName = originalName || path.basename(sourceFile);
+        const geminiExt = path.extname(baseName);
+        const geminiName = baseName.slice(0, -geminiExt.length || undefined);
+        const geminiOutputExt = (geminiExt === ".docx" || geminiExt === ".doc") ? ".txt" : geminiExt;
+        const geminiTarget = context.targetPath || path.resolve("D:/local-llm-ui/downloads", `${geminiName}_fixed${geminiOutputExt}`);
+
+        console.log(`📝 [fileWrite] Gemini completed: ${clean.length} chars → ${path.basename(geminiTarget)}`);
+        const writeResult = await performWrite(geminiTarget, clean, "write");
+        writeResult.data.text += `\n\nProcessed with Gemini 2.5 Flash (single-pass, no chunking).`;
+        return writeResult;
+      }
+    } catch (err) {
+      console.warn(`📝 [fileWrite] Gemini failed: ${err.message}, falling back to chunked mode`);
+    }
+  }
+
   const chunks = splitIntoChunks(originalContent);
   console.log(`📝 [fileWrite] Chunked processing: ${originalContent.length} chars → ${chunks.length} chunks`);
 
