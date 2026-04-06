@@ -3,7 +3,7 @@
 
 import fs from "fs/promises";
 import path from "path";
-import { llm } from "./llm.js";
+import { llm, pickModelForContent } from "./llm.js";
 import { getFile } from "../utils/fileRegistry.js";
 
 // Sandboxes where agent can write
@@ -474,7 +474,11 @@ ${chunk}
 OUTPUT:`;
 
     try {
-      const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true });
+      // Smart model selection: use llama3.1 for non-Latin text (Hebrew, Arabic, etc.)
+      const modelOverride = pickModelForContent(chunk);
+      if (modelOverride) console.log(`📝 [fileWrite] Using ${modelOverride} for non-Latin chunk ${i + 1}`);
+
+      const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true, model: modelOverride });
       const output = result?.data?.text || result?.text || "";
 
       if (!output || output.length < chunk.length * 0.3) {
