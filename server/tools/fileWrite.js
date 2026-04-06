@@ -444,25 +444,34 @@ async function handleChunkedProseWrite(text, context) {
     // Use the clean editing instruction (stripped of file paths) if available
     const taskDescription = context.editInstruction || text;
 
-    const chunkPrompt = `### STRICT MODE: TEXT EDITOR — NOT A CHATBOT ###
-You are editing section ${i + 1} of ${chunks.length} of a document.
+    // Auto-detect the dominant language of this chunk
+    const hebrewChars = (chunk.match(/[\u0590-\u05FF]/g) || []).length;
+    const arabicChars = (chunk.match(/[\u0600-\u06FF]/g) || []).length;
+    const latinChars = (chunk.match(/[a-zA-Z]/g) || []).length;
+    const dominantLang = hebrewChars > latinChars ? "Hebrew (עברית)"
+                       : arabicChars > latinChars ? "Arabic (العربية)"
+                       : "the same language as the input";
 
-YOUR JOB: ${taskDescription}
+    const chunkPrompt = `### STRICT MODE: TEXT EDITOR ###
+Edit section ${i + 1}/${chunks.length}.
 
-RULES:
-1. You MUST actually modify the text. Do NOT return it unchanged.
-2. Fix every grammar, spelling, punctuation, and syntax error you find.
-3. Improve sentence structure and flow where needed.
-4. Keep the same meaning, tone, and intent as the original.
-5. Keep all headings, bullet points, numbered lists, and formatting structure intact.
-6. Output ONLY the corrected text. No explanations, no commentary, no "Here is the corrected version", no markdown fences.
-7. Do NOT skip, summarize, or truncate any part — output the FULL corrected section.
-8. If the text is in a non-English language (e.g. Hebrew, Arabic), fix grammar IN THAT LANGUAGE. Do NOT translate.
+JOB: ${taskDescription}
 
-ORIGINAL TEXT TO EDIT:
+LANGUAGE LOCK: The text is in ${dominantLang}. You MUST output in ${dominantLang} ONLY.
+FORBIDDEN: Do NOT output Chinese, Japanese, Korean, or any CJK characters (汉字/漢字/かな/한글).
+FORBIDDEN: Do NOT output numbered improvement lists, meta-commentary, or analysis.
+FORBIDDEN: Do NOT say "Here is", "Below is", "The corrected version", or any preamble.
+
+EDITING RULES:
+- Fix grammar, spelling, punctuation errors
+- Improve sentence flow while keeping meaning and tone
+- Keep all formatting (headings, bullets, lists) intact
+- Output the FULL corrected section — no truncation
+
+INPUT:
 ${chunk}
 
-CORRECTED TEXT:`;
+OUTPUT:`;
 
     try {
       const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true });
@@ -479,7 +488,17 @@ CORRECTED TEXT:`;
           .replace(/\n?```$/im, "")
           .replace(/^(Here is|Below is|Sure|Okay|The corrected|Corrected)[^\n]*:\s*\n?/i, "")
           .trim();
-        processedChunks.push(clean);
+
+        // CJK contamination check — if the model switched to Chinese/Japanese/Korean
+        const inputCJK = (chunk.match(/[\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF]/g) || []).length;
+        const outputCJK = (clean.match(/[\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF]/g) || []).length;
+        if (outputCJK > inputCJK + 3) {
+          console.warn(`📝 [fileWrite] Chunk ${i + 1} REJECTED: CJK contamination (${outputCJK} CJK chars vs ${inputCJK} in input), keeping original`);
+          processedChunks.push(chunk);
+          failed++;
+        } else {
+          processedChunks.push(clean);
+        }
       }
     } catch (err) {
       console.warn(`📝 [fileWrite] Chunk ${i + 1} failed: ${err.message}, keeping original`);
