@@ -29,11 +29,13 @@ async function callGemini(prompt, timeoutMs = 120_000) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    // Configurable via .env: GEMINI_MODEL=gemini-3-flash (default: gemini-2.5-flash)
+    const geminiModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const startTime = performance.now();
-    console.log(`🧠 [LLM] Sending prompt to gemini-2.5-flash (${prompt.length} chars)...`);
+    console.log(`🧠 [LLM] Sending prompt to ${geminiModel} (${prompt.length} chars)...`);
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: geminiModel,
       contents: prompt,
     });
 
