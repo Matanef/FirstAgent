@@ -452,37 +452,27 @@ async function handleChunkedProseWrite(text, context) {
                        : arabicChars > latinChars ? "Arabic (العربية)"
                        : "the same language as the input";
 
-    const chunkPrompt = `### STRICT MODE: TEXT EDITOR ###
-Edit section ${i + 1}/${chunks.length}.
+    const chunkPrompt = `You are a proofreader. Fix grammar and spelling errors in the text below.
+The text is in ${dominantLang}. Output in ${dominantLang} only. Never output Chinese/Japanese/Korean.
 
-JOB: ${taskDescription}
+CRITICAL: Your output MUST be approximately the same length as the input (${chunk.length} characters).
+Do NOT summarize. Do NOT shorten. Do NOT skip any part. Copy the ENTIRE text and only change words that have errors.
+Do NOT add any commentary, explanations, or notes. Output ONLY the corrected text.
 
-LANGUAGE LOCK: The text is in ${dominantLang}. You MUST output in ${dominantLang} ONLY.
-FORBIDDEN: Do NOT output Chinese, Japanese, Korean, or any CJK characters (汉字/漢字/かな/한글).
-FORBIDDEN: Do NOT output numbered improvement lists, meta-commentary, or analysis.
-FORBIDDEN: Do NOT say "Here is", "Below is", "The corrected version", or any preamble.
-
-EDITING RULES:
-- Fix grammar, spelling, punctuation errors
-- Improve sentence flow while keeping meaning and tone
-- Keep all formatting (headings, bullets, lists) intact
-- Output the FULL corrected section — no truncation
-
-INPUT:
-${chunk}
-
-OUTPUT:`;
+${chunk}`;
 
     try {
       // Smart model selection: use llama3.1 for non-Latin text (Hebrew, Arabic, etc.)
       const modelOverride = pickModelForContent(chunk);
       if (modelOverride) console.log(`📝 [fileWrite] Using ${modelOverride} for non-Latin chunk ${i + 1}`);
 
-      const result = await llm(chunkPrompt, { timeoutMs: 120_000, skipKnowledge: true, model: modelOverride });
+      // 300s timeout — llama3.1 on 8GB VRAM needs more time for Hebrew/Arabic text
+      const result = await llm(chunkPrompt, { timeoutMs: 300_000, skipKnowledge: true, model: modelOverride });
       const output = result?.data?.text || result?.text || "";
 
-      if (!output || output.length < chunk.length * 0.3) {
-        console.warn(`📝 [fileWrite] Chunk ${i + 1} output suspiciously short (${output.length} vs ${chunk.length}), keeping original`);
+      // Reject if output is less than 50% of input length (was 30% — too strict for grammar edits)
+      if (!output || output.length < chunk.length * 0.5) {
+        console.warn(`📝 [fileWrite] Chunk ${i + 1} output too short (${output.length} vs ${chunk.length} = ${Math.round(output.length/chunk.length*100)}%), keeping original`);
         processedChunks.push(chunk);
         failed++;
       } else {
