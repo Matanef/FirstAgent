@@ -117,11 +117,27 @@ export async function llm(prompt, configOptions = {}) {
     try {
       return await callGemini(prompt, timeoutMs);
     } catch (err) {
-      console.warn(`[llm] Gemini failed (${err.message}), falling back to local Ollama`);
-      // Fall through to Ollama below
+      const errMsg = err.message || "";
+      // On 429 rate-limit, try once more after the suggested retry delay
+      const retryMatch = errMsg.match(/retryDelay.*?(\d+)s/i) || errMsg.match(/retry\s+in\s+([\d.]+)s/i);
+      if (retryMatch) {
+        const waitSec = Math.min(Number(retryMatch[1]) + 2, 60); // cap at 60s
+        console.warn(`[llm] Gemini 429 — waiting ${waitSec}s then retrying once...`);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        try {
+          return await callGemini(prompt, timeoutMs);
+        } catch (retryErr) {
+          console.warn(`[llm] Gemini retry also failed (${retryErr.message}), falling back to local Ollama`);
+        }
+      } else {
+        console.warn(`[llm] Gemini failed (${errMsg}), falling back to local Ollama`);
+      }
+      // Fall through to Ollama — but use the DEFAULT model, not "gemini" (which doesn't exist in Ollama)
     }
   }
 
+  // Use the actual Ollama model name (never "gemini" — that's an API-only route)
+  const ollamaModel = model === "gemini" ? (CONFIG.LLM_MODEL || "llama3.1:8b") : model;
   const url = CONFIG.LLM_API_URL + "api/generate";
 
   try {
@@ -146,7 +162,7 @@ export async function llm(prompt, configOptions = {}) {
     }
 
     const body = {
-      model,
+      model: ollamaModel,
       prompt: finalPrompt,
       stream: false,
       ...(format ? { format } : {}),
@@ -155,9 +171,9 @@ export async function llm(prompt, configOptions = {}) {
         ...options
       }
     };
-    
+
     const llmStartTime = performance.now();
-    console.log(`🧠 [LLM] Sending prompt to ${model}...`);
+    console.log(`🧠 [LLM] Sending prompt to ${ollamaModel}...`);
 
     const response = await fetchWithTimeout(url, body, timeoutMs);
 
