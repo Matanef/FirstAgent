@@ -30,6 +30,25 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   }
 }
 
+/**
+ * Smart model selector — picks the best available model for the content.
+ * Qwen excels at code/English but falls back to Chinese on Hebrew/Arabic.
+ * llama3.1 handles multilingual text natively without CJK contamination.
+ * @param {string} text - The content to analyze
+ * @returns {string|undefined} Model name override, or undefined for default
+ */
+export function pickModelForContent(text) {
+  if (!text) return undefined;
+  const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
+  const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
+  const latin = (text.match(/[a-zA-Z]/g) || []).length;
+  // If non-Latin scripts dominate, use llama3.1 to avoid CJK hallucination
+  if (hebrew > 20 || arabic > 20 || (hebrew + arabic) > latin) {
+    return "llama3.1:8b";
+  }
+  return undefined; // Use default model from CONFIG
+}
+
 export async function llm(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
   
