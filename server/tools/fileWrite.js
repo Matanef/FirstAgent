@@ -404,10 +404,14 @@ function splitIntoChunks(text, maxChars = CHUNK_SIZE) {
 /**
  * Extract plain text from a .docx file using PowerShell.
  * .docx is a ZIP containing word/document.xml — we extract and strip XML tags.
- * No npm packages needed, just PowerShell (built into Windows).
+ * Writes to a temp UTF-8 file to preserve Hebrew/Arabic characters
+ * (PowerShell's stdout mangles non-ANSI characters on Windows).
  */
 async function readDocxAsText(filePath) {
   const resolvedPath = path.resolve(filePath);
+  const tempOut = path.resolve("D:/local-llm-ui/downloads", `_docx_temp_${Date.now()}.txt`);
+
+  // Write extracted text to a temp file (UTF-8) instead of stdout to preserve encoding
   const psScript = `
     $ErrorActionPreference = 'Stop'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -415,24 +419,29 @@ async function readDocxAsText(filePath) {
     $entry = $zip.Entries | Where-Object { $_.FullName -eq 'word/document.xml' } | Select-Object -First 1
     if (-not $entry) { Write-Error 'No word/document.xml found'; exit 1 }
     $stream = $entry.Open()
-    $reader = New-Object System.IO.StreamReader($stream)
+    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
     $xml = $reader.ReadToEnd()
     $reader.Close()
     $stream.Close()
     $zip.Dispose()
-    # Strip XML tags, keep text content, normalize whitespace
-    $text = $xml -replace '<w:p[^>]*/?>', "\`n" -replace '<w:tab[^>]*/>', "\`t" -replace '<[^>]+>', '' -replace '&amp;', '&' -replace '&lt;', '<' -replace '&gt;', '>' -replace '&quot;', '"' -replace '&#39;', "'" -replace '\\r\\n', "\`n"
-    Write-Output $text
+    $text = $xml -replace '<w:p[^>]*/?>', "\`n" -replace '<w:tab[^>]*/>', "\`t" -replace '<[^>]+>', '' -replace '&amp;', '&' -replace '&lt;', '<' -replace '&gt;', '>' -replace '&quot;', '"' -replace '&#39;', "'"
+    [System.IO.File]::WriteAllText('${tempOut.replace(/'/g, "''")}', $text, [System.Text.Encoding]::UTF8)
+    Write-Output 'OK'
   `;
 
   try {
-    const { stdout } = await execFileAsync("powershell", ["-NoProfile", "-Command", psScript], {
-      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large docs
+    await execFileAsync("powershell", ["-NoProfile", "-Command", psScript], {
+      maxBuffer: 1024 * 1024,
       timeout: 30_000
     });
-    // Clean up: collapse excessive newlines, trim
-    return stdout.replace(/\n{3,}/g, "\n\n").trim();
+    // Read the temp file (guaranteed UTF-8)
+    const content = await fs.readFile(tempOut, "utf-8");
+    // Clean up temp file
+    await fs.unlink(tempOut).catch(() => {});
+    // Collapse excessive newlines, trim
+    return content.replace(/\n{3,}/g, "\n\n").trim();
   } catch (err) {
+    await fs.unlink(tempOut).catch(() => {});
     throw new Error(`Failed to read .docx file: ${err.message}`);
   }
 }
