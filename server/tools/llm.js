@@ -1,6 +1,61 @@
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 
+// ── GEMINI API BACKEND ──
+// Used for Hebrew/Arabic/multilingual prose where local models fail.
+// Falls back gracefully to local Ollama if API key is missing.
+let _genai = null;
+async function getGenAI() {
+  if (_genai) return _genai;
+  if (!process.env.GEMINI_API_KEY) return null;
+  try {
+    const { GoogleGenAI } = await import("@google/genai");
+    _genai = new GoogleGenAI({});
+    return _genai;
+  } catch {
+    console.warn("[llm] @google/genai not available, Gemini disabled");
+    return null;
+  }
+}
+
+/**
+ * Call Gemini API directly. Returns the same response shape as llm().
+ */
+async function callGemini(prompt, timeoutMs = 120_000) {
+  const ai = await getGenAI();
+  if (!ai) throw new Error("Gemini API not configured (missing GEMINI_API_KEY)");
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const startTime = performance.now();
+    console.log(`🧠 [LLM] Sending prompt to gemini-2.5-flash (${prompt.length} chars)...`);
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+    });
+
+    const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+    const text = response.text || "";
+    console.log(`⏱️ [LLM] Gemini response received in ${elapsed}s (${text.length} chars)`);
+
+    if (!text) {
+      return { tool: "llm", success: false, final: true, data: { text: "Gemini returned an empty response." } };
+    }
+
+    return { tool: "llm", success: true, final: true, data: { text } };
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(`Gemini request timed out after ${timeoutMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Expose for direct use by tools that want Gemini specifically
+export { callGemini };
 
 async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   const controller = new AbortController();
@@ -32,8 +87,9 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
 
 /**
  * Smart model selector — picks the best available model for the content.
- * Qwen excels at code/English but falls back to Chinese on Hebrew/Arabic.
- * llama3.1 handles multilingual text natively without CJK contamination.
+ * Returns "gemini" for Hebrew/Arabic (outsourced to Gemini API for quality).
+ * Falls back to "llama3.1:8b" if Gemini API key is missing.
+ * Returns undefined for Latin/English content (uses default Ollama model).
  * @param {string} text - The content to analyze
  * @returns {string|undefined} Model name override, or undefined for default
  */
@@ -42,17 +98,27 @@ export function pickModelForContent(text) {
   const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
   const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
   const latin = (text.match(/[a-zA-Z]/g) || []).length;
-  // If non-Latin scripts dominate, use llama3.1 to avoid CJK hallucination
+  // If non-Latin scripts dominate, outsource to Gemini for quality
   if (hebrew > 20 || arabic > 20 || (hebrew + arabic) > latin) {
-    return "llama3.1:8b";
+    return process.env.GEMINI_API_KEY ? "gemini" : "llama3.1:8b";
   }
   return undefined; // Use default model from CONFIG
 }
 
 export async function llm(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
-  
+
   const { model = CONFIG.LLM_MODEL, format, options = {} } = configOptions;
+
+  // ── GEMINI ROUTE: If model is "gemini", use the Gemini API instead of Ollama ──
+  if (model === "gemini") {
+    try {
+      return await callGemini(prompt, timeoutMs);
+    } catch (err) {
+      console.warn(`[llm] Gemini failed (${err.message}), falling back to local Ollama`);
+      // Fall through to Ollama below
+    }
+  }
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
