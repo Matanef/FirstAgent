@@ -3,8 +3,12 @@
 
 import fs from "fs/promises";
 import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { llm, pickModelForContent } from "./llm.js";
 import { getFile } from "../utils/fileRegistry.js";
+
+const execFileAsync = promisify(execFile);
 
 // Sandboxes where agent can write
 const WRITABLE_SANDBOXES = [
@@ -333,7 +337,7 @@ AFTER the ===CODE_END=== tag, provide a brief bulleted list summarizing the impr
 // For large text/prose files that exceed LLM output token limits.
 // Splits by headings or paragraph blocks, processes each chunk, reassembles.
 
-const CHUNK_SIZE = 3000; // ~750 tokens — safe for 7B models with 2k output limit
+const CHUNK_SIZE = 1500; // ~375 tokens — smaller chunks = faster processing + less truncation on 7B/8B models
 
 /**
  * Split text into logical chunks by headings, then by paragraph blocks.
@@ -398,6 +402,42 @@ function splitIntoChunks(text, maxChars = CHUNK_SIZE) {
 }
 
 /**
+ * Extract plain text from a .docx file using PowerShell.
+ * .docx is a ZIP containing word/document.xml — we extract and strip XML tags.
+ * No npm packages needed, just PowerShell (built into Windows).
+ */
+async function readDocxAsText(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const psScript = `
+    $ErrorActionPreference = 'Stop'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead('${resolvedPath.replace(/'/g, "''")}')
+    $entry = $zip.Entries | Where-Object { $_.FullName -eq 'word/document.xml' } | Select-Object -First 1
+    if (-not $entry) { Write-Error 'No word/document.xml found'; exit 1 }
+    $stream = $entry.Open()
+    $reader = New-Object System.IO.StreamReader($stream)
+    $xml = $reader.ReadToEnd()
+    $reader.Close()
+    $stream.Close()
+    $zip.Dispose()
+    # Strip XML tags, keep text content, normalize whitespace
+    $text = $xml -replace '<w:p[^>]*/?>', "\`n" -replace '<w:tab[^>]*/>', "\`t" -replace '<[^>]+>', '' -replace '&amp;', '&' -replace '&lt;', '<' -replace '&gt;', '>' -replace '&quot;', '"' -replace '&#39;', "'" -replace '\\r\\n', "\`n"
+    Write-Output $text
+  `;
+
+  try {
+    const { stdout } = await execFileAsync("powershell", ["-NoProfile", "-Command", psScript], {
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large docs
+      timeout: 30_000
+    });
+    // Clean up: collapse excessive newlines, trim
+    return stdout.replace(/\n{3,}/g, "\n\n").trim();
+  } catch (err) {
+    throw new Error(`Failed to read .docx file: ${err.message}`);
+  }
+}
+
+/**
  * Process a large prose file in chunks through the LLM.
  * Each chunk gets the same editing instructions; results are reassembled.
  */
@@ -421,11 +461,32 @@ async function handleChunkedProseWrite(text, context) {
     return { tool: "fileWrite", success: false, final: true, error: "No source file specified for chunked processing." };
   }
 
+  // Resolve the file path
+  let resolvedSource = path.resolve(sourceFile);
   try {
-    originalContent = await fs.readFile(path.resolve(sourceFile), "utf-8");
+    await fs.access(resolvedSource);
   } catch {
+    resolvedSource = path.resolve("D:/local-llm-ui", sourceFile);
     try {
-      originalContent = await fs.readFile(path.resolve("D:/local-llm-ui", sourceFile), "utf-8");
+      await fs.access(resolvedSource);
+    } catch {
+      return { tool: "fileWrite", success: false, final: true, error: `Could not read source file: ${sourceFile}` };
+    }
+  }
+
+  // Read content — .docx files get special handling (ZIP → XML → text)
+  const ext = path.extname(resolvedSource).toLowerCase();
+  if (ext === ".docx" || ext === ".doc") {
+    try {
+      console.log(`📝 [fileWrite] Reading Word document: ${path.basename(resolvedSource)}`);
+      originalContent = await readDocxAsText(resolvedSource);
+      console.log(`📝 [fileWrite] Extracted ${originalContent.length} chars from .docx`);
+    } catch (err) {
+      return { tool: "fileWrite", success: false, final: true, error: `Word file read failed: ${err.message}` };
+    }
+  } else {
+    try {
+      originalContent = await fs.readFile(resolvedSource, "utf-8");
     } catch {
       return { tool: "fileWrite", success: false, final: true, error: `Could not read source file: ${sourceFile}` };
     }
@@ -504,9 +565,11 @@ ${chunk}`;
   const finalContent = processedChunks.join("\n\n");
   // Default output: downloads folder with "_fixed" suffix using original name
   const baseName = originalName || path.basename(sourceFile);
-  const ext = path.extname(baseName);
-  const nameWithoutExt = baseName.slice(0, -ext.length || undefined);
-  const defaultOutput = path.resolve("D:/local-llm-ui/downloads", `${nameWithoutExt}_fixed${ext}`);
+  const outExt = path.extname(baseName);
+  const nameWithoutExt = baseName.slice(0, -outExt.length || undefined);
+  // .docx input → .txt output (we can't write .docx back)
+  const outputExt = (outExt === ".docx" || outExt === ".doc") ? ".txt" : outExt;
+  const defaultOutput = path.resolve("D:/local-llm-ui/downloads", `${nameWithoutExt}_fixed${outputExt}`);
   const targetPath = context.targetPath || defaultOutput;
 
   console.log(`📝 [fileWrite] Reassembled ${processedChunks.length} chunks → ${finalContent.length} chars (${failed} failed, kept original)`);
