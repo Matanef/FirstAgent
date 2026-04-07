@@ -896,6 +896,24 @@ const html = `
       console.warn("[news] Knowledge extraction failed:", e.message);
     }
 
+    // ── Build plain-text version for WhatsApp / non-HTML channels ──
+    // Prioritizes: AI synthesis + top story summaries. Flash news excluded (too noisy for 4000-char limit).
+    const plainParts = [];
+    if (topic) plainParts.push(`📰 *News: ${topic}*\n`);
+    if (overallSynthesis) {
+      plainParts.push(`🤖 *AI Summary:*\n${overallSynthesis}\n`);
+    }
+    if (summaries.length > 0) {
+      const storyLines = summaries.slice(0, 8).map((s, i) => {
+        const src = s.source ? ` _(${s.source})_` : "";
+        const desc = s.summary ? `\n   ${s.summary.slice(0, 150)}${s.summary.length > 150 ? "..." : ""}` : "";
+        const link = s.link ? `\n   ${s.link}` : "";
+        return `${i + 1}. *${s.title}*${src}${desc}${link}`;
+      });
+      plainParts.push(`📋 *Top Stories:*\n\n${storyLines.join("\n\n")}`);
+    }
+    const plain = plainParts.length > 0 ? plainParts.join("\n") : undefined;
+
     return {
       tool: "news",
       success: true,
@@ -908,6 +926,7 @@ const html = `
         flashItems: flashItems.length,
         filteredItems: filteredRssItems.length,
         html,
+        plain,
         preformatted: true,
         text: html,
         learnedFacts

@@ -18,6 +18,7 @@ import { getMemory, getEnrichedProfile, saveJSON, MEMORY_FILE } from "../memory.
 import { getPersonalityContext } from "../personality.js";
 import { getKnowledgeContext } from "../knowledge.js";
 import { classifyIntent } from "../utils/intentClassifier.js";
+import { buildUserToneInstruction } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js"; 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -144,6 +145,19 @@ async function buildUserContext(conversationId) {
       parts.push(knowledgeCtx);
     }
   } catch { /* non-blocking */ }
+
+  // ── Per-user tone/identity injection (WhatsApp multi-user support) ──
+  if (conversationId?.startsWith("whatsapp_")) {
+    try {
+      const phone = conversationId.replace("whatsapp_", "");
+      const toneInstruction = await buildUserToneInstruction(phone);
+      if (toneInstruction) {
+        parts.push(toneInstruction);
+      }
+    } catch (e) {
+      console.warn("[chatAgent] User tone injection failed:", e.message);
+    }
+  }
 
   return parts.join("\n\n");
 }

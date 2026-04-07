@@ -124,7 +124,7 @@ function getEmotionalAdaptation(frustration, sentiment) {
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
  */
-export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep }) {
+export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep, userProfile = null, userToneInstruction = "" }) {
     const startTime = performance.now();
     const queryText = typeof message === "string" ? message : message?.text || "";
     console.log(`\n🚀 [PIPELINE START] Task: "${queryText.substring(0, 50)}..."`);

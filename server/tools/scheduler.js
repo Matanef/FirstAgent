@@ -227,43 +227,50 @@ async function executeScheduledTask(schedule) {
     addNotification(notif);
 
     // Send WhatsApp notification with actual results (not just "Success")
+    // Only sends to users with schedulerEnabled=true (owner by default, not family members)
     try {
       const { CONFIG } = await import("../utils/config.js");
-      const recipient = CONFIG.WHATSAPP_DEFAULT_RECIPIENT;
+      const recipient = schedule.recipient || CONFIG.WHATSAPP_DEFAULT_RECIPIENT;
       if (recipient && process.env.WHATSAPP_TOKEN) {
-        const { sendWhatsAppMessage } = await import("./whatsapp.js");
+        // Check if this recipient should receive scheduler notifications
+        const { shouldReceiveScheduler } = await import("../utils/userProfiles.js");
+        const shouldSend = await shouldReceiveScheduler(recipient);
+        if (!shouldSend) {
+          console.log(`[scheduler] Skipping WhatsApp notification for ${recipient} (schedulerEnabled=false)`);
+        } else {
+          const { sendWhatsAppMessage } = await import("./whatsapp.js");
 
-        // Extract meaningful result text from the agent pipeline output
-        let resultSummary = "";
-        // Helper: prefer .plain (WhatsApp-friendly, raw URLs) over .text (HTML)
-        // Only strip HTML as last resort when no plain version exists
-        const pickPlain = (r) => {
-          if (r?.data?.plain) return r.data.plain;
-          if (r?.output?.data?.plain) return r.output.data.plain;
-          if (r?.reply) return r.reply.replace(/<[^>]+>/g, "");
-          if (r?.data?.text) return r.data.text.replace(/<[^>]+>/g, "");
-          if (r?.output?.data?.text) return r.output.data.text.replace(/<[^>]+>/g, "");
-          return "";
-        };
-        try {
-          if (Array.isArray(results)) {
-            // Multi-step results — collect text from each step
-            resultSummary = results
-              .filter(r => r && (r.data?.plain || r.data?.text || r.output?.data?.plain || r.output?.data?.text || r.reply))
-              .map(r => pickPlain(r).substring(0, 500))
-              .join("\n\n")
-              .substring(0, 1500);
-          } else {
-            resultSummary = pickPlain(results).substring(0, 1500);
+          // Extract meaningful result text from the agent pipeline output
+          let resultSummary = "";
+          // Helper: prefer .plain (WhatsApp-friendly, raw URLs) over .text (HTML)
+          // Only strip HTML as last resort when no plain version exists
+          const pickPlain = (r) => {
+            if (r?.data?.plain) return r.data.plain;
+            if (r?.output?.data?.plain) return r.output.data.plain;
+            if (r?.reply) return r.reply.replace(/<[^>]+>/g, "");
+            if (r?.data?.text) return r.data.text.replace(/<[^>]+>/g, "");
+            if (r?.output?.data?.text) return r.output.data.text.replace(/<[^>]+>/g, "");
+            return "";
+          };
+          try {
+            if (Array.isArray(results)) {
+              resultSummary = results
+                .filter(r => r && (r.data?.plain || r.data?.text || r.output?.data?.plain || r.output?.data?.text || r.reply))
+                .map(r => pickPlain(r).substring(0, 500))
+                .join("\n\n")
+                .substring(0, 1500);
+            } else {
+              resultSummary = pickPlain(results).substring(0, 1500);
+            }
+          } catch (extractErr) {
+            console.warn("[scheduler] Result extraction failed:", extractErr.message);
           }
-        } catch (extractErr) {
-          console.warn("[scheduler] Result extraction failed:", extractErr.message);
-        }
 
-        const summary = resultSummary
-          ? `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}\n\n📊 *Results:*\n${resultSummary}`
-          : `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}`;
-        await sendWhatsAppMessage(recipient, summary);
+          const summary = resultSummary
+            ? `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}\n\n📊 *Results:*\n${resultSummary}`
+            : `⏰ *Scheduled Task Complete*\n\n📋 ${schedule.task}\n✅ Status: Success\n🕐 ${new Date().toLocaleTimeString()}`;
+          await sendWhatsAppMessage(recipient, summary);
+        }
       }
     } catch (waErr) {
       console.warn("[scheduler] WhatsApp notification failed:", waErr.message);

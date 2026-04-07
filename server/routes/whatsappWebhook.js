@@ -6,6 +6,7 @@
 import express from "express";
 import crypto from "crypto";
 import { getState, setState, clearState, touchConversationWindow } from "../utils/whatsappState.js";
+import { getUserByPhone, buildUserToneInstruction } from "../utils/userProfiles.js";
 
 const router = express.Router();
 
@@ -200,8 +201,12 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     // ── EMPTY GUARD ──
     if (!body.trim()) return;
 
+    // ── USER PROFILE LOOKUP ──
+    const userProfile = await getUserByPhone(from);
+    const displayName = userProfile?.name || contactName;
+
     console.log("\n" + "─".repeat(60));
-    console.log(`📱 [WhatsApp] From: ${contactName} (${from}) → "${body}"`);
+    console.log(`📱 [WhatsApp] From: ${displayName} (${from})${userProfile ? ` [${userProfile.role}]` : ""} → "${body}"`);
     console.log("─".repeat(60));
 
     const { sendWhatsAppMessage: _sendWA } = await import("../tools/whatsapp.js");
@@ -258,10 +263,15 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
 
     const { executeAgent } = await import("../utils/coordinator.js");
 
+    // Build user-specific tone instruction for non-default users
+    const userToneInstruction = await buildUserToneInstruction(from);
+
     const result = await executeAgent({
       message: body,
       conversationId: `whatsapp_${from}`,
-      clientIp: "whatsapp"
+      clientIp: "whatsapp",
+      userProfile,
+      userToneInstruction
     });
 
     console.log(`🤖 [WhatsApp] Pipeline complete — tool: ${result.tool}, success: ${result.success}`);
