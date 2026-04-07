@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { llm, llmStream } from "../tools/llm.js";
 import { getMemory, getEnrichedProfile, saveJSON, MEMORY_FILE } from "../memory.js";
 import { getPersonalityContext } from "../personality.js";
-import { getKnowledgeContext } from "../knowledge.js";
+import { getKnowledgeContext, getRelevantKnowledge } from "../knowledge.js";
 import { classifyIntent } from "../utils/intentClassifier.js";
 import { buildUserToneInstruction } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js"; 
@@ -508,6 +508,10 @@ CRITICAL INTEGRATION RULES:
     }
   }
 
+  // Find knowledge facts specifically relevant to this user message
+  // Injected near the user message so small LLMs can't ignore it
+  const relevantKnowledge = await getRelevantKnowledge(message).catch(() => "");
+
   const conversationContext = recentTurns
     .slice(-10)
     .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${(t.content || "").slice(0, 300)}`)
@@ -543,7 +547,7 @@ ABSOLUTE RULES (OVERRIDE ALL OTHER INSTRUCTIONS):
 
 ${toolContextStr ? toolContextStr + "\n\n" : ""}
 ${conversationContext ? `CONVERSATION HISTORY:\n${conversationContext}\n\n---\n` : ""}
-USER: ${message}
+${relevantKnowledge ? relevantKnowledge + "\n\n" : ""}USER: ${message}
 ASSISTANT:`;
 
   try {

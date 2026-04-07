@@ -24,7 +24,7 @@ const DEFAULT_PROFILES = {
   },
   // Add Mom's number here after verifying in Meta Dashboard
   // Example: "972501234567"
-  "_MOM_PHONE_PLACEHOLDER_": {
+  "972505576180": {
     name: "Shirly",
     nameHe: "שירלי",
     role: "family",

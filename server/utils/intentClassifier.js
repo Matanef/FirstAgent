@@ -100,6 +100,16 @@ const TASK_PATTERNS = [
   /\b(search|find|look\s+up|google|fetch|get|check|show|list|display|browse|run|call|execute|start|trigger|play)\b/i,
   // Fixed plural support for messages and emails
   /\b(send|compose|write|draft|reply)\s+(an?\s+)?(emails?|messages?|whatsapp|texts?|sms|dms?)\b/i,
+  // Natural language "send [person/relation] a [adjective] message" — recipient between verb and noun
+  // Note: \b doesn't work with Hebrew chars, so Hebrew verbs use (?:^|\s) anchoring
+  /\b(send)\s+.{1,50}\b(message|mail|email|text)\b/i,
+  /(?:^|\s)(שלח|תשלח|שלחי)\s+.{1,50}(הודעה|מייל|מסרון)/i,
+  // "send a message to [person]" / "message [person]"
+  /\b(send)\s+(a\s+)?(message|text)\s+(to)\s+/i,
+  /(?:^|\s)(שלח|תשלח|שלחי)\s+.{0,10}(הודעה|מסרון)\s+(ל)/i,
+  // Family relation as send target — "send my mom", "שלח לאמא"
+  /\b(send)\s+(my\s+|to\s+my\s+)?(mom|dad|mother|father|brother|sister)\b/i,
+  /(?:^|\s)(שלח|תשלח|שלחי)\s+(ל)?(אמא|אימא|אבא|אחי|אחות)/i,
   /\b(whatsapp|וואטסאפ|ווטסאפ)\b/i,
   // Memory/identity queries — must be task, not chat
   /\bwhat\s+do\s+you\s+(know|remember)\s+(about\s+me|about\s+my)\b/i,

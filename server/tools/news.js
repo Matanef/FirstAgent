@@ -558,28 +558,28 @@ export async function news(request) {
         // Fetch Lanou's specific personality and voice instructions
         const personalityCtx = await getPersonalityContext("chat");
         
-const synthesisPrompt = `
+        const synthesisPrompt = `
 ${personalityCtx}
 
-Based on the following news summaries${topic ? ` about ${topic}` : ''}, analyze the current situation. 
+Based on the following NEW news summaries${topic ? ` about ${topic}` : ''}, AND your existing RECENT KNOWLEDGE context, analyze the current situation. 
 
 Write exactly TWO paragraphs:
-First paragraph: Synthesize the core facts. If the data is sparse, summarize exactly what is there.
-Second paragraph: Give your opinion or observation. Speak entirely in YOUR voice (dry, observational, systems-thinking).
+First paragraph: Synthesize the core facts from the NEW data. If this updates or contradicts something in your RECENT KNOWLEDGE, point that out.
+Second paragraph: Give your opinion or observation. How does this new information evolve your previous understanding of the topic? Speak entirely in YOUR voice (dry, observational, systems-thinking).
 
 CRITICAL INSTRUCTIONS: 
 1. DO NOT apologize for "incomplete information" or missing data. Work with what you have.
 2. DO NOT mention your AI nature, knowledge cutoffs, or inability to browse.
 3. DO NOT use headers, titles, or markdown like "Paragraph 1". Just write the text naturally.
 
-NEWS DATA:
+NEW NEWS DATA:
 ${combinedText}`;
         
-        // Notice we added skipKnowledge: true because we don't want the LLM 
-        // to confuse past knowledge with the specific news articles we just handed it.
-        const synthesisResult = await llm(synthesisPrompt, { skipKnowledge: true, 
-          skipHistory: true }); 
-if (synthesisResult.success && synthesisResult.data?.text) {
+        // FIX: Removed `skipKnowledge: true` so the agent's long-term passive 
+        // knowledge is injected into the prompt, allowing it to form an evolving opinion.
+        const synthesisResult = await llm(synthesisPrompt, { skipHistory: true }); 
+        
+        if (synthesisResult.success && synthesisResult.data?.text) {
           // Instead of just trimming it, let's split it by line breaks and wrap in <p> tags
           const rawText = synthesisResult.data.text.trim();
           overallSynthesis = rawText

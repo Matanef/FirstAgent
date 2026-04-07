@@ -170,6 +170,53 @@ IMPORTANT: When a user asks about any topic covered above, reference this knowle
 }
 
 /**
+ * Find knowledge facts relevant to a specific user question.
+ * Returns a focused, high-priority context string to inject near the user message.
+ * This prevents small LLMs from ignoring knowledge in favor of stale training data.
+ */
+export async function getRelevantKnowledge(userMessage) {
+  if (!userMessage || userMessage.length < 5) return "";
+  const facts = await loadKnowledge();
+  if (facts.length === 0) return "";
+
+  const msgLower = userMessage.toLowerCase().replace(/[?.!,;:'"]/g, "");
+  // Filter out stopwords so "current prime minister" doesn't match everything
+  // Use length >= 2 to keep important short tokens like "UK", "US", "AI"
+  const msgWords = new Set(msgLower.split(/\s+/).filter(w => w.length >= 2 && !TOPIC_STOPWORDS.has(w)));
+
+  // Score each fact by relevance to the user message
+  const scored = facts.map(f => {
+    let score = 0;
+    const topicLower = (f.topic || "").toLowerCase();
+    const factLower = (f.fact || "").toLowerCase();
+
+    // Check if substantive message words appear in topic or fact
+    for (const word of msgWords) {
+      if (topicLower.includes(word)) score += 3;
+      if (factLower.includes(word)) score += 1;
+    }
+
+    // Bonus for substantive topic words appearing in the message
+    const topicWords = topicLower.split(/\s+/).filter(w => w.length >= 2 && !TOPIC_STOPWORDS.has(w));
+    for (const tw of topicWords) {
+      if (msgLower.includes(tw)) score += 2;
+    }
+
+    return { fact: f, score };
+  })
+  .filter(s => s.score >= 4) // Minimum relevance threshold
+  .sort((a, b) => b.score - a.score)
+  .slice(0, 3);
+
+  if (scored.length === 0) return "";
+
+  const lines = scored.map(s => `• ${s.fact.fact}`);
+  return `⚠️ KNOWLEDGE OVERRIDE — YOUR LEARNED FACTS ABOUT THIS TOPIC:
+${lines.join("\n")}
+YOU MUST USE THESE FACTS IN YOUR ANSWER. These are more recent than your training data. Do NOT contradict them with older information.`;
+}
+
+/**
  * Extract facts from news results using a lightweight heuristic.
  * No LLM call — just extracts key info from article summaries.
  */
@@ -228,9 +275,10 @@ export async function extractFromNews(articles, topic) {
 export async function extractFromSearch(results, synthesis, query) {
   if (!results || results.length === 0) return [];
 
-  // Clean the query: strip question words and conversational noise
+  // Clean the query: strip question words, search commands, and conversational noise
   const cleanedQuery = (query || "")
-    .replace(/^(what|who|when|where|why|how|tell\s+me|explain|describe|search\s+for)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    .replace(/^(search\s+for\s+)?(what|who|when|where|why|how|tell\s+me|explain|describe)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    .replace(/^(the\s+)?(current|latest|recent)\s+/gi, "")
     .replace(/[?.!]+$/g, "")
     .trim();
 
@@ -247,7 +295,14 @@ export async function extractFromSearch(results, synthesis, query) {
   const ongoingKeywords = /\b(war|conflict|crisis|outbreak|pandemic|siege|invasion|ceasefire|ongoing|escalat|continu|develop|massacre|protest|revolt|uprising)\b/i;
 
   // If we have an LLM synthesis, store that as a single comprehensive fact
+  // But SKIP non-answers — these are failed searches that would pollute knowledge
   if (synthesis && synthesis.length > 20) {
+    const isNonAnswer = /\b(not\s+directly\s+mentioned|couldn'?t\s+find|no\s+reliable|not\s+provided|not\s+available|unable\s+to\s+find|no\s+(?:specific|relevant)\s+(?:information|details|results))\b/i.test(synthesis);
+    if (isNonAnswer) {
+      console.log(`[knowledge] Skipping non-answer synthesis for topic "${topic}"`);
+      return [];
+    }
+
     const ongoing = ongoingKeywords.test(synthesis) || ongoingKeywords.test(query || "");
 
     const r = await addFact({
@@ -295,7 +350,15 @@ export async function extractFromWebContent(pageTitle, plainText, url, { permane
     try {
       // Trim content to a reasonable size for LLM extraction
       const contentForLLM = plainText.substring(0, 6000);
-      const extractPrompt = `Extract 3-5 distinct, important facts from this article. Each fact should be a self-contained statement that someone could understand without reading the article.
+      const extractPrompt = `Extract 3-5 distinct, important facts from this article. Prioritize in this order:
+1. CURRENT STATE: Who/what currently holds a position, the latest numbers, the current status (e.g., "The current president is X since Y")
+2. RECENT EVENTS: What happened recently, any changes, updates, or breaking developments
+3. KEY FACTS: Important permanent facts that help understand the topic
+
+Each fact should be a self-contained statement that someone could understand without reading the article. Include specific names, dates, and numbers — never generic descriptions.
+
+BAD example: {"topic": "Term Length", "fact": "The president serves a four-year term"} — this is generic trivia.
+GOOD example: {"topic": "Current US President", "fact": "Donald Trump is the 47th president, inaugurated on January 20, 2025"} — this is specific and current.
 
 Article title: ${topic}
 Article content:
@@ -364,10 +427,30 @@ function _expiryDate(days) {
   return d.toISOString().split("T")[0];
 }
 
+// Stopwords to exclude from topic overlap matching — these are common in queries
+// but carry no topical meaning ("current prime minister" matches everything)
+const TOPIC_STOPWORDS = new Set([
+  // Short function words (needed since we allow length >= 2)
+  "is", "am", "an", "at", "be", "by", "do", "go", "he", "if", "in", "it", "me", "my",
+  "no", "of", "on", "or", "so", "to", "up", "us", "we",
+  // Common 3+ char stopwords
+  "the", "and", "for", "are", "was", "were", "not", "but", "has", "had", "will", "can", "may",
+  "current", "latest", "recent", "today", "new", "last", "first", "next",
+  "prime", "minister", "president", "leader", "head", "chief", "king", "queen",
+  "what", "who", "when", "where", "which", "how", "does", "that", "this", "with",
+  "about", "from", "into", "have", "been", "being", "their", "there", "they",
+  "some", "more", "most", "also", "just", "very", "much", "many", "such",
+  "search", "find", "look", "show", "tell", "give", "know",
+]);
+
 function _wordOverlap(a, b) {
-  const wordsA = new Set((a || "").toLowerCase().split(/\s+/).filter(w => w.length >= 4));
-  const wordsB = new Set((b || "").toLowerCase().split(/\s+/).filter(w => w.length >= 4));
+  const wordsA = new Set((a || "").toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !TOPIC_STOPWORDS.has(w)));
+  const wordsB = new Set((b || "").toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !TOPIC_STOPWORDS.has(w)));
   if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  // Guard: if either set has only 1 word after filtering, a single shared word
+  // (e.g., "israel") would give 100% overlap between unrelated topics.
+  // Require at least 2 substantive words in both sets for fuzzy matching.
+  if (wordsA.size < 2 || wordsB.size < 2) return 0;
   let overlap = 0;
   for (const w of wordsA) if (wordsB.has(w)) overlap++;
   return overlap / Math.min(wordsA.size, wordsB.size);

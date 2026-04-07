@@ -160,10 +160,17 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     const change = entry?.changes?.[0];
     const value = change?.value;
 
-    // Status updates (delivered, read, etc.) — log but skip
+    // Status updates (delivered, read, failed, etc.) — log details and skip
     if (value?.statuses) {
       const status = value.statuses[0];
-      console.log(`📱 [WhatsApp] Status: ${status?.status} for ${status?.recipient_id}`);
+      if (status?.status === "failed") {
+        const errCode = status?.errors?.[0]?.code || "unknown";
+        const errTitle = status?.errors?.[0]?.title || "Unknown error";
+        const errMsg = status?.errors?.[0]?.message || status?.errors?.[0]?.error_data?.details || "";
+        console.error(`❌ [WhatsApp] Status: FAILED for ${status?.recipient_id} — Error ${errCode}: ${errTitle}${errMsg ? ` (${errMsg})` : ""}`);
+      } else {
+        console.log(`📱 [WhatsApp] Status: ${status?.status} for ${status?.recipient_id}`);
+      }
       return;
     }
 
@@ -256,7 +263,7 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
       return;
     }
 
-    // ──────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────
     // GENERIC: Route through full agent pipeline
     // ──────────────────────────────────────────────────────
     console.log(`🤖 [WhatsApp] Routing through agent pipeline: "${body.slice(0, 60)}..."`);
@@ -266,14 +273,35 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     // Build user-specific tone instruction for non-default users
     const userToneInstruction = await buildUserToneInstruction(from);
 
+// ── PERSONA OVERRIDE FOR WHATSAPP ──
+    let personaPrefix = `(System: You are Lanou, communicating via WhatsApp.`;
+    
+    // 1. Always inject the user's identity if we know it
+    if (userProfile && userProfile.name) {
+        personaPrefix += ` You are speaking with ${userProfile.name}`;
+        if (userProfile.relation) personaPrefix += ` (Matan's ${userProfile.relation}).`;
+        else personaPrefix += `.`;
+        
+        if (userProfile.role !== "admin" && userProfile.role !== "developer") {
+           personaPrefix += ` Answer warmly and conversationally. Do NOT output raw terminal data, JSON, or tool diagnostics. Summarize any tool findings in natural language.`;
+        }
+    }
+    
+// 2. Add identity override instructions if they ask who you are
+    if (/^(what('s| is) your name|who are you|what are you|איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)[?.!]?\s*$/i.test(body.trim())) {
+        personaPrefix += ` The user is asking about your identity. Answer briefly and conversationally as Lanou. Do not search the web or run tools.`;
+    }
+    
+    personaPrefix += `) `;
+    const contextualMessage = `${personaPrefix}\n${body}`;
+
     const result = await executeAgent({
-      message: body,
+      message: contextualMessage,
       conversationId: `whatsapp_${from}`,
       clientIp: "whatsapp",
       userProfile,
       userToneInstruction
     });
-
     console.log(`🤖 [WhatsApp] Pipeline complete — tool: ${result.tool}, success: ${result.success}`);
 
     // ── Intercept email drafts: save state so "send it" works ──

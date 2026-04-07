@@ -137,8 +137,9 @@ async function detectWhatsAppIntent(text) {
   const contactPatterns = [
     // "send a message to [NAME/RELATION]" with optional message description
     /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message\s+)?(?:to\s+)(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})(?:[.,]?\s*(?:the\s+)?(?:message|it)\s+should\s+(?:be\s+)?(.+))?/iu,
-    // "send [NAME] a message" with optional description
-    /(?:send|שלח)\s+(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|הודעה)(?:[.,]?\s*(?:the\s+)?(?:message|it)\s+should\s+(?:be\s+)?(.+))?/iu,
+    // "send [NAME] a [adjective] message" — allows up to 3 words between "a" and "message"
+    // Matches: "send my mom a welcoming message", "send shirly a funny short message"
+    /(?:send|שלח)\s+(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})\s+(?:a\s+)?(?:[\w]+\s+){0,3}(?:whatsapp\s+)?(?:message|הודעה)(?:[.,]?\s*(?:the\s+)?(?:message|it)\s+should\s+(?:be\s+)?(.+))?/iu,
   ];
 
   for (const pattern of contactPatterns) {
@@ -283,47 +284,74 @@ async function sendTemplateMessage(cleanedNumber, text) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_ID;
   const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "hello_world";
-  const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en_US";
+  const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
 
   const url = `${WHATSAPP_API}/${phoneId}/messages`;
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-  // Build template payload — include body parameter if message text is provided
-  const templatePayload = {
-    messaging_product: "whatsapp",
-    to: cleanedNumber,
-    type: "template",
-    template: {
-      name: templateName,
-      language: { code: templateLang },
-    }
-  };
+  // Try sending with the configured template.
+  // Strategy: try WITH body parameter first, then WITHOUT, then fall back to hello_world.
+  // This handles templates with unknown parameter counts gracefully.
+  const attempts = [];
 
-  // If we have a custom message and a user-configured template (not the default hello_world),
-  // pass the text as a body parameter so it appears in the template.
+  // Attempt 1: configured template WITH body parameter (if we have text)
   if (text && templateName !== "hello_world") {
-    templatePayload.template.components = [
-      {
-        type: "body",
-        parameters: [{ type: "text", text: text.slice(0, 1024) }]
-      }
-    ];
-  }
-
-  try {
-    const response = await axios.post(url, templatePayload, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
+    attempts.push({
+      label: `${templateName} (with param)`,
+      payload: {
+        messaging_product: "whatsapp", to: cleanedNumber, type: "template",
+        template: {
+          name: templateName,
+          language: { code: templateLang },
+          components: [{ type: "body", parameters: [{ type: "text", text: text.slice(0, 1024) }] }]
+        }
       }
     });
-    const messageId = response.data?.messages?.[0]?.id;
-    console.log(`✅ [WhatsApp] Template "${templateName}" sent to ${cleanedNumber} (id: ${messageId})`);
-    return { success: true, to: cleanedNumber, messageId, usedTemplate: templateName };
-  } catch (err) {
-    const errorMsg = err.response?.data?.error?.message || err.message;
-    console.error(`❌ [WhatsApp] Template send failed to ${cleanedNumber}: ${errorMsg}`);
-    return { success: false, to: cleanedNumber, error: errorMsg, usedTemplate: templateName };
   }
+
+  // Attempt 2: configured template WITHOUT parameters (template has no {{1}} placeholders)
+  if (templateName !== "hello_world") {
+    attempts.push({
+      label: `${templateName} (no params)`,
+      payload: {
+        messaging_product: "whatsapp", to: cleanedNumber, type: "template",
+        template: { name: templateName, language: { code: templateLang } }
+      }
+    });
+  }
+
+  // Attempt 3: hello_world fallback (always works, 0 parameters, en_US)
+  attempts.push({
+    label: "hello_world (fallback)",
+    payload: {
+      messaging_product: "whatsapp", to: cleanedNumber, type: "template",
+      template: { name: "hello_world", language: { code: "en_US" } }
+    }
+  });
+
+  let lastError = "";
+  for (const attempt of attempts) {
+    try {
+      const response = await axios.post(url, attempt.payload, { headers });
+      const messageId = response.data?.messages?.[0]?.id;
+      const usedTemplate = attempt.payload.template.name;
+      console.log(`✅ [WhatsApp] Template "${attempt.label}" sent to ${cleanedNumber} (id: ${messageId})`);
+      return { success: true, to: cleanedNumber, messageId, usedTemplate };
+    } catch (err) {
+      const errorMsg = err.response?.data?.error?.message || err.message;
+      const errCode = err.response?.data?.error?.code;
+      console.warn(`⚠️ [WhatsApp] Template "${attempt.label}" failed: ${errorMsg}`);
+      lastError = errorMsg;
+      // Only retry on template-specific errors (132000=param mismatch, 132001=not found)
+      if (errCode !== 132000 && errCode !== 132001 && errCode !== 132005) {
+        // Non-template error (auth, rate limit, invalid number) — don't keep trying templates
+        break;
+      }
+    }
+  }
+
+  console.error(`❌ [WhatsApp] All template attempts failed for ${cleanedNumber}: ${lastError}`);
+  return { success: false, to: cleanedNumber, error: lastError, usedTemplate: templateName };
 }
 
 /**
@@ -364,41 +392,34 @@ export async function sendWhatsAppMessage(to, text, opts = {}) {
       };
     }
 
-    // Template sent successfully. If we have a custom template (not hello_world),
-    // the message was included as a parameter. If using hello_world, send the
-    // actual message as a follow-up (the template opened the window).
+    // Template sent successfully.
+    // If using hello_world (no params), attempt a follow-up freeform text.
+    // This works when the user actually has an open window (e.g., server restarted
+    // but user had messaged recently). If they truly have no window, the follow-up
+    // will fail silently — that's fine, the template was still delivered.
     if (templateResult.usedTemplate === "hello_world" && text) {
-      // Small delay to let the template open the conversation
       await new Promise(r => setTimeout(r, 1500));
-      // Now try sending the actual text as a follow-up
       try {
         const url = `${WHATSAPP_API}/${phoneId}/messages`;
-        const followUp = await axios.post(
-          url,
-          {
-            messaging_product: "whatsapp",
-            to: cleanedNumber,
-            type: "text",
-            text: { body: text }
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
+        const followUp = await axios.post(url, {
+          messaging_product: "whatsapp",
+          to: cleanedNumber,
+          type: "text",
+          text: { body: text }
+        }, {
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+        });
         const followUpId = followUp.data?.messages?.[0]?.id;
         console.log(`✅ [WhatsApp] Follow-up text sent to ${cleanedNumber} (id: ${followUpId})`);
-        return { success: true, to: cleanedNumber, messageId: followUpId, note: "Sent via template + follow-up (no active window)" };
+        return { success: true, to: cleanedNumber, messageId: followUpId, note: "Sent via template + follow-up" };
       } catch (err) {
-        // Follow-up failed, but template was sent
-        console.warn(`⚠️ [WhatsApp] Template sent but follow-up text failed: ${err.response?.data?.error?.message || err.message}`);
+        // Follow-up failed (no real window) — template was still delivered
+        console.warn(`⚠️ [WhatsApp] Follow-up text failed (expected if no real window): ${err.response?.data?.error?.message || err.message}`);
         return {
           success: true,
           to: cleanedNumber,
           messageId: templateResult.messageId,
-          note: `Template "${templateResult.usedTemplate}" sent, but follow-up message could not be delivered. Consider setting up a custom WHATSAPP_TEMPLATE_NAME with a body parameter.`
+          note: `Template "hello_world" sent, but follow-up message could not be delivered. The recipient needs to reply first to open a conversation window.`
         };
       }
     }
@@ -747,7 +768,16 @@ RULES:
 - If a language preference is specified, write in that language.
 - Match the requested tone exactly.`;
 
-            const composeResult = await llmCall(composePrompt, { skipKnowledge: true, timeoutMs: 30_000 });
+            // Pick a model that can handle the target language (Hebrew → Gemini/aya-expanse)
+            let composeModel;
+            try {
+              const { pickModelForContent } = await import("./llm.js");
+              // Check if the prompt or recipient language requires a Hebrew-capable model
+              const langHint = recipientContext.includes("Hebrew") ? "שלום" : composePrompt;
+              composeModel = pickModelForContent(langHint);
+            } catch { /* fallback to default */ }
+
+            const composeResult = await llmCall(composePrompt, { skipKnowledge: true, timeoutMs: 30_000, model: composeModel });
             const composed = composeResult?.data?.text?.trim();
             if (composed && composed.length > 2) {
               // Clean LLM artifacts
@@ -782,7 +812,7 @@ RULES:
           tool: "whatsapp",
           success: false,
           final: true,
-          error: `Failed to send WhatsApp to ${result.to}: ${result.error}`
+          error: `Failed to send WhatsApp to ${parsed.recipientName || result.to} (${result.to}): ${result.error}${messageToSend ? `\n\n📝 Composed message was:\n"${messageToSend}"` : ""}`
         };
       }
 

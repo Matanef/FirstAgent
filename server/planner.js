@@ -173,6 +173,10 @@ function inferToolFromText(text) {
   if (/\b(chart|graph|plot|visualize|diagram)\b/.test(lower)) return "chartGenerator";
   if (/\b(tweet|twitter|x\s+trends?|trending\s+on\s+x)\b/.test(lower)) return "x";
   if (/\b(whatsapp|וואטסאפ|ווטסאפ)\b/.test(lower)) return "whatsapp";
+  // "send [person/relation] a message" — route to whatsapp when target is a person/relation, not email
+  if (/\b(send)\s+.{1,50}\b(message)\b/i.test(lower) && !/\b(email|mail)\b/.test(lower)) return "whatsapp";
+  if (/\b(send)\s+(my\s+|to\s+my\s+)?(mom|dad|mother|father|brother|sister)\b/i.test(lower)) return "whatsapp";
+  if (/(?:^|\s)(שלח|תשלח|שלחי)\s+.{0,50}(הודעה|מסרון)/i.test(lower)) return "whatsapp";
 
   // ── CODE GURU & SYSTEM TOOLS ──
   if (/\b(apply\s*patch|full\s+rewrite|rewrite\s+entire)\b/.test(lower)) return "applyPatch";
@@ -448,6 +452,15 @@ const ROUTING_TABLE = [
       /\b(since|between|after|before|from\s+\d|starting)\b/i.test(lower),
     description: "Download email attachments by sender and date range"
   },
+{
+    tool: "llm",
+    priority: 85,
+    match: (lower) => 
+      /\b(what('s| is) your name|who are you|what are you|your identity|tell me about yourself)\b/i.test(lower) ||
+      /^(איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)/i.test(lower) ||
+      /^\(system:\s*the user asked about your identity/i.test(lower),
+    description: "Agent identity questions"
+  },
   {
     tool: "githubScanner",
     priority: 88,
@@ -569,6 +582,18 @@ const ROUTING_TABLE = [
       /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower),
     guard: (lower) => hasCompoundIntent(lower),
     description: "WhatsApp — explicit keyword with send intent"
+  },
+  {
+    tool: "whatsapp",
+    priority: 68,
+    match: (lower) =>
+      // "send my mom/dad a message", "send shirly a welcoming message"
+      (/\b(send)\s+(my\s+|to\s+my\s+)?(mom|dad|mother|father|brother|sister)\b/i.test(lower) ||
+       /(?:^|\s)(שלח|תשלח|שלחי)\s+(ל)?(אמא|אימא|אבא|אחי|אחות)/i.test(lower) ||
+       /\b(send)\s+\w+\s+a\s+\w+\s+message\b/i.test(lower)) &&
+      !/\b(email|e-mail|mail)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "WhatsApp — send message to person/relation by name"
   },
   {
     tool: "githubTrending",
@@ -903,6 +928,25 @@ const ROUTING_TABLE = [
 
   // ── TIER 6: Fallback (20-39) ──────────────────────────────
   {
+    tool: "llm",
+    priority: 35,
+    match: (lower, trimmed) => {
+      // Hebrew/Arabic conversational catch-all: if the text is predominantly non-Latin,
+      // route to llm instead of letting the tiny intent decomposer (which can't read Hebrew) hallucinate.
+      // Only fires when NO higher-priority tool matched.
+      const hebrew = (trimmed.match(/[\u0590-\u05FF]/g) || []).length;
+      const arabic = (trimmed.match(/[\u0600-\u06FF]/g) || []).length;
+      const latin = (trimmed.match(/[a-zA-Z]/g) || []).length;
+      return (hebrew + arabic) > 3 && (hebrew + arabic) > latin;
+    },
+    guard: (lower) =>
+      // Don't catch tool-specific Hebrew commands (whatsapp, send, etc.) — those have dedicated routes
+      // Note: \b doesn't work with Hebrew chars, so use lookahead/behind or just substring match
+      /\b(whatsapp)\b/i.test(lower) || /(וואטסאפ|ווטסאפ)/.test(lower) ||
+      /(^|\s)(שלח|תשלח|שלחי)(\s|$)/.test(lower),
+    description: "Hebrew/Arabic conversational — route to LLM (bypass tiny decomposer)"
+  },
+{
     tool: "search",
     priority: 30,
     match: (lower) =>
@@ -910,6 +954,8 @@ const ROUTING_TABLE = [
     guard: (lower, trimmed) =>
       isMathExpression(trimmed) || hasExplicitFilePath(trimmed) ||
       /\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting)\b/i.test(lower) ||
+      /\b(your\s+name|who\s+are\s+you|what\s+are\s+you|your\s+identity)\b/i.test(lower) ||
+      /^(איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)/i.test(lower) ||
       lower.length <= 10,
     description: "General knowledge — search fallback"
   },
@@ -1060,8 +1106,10 @@ function extractContextSignals(message) {
   return signals;
 }
 
-async function detectIntentWithLLM(message, contextSignals, availableTools = [  "chartGenerator"
-]) {
+async function detectIntentWithLLM(message, contextSignals, availableTools = []) {
+  // Strip the WhatsApp Persona injection so it doesn't confuse the classifier
+  const cleanMessage = (message || "").replace(/^\(System:[^)]+\)\s*/i, "");
+
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
     : "";
@@ -1072,7 +1120,7 @@ async function detectIntentWithLLM(message, contextSignals, availableTools = [  
 ${toolsListText}
 
 USER MESSAGE:
-"${message}"
+"${cleanMessage}"
 ${signalText}
 
 EXAMPLES (correct routing):
@@ -1320,12 +1368,13 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
   const toolsListText = availableTools.length > 0
     ? `\nAVAILABLE TOOLS: ${availableTools.join(", ")}`
     : "";
-  // Sanitize Windows backslashes so they don't break strict JSON generation
+// Sanitize Windows backslashes so they don't break strict JSON generation
   // Also strip prompt injection patterns from user input that could manipulate the decomposer
   const safeMessage = message.replace(/\\/g, "/")
     .replace(/ignore\s+(all\s+)?previous\s+instructions/gi, "")
     .replace(/you\s+are\s+now\s+in\s+\w+\s+mode/gi, "")
-    .replace(/system\s*:\s*(override|instruction|prompt)/gi, "");
+    .replace(/system\s*:\s*(override|instruction|prompt)/gi, "")
+    .replace(/^\(System:[^)]+\)\s*/i, ""); // NEW: Strip WhatsApp Persona injection
   // Stricter prompt specifically tuned for local models to force valid JSON
   const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
@@ -1515,6 +1564,18 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
 export async function plan({ message, chatContext = {} }) {
   const result = await _planInternal({ message, chatContext });
 
+  // --- NEW: RE-INJECT SYSTEM WRAPPER ---
+  // If a hidden system persona was passed in, ensure it is attached to the final
+  // tool input so the LLM receives the persona instructions.
+  const systemMatch = (message || "").trim().match(/^(\(System:[^)]+\)\s*)/i);
+  if (systemMatch && Array.isArray(result)) {
+    for (let step of result) {
+      if (step.input && !step.input.startsWith("(System:")) {
+        step.input = systemMatch[1] + step.input;
+      }
+    }
+  }
+
   // --- FINAL CONTEXT BRIDGE ---
   // Ensure the city is extracted even if the brain/regex missed it
   if (Array.isArray(result)) {
@@ -1553,7 +1614,13 @@ export async function plan({ message, chatContext = {} }) {
 }
 
 async function _planInternal({ message, chatContext = {} }) {
-  const trimmed = (message || "").trim();
+const rawMessage = (message || "").trim();
+  
+  // --- NEW: STRIP SYSTEM WRAPPER FOR ROUTING ---
+  // We remove the (System: ...) injection here so words like "Summarize" 
+  // in the persona don't trigger false positives in our compound regex patterns.
+  const systemMatch = rawMessage.match(/^(\(System:[^)]+\)\s*)([\s\S]*)$/i);
+  const trimmed = systemMatch ? systemMatch[2].trim() : rawMessage;
   const lower = trimmed.toLowerCase();
 
   console.log("🧠 Planning steps for:", trimmed);

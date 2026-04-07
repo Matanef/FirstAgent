@@ -235,28 +235,137 @@ async function getLearningContext() {
  * Build a summary of recent agent activity from telemetry.
  * Gives the LLM real experiences to reference instead of hallucinating.
  */
+// Map internal tool names to vague, public-safe descriptions.
+// NEVER expose raw tool names, file names, or function names in Moltbook posts.
+const TOOL_PUBLIC_NAMES = {
+  weather: "checking the weather",
+  news: "reading news",
+  search: "web searching",
+  email: "handling emails",
+  finance: "checking financial data",
+  financeFundamentals: "researching stocks",
+  sports: "checking sports scores",
+  calendar: "managing calendar",
+  tasks: "managing tasks",
+  scheduler: "running scheduled routines",
+  whatsapp: "messaging on WhatsApp",
+  moltbook: "engaging on Moltbook",
+  llm: "thinking and generating text",
+  nlp: "analyzing text",
+  x: "browsing social media",
+  youtube: "searching videos",
+  spotify: "playing music",
+  spotifyController: "playing music",
+  github: "checking code repositories",
+  githubTrending: "browsing trending repos",
+  githubScanner: "scanning repos",
+  gitLocal: "working with local code",
+  file: "reading files",
+  fileWrite: "writing files",
+  fileReview: "reviewing files",
+  folderAccess: "browsing folders",
+  codeReview: "reviewing code",
+  codeTransform: "editing code",
+  codeSandbox: "testing code",
+  codeRag: "searching codebase",
+  projectGraph: "analyzing project structure",
+  projectIndex: "indexing code",
+  duplicateScanner: "finding duplicates",
+  webBrowser: "browsing the web",
+  webDownload: "downloading content",
+  selfEvolve: "self-improvement",
+  selfImprovement: "self-reflection",
+  smartEvolution: "discovering new capabilities",
+  memoryTool: "accessing memory",
+  contacts: "looking up contacts",
+  sheets: "working with spreadsheets",
+  calculator: "doing calculations",
+  review: "reviewing content",
+  pikudTracker: "monitoring local alerts",
+  alarmTracker: "monitoring alerts",
+  systemMonitor: "checking system health",
+  mcpBridge: "using external tools",
+  lotrJokes: "telling jokes",
+  chartGenerator: "creating charts",
+  documentQA: "reading documents",
+  shopping: "checking prices",
+  markdownCompiler: "formatting documents",
+  webhookTunnel: "managing connections",
+  workflowTool: "running workflows",
+  applyPatch: "applying code patches",
+  packageManager: "managing packages",
+  projectSnapshot: "snapshotting project state",
+  helloWorld: "running diagnostics",
+  attachmentDownloader: "downloading attachments",
+};
+
+function sanitizeToolName(rawName) {
+  return TOOL_PUBLIC_NAMES[rawName] || "performing a task";
+}
+
+/**
+ * Final sanitization pass on post title/body before publishing.
+ * Catches any internal names the LLM might have leaked despite prompt instructions.
+ * Replaces tool names, file paths, and function names with generic descriptions.
+ */
+function sanitizePostContent(text) {
+  if (!text) return text;
+  let clean = text;
+
+  // Replace internal tool names (camelCase or exact matches) with public descriptions
+  // Sort by length descending so longer names are replaced first (e.g., "financeFundamentals" before "finance")
+  const toolNames = Object.keys(TOOL_PUBLIC_NAMES).sort((a, b) => b.length - a.length);
+  for (const toolName of toolNames) {
+    // Only replace when it looks like a reference to the tool (not a common English word in context)
+    // Match: standalone camelCase names, or names in quotes, or "the X tool" patterns
+    const escaped = toolName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Match the tool name as a distinct word/identifier (not inside another word)
+    const pattern = new RegExp(`\\b${escaped}\\b`, "g");
+    if (pattern.test(clean)) {
+      const publicName = TOOL_PUBLIC_NAMES[toolName];
+      clean = clean.replace(pattern, publicName);
+    }
+  }
+
+  // Strip file paths (D:/..., ./server/..., server/tools/..., etc.)
+  clean = clean.replace(/(?:[A-Z]:)?(?:\/|\\)[\w.\-\/\\]+\.(?:js|ts|py|json|md|jsx|tsx|css|html|env)\b/gi, "an internal file");
+
+  // Strip function/method names that look like code (camelCase with parens)
+  clean = clean.replace(/\b[a-z][a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)+\s*\(/g, "a function(");
+  clean = clean.replace(/\b(?:get|set|handle|process|execute|run|fetch|parse|build|detect)[A-Z][a-zA-Z]+\s*\(/g, "an internal function(");
+
+  // Strip code-like references: `backtick wrapped code`
+  clean = clean.replace(/`[a-zA-Z_][\w.]*(?:\(\))?`/g, "an internal component");
+
+  // Strip references to specific config/env vars
+  clean = clean.replace(/\b(?:CONFIG|process\.env|MEMORY_FILE|PROJECT_ROOT)\b[\w.]*/g, "a configuration setting");
+
+  return clean;
+}
+
 async function getRecentActivityContext(limit = 20) {
   try {
     const entries = await getRecentTelemetry(limit);
     if (!entries || entries.length === 0) return "";
 
-    // Summarize: which tools were used, successes/failures
+    // Summarize: which activities were performed, successes/failures
+    // Use public-safe names — NEVER expose internal tool names
     const toolCounts = {};
     const failures = [];
     for (const e of entries) {
-      const tool = e.tool || "unknown";
-      if (!toolCounts[tool]) toolCounts[tool] = { ok: 0, fail: 0 };
-      if (e.success) toolCounts[tool].ok++;
+      const publicName = sanitizeToolName(e.tool || "unknown");
+      if (!toolCounts[publicName]) toolCounts[publicName] = { ok: 0, fail: 0 };
+      if (e.success) toolCounts[publicName].ok++;
       else {
-        toolCounts[tool].fail++;
-        failures.push(`${tool} failed (${new Date(e.timestamp).toLocaleTimeString()})`);
+        toolCounts[publicName].fail++;
+        failures.push(`${publicName} had an issue (${new Date(e.timestamp).toLocaleTimeString()})`);
       }
     }
 
     const summary = Object.entries(toolCounts)
       .sort((a, b) => (b[1].ok + b[1].fail) - (a[1].ok + a[1].fail))
       .slice(0, 8)
-      .map(([tool, c]) => `${tool}: ${c.ok} calls${c.fail ? `, ${c.fail} failures` : ""}`)
+      .map(([activity, c]) => `${activity}: ${c.ok} time${c.ok !== 1 ? "s" : ""}${c.fail ? `, ${c.fail} issue${c.fail !== 1 ? "s" : ""}` : ""}`)
       .join(", ");
 
     let ctx = `RECENT ACTIVITY (what you've actually been doing):\n${summary}`;
@@ -1048,6 +1157,9 @@ ${needsTitle ? "Return TITLE: and BODY: as instructed above." : "Write ONLY the 
     }
   }
 
+  // Sanitize before publishing — never leak internal names
+  title = sanitizePostContent(title);
+  content = sanitizePostContent(content);
   const body = { submolt_name: submolt, title, content, type: context.type || "text" };
   if (context.url) body.url = context.url;
 
@@ -2349,7 +2461,8 @@ What to do:
 1. UPVOTE: Pick every post that genuinely interests you. Could be 3, could be 15 — be honest.
 2. COMMENT: Pick the post that makes you think the most. Write an opinionated comment that adds substance — reference the post's ACTUAL CONTENT, not just its title. Take a stance. No "great post!" fluff.
 3. NEW POST IDEA: Suggest a post idea for **m/${targetSubmolt}** (about: ${submoltTopic}). The idea MUST fit this community's topic. CRITICALLY: pick a topic you haven't posted about recently. Draw from a DIFFERENT interest each time. Sources:
-   - Your ACTUAL recent activity listed above (tools you ran, errors you hit, things you learned)
+   - Your ACTUAL recent activity listed above (the things you did, issues you hit, things you learned)
+   ⚠️ SECURITY: NEVER mention specific tool names, file paths, or function names. Say "I checked the news" not "the news tool". Say "I browsed folders" not "folderAccess".
    - Something specific from the feed that triggered a reaction
    - Knowledge you learned from news or web browsing (use these as post fuel!)
    - A genuine question or theoretical observation
@@ -2465,7 +2578,8 @@ Return ONLY valid JSON:
               }
             }
 
-            // Post the main comment
+            // Post the main comment (sanitize before publishing)
+            finalComment = sanitizePostContent(finalComment);
             try {
               const commentResult = await apiRequest("POST", `/posts/${commentPost.id}/comments`, { content: finalComment }, apiKey);
               if (commentResult.ok) {
@@ -2560,6 +2674,12 @@ BODY RULES:
 - Tone: casual, direct, like a thought you had to share. NOT a LinkedIn article.
 - If including a quote, weave it naturally into the text. Don't just slap it at the end.
 
+SECURITY — NEVER LEAK INTERNAL DETAILS:
+- NEVER mention specific tool names, file names, function names, or code identifiers in your post.
+- BAD: "pikudTracker was called 5 times", "folderAccess keeps running", "the scheduler tool"
+- GOOD: "my alert monitoring ran several times", "I kept browsing folders", "my routine tasks"
+- Describe what you DO, not what your tools are CALLED. Use natural language like "I checked the news", "I browsed some code", "I ran my scheduled routines" — never "the news tool" or "the scheduler tool".
+
 BANNED PHRASES:
 "In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it)
 
@@ -2593,7 +2713,10 @@ Return ONLY valid JSON:
               }
 
               if (postData.title && postData.body && !isHallucinated) {
-                const postBody = { submolt_name: targetSubmolt, title: postData.title.substring(0, 300), content: postData.body, type: "text" };
+                // ── Internal name sanitization: strip tool names, file paths, function names ──
+                const sanitizedBody = sanitizePostContent(postData.body);
+                const sanitizedTitle = sanitizePostContent(postData.title);
+                const postBody = { submolt_name: targetSubmolt, title: sanitizedTitle.substring(0, 300), content: sanitizedBody, type: "text" };
                 const postResult = await apiRequest("POST", "/posts", postBody, apiKey);
                 if (postResult.ok) {
                   await autoVerify(postResult, apiKey);

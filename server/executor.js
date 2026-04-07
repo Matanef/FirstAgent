@@ -614,15 +614,19 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
   if (!stepResult.success) {
     const errorText = result?.error || result?.data?.error || "Tool execution failed.";
 
-    // Finance tools: NEVER let LLM hallucinate data on failure — return the error directly
-    const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals"];
+    // Tools that should NEVER have their errors hallucinated by LLM — return the error directly
+    const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals", "whatsapp"];
     if (noHallucinateOnError.includes(tool)) {
       console.warn(`[finalizer] ${tool} failed — returning error directly (no LLM summarization)`);
+      const prefix = tool === "whatsapp"
+        ? "WhatsApp message could not be sent."
+        : "I wasn't able to fetch the requested financial data.";
       return {
-        reply: `I wasn't able to fetch the requested financial data. ${errorText}`,
+        reply: `${prefix} ${errorText}`,
         tool,
         success: false,
-        final: true
+        final: true,
+        data: result?.data || null
       };
     }
 

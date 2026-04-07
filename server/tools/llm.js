@@ -125,11 +125,14 @@ const LOCAL_HEBREW_MODEL = process.env.LOCAL_HEBREW_MODEL || "aya-expanse:8b";
  */
 export function pickModelForContent(text) {
   if (!text) return undefined;
-  const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
-  const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
-  const latin = (text.match(/[a-zA-Z]/g) || []).length;
-  // If non-Latin scripts dominate, use a multilingual model
-  if (hebrew > 20 || arabic > 20 || (hebrew + arabic) > latin) {
+  // Strip the (System: ...) persona wrapper — it's injected metadata, not user content.
+  // Without this, the English wrapper's Latin chars overwhelm short Hebrew messages.
+  const userText = text.replace(/^\(System:[^)]*\)\s*/i, "");
+  const hebrew = (userText.match(/[\u0590-\u05FF]/g) || []).length;
+  const arabic = (userText.match(/[\u0600-\u06FF]/g) || []).length;
+  const latin = (userText.match(/[a-zA-Z]/g) || []).length;
+  // If non-Latin scripts dominate (or enough Hebrew/Arabic present), use a multilingual model
+  if (hebrew > 3 || arabic > 3 || (hebrew + arabic) > latin) {
     // If Gemini API is available and not rate-limited, use it for best quality
     if (process.env.GEMINI_API_KEY && !geminiStatus().coolingDown) {
       return "gemini";
@@ -143,7 +146,14 @@ export function pickModelForContent(text) {
 export async function llm(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
 
-  const { model = CONFIG.LLM_MODEL, format, options = {} } = configOptions;
+  let { model, format, options = {} } = configOptions;
+
+  // Auto-detect Hebrew/Arabic in the prompt and switch to a capable model
+  // Only when no explicit model was requested (i.e., using default)
+  if (!model) {
+    const detectedModel = pickModelForContent(typeof prompt === "string" ? prompt : "");
+    model = detectedModel || CONFIG.LLM_MODEL;
+  }
 
   // ── GEMINI ROUTE: If model is "gemini", use the Gemini API instead of Ollama ──
   if (model === "gemini") {
