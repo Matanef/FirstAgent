@@ -39,14 +39,81 @@ function cleanPhoneNumber(raw) {
 }
 
 // ============================================================
+// CONTACT RESOLUTION (from userProfiles)
+// ============================================================
+
+/**
+ * Resolve a contact name (e.g., "my mom", "Shirly", "אמא") to a phone number.
+ * Checks userProfiles registry for matching names, relations, or Hebrew names.
+ * @param {string} nameOrRelation - Contact reference from user input
+ * @returns {string|null} Phone number or null
+ */
+async function resolveContact(nameOrRelation) {
+  if (!nameOrRelation) return null;
+  const lower = nameOrRelation.toLowerCase().trim();
+
+  try {
+    const { getAllProfiles } = await import("../utils/userProfiles.js");
+    const profiles = await getAllProfiles();
+
+    for (const [phone, profile] of Object.entries(profiles)) {
+      if (phone.startsWith("_")) continue; // Skip placeholders
+      const checks = [
+        profile.name?.toLowerCase(),
+        profile.nameHe,
+        profile.relation?.toLowerCase(),
+      ].filter(Boolean);
+
+      // Direct match: "shirly", "שירלי", "mother"
+      if (checks.some(c => c === lower || lower.includes(c))) return phone;
+
+      // Relation aliases: "my mom" → "mother", "אמא שלי" → "mother"
+      const relationAliases = {
+        mother: ["mom", "mum", "mama", "אמא", "אימא", "mother"],
+        father: ["dad", "papa", "אבא", "father"],
+        sister: ["sis", "אחות", "sister"],
+        brother: ["bro", "אח", "brother"],
+        wife: ["wife", "אישה", "רעיה"],
+        husband: ["husband", "בעל"],
+      };
+
+      if (profile.relation && relationAliases[profile.relation]) {
+        if (relationAliases[profile.relation].some(alias => lower.includes(alias))) {
+          return phone;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[whatsapp] Contact resolution failed:", e.message);
+  }
+  return null;
+}
+
+// ============================================================
 // INTENT DETECTION
 // ============================================================
 
 /**
- * Parse user's natural language request to detect WhatsApp intent.
- * Returns: { intent, to, message, filename }
+ * Detect if the "message" part is actually a composition instruction
+ * (e.g., "a welcoming message with cynicism") vs. literal text to send.
  */
-function detectWhatsAppIntent(text) {
+function isCompositionInstruction(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  // Patterns that indicate the user wants the agent to COMPOSE the message
+  return /\b(should be|make it|write|compose|draft|generate|create)\b/i.test(lower) ||
+    /\b(welcoming|funny|formal|cynical|sarcastic|warm|professional|casual|short|long|brief|sweet)\b/i.test(lower) ||
+    /\b(a\s+(?:nice|good|funny|warm|sweet|short|welcoming|cynical))\s+(message|text|note)\b/i.test(lower) ||
+    /\bthe\s+message\s+should\b/i.test(lower) ||
+    /\bwith\s+(?:a\s+)?(?:bit|touch|hint)\s+of\b/i.test(lower) ||
+    /\b(הודעה\s+(?:חמה|מצחיקה|קצרה|רשמית|ציניקנית))\b/i.test(lower);
+}
+
+/**
+ * Parse user's natural language request to detect WhatsApp intent.
+ * Returns: { intent, to, message, filename, isComposeRequest, recipientName }
+ */
+async function detectWhatsAppIntent(text) {
   const lower = text.toLowerCase();
 
   // ── Bulk send: "send whatsapp to everyone in contacts.xlsx saying ..." ──
@@ -65,13 +132,63 @@ function detectWhatsAppIntent(text) {
     return { intent: "bulk_send", filename: bulkAlt[1].trim(), message: bulkAlt[2].trim(), to: null };
   }
 
-  // ── Single send: "send a whatsapp to 0541234567 saying hello" ──
-  // Also handles: "send a whatsapp to 0541234567 hello" (no connector word)
+  // ── CONTACT NAME RESOLUTION ──
+  // "send a message to my mom" / "send Shirly a whatsapp" / "שלח הודעה לאמא"
+  const contactPatterns = [
+    // "send a message to [NAME/RELATION]" with optional message description
+    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message\s+)?(?:to\s+)(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})(?:[.,]?\s*(?:the\s+)?(?:message|it)\s+should\s+(?:be\s+)?(.+))?/iu,
+    // "send [NAME] a message" with optional description
+    /(?:send|שלח)\s+(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|הודעה)(?:[.,]?\s*(?:the\s+)?(?:message|it)\s+should\s+(?:be\s+)?(.+))?/iu,
+  ];
+
+  for (const pattern of contactPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const contactRef = match[1].trim();
+      // Don't match if it looks like a phone number
+      if (/^\d+$/.test(contactRef)) continue;
+      // Don't match noise words
+      if (/^(everyone|all|whatsapp|a|the|it)$/i.test(contactRef)) continue;
+
+      const resolvedPhone = await resolveContact(contactRef);
+      if (resolvedPhone) {
+        // Collect ALL message description from the full text
+        let messageDesc = match[2]?.trim() || "";
+        // Also check for multi-line descriptions: "the message should be..." anywhere in text
+        if (!messageDesc) {
+          const descMatch = text.match(/(?:the\s+)?message\s+should\s+(?:be\s+)?(.+)/is);
+          if (descMatch) messageDesc = descMatch[1].trim();
+        }
+        // Also check for "with a bit of..." style descriptions
+        if (!messageDesc) {
+          const withMatch = text.match(/(?:with|including)\s+(.+)/is);
+          if (withMatch) messageDesc = withMatch[1].trim();
+        }
+        // Fallback: everything after the contact name
+        if (!messageDesc) {
+          const afterContact = text.split(new RegExp(contactRef, "i"))[1] || "";
+          messageDesc = afterContact.replace(/^[\s.,]+/, "").trim();
+        }
+
+        return {
+          intent: "single_send",
+          to: resolvedPhone,
+          message: messageDesc || "Hi!",
+          filename: null,
+          isComposeRequest: true,
+          recipientName: contactRef
+        };
+      }
+    }
+  }
+
+  // ── Single send with phone number: "send a whatsapp to 0541234567 saying hello" ──
   const singleMatch = text.match(
     /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\s+(?:message\s+)?(?:to\s+)([\d\s\-\+\(\)]{7,20})\s+(?:(?:saying|with\s+message|הודעה|עם)\s+)?(.+)/iu
   );
   if (singleMatch) {
-    return { intent: "single_send", to: singleMatch[1].trim(), message: singleMatch[2].trim(), filename: null };
+    const msg = singleMatch[2].trim();
+    return { intent: "single_send", to: singleMatch[1].trim(), message: msg, filename: null, isComposeRequest: isCompositionInstruction(msg) };
   }
 
   // Even simpler: "whatsapp 0541234567 hello world"
@@ -79,7 +196,8 @@ function detectWhatsAppIntent(text) {
     /(?:whatsapp|ווטסאפ|וואטסאפ)\s+([\d\s\-\+\(\)]{7,20})\s+(.+)/iu
   );
   if (simpleMatch) {
-    return { intent: "single_send", to: simpleMatch[1].trim(), message: simpleMatch[2].trim(), filename: null };
+    const msg = simpleMatch[2].trim();
+    return { intent: "single_send", to: simpleMatch[1].trim(), message: msg, filename: null, isComposeRequest: isCompositionInstruction(msg) };
   }
 
   // ── "send a message to 0541234567 saying hello" ──
@@ -87,21 +205,46 @@ function detectWhatsAppIntent(text) {
     /(?:send|שלח)\s+(?:a\s+)?message\s+to\s+([\d\s\-\+\(\)]{7,20})\s+(?:saying\s+)?(.+)/iu
   );
   if (sendMsgTo) {
-    return { intent: "single_send", to: sendMsgTo[1].trim(), message: sendMsgTo[2].trim(), filename: null };
+    const msg = sendMsgTo[2].trim();
+    return { intent: "single_send", to: sendMsgTo[1].trim(), message: msg, filename: null, isComposeRequest: isCompositionInstruction(msg) };
+  }
+
+  // ── "send a message to [NAME]" without phone number ──
+  // Broader catch-all for contact resolution with no explicit phone
+  const sendToName = text.match(
+    /(?:send|שלח)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message\s+)?(?:to\s+)(?:my\s+)?([a-zA-Z\u0590-\u05FF]{2,20})/iu
+  );
+  if (sendToName) {
+    const contactRef = sendToName[1].trim();
+    if (!/^(everyone|all|whatsapp|a|the|it)$/i.test(contactRef)) {
+      const resolvedPhone = await resolveContact(contactRef);
+      if (resolvedPhone) {
+        // Everything after the contact name is the message/instruction
+        const afterName = text.slice(text.indexOf(contactRef) + contactRef.length).replace(/^[\s.,]+/, "").trim();
+        // Remove noise like "the number is..." since we already resolved the contact
+        const cleanMsg = afterName.replace(/the\s+number\s+is\s+[\d\s\-\+\(\)]+/i, "").trim();
+        return {
+          intent: "single_send",
+          to: resolvedPhone,
+          message: cleanMsg || "Hi!",
+          filename: null,
+          isComposeRequest: true,
+          recipientName: contactRef
+        };
+      }
+    }
   }
 
   // ── Flexible: "send NUMBER a message saying MSG" ──
-  // Handles: "use whatsapp to send NUMBER a message saying MSG"
-  // Also:    "send NUMBER amessage saying MSG" (typo with no space)
   const flexMatch = text.match(
     /(?:send|שלח)\s+([\d\s\-\+\(\)]{7,20})\s+(?:a?\s*message\s+)?(?:saying|with|that\s+says?|:)\s*(.+)/iu
   );
   if (flexMatch) {
-    return { intent: "single_send", to: flexMatch[1].trim(), message: flexMatch[2].trim(), filename: null };
+    const msg = flexMatch[2].trim();
+    return { intent: "single_send", to: flexMatch[1].trim(), message: msg, filename: null, isComposeRequest: isCompositionInstruction(msg) };
   }
 
   // ── Fallback: extract phone number + "saying ..." from the text ──
-  // Use word boundary (\b) to avoid matching "amessage" as "message"
   const phoneMatch = text.match(/((?:\+?\d[\d\s\-\(\)]{6,18}\d))/);
   const msgMatch = text.match(/\b(?:saying|that\s+says?)\s+(.+)/iu);
   if (phoneMatch && msgMatch) {
@@ -109,15 +252,13 @@ function detectWhatsAppIntent(text) {
   }
 
   // ── Last resort: "send NUMBER <anything>" ──
-  // "send 0587426393 go to sleep" → to=0587426393, message="go to sleep"
   const lastResort = text.match(
     /(?:send|שלח)\s+([\d\+\-\(\)\s]{7,20})\s+(.{3,})/iu
   );
   if (lastResort) {
-    // Strip common noise words from the start of the message
     let msg = lastResort[2].trim().replace(/^(?:a\s*message\s+)?/i, "").trim();
     if (msg.length >= 2) {
-      return { intent: "single_send", to: lastResort[1].trim(), message: msg, filename: null };
+      return { intent: "single_send", to: lastResort[1].trim(), message: msg, filename: null, isComposeRequest: isCompositionInstruction(msg) };
     }
   }
 
@@ -545,7 +686,7 @@ export async function whatsapp(request) {
     };
   }
 
-  const parsed = detectWhatsAppIntent(text);
+  const parsed = await detectWhatsAppIntent(text);
 
   try {
     switch (parsed.intent) {
@@ -560,17 +701,66 @@ export async function whatsapp(request) {
           };
         }
 
-        const result = await sendWhatsAppMessage(parsed.to, parsed.message);
+        let messageToSend = parsed.message;
+
+        // ── COMPOSE MODE: if the "message" is actually an instruction, generate it via LLM ──
+        if (parsed.isComposeRequest) {
+          console.log(`📱 [whatsapp] Compose mode: generating message for ${parsed.recipientName || parsed.to}`);
+          try {
+            const { llm: llmCall } = await import("./llm.js");
+            // Look up recipient profile for tone context
+            let recipientContext = "";
+            try {
+              const { getUserByPhone } = await import("../utils/userProfiles.js");
+              const profile = await getUserByPhone(parsed.to);
+              if (profile) {
+                recipientContext = `\nRecipient: ${profile.name}${profile.nameHe ? ` (${profile.nameHe})` : ""}${profile.relation ? `, the sender's ${profile.relation}` : ""}.`;
+                if (profile.language && profile.language !== "auto") {
+                  recipientContext += ` Preferred language: ${profile.language}.`;
+                }
+              }
+            } catch { /* non-blocking */ }
+
+            const composePrompt = `Compose a short WhatsApp message based on these instructions.
+${recipientContext}
+Instructions: ${parsed.message}
+Full user request: ${text}
+
+RULES:
+- Output ONLY the message text. No quotes, no "Here's the message:", no commentary.
+- Keep it natural and conversational (it's a WhatsApp message, not an email).
+- Use emojis sparingly if appropriate.
+- If a language preference is specified, write in that language.
+- Match the requested tone exactly.`;
+
+            const composeResult = await llmCall(composePrompt, { skipKnowledge: true, timeoutMs: 30_000 });
+            const composed = composeResult?.data?.text?.trim();
+            if (composed && composed.length > 2) {
+              // Clean LLM artifacts
+              messageToSend = composed
+                .replace(/^["']|["']$/g, "")
+                .replace(/^(Here'?s?|Sure|OK|Okay)[^\n]*:\s*/i, "")
+                .trim();
+              console.log(`📱 [whatsapp] Composed message (${messageToSend.length} chars): "${messageToSend.slice(0, 80)}..."`);
+            }
+          } catch (e) {
+            console.warn(`[whatsapp] Message composition failed: ${e.message}, sending instruction as-is`);
+          }
+        }
+
+        const result = await sendWhatsAppMessage(parsed.to, messageToSend);
         if (result.success) {
           const note = result.note ? `\n📋 ${result.note}` : "";
+          const recipientLabel = parsed.recipientName || result.to;
           return {
             tool: "whatsapp",
             success: true,
             final: true,
             data: {
-              text: `✅ Successfully sent WhatsApp message to ${result.to}${note}`,
+              text: `✅ Sent WhatsApp to ${recipientLabel} (${result.to})${note}\n\n📝 Message: "${messageToSend}"`,
               to: result.to,
-              messageId: result.messageId
+              messageId: result.messageId,
+              preformatted: true
             }
           };
         }
