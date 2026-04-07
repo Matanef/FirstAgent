@@ -160,15 +160,17 @@ export async function llm(prompt, configOptions = {}) {
         const is503 = errMsg.includes("503") || errMsg.includes("UNAVAILABLE") || errMsg.includes("high demand");
 
         if (is429) {
-          // Quota exhausted — trip breaker for a long cooldown (no point retrying for minutes)
+          // Quota exhausted — long cooldown. Free tier is 20 RPD, no point retrying for minutes.
+          // 5 minutes minimum, or the Google-suggested retryDelay if longer
           const retryMatch = errMsg.match(/retryDelay.*?(\d+)s/i) || errMsg.match(/retry\s+in\s+([\d.]+)s/i);
-          const cooldownSec = retryMatch ? Math.min(Number(retryMatch[1]) + 5, 120) : 60;
+          const googleSuggestedSec = retryMatch ? Number(retryMatch[1]) : 0;
+          const cooldownSec = Math.max(300, googleSuggestedSec); // At least 5 minutes
           tripGeminiBreaker(cooldownSec);
-          console.warn(`[llm] Gemini 429 (quota) — falling back to local Ollama`);
+          console.warn(`[llm] Gemini 429 (quota) — falling back to local Ollama for ${cooldownSec}s`);
         } else if (is503) {
-          // Server overloaded — shorter cooldown, it might recover
-          tripGeminiBreaker(30);
-          console.warn(`[llm] Gemini 503 (overloaded) — falling back to local Ollama for 30s`);
+          // Server overloaded — moderate cooldown, it might recover
+          tripGeminiBreaker(120);
+          console.warn(`[llm] Gemini 503 (overloaded) — falling back to local Ollama for 120s`);
         } else {
           console.warn(`[llm] Gemini failed (${errMsg}), falling back to local Ollama`);
         }
