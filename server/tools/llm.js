@@ -56,6 +56,31 @@ async function callGemini(prompt, timeoutMs = 120_000) {
   }
 }
 
+// ── GEMINI CIRCUIT BREAKER ──
+// When Gemini returns 429 (quota) or 503 (overloaded), stop hammering it.
+// All subsequent calls skip the API and fall back to Ollama immediately.
+let _geminiCooldownUntil = 0; // Unix timestamp (ms) — 0 = no cooldown
+
+/**
+ * Check if Gemini API is currently in cooldown (circuit breaker tripped).
+ * @returns {{ coolingDown: boolean, remainingSec: number }}
+ */
+export function geminiStatus() {
+  const now = Date.now();
+  if (_geminiCooldownUntil > now) {
+    return { coolingDown: true, remainingSec: Math.ceil((_geminiCooldownUntil - now) / 1000) };
+  }
+  return { coolingDown: false, remainingSec: 0 };
+}
+
+/**
+ * Trip the circuit breaker — Gemini is unavailable for `seconds`.
+ */
+function tripGeminiBreaker(seconds) {
+  _geminiCooldownUntil = Date.now() + seconds * 1000;
+  console.warn(`🔌 [llm] Gemini circuit breaker tripped — skipping API calls for ${seconds}s`);
+}
+
 // Expose for direct use by tools that want Gemini specifically
 export { callGemini };
 
@@ -114,25 +139,33 @@ export async function llm(prompt, configOptions = {}) {
 
   // ── GEMINI ROUTE: If model is "gemini", use the Gemini API instead of Ollama ──
   if (model === "gemini") {
-    try {
-      return await callGemini(prompt, timeoutMs);
-    } catch (err) {
-      const errMsg = err.message || "";
-      // On 429 rate-limit, try once more after the suggested retry delay
-      const retryMatch = errMsg.match(/retryDelay.*?(\d+)s/i) || errMsg.match(/retry\s+in\s+([\d.]+)s/i);
-      if (retryMatch) {
-        const waitSec = Math.min(Number(retryMatch[1]) + 2, 60); // cap at 60s
-        console.warn(`[llm] Gemini 429 — waiting ${waitSec}s then retrying once...`);
-        await new Promise(r => setTimeout(r, waitSec * 1000));
-        try {
-          return await callGemini(prompt, timeoutMs);
-        } catch (retryErr) {
-          console.warn(`[llm] Gemini retry also failed (${retryErr.message}), falling back to local Ollama`);
+    const status = geminiStatus();
+    if (status.coolingDown) {
+      // Circuit breaker is active — skip API entirely, go straight to Ollama
+      console.warn(`🔌 [llm] Gemini circuit breaker active (${status.remainingSec}s left) — using local Ollama`);
+    } else {
+      try {
+        return await callGemini(prompt, timeoutMs);
+      } catch (err) {
+        const errMsg = err.message || "";
+        const is429 = errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota");
+        const is503 = errMsg.includes("503") || errMsg.includes("UNAVAILABLE") || errMsg.includes("high demand");
+
+        if (is429) {
+          // Quota exhausted — trip breaker for a long cooldown (no point retrying for minutes)
+          const retryMatch = errMsg.match(/retryDelay.*?(\d+)s/i) || errMsg.match(/retry\s+in\s+([\d.]+)s/i);
+          const cooldownSec = retryMatch ? Math.min(Number(retryMatch[1]) + 5, 120) : 60;
+          tripGeminiBreaker(cooldownSec);
+          console.warn(`[llm] Gemini 429 (quota) — falling back to local Ollama`);
+        } else if (is503) {
+          // Server overloaded — shorter cooldown, it might recover
+          tripGeminiBreaker(30);
+          console.warn(`[llm] Gemini 503 (overloaded) — falling back to local Ollama for 30s`);
+        } else {
+          console.warn(`[llm] Gemini failed (${errMsg}), falling back to local Ollama`);
         }
-      } else {
-        console.warn(`[llm] Gemini failed (${errMsg}), falling back to local Ollama`);
+        // Fall through to Ollama
       }
-      // Fall through to Ollama — but use the DEFAULT model, not "gemini" (which doesn't exist in Ollama)
     }
   }
 
