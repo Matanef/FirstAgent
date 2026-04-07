@@ -708,6 +708,14 @@ export async function whatsapp(request) {
           console.log(`📱 [whatsapp] Compose mode: generating message for ${parsed.recipientName || parsed.to}`);
           try {
             const { llm: llmCall } = await import("./llm.js");
+
+            // Load agent personality so it can write "as itself"
+            let personalityContext = "";
+            try {
+              const { getPersonalitySummary } = await import("../personality.js");
+              personalityContext = await getPersonalitySummary();
+            } catch { /* non-blocking */ }
+
             // Look up recipient profile for tone context
             let recipientContext = "";
             try {
@@ -721,8 +729,14 @@ export async function whatsapp(request) {
               }
             } catch { /* non-blocking */ }
 
+            // Detect if the user wants the agent to write as itself
+            const asAgent = /\b(as yourself|as you|introduce yourself|from you|in your (?:name|voice)|מעצמך|בשמך|הצג את עצמך)\b/i.test(text);
+            const senderContext = asAgent
+              ? `\nYou are writing AS YOURSELF (the AI agent). ${personalityContext ? `Your identity: ${personalityContext}` : ""} Introduce yourself naturally — you are the agent, not the user.`
+              : `\nYou are writing on behalf of the user (the agent's owner/developer). Do NOT introduce yourself as an AI.`;
+
             const composePrompt = `Compose a short WhatsApp message based on these instructions.
-${recipientContext}
+${recipientContext}${senderContext}
 Instructions: ${parsed.message}
 Full user request: ${text}
 
