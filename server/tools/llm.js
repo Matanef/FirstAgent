@@ -112,10 +112,13 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
   }
 }
 
+// Best local model for Hebrew/Arabic prose (Cohere's Aya Expanse, trained on 23 languages)
+const LOCAL_HEBREW_MODEL = process.env.LOCAL_HEBREW_MODEL || "aya-expanse:8b";
+
 /**
  * Smart model selector — picks the best available model for the content.
  * Returns "gemini" for Hebrew/Arabic (outsourced to Gemini API for quality).
- * Falls back to "llama3.1:8b" if Gemini API key is missing.
+ * Falls back to aya-expanse:8b if Gemini API key is missing or circuit breaker is active.
  * Returns undefined for Latin/English content (uses default Ollama model).
  * @param {string} text - The content to analyze
  * @returns {string|undefined} Model name override, or undefined for default
@@ -125,9 +128,14 @@ export function pickModelForContent(text) {
   const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
   const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
   const latin = (text.match(/[a-zA-Z]/g) || []).length;
-  // If non-Latin scripts dominate, outsource to Gemini for quality
+  // If non-Latin scripts dominate, use a multilingual model
   if (hebrew > 20 || arabic > 20 || (hebrew + arabic) > latin) {
-    return process.env.GEMINI_API_KEY ? "gemini" : "llama3.1:8b";
+    // If Gemini API is available and not rate-limited, use it for best quality
+    if (process.env.GEMINI_API_KEY && !geminiStatus().coolingDown) {
+      return "gemini";
+    }
+    // Otherwise use the best local multilingual model
+    return LOCAL_HEBREW_MODEL;
   }
   return undefined; // Use default model from CONFIG
 }
@@ -170,7 +178,8 @@ export async function llm(prompt, configOptions = {}) {
   }
 
   // Use the actual Ollama model name (never "gemini" — that's an API-only route)
-  const ollamaModel = model === "gemini" ? (CONFIG.LLM_MODEL || "llama3.1:8b") : model;
+  // When Gemini falls back, use the local Hebrew model (aya-expanse) since the content was non-Latin
+  const ollamaModel = model === "gemini" ? LOCAL_HEBREW_MODEL : model;
   const url = CONFIG.LLM_API_URL + "api/generate";
 
   try {
