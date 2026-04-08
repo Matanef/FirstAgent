@@ -263,6 +263,34 @@ async function detectWhatsAppIntent(text) {
     }
   }
 
+  // ── No-body fallback: "send a whatsapp to NUMBER" with no message ──
+  // Treat as a compose request — the LLM will generate the message content.
+  const noBodyMatch = text.match(/((?:\+?\d[\d\s\-\(\)]{6,18}\d))/);
+  if (noBodyMatch && /\b(send|שלח|תשלח|שלחי)\b/iu.test(text)) {
+    // Extract any composition hints from the text (e.g., "from yourself", "a warm greeting")
+    const hint = text
+      .replace(noBodyMatch[0], "")
+      .replace(/\b(send|שלח|תשלח|שלחי)\b/iu, "")
+      .replace(/\b(a\s+)?(?:whatsapp|ווטסאפ|וואטסאפ)\b/iu, "")
+      .replace(/\b(message|הודעה)\b/iu, "")
+      .replace(/\b(to|ל)\b/iu, "")
+      .replace(/\b(from)\b/iu, "")
+      .trim()
+      .replace(/^[\s.,;:]+|[\s.,;:]+$/g, "");
+    // "yourself" / "עצמך" alone is an identity hint (write as agent), not a content hint
+    const isIdentityOnly = /^(yourself|yourselves|עצמך|עצמכם)$/i.test(hint);
+    const composeInstruction = (hint.length > 1 && !isIdentityOnly)
+      ? `Compose a message: ${hint}`
+      : "Compose a friendly, warm greeting message";
+    return {
+      intent: "single_send",
+      to: noBodyMatch[1].trim(),
+      message: composeInstruction,
+      filename: null,
+      isComposeRequest: true
+    };
+  }
+
   return { intent: "unknown", to: null, message: null, filename: null };
 }
 
@@ -751,7 +779,7 @@ export async function whatsapp(request) {
             } catch { /* non-blocking */ }
 
             // Detect if the user wants the agent to write as itself
-            const asAgent = /\b(as yourself|as you|introduce yourself|from you|in your (?:name|voice)|מעצמך|בשמך|הצג את עצמך)\b/i.test(text);
+            const asAgent = /\b(as yourself|as you|introduce yourself|from your?self|in your (?:name|voice)|מעצמך|בשמך|הצג את עצמך)\b/i.test(text);
             const senderContext = asAgent
               ? `\nYou are writing AS YOURSELF (the AI agent). ${personalityContext ? `Your identity: ${personalityContext}` : ""} Introduce yourself naturally — you are the agent, not the user.`
               : `\nYou are writing on behalf of the user (the agent's owner/developer). Do NOT introduce yourself as an AI.`;

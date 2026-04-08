@@ -501,9 +501,14 @@ async function handleChunkedProseWrite(text, context) {
     }
   }
 
-  // ── GEMINI FAST PATH: Send entire file in one request (1M token context window) ──
+  // ── MODEL STRATEGY: Large files go straight to local aya (saves Gemini quota) ──
+  // Gemini free tier has ~20 RPD — a 30-chunk file would blow the quota in one task.
+  // Threshold: files over 5000 chars skip Gemini entirely and use aya-expanse directly.
+  const LARGE_FILE_THRESHOLD = 5000;
+  let skipGemini = originalContent.length > LARGE_FILE_THRESHOLD;
+
   const modelForContent = pickModelForContent(originalContent);
-  if (modelForContent === "gemini") {
+  if (modelForContent === "gemini" && !skipGemini) {
     console.log(`📝 [fileWrite] Gemini mode: sending entire file (${originalContent.length} chars) in one request`);
     const taskDescription = context.editInstruction || text;
 
@@ -528,6 +533,7 @@ ${originalContent}`;
 
       if (!output || output.length < originalContent.length * 0.5) {
         console.warn(`📝 [fileWrite] Gemini output too short (${output.length} vs ${originalContent.length}), falling back to chunked mode`);
+        skipGemini = true; // Force chunked mode to use local model (don't retry Gemini per-chunk)
         // Fall through to chunked processing below
       } else {
         // Clean output
@@ -550,11 +556,19 @@ ${originalContent}`;
       }
     } catch (err) {
       console.warn(`📝 [fileWrite] Gemini failed: ${err.message}, falling back to chunked mode`);
+      skipGemini = true; // Don't retry Gemini per-chunk
     }
   }
 
   const chunks = splitIntoChunks(originalContent);
   console.log(`📝 [fileWrite] Chunked processing: ${originalContent.length} chars → ${chunks.length} chunks`);
+
+  // For large files, skip Gemini entirely to save quota and avoid try-fail-fallback latency.
+  // Also track if Gemini fails mid-run so we stop trying it for remaining chunks.
+  let forceLocal = skipGemini;
+  if (forceLocal) {
+    console.log(`📝 [fileWrite] Skipping Gemini for chunks (${skipGemini ? "large file or Gemini already failed" : "forced"}) — using local aya-expanse (saving Gemini quota)`);
+  }
 
   const processedChunks = [];
   let failed = 0;
@@ -583,10 +597,20 @@ Do NOT add any commentary, explanations, or notes. Output ONLY the corrected tex
 
 ${chunk}`;
 
+    // Smart model selection for chunks:
+    // - forceLocal=true (large file or Gemini already failed) → use aya-expanse directly
+    // - forceLocal=false → let pickModelForContent decide (may try Gemini for small files)
+    let modelOverride;
+    if (forceLocal) {
+      // Detect if chunk is non-Latin → use aya-expanse; otherwise use default
+      const isNonLatin = hebrewChars > 3 || arabicChars > 3 || (hebrewChars + arabicChars) > latinChars;
+      modelOverride = isNonLatin ? "aya-expanse:8b" : undefined;
+    } else {
+      modelOverride = pickModelForContent(chunk);
+    }
+    if (modelOverride) console.log(`📝 [fileWrite] Using ${modelOverride} for non-Latin chunk ${i + 1}`);
+
     try {
-      // Smart model selection: use llama3.1 for non-Latin text (Hebrew, Arabic, etc.)
-      const modelOverride = pickModelForContent(chunk);
-      if (modelOverride) console.log(`📝 [fileWrite] Using ${modelOverride} for non-Latin chunk ${i + 1}`);
 
       // 300s timeout — llama3.1 on 8GB VRAM needs more time for Hebrew/Arabic text
       const result = await llm(chunkPrompt, { timeoutMs: 300_000, skipKnowledge: true, model: modelOverride });
@@ -620,6 +644,11 @@ ${chunk}`;
       console.warn(`📝 [fileWrite] Chunk ${i + 1} failed: ${err.message}, keeping original`);
       processedChunks.push(chunk);
       failed++;
+      // If Gemini was being used and failed, stop trying it for remaining chunks
+      if (!forceLocal && modelOverride === "gemini") {
+        forceLocal = true;
+        console.log(`📝 [fileWrite] Gemini failed on chunk ${i + 1} — switching to local aya for remaining chunks`);
+      }
     }
   }
 

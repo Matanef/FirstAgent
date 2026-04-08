@@ -79,6 +79,8 @@ function scoreRelevance(result, query) {
 // Used by ALL sources, not just Wikipedia
 function cleanSearchQuery(query) {
   return (query || "")
+    // Strip WhatsApp/system persona wrapper: "(System: You are Lanou...)\nactual query"
+    .replace(/^\(System:[^)]*\)\s*/i, "")
     // Strip "search for", "look up", "find" prefixes
     .replace(/^(search\s+for\s+|look\s+up\s+|find\s+|google\s+)/i, "")
     // Strip question words at the start
@@ -100,8 +102,10 @@ function extractWikiTopic(query) {
     .trim();
 }
 
-// Extract "incumbent" and "incumbentsince" from Wikipedia infobox wikitext
-// e.g., "| incumbent = [[Keir Starmer]]" → "Keir Starmer"
+// Extract leadership info from Wikipedia infobox wikitext.
+// Handles two patterns:
+// 1. Role pages: "| incumbent = [[Keir Starmer]]" + "| incumbentsince = ..."
+// 2. Country pages: "| leader_title1 = [[President]]" + "| leader_name1 = [[Name]]"
 async function fetchWikiInfobox(pageTitle) {
   try {
     const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(pageTitle)}&prop=wikitext&section=0&format=json`;
@@ -109,23 +113,113 @@ async function fetchWikiInfobox(pageTitle) {
     const wikitext = data?.parse?.wikitext?.["*"] || "";
     if (!wikitext) return null;
 
-    const incumbentMatch = wikitext.match(/\|\s*incumbent\s*=\s*\[\[([^\]|]+)/i);
+    // Pattern 1: Role pages (e.g., "Prime Minister of Israel")
+    const incumbentMatch = wikitext.match(/\|\s*incumbent\s*=\s*(?:\{\{nowrap\|)?\[\[([^\]|]+)/i);
     const sinceMatch = wikitext.match(/\|\s*incumbentsince\s*=\s*(.+)/i);
-
     if (incumbentMatch) {
       const name = incumbentMatch[1].trim();
-      const since = sinceMatch ? sinceMatch[1].replace(/\[|\]/g, "").trim() : "";
-      return { name, since };
+      const since = sinceMatch ? sinceMatch[1].replace(/\[|\]|\{\{[^}]*\}\}/g, "").trim() : "";
+      return { name, since, type: "role" };
     }
+
+    // Pattern 2: Country pages (e.g., "Poland", "Israel")
+    // Extract leader_name/leader_title pairs using line-by-line parsing
+    const leaders = [];
+    const lines = wikitext.split("\n");
+    for (let i = 1; i <= 5; i++) {
+      let role = "", name = "";
+      for (const line of lines) {
+        if (line.includes(`leader_title${i}`)) {
+          const m = line.match(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
+          role = m ? (m[2] || m[1]) : (line.split("=")[1] || "").trim();
+        }
+        if (line.includes(`leader_name${i}`)) {
+          const m = line.match(/\[\[([^\]|]+)/);
+          name = m ? m[1].trim() : "";
+        }
+      }
+      if (role && name) {
+        leaders.push({ role: role.replace(/\[|\]/g, "").trim(), name });
+      }
+    }
+    if (leaders.length > 0) {
+      return { leaders, type: "country" };
+    }
+
     return null;
   } catch {
     return null;
   }
 }
 
+// Helper: enrich a Wikipedia page result with infobox data and optionally fetch the person's page
+async function enrichWithInfobox(pageTitle, snippet, results, seenTitles, queryLower) {
+  const infobox = await fetchWikiInfobox(pageTitle);
+  if (!infobox) return snippet;
+
+  if (infobox.type === "role" && infobox.name) {
+    // Role page (e.g., "Prime Minister of Israel") — has incumbent
+    const sinceStr = infobox.since ? ` (since ${infobox.since})` : "";
+    snippet = `The current ${pageTitle.toLowerCase()} is ${infobox.name}${sinceStr}. ${snippet}`;
+    console.log(`[Wikipedia] Enriched with infobox: ${infobox.name}${sinceStr}`);
+
+    // Fetch the incumbent's own page
+    if (!seenTitles.has(infobox.name.toLowerCase())) {
+      try {
+        const personData = await safeFetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(infobox.name)}`);
+        if (personData?.extract) {
+          results.push({
+            title: personData.title || infobox.name,
+            snippet: personData.extract,
+            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(personData.title || infobox.name)}`,
+            source: "Wikipedia"
+          });
+          seenTitles.add((personData.title || "").toLowerCase());
+        }
+      } catch { /* person page fetch failed */ }
+    }
+  } else if (infobox.type === "country" && infobox.leaders?.length > 0) {
+    // Country page (e.g., "Poland") — has leader_name1/leader_title1
+    const leaderLines = infobox.leaders.map(l => `${l.role}: ${l.name}`).join("; ");
+    snippet = `Current leaders: ${leaderLines}. ${snippet}`;
+    console.log(`[Wikipedia] Enriched with country leaders: ${leaderLines}`);
+
+    // Fetch the most relevant leader's page based on query keywords
+    const roleKeywords = queryLower || "";
+    let bestLeader = infobox.leaders[0]; // default to first (usually president/head of state)
+    for (const l of infobox.leaders) {
+      const roleLower = l.role.toLowerCase();
+      if (roleKeywords.includes("prime minister") && roleLower.includes("prime minister")) bestLeader = l;
+      if (roleKeywords.includes("president") && roleLower.includes("president")) bestLeader = l;
+      if (roleKeywords.includes("ruler") || roleKeywords.includes("head of state") || roleKeywords.includes("leader")) bestLeader = infobox.leaders[0];
+    }
+
+    if (!seenTitles.has(bestLeader.name.toLowerCase())) {
+      try {
+        const personData = await safeFetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(bestLeader.name)}`);
+        if (personData?.extract) {
+          results.push({
+            title: personData.title || bestLeader.name,
+            snippet: personData.extract,
+            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(personData.title || bestLeader.name)}`,
+            source: "Wikipedia"
+          });
+          seenTitles.add((personData.title || "").toLowerCase());
+        }
+      } catch { /* person page fetch failed */ }
+    }
+  }
+
+  return snippet;
+}
+
+// Detect if a query is asking about a political role/leader
+function isLeadershipQuery(query) {
+  return /\b(president|prime\s*minister|ruler|head\s+of\s+state|leader|chancellor|king|queen|governor|mayor)\b/i.test(query);
+}
+
 // Wikipedia: fetch direct page summary, infobox data, AND search results in parallel
-// Direct lookup for "prime minister of the UK" returns the generic role page;
-// Infobox extraction finds "incumbent = [[Keir Starmer]]" with the actual name.
+// Handles role pages (incumbent), country pages (leader_name), and typos via search fallback.
 async function fetchWikipedia(query) {
   try {
     const topic = extractWikiTopic(query);
@@ -139,33 +233,15 @@ async function fetchWikipedia(query) {
 
     const results = [];
     const seenTitles = new Set();
+    const queryLower = query.toLowerCase();
 
     // Add direct page if found
     if (directData?.extract) {
-      let snippet = directData.extract;
       const pageTitle = directData.title || topic;
+      let snippet = directData.extract;
 
-      // Try to enrich with infobox data (incumbent, since) for role/position pages
-      const infobox = await fetchWikiInfobox(pageTitle);
-      if (infobox?.name) {
-        const sinceStr = infobox.since ? ` (since ${infobox.since})` : "";
-        snippet = `The current ${pageTitle.toLowerCase()} is ${infobox.name}${sinceStr}. ${snippet}`;
-        console.log(`[Wikipedia] Enriched with infobox: ${infobox.name}${sinceStr}`);
-
-        // Also fetch the incumbent's own page summary for richer context
-        try {
-          const incumbentData = await safeFetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(infobox.name)}`);
-          if (incumbentData?.extract) {
-            results.push({
-              title: incumbentData.title || infobox.name,
-              snippet: incumbentData.extract,
-              url: `https://en.wikipedia.org/wiki/${encodeURIComponent(incumbentData.title || infobox.name)}`,
-              source: "Wikipedia"
-            });
-            seenTitles.add((incumbentData.title || "").toLowerCase());
-          }
-        } catch { /* incumbent page fetch failed, continue */ }
-      }
+      // Enrich with infobox data (incumbent or country leaders)
+      snippet = await enrichWithInfobox(pageTitle, snippet, results, seenTitles, queryLower);
 
       results.unshift({
         title: pageTitle,
@@ -176,11 +252,11 @@ async function fetchWikipedia(query) {
       seenTitles.add(pageTitle.toLowerCase());
     }
 
-    // Add search results — fetch summaries for pages we haven't seen yet
+    // Process search results
     if (searchData?.query?.search?.length > 0) {
       const candidates = searchData.query.search
         .filter(sr => !seenTitles.has(sr.title.toLowerCase()))
-        .slice(0, 2);
+        .slice(0, 3);
 
       const summaryPromises = candidates.map(sr =>
         safeFetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(sr.title)}`).catch(() => null)
@@ -189,14 +265,27 @@ async function fetchWikipedia(query) {
 
       for (let i = 0; i < summaries.length; i++) {
         const pageData = summaries[i];
-        if (pageData?.extract) {
-          results.push({
-            title: pageData.title || candidates[i].title,
-            snippet: pageData.extract,
-            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(pageData.title || candidates[i].title)}`,
-            source: "Wikipedia"
-          });
+        if (!pageData?.extract) continue;
+        const title = pageData.title || candidates[i].title;
+        if (seenTitles.has(title.toLowerCase())) continue;
+
+        let snippet = pageData.extract;
+
+        // For leadership queries, try infobox extraction on country/role pages found via search
+        // This handles typos ("polan" → search finds "Poland") and indirect queries ("head of state")
+        const isCountryPage = /\bcountr/i.test(pageData.description || "");
+        const isRolePage = /\b(head of government|head of state|minister|president|chancellor)\b/i.test(title.toLowerCase());
+        if (isLeadershipQuery(query) && (isCountryPage || isRolePage)) {
+          snippet = await enrichWithInfobox(title, snippet, results, seenTitles, queryLower);
         }
+
+        results.push({
+          title,
+          snippet,
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+          source: "Wikipedia"
+        });
+        seenTitles.add(title.toLowerCase());
       }
     }
 

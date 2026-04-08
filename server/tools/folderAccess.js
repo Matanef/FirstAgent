@@ -64,11 +64,31 @@ function formatSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+/**
+ * Extract custom folder exclusions from text
+ */
+function extractExclusions(text) {
+  const exclusions = new Set();
+  const match = text.match(/\b(?:exclude|ignore|skip|except|without)\s+([a-zA-Z0-9_.,\s/\\-]+)/i);  
 
+  if (match) {
+    // Split by commas or spaces, remove empty strings
+    const items = match[1].split(/[,\s]+/).map(i => i.trim()).filter(Boolean);
+    // Filter out common conversational noise
+    const stopWords = new Set(["and", "the", "folders", "directories", "files", "folder", "directory", "file", "etc"]);
+    
+    items.forEach(item => {
+      if (!stopWords.has(item.toLowerCase())) {
+      // strip leading/trailing slashes so "folder/" becomes "folder"
+      exclusions.add(item.replace(/^[/\\]+|[/\\]+$/g, ''));      }
+    });
+  }
+  return exclusions;
+}
 /**
  * Recursively list files in a directory
  */
-async function listRecursive(dirPath, depth = 0, maxDepth = MAX_DEPTH) {
+async function listRecursive(dirPath, depth = 0, maxDepth = MAX_DEPTH, customExcludes = new Set()) {
   const entries = [];
   if (depth > maxDepth) return entries;
 
@@ -80,13 +100,26 @@ async function listRecursive(dirPath, depth = 0, maxDepth = MAX_DEPTH) {
   }
 
   for (const item of items) {
-    if (SKIP_DIRS.has(item.name) && item.isDirectory()) continue;
-    if (item.name.startsWith(".") && depth > 0 && item.isDirectory()) continue;
-
     const fullPath = path.join(dirPath, item.name);
 
+    // Normalize the path to forward slashes and lowercase for reliable matching
+    const normalizedFullPath = fullPath.replace(/\\/g, '/').toLowerCase();
+
+    // Check if the custom exclusion matches the item name OR is part of the full path
+    const isCustomExcluded = Array.from(customExcludes).some(ex => {
+      const lowerEx = ex.toLowerCase();
+      return item.name.toLowerCase() === lowerEx || normalizedFullPath.includes(lowerEx);
+    });
+
+    // SINGLE, CLEAN CHECK: Skip if hardcoded or custom excluded
+    if ((SKIP_DIRS.has(item.name) || isCustomExcluded) && item.isDirectory()) continue;
+    
+    // Skip hidden files/folders (unless we are at depth 0)
+    if (item.name.startsWith(".") && depth > 0 && item.isDirectory()) continue;
+
     if (item.isDirectory()) {
-      const children = await listRecursive(fullPath, depth + 1, maxDepth);
+      // Pass customExcludes down the tree
+      const children = await listRecursive(fullPath, depth + 1, maxDepth, customExcludes);
       entries.push({
         name: item.name,
         type: "directory",
@@ -255,8 +288,9 @@ function extractPath(text) {
 /**
  * Search files by name or content pattern
  */
-async function searchFiles(dirPath, query, maxDepth = MAX_DEPTH) {
-  const entries = await listRecursive(dirPath, 0, maxDepth);
+async function searchFiles(dirPath, query, maxDepth = MAX_DEPTH, customExcludes = new Set()) {
+  // UPDATED: Pass customExcludes to listRecursive
+  const entries = await listRecursive(dirPath, 0, maxDepth, customExcludes);
   const flatFiles = flattenTree(entries);
   const lowerQuery = query.toLowerCase();
 
@@ -497,6 +531,11 @@ export async function folderAccess(request) {
       data: { message: `Cannot access "${normalizedPath}": ${err.message}` }
     };
   }
+// Extract custom exclusions from the prompt
+const customExcludes = extractExclusions(text);
+  if (customExcludes.size > 0) {
+    console.log(`[folderAccess] Applying custom exclusions:`, Array.from(customExcludes));
+  }
 
   try {
     switch (intent) {
@@ -518,7 +557,7 @@ export async function folderAccess(request) {
 
       case "tree": {
         const depth = context.depth || 4;
-        const entries = await listRecursive(normalizedPath, 0, depth);
+        const entries = await listRecursive(normalizedPath, 0, depth, customExcludes);
         const treeStr = buildTreeString(entries);
         const flatFiles = flattenTree(entries);
 
@@ -536,7 +575,7 @@ export async function folderAccess(request) {
       }
 
       case "stats": {
-        const entries = await listRecursive(normalizedPath, 0, MAX_DEPTH);
+        const entries = await listRecursive(normalizedPath, 0, MAX_DEPTH, customExcludes);
         const flatFiles = flattenTree(entries);
         const stats = buildStats(flatFiles);
 
@@ -569,7 +608,7 @@ export async function folderAccess(request) {
 
       case "search": {
         const searchQuery = text.replace(/.*(?:search|find|grep|look\s+for|where\s+is)\s+/i, "").replace(new RegExp(folderPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "").trim();
-        const results = await searchFiles(normalizedPath, searchQuery || text);
+        const results = await searchFiles(normalizedPath, searchQuery || text, MAX_DEPTH, customExcludes);
 
         let resultText = `🔍 **Search results in ${normalizedPath}**\n\n`;
         if (results.nameMatches.length > 0) {
@@ -602,7 +641,7 @@ export async function folderAccess(request) {
       case "list":
       default: {
         const depth = context.depth || 2;
-        const entries = await listRecursive(normalizedPath, 0, depth);
+        const entries = await listRecursive(normalizedPath, 0, depth, customExcludes);
         const flatFiles = flattenTree(entries);
         const stats = buildStats(flatFiles);
 

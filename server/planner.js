@@ -571,7 +571,7 @@ const ROUTING_TABLE = [
       /\bsend\b/i.test(lower) &&
       /(?:\+?\d[\d\s\-()]{6,18}\d)/.test(trimmed) &&
       !/\b(email|e-mail|mail)\b/i.test(lower),
-    guard: (lower) => hasCompoundIntent(lower),
+    guard: (lower) => hasCompoundIntent(lower) || /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower),
     description: "WhatsApp — phone number detected with send command"
   },
   {
@@ -580,7 +580,7 @@ const ROUTING_TABLE = [
     match: (lower) =>
       /\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
       /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower),
-    guard: (lower) => hasCompoundIntent(lower),
+    guard: (lower) => hasCompoundIntent(lower) || /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower),
     description: "WhatsApp — explicit keyword with send intent"
   },
   {
@@ -592,7 +592,7 @@ const ROUTING_TABLE = [
        /(?:^|\s)(שלח|תשלח|שלחי)\s+(ל)?(אמא|אימא|אבא|אחי|אחות)/i.test(lower) ||
        /\b(send)\s+\w+\s+a\s+\w+\s+message\b/i.test(lower)) &&
       !/\b(email|e-mail|mail)\b/i.test(lower),
-    guard: (lower) => hasCompoundIntent(lower),
+    guard: (lower) => hasCompoundIntent(lower) || /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower),
     description: "WhatsApp — send message to person/relation by name"
   },
   {
@@ -784,7 +784,10 @@ const ROUTING_TABLE = [
       /\b(write|create|generate|make)\s+(a\s+)?(new\s+)?(file|script|module|component|document|code|program|class|function)\b/i.test(lower) ||
       /\b(save\s+to|write\s+to|create\s+file|new\s+file)\b/i.test(lower) ||
       (/\b(write|create|generate)\b/i.test(lower) && hasExplicitFilePath(trimmed)),
-    guard: (lower) => hasCompoundIntent(lower),
+    guard: (lower) =>
+      hasCompoundIntent(lower) ||
+      // Exclude prose editing requests — those need the certainty branch for chunked mode
+      (isProseIntent(lower) && /\b(rewrite|correct|edit|improve|translate|proofread|fix|grammar|copywrite)\b/i.test(lower)),
     description: "File write/create — generate new files"
   },
   {
@@ -950,11 +953,15 @@ const ROUTING_TABLE = [
     tool: "search",
     priority: 30,
     match: (lower) =>
-      /\b(what is|what are|who is|who was|who were|when did|where is|how many|how does|why do|why did|why are|why is|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+|search\s+for(?!\s+\w+\s+on\s+(?:x|twitter)))\b/i.test(lower),
+      /\b(what is|what are|who is|who was|who were|when did|where is|how many|how does|why do|why did|why are|why is|define|meaning of|history of|tell\s+me\s+about|explain\s+\w+|search\s+for(?!\s+\w+\s+on\s+(?:x|twitter)))\b/i.test(lower) ||
+      // Match "[country/entity] head of state/president/prime minister" patterns (no question word needed)
+      /\b(head\s+of\s+state|president\s+of|prime\s+minister\s+of|chancellor\s+of|king\s+of|queen\s+of)\b/i.test(lower) ||
+      /\w+('s|s)\s+(president|prime\s+minister|ruler|head\s+of\s+state|chancellor|king|queen)\b/i.test(lower),
     guard: (lower, trimmed) =>
       isMathExpression(trimmed) || hasExplicitFilePath(trimmed) ||
       /\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting)\b/i.test(lower) ||
       /\b(your\s+name|who\s+are\s+you|what\s+are\s+you|your\s+identity)\b/i.test(lower) ||
+      /\b(your\s+(opinion|view|take|thoughts?)|what\s+do\s+you\s+think|do\s+you\s+(like|think|feel|believe))\b/i.test(lower) ||
       /^(איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)/i.test(lower) ||
       lower.length <= 10,
     description: "General knowledge — search fallback"
@@ -1564,13 +1571,20 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
 export async function plan({ message, chatContext = {} }) {
   const result = await _planInternal({ message, chatContext });
 
-  // --- NEW: RE-INJECT SYSTEM WRAPPER ---
-  // If a hidden system persona was passed in, ensure it is attached to the final
-  // tool input so the LLM receives the persona instructions.
+  // --- RE-INJECT SYSTEM WRAPPER (only for LLM-facing tools) ---
+  // The system persona wrapper is for LLM synthesis — tools like search, weather,
+  // finance, etc. would break if they receive "(System: You are Lanou...)" as input.
   const systemMatch = (message || "").trim().match(/^(\(System:[^)]+\)\s*)/i);
+  // Tools that process text through LLM and benefit from persona context
+  const LLM_FACING_TOOLS = new Set(["llm", "news", "moltbook", "nlp", "review", "codeReview", "fileReview"]);
   if (systemMatch && Array.isArray(result)) {
     for (let step of result) {
-      if (step.input && !step.input.startsWith("(System:")) {
+      // Defensively coerce input to string — LLM decomposer sometimes returns objects
+      if (step.input && typeof step.input !== "string") {
+        step.input = typeof step.input === "object" ? JSON.stringify(step.input) : String(step.input);
+      }
+      // Only inject system wrapper for tools that use LLM internally and need persona
+      if (step.input && typeof step.input === "string" && !step.input.startsWith("(System:") && LLM_FACING_TOOLS.has(step.tool)) {
         step.input = systemMatch[1] + step.input;
       }
     }

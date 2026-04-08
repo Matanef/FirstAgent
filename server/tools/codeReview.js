@@ -8,22 +8,26 @@ import { llm } from "./llm.js";
 import { loadReviewCache, saveReviewCache } from "../utils/cacheReview.js"
 import { validateCode } from "../utils/codeValidator.js";
 
-const FAST_REVIEW_MODEL = "qwen2.5-coder:7b";   // <— FAST MODEL FOR ALL CODE REVIEWS
-const FILE_TIMEOUT = 300_000;            // 60s per file
-const ARCH_TIMEOUT = 600_000;            // 90s for architecture review
+const FAST_REVIEW_MODEL = process.env.FAST_REVIEW_MODEL || "qwen2.5-coder:7b";   // <— FAST MODEL FOR ALL CODE REVIEWS
+const FILE_TIMEOUT = Number(process.env.FILE_TIMEOUT) || 300_000;            // 60s per file
+const ARCH_TIMEOUT = Number(process.env.ARCH_TIMEOUT) || 600_000;            // 90s for architecture review
 
-const MAX_FILE_SIZE = 256 * 1024; // 256 KB
-const MAX_FILES_PER_REVIEW = 20;
+const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE) || 256 * 1024; // 256 KB
+const MAX_FILES_PER_REVIEW = Number(process.env.MAX_FILES_PER_REVIEW) || 20;
 
 const SKIP_DIRS = new Set([
-  "node_modules", ".git", ".svn", "dist", "build", "out", "__pycache__",
-  ".cache", ".next", "coverage", ".vscode", ".idea", "vendor"
+  process.env.SKIP_DIRS?.split(",") ?? [
+    "node_modules", ".git", ".svn", "dist", "build", "out", "__pycache__",
+    ".cache", ".next", "coverage", ".vscode", ".idea", "vendor"
+  ]
 ]);
 
 // ── SECURITY: Sandbox boundaries for code review ──
 const ALLOWED_ROOTS = [
-  path.resolve("D:/local-llm-ui"),
-  path.resolve("E:/testFolder")
+  process.env.ALLOWED_ROOTS?.split(",") ?? [
+    path.resolve("D:/local-llm-ui"),
+    path.resolve("E:/testFolder")
+  ]
 ];
 
 function isReviewPathAllowed(resolvedPath) {

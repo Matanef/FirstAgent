@@ -446,9 +446,12 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1) {
     });
   }
 
+  // Resolve the display text: coordinator's .reply (LLM-synthesized) > .data.text > .data.message > fallback
+  const displayText = toolResult.reply || toolResult.data?.text || toolResult.data?.message || "Task completed.";
+
   // Stream the preformatted text directly back to the UI
-  if (options.onChunk && toolResult.data?.text) {
-    options.onChunk(toolResult.data.text);
+  if (options.onChunk && displayText) {
+    options.onChunk(displayText);
   }
 
   // Run the background facts extractor so we don't lose memory capabilities
@@ -457,7 +460,7 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1) {
   );
 
   return {
-    reply: toolResult.data?.text || "Task completed.",
+    reply: displayText,
     tool: toolResult.tool,
     html: toolResult.data?.html || null,
     success: toolResult.success,

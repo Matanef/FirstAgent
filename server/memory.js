@@ -90,11 +90,31 @@ function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
+const BACKUP_FILE = MEMORY_FILE + ".bak";
+
 function ensureMemoryDirAndFileSync() {
   try {
     const dir = path.dirname(MEMORY_FILE);
     if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
     if (!fsSync.existsSync(MEMORY_FILE)) {
+      // Main file is missing — try to restore from backup before creating empty default
+      if (fsSync.existsSync(BACKUP_FILE)) {
+        try {
+          const backupData = fsSync.readFileSync(BACKUP_FILE, "utf8");
+          const parsed = JSON.parse(backupData);
+          // Sanity check: backup has real data (not empty default)
+          const hasData = Object.keys(parsed.conversations || {}).length > 0 ||
+                          Object.keys(parsed.profile || {}).length > 0;
+          if (hasData) {
+            fsSync.writeFileSync(MEMORY_FILE, backupData, "utf8");
+            console.warn("🔧 [memory] Restored from backup file (main file was missing)");
+            return;
+          }
+        } catch (backupErr) {
+          console.warn("⚠️ [memory] Backup exists but is unreadable:", backupErr.message);
+        }
+      }
+      console.warn("⚠️ [memory] No main file or backup found — creating empty default");
       fsSync.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2), "utf8");
     }
   } catch (err) {
@@ -177,6 +197,18 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
   await _acquireLock();
   try {
     ensureMemoryDirAndFileSync();
+
+    // ── SAFETY: Back up current file before overwriting ──
+    // If the rename/write fails mid-operation, we can recover from .bak on next boot.
+    try {
+      if (fsSync.existsSync(file)) {
+        await fs.copyFile(file, BACKUP_FILE);
+      }
+    } catch (bakErr) {
+      // Non-fatal — backup failure shouldn't block saves
+      console.warn("⚠️ [memory] Backup copy failed:", bakErr.message);
+    }
+
     const tmp = `${file}.tmp.${Date.now()}`;
     const safeData = validateMemoryShape(obj);
 
