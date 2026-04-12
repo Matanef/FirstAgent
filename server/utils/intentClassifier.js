@@ -117,6 +117,7 @@ const TASK_PATTERNS = [
   /\bwho\s+am\s+i\b/i,
   /\bmy\s+(contacts?|preferences|location|profile|email|phone)\b/i,
   /\b(create|add|schedule|book|set\s+up|make)\s+(an?\s+)?(event|meeting|appointment|task|reminder)\b/i,
+  /\b(add|remove|delete|set)\s+(an?\s+)?(alias|nickname|aka|contact)\b/i,
   /\b(review|analyze|audit|inspect)\s+(the\s+|my\s+|this\s+)?(code|file|project)\b/i,
   /\b(rewrite|edit|correct|proofread|modify|update)\s+(the\s+|my\s+|this\s+)?(file|document|text|guide|code|script)\b/i,
   /\b(rewrite|edit|correct|proofread)\s+\w+\.\w{1,5}\b/i,

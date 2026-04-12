@@ -3,8 +3,18 @@
 // Enables cross-session context: "last time we talked about X"
 // Uses existing memory.js infrastructure
 
+import fs from "fs/promises";
+import fsSync from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { getMemory, withMemoryLock, saveJSON, MEMORY_FILE } from "../memory.js";
 import { llm } from "../tools/llm.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Archive file — append-only JSONL, never read at runtime. Safety net for recovery.
+const ARCHIVE_FILE = path.resolve(__dirname, "..", "..", "data", "conversation-archive.jsonl");
 
 const MAX_CONVERSATION_SUMMARIES = 50;
 const MAX_MESSAGES_BEFORE_SUMMARY = 20;
@@ -233,4 +243,126 @@ export async function getConversationStats() {
     lastActive: summaries.length > 0 ? summaries[summaries.length - 1].timestamp : null,
     recentTopics: summaries.slice(-5).flatMap(s => s.topics || [])
   };
+}
+
+// ============================================================
+// CONVERSATION ARCHIVE — Append-only JSONL safety net
+// ============================================================
+
+/**
+ * Archive a full conversation to the JSONL archive file.
+ * This is a safety net — the file is never read at runtime.
+ * @param {string} conversationId
+ * @param {Array} messages - Full message array
+ */
+async function archiveConversation(conversationId, messages) {
+  try {
+    const dir = path.dirname(ARCHIVE_FILE);
+    await fs.mkdir(dir, { recursive: true });
+
+    const entry = JSON.stringify({
+      id: conversationId,
+      archivedAt: new Date().toISOString(),
+      messageCount: messages.length,
+      messages
+    });
+
+    await fs.appendFile(ARCHIVE_FILE, entry + "\n", "utf8");
+    return true;
+  } catch (err) {
+    console.warn("[conversationMemory] Archive write failed:", err.message);
+    return false;
+  }
+}
+
+// ============================================================
+// AUTO-PRUNE — Summarize + archive old conversations on startup
+// ============================================================
+
+const PRUNE_AGE_DAYS = 30;
+const KEEP_RECENT_MESSAGES = 5;
+
+/**
+ * Auto-prune conversations older than PRUNE_AGE_DAYS.
+ * Call this on server startup (non-blocking).
+ */
+export async function pruneOldConversations() {
+  try {
+    const memory = await getMemory();
+    const conversations = memory.conversations || {};
+    const cutoff = Date.now() - (PRUNE_AGE_DAYS * 24 * 60 * 60 * 1000);
+    let pruned = 0;
+    let archived = 0;
+
+    for (const [id, messages] of Object.entries(conversations)) {
+      if (!Array.isArray(messages) || messages.length < 6) continue;
+
+      const lastMessage = messages[messages.length - 1];
+      const lastTimestamp = lastMessage?.timestamp
+        ? new Date(lastMessage.timestamp).getTime()
+        : 0;
+
+      if (lastTimestamp > cutoff || lastTimestamp === 0) continue;
+      if (messages[0]?.role === "__summary__") continue;
+
+      // Step 1: Archive to JSONL
+      const archiveOk = await archiveConversation(id, messages);
+      if (archiveOk) archived++;
+
+      // Step 2: Summarize (PATCHED)
+      let summaryText = "";
+      try {
+        const convoText = messages
+          .slice(0, 30)
+          .map(m => `${m.role}: ${(m.content || "").slice(0, 150)}`)
+          .join("\n");
+
+        // Force skipLanguageDetection to avoid Gemini overload, and set a timeout
+        const result = await llm(
+          `Summarize this conversation in 2-3 sentences. Focus on what the user asked and what was accomplished.\n\nConversation:\n${convoText}\n\nSummary:`,
+          { skipLanguageDetection: true, timeoutMs: 60000 }
+        );
+        summaryText = result?.data?.text || "";
+      } catch (err) {
+        console.warn(`[conversationMemory] Summarization failed for ${id}:`, err.message);
+        const userMsgs = messages.filter(m => m.role === "user").map(m => (m.content || "").slice(0, 50));
+        summaryText = `User discussed: ${userMsgs.slice(0, 5).join(", ")}`;
+      }
+
+      // Step 3: Replace messages
+      const recentMessages = messages.slice(-KEEP_RECENT_MESSAGES);
+      conversations[id] = [
+        {
+          role: "__summary__",
+          content: summaryText.slice(0, 500),
+          timestamp: new Date().toISOString(),
+          originalCount: messages.length,
+          prunedAt: new Date().toISOString()
+        },
+        ...recentMessages
+      ];
+      pruned++;
+
+      // Give the local LLM a 2-second breather before the next conversation
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    if (pruned > 0) {
+      await withMemoryLock(async () => {
+        const mem = await getMemory();
+        for (const [id, msgs] of Object.entries(conversations)) {
+          if (msgs[0]?.role === "__summary__") {
+            mem.conversations[id] = msgs;
+          }
+        }
+        await saveJSON(MEMORY_FILE, mem);
+      });
+      console.log(`🧹 [conversationMemory] Pruned ${pruned} old conversations (${archived} archived to JSONL)`);
+    }
+
+    return { pruned, archived };
+  } catch (err) {
+    console.warn("[conversationMemory] Prune failed:", err.message);
+    return { pruned: 0, archived: 0 };
+  }
 }

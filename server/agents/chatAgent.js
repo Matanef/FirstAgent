@@ -187,7 +187,8 @@ async function resolveWithTools(message, options, recentTurns) {
       clientIp: options.clientIp,
       fileIds: options.fileIds,
       onChunk: null, // CRITICAL: Stop the taskAgent from talking directly to the user
-      onStep: options.onStep // Allow thoughts/plans to still stream
+      onStep: options.onStep, // Allow thoughts/plans to still stream
+      signal: options.signal // 👈 PASS SIGNAL TO TASK AGENT
     });
 
     return taskResult;
@@ -377,11 +378,24 @@ export async function handleChat(message, recentTurns = [], options = {}) {
 // UNIFIED AGENT: Check if we need to run tools first!
 const toolResult = await resolveWithTools(message, options, recentTurns);
 
+// If the user aborted during tool execution, exit immediately!
+if (options.signal?.aborted) {
+  console.log("🛑 [chatAgent] Request aborted during execution. Bailing out.");
+  return {
+    reply: "Operation cancelled.",
+    tool: toolResult?.tool || "unknown",
+    success: false,
+    mode: "task",
+    stateGraph: toolResult?.stateGraph || []
+  };
+}
+
 // ── MULTI-STEP DATA MERGER ──
 // If the orchestrator ran multiple steps (e.g., Weather -> News),
 // the top-level toolResult often only contains the LAST step's data.
 // We must iterate through the stateGraph to combine the outputs so nothing is lost.
-if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1) {
+// 👉 ADDED CHECKS: Skip merging HTML widgets if the pipeline ends in an email!
+if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1 && toolResult.tool !== "email" && toolResult.tool !== "email_confirm") {
   console.log(`[chatAgent] Multi-step execution detected (${toolResult.stateGraph.length} steps). Merging outputs.`);
   
   let combinedHtml = "";
@@ -396,16 +410,18 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1) {
     
     // 1. Accumulate HTML widgets (like the News table)
     if (raw.html) {
-      combinedHtml += combinedHtml ? `\n\n${raw.html}` : raw.html;
-    } 
+      combinedHtml += combinedHtml ? `\n\n\n\n${raw.html}` : raw.html;
+    }
+
     // 2. Accumulate Text (like the Weather summary) for steps WITHOUT HTML
     else {
-      if (typeof step.output === "string" && step.output.trim()) {
-        combinedText += combinedText ? `\n\n${step.output}` : step.output;
-      } else if (raw.text) {
-        combinedText += combinedText ? `\n\n${raw.text}` : raw.text;
+      const output = typeof step.output === "string" ? step.output.trim() : (raw.text || "");
+      if (output) {
+        // Use double newline + Zero-Width Space to anchor the spacing without causing glitches
+        combinedText += combinedText ? `\n\n\u200B\n\n${output}` : output;
       } else if (step.tool === "weather" && raw.temp) {
-        combinedText += `\n\n☀️ **Current weather in ${raw.city}:** ${raw.temp}°C, ${raw.description}. Air Quality: ${raw.aqi_description || 'Unknown'}.`;
+        const weatherText = `☀️ **Current weather in ${raw.city}:** ${raw.temp}°C, ${raw.description}. Air Quality: ${raw.aqi_description || 'Unknown'}.`;
+        combinedText += combinedText ? `\n\n\u200B\n\n${weatherText}` : weatherText;
       }
     }
   }
@@ -564,9 +580,9 @@ ASSISTANT:`;
       await llmStream(prompt, (chunk) => {
         replyText += chunk;
         options.onChunk(chunk);
-      }, { skipKnowledge: true });
+      }, { skipKnowledge: true, signal: options.signal });
     } else {
-      const result = await llm(prompt, { skipKnowledge: true });
+      const result = await llm(prompt, { skipKnowledge: true, signal: options.signal });
       replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
     }
 

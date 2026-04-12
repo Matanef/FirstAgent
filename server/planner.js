@@ -1,15 +1,15 @@
 // server/planner.js
 // COMPLETE MULTI-STEP PLANNER (patched): diagnostic routing, tool availability checks,
 // safe improvement plans (no calls to missing tools), and clearer certainty logging.
-
+import { llm, pickModelForContent } from "./tools/llm.js"; // Add pickModelForContent
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { llm } from "./tools/llm.js";
 import { getMemory } from "./memory.js";
 import { CONFIG } from "./utils/config.js";
 import { detectCorrection, logCorrection, buildCorrectionContext } from "./intentDebugger.js";
 import { dynamicSkills } from "./executor.js";
+import { logRoutingDecision } from "./routes/dashboard.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -553,8 +553,12 @@ const ROUTING_TABLE = [
       hasCompoundIntent(lower) ||
       /\/api\/v\d\/agents?\b/i.test(lower) ||
       (/\b(set\s*up|setup|configure)\b/i.test(lower) && /\b(moltbook|owner[- ]?email)\b/i.test(lower)) ||
+      // Guard: "add contact ... email: X" is contact management, not email composition
+      (/\b(add|save|update|edit|remove|delete)\s+(an?\s+)?(contact|alias|nickname)\b/i.test(lower)) ||
       // Guard: "inspect/review email.js" is a code review, not email composition
-      (hasExplicitFilePath(trimmed || lower) && /\b(inspect|review|audit|check|security|analyz|vulnerabilit|bug|issue|improv)\b/i.test(lower)),
+      (hasExplicitFilePath(trimmed || lower) && /\b(inspect|review|audit|check|security|analyz|vulnerabilit|bug|issue|improv)\b/i.test(lower)) ||
+      // Guard: "what's John's email?" is a contact lookup, not email composition
+      /\b\w+'s\s+(email|phone|number)\b/i.test(lower),
     context: (lower) => {
       const ctx = {};
       if (/\b(check|read|browse|inbox|list|show|go\s+over|latest|recent|unread)\b/i.test(lower)) ctx.action = "browse";
@@ -578,8 +582,8 @@ const ROUTING_TABLE = [
     tool: "whatsapp",
     priority: 70,
     match: (lower) =>
-      /\b(whatsapp|ווטסאפ|וואטסאפ)\b/i.test(lower) &&
-      /\b(send|שלח|bulk|mass|קבוצת|message|הודעה)\b/i.test(lower),
+      (/\b(whatsapp)\b/i.test(lower) || /(?:^|\s)(ווטסאפ|וואטסאפ)(?:\s|$)/.test(lower)) &&
+      (/\b(send|bulk|mass|message)\b/i.test(lower) || /(?:^|\s)(שלח|תשלח|שלחי|קבוצת|הודעה)(?:\s|$)/.test(lower)),
     guard: (lower) => hasCompoundIntent(lower) || /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower),
     description: "WhatsApp — explicit keyword with send intent"
   },
@@ -625,7 +629,12 @@ const ROUTING_TABLE = [
     priority: 70,
     match: (lower) =>
       /\b(calendar|meeting|appointment|schedule\s+(a|an|the)|set\s+(a|an)\s+(meeting|call|event|appointment)|add\s+to\s+(my\s+)?calendar|my\s+calendar|book\s+(a|an)\s+(room|meeting|call|appointment|dentist|doctor)|what\s+events?\b|my\s+events|am\s+i\s+(free|busy|available)|free\s+(time|slot|tomorrow|today|this)|availab(le|ility)\s+(today|tomorrow|this|next))\b/i.test(lower),
-    guard: (lower) => /\b(score|match|game|league|football|soccer|basketball|nba|nfl|sports?\s+events?)\b/i.test(lower),
+    guard: (lower) =>
+      /\b(score|match|game|league|football|soccer|basketball|nba|nfl|sports?\s+events?)\b/i.test(lower) ||
+      // Guard: recurring/automation keywords → scheduler, not calendar
+      /\b(every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate)\b/i.test(lower) ||
+      // Guard: "schedule a task/whatsapp/email" is not a calendar event
+      /\bschedule\s+(a\s+)?(task|whatsapp|message|email|check|report|scan)\b/i.test(lower),
     description: "Calendar — meetings, events, availability"
   },
 
@@ -755,7 +764,9 @@ const ROUTING_TABLE = [
       (/\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)),
     guard: (lower) =>
       /\b(stock|share|invest|market|ticker|cybersecurity|crypto|bitcoin|earnings)\b/i.test(lower) ||
-      /\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower),
+      /\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower) ||
+      // Guard: "add task buy groceries" is a todo, not a shopping request
+      /\b(add\s+task|todo|to-do|task\s+list|reminder|checklist)\b/i.test(lower),
     description: "Shopping — product search, price comparisons, deals"
   },
   {
@@ -877,7 +888,9 @@ const ROUTING_TABLE = [
   {
     tool: "contacts",
     priority: 46,
-    match: (lower) => /\b(contacts?|address\s*book|phone\s*(number|book)|my\s+contacts|add\s+contact|find\s+contact|who\s+is\s+\w+'\s*s?\s*(number|email|phone))\b/i.test(lower),
+    match: (lower) =>
+      /\b(contacts?|address\s*book|phone\s*(number|book)|my\s+contacts|add\s+contact|find\s+contact|who\s+is\s+\w+'\s*s?\s*(number|email|phone))\b/i.test(lower) ||
+      /\b(add|remove|delete|set)\s+(an?\s+)?(alias|nickname|aka)\b/i.test(lower),
     guard: (lower) => /\b(github|email\s+(to|about|regarding))\b/i.test(lower),
     description: "Contacts management"
   },
@@ -959,6 +972,7 @@ const ROUTING_TABLE = [
       /\w+('s|s)\s+(president|prime\s+minister|ruler|head\s+of\s+state|chancellor|king|queen)\b/i.test(lower),
     guard: (lower, trimmed) =>
       isMathExpression(trimmed) || hasExplicitFilePath(trimmed) ||
+      hasCompoundIntent(lower) ||
       /\b(weather|email|task|todo|file|github|score|game|match|league|calendar|meeting)\b/i.test(lower) ||
       /\b(your\s+name|who\s+are\s+you|what\s+are\s+you|your\s+identity)\b/i.test(lower) ||
       /\b(your\s+(opinion|view|take|thoughts?)|what\s+do\s+you\s+think|do\s+you\s+(like|think|feel|believe))\b/i.test(lower) ||
@@ -1035,10 +1049,12 @@ async function evaluateRoutingTable(lower, trimmed, chatContext) {
       const redirectTool = ctx.__redirectTool;
       delete ctx.__redirectTool;
       console.log(`[planner] routing table → ${winner.tool} redirected to ${redirectTool} (priority ${winner.priority})`);
+      logRoutingDecision(trimmed, redirectTool, winner.priority, `routing_table_${winner.tool}_redirect`);
       return [{ tool: redirectTool, input: trimmed, context: ctx, reasoning: `routing_table_${winner.tool}_redirect` }];
     }
 
     console.log(`[planner] routing table → ${winner.tool} (priority ${winner.priority}, ${candidates.length} candidate${candidates.length > 1 ? "s" : ""})`);
+    logRoutingDecision(trimmed, winner.tool, winner.priority, `routing_table_${winner.tool}`);
     return [{ tool: winner.tool, input: trimmed, context: ctx, reasoning: `routing_table_${winner.tool}` }];
   }
 
@@ -1113,9 +1129,12 @@ function extractContextSignals(message) {
   return signals;
 }
 
-async function detectIntentWithLLM(message, contextSignals, availableTools = []) {
+async function detectIntentWithLLM(message, contextSignals, availableTools = [], signal) {
   // Strip the WhatsApp Persona injection so it doesn't confuse the classifier
   const cleanMessage = (message || "").replace(/^\(System:[^)]+\)\s*/i, "");
+
+  const modelOverride = pickModelForContent(cleanMessage);
+  const modelToUse = modelOverride || "qwen2.5:1.5b";
 
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
@@ -1243,10 +1262,11 @@ RULES:
 
 Respond with ONLY the tool name (one word, no explanation).`;
 
-  try {
+try {
     const response = await llm(prompt, { 
-      model: "qwen2.5:1.5b", 
-      timeoutMs: 30000 
+      model: modelToUse, // <--- NOW DYNAMIC
+      timeoutMs: 30000,
+      signal 
     });
     if (!response.success || !response.data?.text) {
       return { intent: "llm", reason: "fallback" };
@@ -1326,12 +1346,12 @@ function tryParseStepsJSON(text) {
  *
  * Returns a resolved step array, or null if decomposition fails.
  */
-async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
+async function handleCompoundIntent(trimmed, lower, chatContext = {}, signal) {
   const availableTools = listAvailableTools();
   const contextSignals = extractContextSignals(trimmed);
   console.log("[planner] handleCompoundIntent: attempting LLM decomposition...");
 
-  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
+  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools, signal);
 
   if (decomposedSteps && decomposedSteps.length > 1) {
     // Resolve and validate each step's tool name
@@ -1367,7 +1387,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}) {
  * Uses the LLM as a "Sequential Logic Engine" — returns a JSON array of steps.
  * Falls back to null on failure (caller should use single-tool classifier).
  */
-async function decomposeIntentWithLLM(message, contextSignals, availableTools = []) {
+async function decomposeIntentWithLLM(message, contextSignals, availableTools = [], signal) {
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
     : "";
@@ -1382,6 +1402,9 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
     .replace(/you\s+are\s+now\s+in\s+\w+\s+mode/gi, "")
     .replace(/system\s*:\s*(override|instruction|prompt)/gi, "")
     .replace(/^\(System:[^)]+\)\s*/i, ""); // NEW: Strip WhatsApp Persona injection
+
+  const modelOverride = pickModelForContent(safeMessage);
+  const modelToUse = modelOverride || "qwen2.5:1.5b";
   // Stricter prompt specifically tuned for local models to force valid JSON
   const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
@@ -1456,11 +1479,12 @@ USER MESSAGE:
 ${await buildCorrectionContext()}
 OUTPUT ONLY THE JSON ARRAY:`;
 
-  try {
+try {
     const response = await llm(prompt, { 
-      model: "qwen2.5:1.5b", // Force a tiny, fast model for routing
-      timeoutMs: 90000, // Give it 90 seconds to think
-      format: "json"    // Force strict JSON output!
+      model: modelToUse, // <--- NOW DYNAMIC
+      timeoutMs: 90000, 
+      format: "json",
+      signal
     });
     if (!response.success || !response.data?.text) {
       console.warn("[planner] decomposeIntentWithLLM: LLM returned no text, falling back");
@@ -1486,7 +1510,8 @@ Return valid JSON array only:`;
 
     const retryResponse = await llm(retryPrompt, { 
       timeoutMs: 60000, 
-      format: "json" 
+      format: "json",
+      signal 
     });
     if (retryResponse.success && retryResponse.data?.text) {
       const retryParsed = tryParseStepsJSON(retryResponse.data.text.trim());
@@ -1568,8 +1593,8 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
 // MAIN PLAN FUNCTION - Returns ARRAY of steps
 // ============================================================
 
-export async function plan({ message, chatContext = {} }) {
-  const result = await _planInternal({ message, chatContext });
+export async function plan({ message, chatContext = {}, signal }) {
+  const result = await _planInternal({ message, chatContext, signal });
 
   // --- RE-INJECT SYSTEM WRAPPER (only for LLM-facing tools) ---
   // The system persona wrapper is for LLM synthesis — tools like search, weather,
@@ -1627,7 +1652,7 @@ export async function plan({ message, chatContext = {} }) {
   return result;
 }
 
-async function _planInternal({ message, chatContext = {} }) {
+async function _planInternal({ message, chatContext = {}, signal }) {
 const rawMessage = (message || "").trim();
   
   // --- NEW: STRIP SYSTEM WRAPPER FOR ROUTING ---
@@ -1678,7 +1703,7 @@ const rawMessage = (message || "").trim();
   // "search X for topic, analyze sentiment, send to whatsapp").
   if (!isSchedulingIntent && hasCompoundIntent(lower)) {
     console.log("[planner] ⚡ Global compound intent detected — routing to compound handler");
-    const compoundResult = await handleCompoundIntent(trimmed, lower, chatContext);
+    const compoundResult = await handleCompoundIntent(trimmed, lower, chatContext, signal);
     if (compoundResult) return compoundResult;
     console.log("[planner] ⚡ Compound handler returned null, falling through to certainty branches");
   }
@@ -2582,7 +2607,7 @@ Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or
 
   // SAFETY NET: If decomposition failed entirely, fall back to single-tool classifier
   console.warn("[planner] Decomposition failed, falling back to single-tool classifier");
-  const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools);
+  const detection = await detectIntentWithLLM(trimmed, contextSignals, availableTools, signal);
   console.log("[planner] Single-tool fallback classified:", detection.intent);
 
   const tool = resolveToolName(detection.intent, availableTools, trimmed);
@@ -2606,3 +2631,8 @@ Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or
     reasoning: detection.reason
   }];
 }
+
+// ============================================================
+// TEST EXPORTS — used by server/tests/routing.test.js
+// ============================================================
+export { ROUTING_TABLE };

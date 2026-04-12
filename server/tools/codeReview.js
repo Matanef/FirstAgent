@@ -324,6 +324,16 @@ export async function codeReview(request) {
       ? request
       : request?.text || request?.input || "";
 
+  // SAFETY CHECK: If no path-like string is found, don't let path.relative run
+  if (!text.includes('/') && !text.includes('\\') && !text.includes('.')) {
+      return {
+          tool: "codeReview",
+          success: false,
+          final: true,
+          error: "No file path provided for review. Please specify a file or directory."
+      };
+  }
+
   const context =
     typeof request === "object" ? request?.context || {} : {};
 

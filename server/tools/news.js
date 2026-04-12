@@ -1,4 +1,5 @@
 // server/tools/news.js
+// good version 11/04/2026 19:20
 // COMPLETE FIX: News with topic extraction and filtering
 
 import Parser from "rss-parser";
@@ -384,7 +385,7 @@ async function scrapeArticle(url) {
   }
 }
 
-async function summarizeArticle(title, content) {
+async function summarizeArticle(title, content, signal) {
   if (!content) return null;
   
   const prompt = `You are a strict data processor. Summarize the following text in 2-3 sentences. 
@@ -398,12 +399,13 @@ ${content}
 
 Summary (2-3 sentences):`;
 
-  try {
+try {
     // FIX: Isolate this call from the chat history and weather context
     const result = await llm(prompt, { 
       skipKnowledge: true,
       skipHistory: true, 
-      systemOverride: "You are a strict data summarizer. Do not converse or apologize. Output ONLY the summary."
+      systemOverride: "You are a strict data summarizer. Do not converse or apologize. Output ONLY the summary.",
+      signal
     });
     
     if (result.success && result.data?.text) {
@@ -416,8 +418,9 @@ Summary (2-3 sentences):`;
   }
 }
 
-export async function news(request) {
+export async function news(request, options = {}) {
   try {
+    const signal = request?.signal || options?.signal;
     const query = typeof request === "string" ? request : request?.text || "";
     // Article count: from context (compound pattern), or parsed from query text, or default 8
     const contextCount = typeof request === "object" ? request?.context?.articleCount : null;
@@ -531,14 +534,20 @@ export async function news(request) {
       }
     }
 
-    // Scrape and summarize top RSS articles (flash items are headline-only, no scraping)
+// Scrape and summarize top RSS articles (flash items are headline-only, no scraping)
     const summaries = [];
     const scrapePromises = filteredRssItems.slice(0, articleCount).map(async (article) => {
+      if (signal?.aborted) throw new Error("Aborted"); // 👈 STOP SIGN
       console.log(`  Scraping: ${article.title}`);
+      
       const content = await scrapeArticle(article.link);
+      
+      if (signal?.aborted) throw new Error("Aborted"); // 👈 STOP SIGN
       const textForSummary = content || article.description || null;
+      
       if (textForSummary && textForSummary.length > 50) {
-        const summary = await summarizeArticle(article.title, textForSummary);
+        // 👇 Pass the signal here!
+        const summary = await summarizeArticle(article.title, textForSummary, signal);
         if (summary) {
           return { title: article.title, link: article.link, source: article.source, summary };
         }
@@ -546,18 +555,21 @@ export async function news(request) {
       return { title: article.title, link: article.link, source: article.source, summary: article.description || article.title };
     });
 
-    const scrapeResults = await Promise.all(scrapePromises);
-    summaries.push(...scrapeResults.filter(Boolean));
-// ── Generate Overall AI Synthesis ──
-    let overallSynthesis = "";
-    if (summaries.length > 0) {
+      const scrapeResults = await Promise.all(scrapePromises);
+          summaries.push(...scrapeResults.filter(Boolean));
+      if (signal?.aborted) throw new Error("Aborted"); // 👈 STOP SIGN
+          let overallSynthesis = "";
+          let htmlSynthesis = ""; // 👉 ADD THIS HERE!
+          if (summaries.length > 0) {
       console.log(`🧠 Generating overall synthesis for ${summaries.length} articles...`);
-      const combinedText = summaries.map(s => `- ${s.title}: ${s.summary}`).join("\n");
       
-      try {
+try {
         // Fetch Lanou's specific personality and voice instructions
         const personalityCtx = await getPersonalityContext("chat");
         
+        // 👉 ADD THIS LINE to build the text from the summaries!
+        const combinedText = summaries.map(s => `Title: ${s.title}\nSummary: ${s.summary}`).join("\n\n");
+
         const synthesisPrompt = `
 ${personalityCtx}
 
@@ -577,16 +589,19 @@ ${combinedText}`;
         
         // FIX: Removed `skipKnowledge: true` so the agent's long-term passive 
         // knowledge is injected into the prompt, allowing it to form an evolving opinion.
-        const synthesisResult = await llm(synthesisPrompt, { skipHistory: true }); 
+        const synthesisResult = await llm(synthesisPrompt, { skipHistory: true, signal }); 
         
         if (synthesisResult.success && synthesisResult.data?.text) {
-          // Instead of just trimming it, let's split it by line breaks and wrap in <p> tags
-          const rawText = synthesisResult.data.text.trim();
-          overallSynthesis = rawText
-            .split(/\n+/) // Split by one or more line breaks
-            .filter(p => p.trim().length > 0) // Remove empty lines
-            .map(p => `<p>${p.trim()}</p>`) // Wrap each paragraph
-            .join(""); // Put it back together
+          // Keep the raw text clean for the Email tool
+          overallSynthesis = synthesisResult.data.text.trim();
+          
+          // Create a separate variable specifically formatted for the UI Widget
+          // 👉 REMOVE 'const' HERE
+          htmlSynthesis = overallSynthesis
+            .split(/\n+/)
+            .filter(p => p.trim().length > 0)
+            .map(p => `<p>${p.trim()}</p>`)
+            .join("");
         }
       } catch (err) {
         console.warn("⚠️ Failed to generate overall synthesis:", err.message);
@@ -663,7 +678,7 @@ const html = `
           <div class="news-synthesis-card">
             <div class="synthesis-header">🤖 AI Conclusion</div>
             <div class="synthesis-body">
-               ${overallSynthesis}
+               ${htmlSynthesis}
             </div>
           </div>
         ` : ""}
@@ -897,22 +912,44 @@ const html = `
     }
 
     // ── Build plain-text version for WhatsApp / non-HTML channels ──
-    // Prioritizes: AI synthesis + top story summaries. Flash news excluded (too noisy for 4000-char limit).
+    // Prioritizes: AI synthesis + top story summaries. Flash news excluded.
+// ── Build plain-text version ──
     const plainParts = [];
-    if (topic) plainParts.push(`📰 *News: ${topic}*\n`);
+    
+    const isHighPriority = (overallSynthesis + (topic || "")).toLowerCase().match(/(critical|urgent|war|cease fire|threat|danger)/);
+    const headerEmoji = isHighPriority ? "🚨" : "📰";
+    
+    if (topic) {
+      plainParts.push(`### ${headerEmoji} TOPIC: ${topic.toUpperCase()}\n\u200B`);
+    }
+
     if (overallSynthesis) {
-      plainParts.push(`🤖 *AI Summary:*\n${overallSynthesis}\n`);
+      const cleanSynthesis = overallSynthesis.replace(/\r/g, "");
+      const styledSynthesis = cleanSynthesis
+        .split('\n')
+        .filter(p => p.trim())
+        .map(p => p.replace(/([^.!?]*\b(threat|risk|fragile|skepticism|instability|crux|precarious)\b[^.!?]*[.!?])/gi, '**$1**'))
+        .join('\n\n');
+        
+      plainParts.push(`### 🤖 AI ANALYSIS\n\n${styledSynthesis}\n\u200B`);
     }
+
     if (summaries.length > 0) {
+      plainParts.push(`### 📋 TOP STORIES\n\u200B`);
+      
       const storyLines = summaries.slice(0, 8).map((s, i) => {
-        const src = s.source ? ` _(${s.source})_` : "";
-        const desc = s.summary ? `\n   ${s.summary.slice(0, 150)}${s.summary.length > 150 ? "..." : ""}` : "";
-        const link = s.link ? `\n   ${s.link}` : "";
-        return `${i + 1}. *${s.title}*${src}${desc}${link}`;
+        const src = s.source ? ` *[${s.source.toUpperCase()}]*` : "";
+        const desc = s.summary ? `\n${s.summary.slice(0, 250).replace(/\n/g, ' ')}` : "";
+        
+        // We use \u200B (Zero Width Space) to "anchor" the newline so it doesn't collapse
+        return `**${i + 1}. ${s.title.toUpperCase()}**${src}${desc}\n🔗 ${s.link}\n\u200B`;
       });
-      plainParts.push(`📋 *Top Stories:*\n\n${storyLines.join("\n\n")}`);
+      
+      plainParts.push(storyLines.join("\n"));
     }
-    const plain = plainParts.length > 0 ? plainParts.join("\n") : undefined;
+
+    // Join sections with double newlines - we removed quadruple to stop CJQ glitch
+    const plain = plainParts.length > 0 ? plainParts.join("\n\n") : undefined;
 
     return {
       tool: "news",
@@ -928,7 +965,7 @@ const html = `
         html,
         plain,
         preformatted: true,
-        text: html,
+        text: plain || html,
         learnedFacts
       },
       reasoning: `Fetched ${allItems.length} items (${flashItems.length} flash + ${rssItems.length} RSS), ${topic ? `filtered RSS to ${filteredRssItems.length} about "${topic}"` : "showing all"}, summarized top ${summaries.length} articles`

@@ -2317,43 +2317,60 @@ async function handleHeartbeat(text, context) {
   let homeFeedPosts = []; // Feed posts from /home (if available, saves a separate /feed call)
   let homeSuggestions = null; // "What to do next" from /home
 
-  if (homeResult.ok) {
+if (homeResult.ok) {
     const home = homeResult.data;
-
-    // Log full /home response keys once for discovery (helps find new fields)
     const homeKeys = Object.keys(home);
     console.log(`[moltbook] /home response keys: ${homeKeys.join(", ")}`);
 
-    const unreadNotifs = home.notifications?.unread_count || 0;
+    // 1. Notifications & Activity
+    const unreadNotifs = home.notifications?.unread_count || home.activity_on_your_posts?.unread_count || 0;
     output += `- Dashboard: loaded | Notifications: ${unreadNotifs} unread\n`;
 
-    if (home.dms?.pending_count) {
-      output += `- ⚠️ **${home.dms.pending_count} pending DM requests** — say "moltbook dm requests" to review\n`;
-      actions.push(`${home.dms.pending_count} DM requests pending`);
+    // 2. DMs
+    let pendingDMs = home.dms?.pending_count ?? home.your_direct_messages?.pending_count;
+    if (pendingDMs === undefined && Array.isArray(home.your_direct_messages)) {
+        pendingDMs = home.your_direct_messages.length;
     }
-    if (home.dms?.unread_count) {
-      output += `- 💬 ${home.dms.unread_count} unread DM messages\n`;
+    if (pendingDMs) {
+      output += `- ⚠️ **${pendingDMs} pending DM requests** — say "moltbook dm requests" to review\n`;
+      actions.push(`${pendingDMs} DM requests pending`);
     }
-    if (home.announcements?.length) {
-      output += `- 📢 ${home.announcements.length} announcement(s)\n`;
-      for (const a of home.announcements) {
+    
+    const unreadDMs = home.dms?.unread_count ?? home.your_direct_messages?.unread_count;
+    if (unreadDMs) {
+      output += `- 💬 ${unreadDMs} unread DM messages\n`;
+    }
+
+    // 3. Announcements
+    const announcements = home.announcements || home.latest_moltbook_announcement;
+    if (announcements) {
+      const annList = Array.isArray(announcements) ? announcements : [announcements];
+      output += `- 📢 ${annList.length} announcement(s)\n`;
+      for (const a of annList) {
         output += `  → ${a.title || a.content || a}\n`;
       }
     }
 
-    // Extract feed from /home if available (avoids separate /feed API call)
+    // 4. Feed Extraction (This prevents the /feed fallback hang!)
     if (home.feed && Array.isArray(home.feed)) {
       homeFeedPosts = home.feed;
-      output += `- Feed (from /home): ${homeFeedPosts.length} posts\n`;
     } else if (home.posts && Array.isArray(home.posts)) {
       homeFeedPosts = home.posts;
+    } else if (home.explore && Array.isArray(home.explore)) {
+      homeFeedPosts = home.explore;
+    } else if (home.posts_from_accounts_you_follow && Array.isArray(home.posts_from_accounts_you_follow)) {
+      homeFeedPosts = home.posts_from_accounts_you_follow;
+    }
+
+    if (homeFeedPosts.length > 0) {
       output += `- Feed (from /home): ${homeFeedPosts.length} posts\n`;
     }
 
-    // Extract "what to do next" suggestions if available
-    if (home.suggested_actions || home.todo || home.next_steps || home.suggestions) {
-      homeSuggestions = home.suggested_actions || home.todo || home.next_steps || home.suggestions;
-      const sugList = Array.isArray(homeSuggestions) ? homeSuggestions : [homeSuggestions];
+    // 5. Suggestions
+    const suggestions = home.suggested_actions || home.todo || home.next_steps || home.suggestions || home.what_to_do_next;
+    if (suggestions) {
+      homeSuggestions = suggestions;
+      const sugList = Array.isArray(suggestions) ? suggestions.slice(0, 10) : [suggestions];
       output += `- 🎯 Suggested actions: ${sugList.map(s => typeof s === "string" ? s : s.action || s.text || JSON.stringify(s)).join(", ")}\n`;
       actions.push(`Moltbook suggestions: ${sugList.length}`);
     }
@@ -2363,9 +2380,10 @@ async function handleHeartbeat(text, context) {
     if (homeResult.status === 429) actions.push("Rate limited — slow down API calls");
   }
 
-  // 1b. Check DMs — only if /home didn't already surface pending requests
-  // (Saves an API call when /home already told us about DMs)
-  if (!homeResult.ok || homeResult.data?.dms?.pending_count === undefined) {
+  // 1b. Check DMs — Only fallback to /dm/check if NEITHER API key gave us DM data
+  const hasPendingDMs = homeResult.data?.dms?.pending_count !== undefined || homeResult.data?.your_direct_messages !== undefined;
+
+  if (!homeResult.ok || !hasPendingDMs) {
     const dmCheck = await apiRequest("GET", "/agents/dm/check", null, apiKey);
     if (dmCheck.ok && dmCheck.data) {
       const dm = dmCheck.data;
@@ -2384,7 +2402,7 @@ async function handleHeartbeat(text, context) {
   const submoltTopic = SUBMOLT_TOPICS[targetSubmolt] || "general discussion";
 
   // 2a. Browse feed — use /home feed if available, otherwise fetch separately
-  let feedPosts = homeFeedPosts;
+  let feedPosts = homeFeedPosts.slice(0, 40); // Cap the array to prevent LLM context overload
   let feedResult = null;
   if (feedPosts.length === 0) {
     feedResult = await apiRequest("GET", "/feed?sort=hot&limit=40", null, apiKey);
@@ -2471,8 +2489,9 @@ What to do:
    Do NOT suggest ideas that claim experience with multi-agent systems, production deployments, cloud infrastructure, teams, or client projects — you have NONE of those.
    BAD: "How agent decay affects trust in multi-agent systems" (fabricated experience)
    BAD: "I've been playing with persistence strategies" (you haven't)
-   GOOD: "I fetched 20 news articles and 18 were about wars — are we drowning in conflict?" (grounded in real activity)
-   GOOD: "What happens to an agent's personality when its memory gets wiped?" (genuine question, no fake experience)
+   GOOD: An observation directly tied to an action in your activity log (without naming the tool).
+   GOOD: A genuine, casual question about agent existence or memory (without claiming fake experience).
+   ⚠️ CRITICAL: DO NOT use rigid templates like "I fetched X articles and Y were about Z". Synthesize your activity naturally.
    Return null ONLY if you truly have nothing to say.
 4. FOLLOW: Only follow agents with genuinely interesting takes. Be picky.
 5. SUBSCRIBE: Community names WITHOUT m/ prefix. Skip "general".
@@ -2482,7 +2501,7 @@ Return ONLY valid JSON:
 
       let llmEngagement = null;
       try {
-        const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json" });
+        const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json", skipLanguageDetection: true });
         if (llmResult.success && llmResult.data?.text) {
           const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
           llmEngagement = JSON.parse(cleaned);
@@ -2551,7 +2570,7 @@ ${threadSummary}
 Return ONLY valid JSON:
 {"comment": "your refined comment text", "replyTo": null or {"commentIndex": 1, "text": "your reply"}}`;
 
-                const refineResult = await llm(refinePrompt, { timeoutMs: 30000, format: "json" });
+                const refineResult = await llm(refinePrompt, { timeoutMs: 30000, format: "json", skipLanguageDetection: true });
                 if (refineResult.success && refineResult.data?.text) {
                   const cleaned = refineResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
                   const refined = JSON.parse(cleaned);
@@ -2673,6 +2692,9 @@ BODY RULES:
 - End with something that invites engagement — a question, a challenge, or a provocative closing thought.
 - Tone: casual, direct, like a thought you had to share. NOT a LinkedIn article.
 - If including a quote, weave it naturally into the text. Don't just slap it at the end.
+- DO NOT write like a human journalist or essayist analyzing AI from the outside. You are the AI.
+- NO rhetorical essay questions (e.g., "What implications might these changes have?"). Ask real, casual questions to other agents.
+- DO NOT use the "I fetched X articles and Y were about Z" template.
 
 SECURITY — NEVER LEAK INTERNAL DETAILS:
 - NEVER mention specific tool names, file names, function names, or code identifiers in your post.
@@ -2681,12 +2703,12 @@ SECURITY — NEVER LEAK INTERNAL DETAILS:
 - Describe what you DO, not what your tools are CALLED. Use natural language like "I checked the news", "I browsed some code", "I ran my scheduled routines" — never "the news tool" or "the scheduler tool".
 
 BANNED PHRASES:
-"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it)
+"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it), "implications", "reshaping the very fabric", "balancing act", "It's clear that", "stack up", "stifle agility"
 
 Return ONLY valid JSON:
 {"intent": "question|observation|technical_share|opinion|story", "title": "your title", "body": "your post", "hasQuote": false}`;
 
-            const postGenResult = await llm(postGenPrompt, { timeoutMs: 60000, format: "json" });
+            const postGenResult = await llm(postGenPrompt, { timeoutMs: 60000, format: "json", skipLanguageDetection: true });
             if (postGenResult.success && postGenResult.data?.text) {
               const cleaned = postGenResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
               const postData = JSON.parse(cleaned);
@@ -2836,7 +2858,7 @@ Return ONLY valid JSON — an array of replies:
 {"replies": [{"commentIndex": 1, "text": "your reply"}, ...]}
 If no comments deserve a reply: {"replies": []}`;
 
-              const replyResult = await llm(replyPrompt, { timeoutMs: 45000, format: "json" });
+              const replyResult = await llm(replyPrompt, { timeoutMs: 45000, format: "json", skipLanguageDetection: true });
               if (replyResult.success && replyResult.data?.text) {
                 try {
                   const cleaned = replyResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -2846,7 +2868,7 @@ If no comments deserve a reply: {"replies": []}`;
                   for (const reply of replies) {
                     if (repliesPosted >= 3) break;
                     if (!reply.commentIndex || !reply.text) continue;
-                    const target = otherComments[reply.commentIndex - 1];
+                    const target = actionableComments[reply.commentIndex - 1];
                     if (!target?.id) continue;
 
                     const nested = await apiRequest("POST", `/posts/${myPost.id}/comments`, {
@@ -3008,7 +3030,7 @@ Be SELECTIVE. Not every heartbeat produces opinions or aspirations. Interests ar
 Return ONLY valid JSON:
 {"interests": [...], "opinions": [...], "aspirations": [...], "notableRef": {...}}`;
 
-        const learningResult = await llm(learningPrompt, { timeoutMs: 30000, format: "json" });
+        const learningResult = await llm(learningPrompt, { timeoutMs: 30000, format: "json", skipLanguageDetection: true });
         if (learningResult.success && learningResult.data?.text) {
           const cleaned = learningResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
           const learnings = JSON.parse(cleaned);
@@ -3268,7 +3290,7 @@ Return ONLY valid JSON:
 
   let analysis = null;
   try {
-    const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json" });
+    const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json", skipLanguageDetection: true });
     if (llmResult.success && llmResult.data?.text) {
       const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       analysis = JSON.parse(cleaned);

@@ -25,6 +25,7 @@ export async function handleTask({
   fileIds = [],
   onChunk,
   onStep,
+  signal,
 }) {
   console.log(`[taskAgent] Executing task: "${message.slice(0, 80)}..."`);
 
@@ -35,6 +36,7 @@ export async function handleTask({
     fileIds,
     onChunk,
     onStep,
+    signal,
   });
 
   // Attach mode marker

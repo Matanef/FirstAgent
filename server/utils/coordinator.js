@@ -124,7 +124,7 @@ function getEmotionalAdaptation(frustration, sentiment) {
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
  */
-export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep, userProfile = null, userToneInstruction = "" }) {
+export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep, userProfile = null, userToneInstruction = "", signal }) {
     const startTime = performance.now();
     const queryText = typeof message === "string" ? message : message?.text || "";
     console.log(`\n🚀 [PIPELINE START] Task: "${queryText.substring(0, 50)}..."`);
@@ -159,7 +159,7 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
     console.log("🧠 Planning steps for:", queryText);
     const chatContext = { conversationId };
     if (fileIds.length > 0) chatContext.fileIds = fileIds;
-    const planResult = await plan({ message: queryText, chatContext });
+    const planResult = await plan({ message: queryText, chatContext, signal });
 
     // CRITICAL: Validate and normalize plan result
     let steps;
@@ -215,6 +215,10 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
 
     // 3. Execution Loop
     for (let i = 0; i < steps.length; i++) {
+        if (signal?.aborted) {
+            console.log("🛑 [Coordinator] Abort signal detected, stopping pipeline.");
+            break; 
+        }
         const step = steps[i];
         const stepNumber = i + 1;
 
@@ -313,7 +317,8 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             conversationId,
             sentiment,
             entities,
-            stateGraph
+            stateGraph,
+            signal
         });
 
         // ERROR RECOVERY: retry once on transient/timeout failures
@@ -329,7 +334,8 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
                     conversationId,
                     sentiment,
                     entities,
-                    stateGraph
+                    stateGraph,
+                    signal
                 });
             }
         }
@@ -345,7 +351,8 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             sentiment,
             entities,
             stateGraph,
-            onChunk: isLastStep ? onChunk : null
+            onChunk: isLastStep ? onChunk : null,
+            signal
         });
 
         // SELF-REFLECTION: Check for hallucinated placeholders in the reply
@@ -438,10 +445,12 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         { tool: lastFinalized?.tool, stepsCompleted: stateGraph.length }
     );
 
-    // Carry forward HTML widgets from intermediate steps (e.g., githubTrending → llm compound)
+// Carry forward HTML widgets from intermediate steps (e.g., githubTrending → llm compound)
     // so the frontend can render the rich widget above the text summary
     let resultData = lastFinalized?.data || null;
-    if (stateGraph.length > 1) {
+    
+    // 👉 ADDED CHECKS: Skip carrying forward HTML if the final tool is an email!
+    if (stateGraph.length > 1 && lastFinalized?.tool !== "email" && lastFinalized?.tool !== "email_confirm") {
         const htmlStep = stateGraph.find(s => s.rawData?.html && s.tool !== lastFinalized?.tool);
         if (htmlStep?.rawData?.html) {
             resultData = { ...(resultData || {}), html: htmlStep.rawData.html, htmlSource: htmlStep.tool };

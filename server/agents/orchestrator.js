@@ -11,6 +11,7 @@ export async function handleMessage({
   fileIds = [],
   onChunk,
   onStep,
+  signal,
 }) {
   // 1. Load recent conversation turns
   const recentTurns = await getRecentTurns(conversationId, 5);
@@ -29,7 +30,8 @@ export async function handleMessage({
     clientIp,
     fileIds,
     onChunk,
-    onStep
+    onStep,
+    signal
   });
 
   // 4. Store assistant turn

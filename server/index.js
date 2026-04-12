@@ -1,6 +1,14 @@
 // server/index.js
 // Application entry point — Express setup, middleware, and route mounting
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 
+// Get the directory of the current file (server folder)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Point directly to the .env file inside the server folder
+dotenv.config({ path: path.join(__dirname, ".env") });
 import express from "express";
 import cors from "cors";
 import { PROJECT_ROOT } from "./utils/config.js";
@@ -14,6 +22,7 @@ import duplicateRoutes from "./routes/duplicates.js";
 import oauthCallback from "./routes/oauthCallback.js";
 import browseRoutes from "./routes/browse.js";
 import whatsappWebhook from "./routes/whatsappWebhook.js";
+import dashboardRoutes from "./routes/dashboard.js";
 import { loadSkills } from "./executor.js";
 
 const app = express();
@@ -65,6 +74,7 @@ app.use("/api", reviewRoutes);
 app.use("/api", duplicateRoutes);
 app.use("/api/browse", browseRoutes);
 app.use("/webhook/whatsapp", whatsappWebhook);
+app.use(dashboardRoutes);
 
 // ============================================================
 // START SERVER
@@ -77,6 +87,11 @@ app.listen(PORT, async () => {
   console.log("=".repeat(70) + "\n");
 
   await loadSkills();
+
+  // ── Auto-prune old conversations (non-blocking) ──
+  import("./utils/conversationMemory.js")
+    .then(mod => mod.pruneOldConversations())
+    .catch(e => console.warn("⚠️ [startup] Conversation pruning skipped:", e.message));
 
   // ── Auto-start ngrok tunnel for WhatsApp webhooks ──
   if (process.env.WHATSAPP_TOKEN && process.env.NGROK_AUTHTOKEN) {

@@ -14,8 +14,11 @@ export const SENTIMENT_KEYWORDS = [
   'serious', 'solemn', 'sarcastic', 'enthusiastic', 'grateful'
 ];
 
+// server/tools/emailUtils.js
 export function stripMarkdown(text) {
-  return text.replace(/[_*`~]/g, "").trim();
+  // Only strip underscores, backticks, and tildes. 
+  // Keep asterisks so the email tool can use them for logic/cleaning.
+  return text.replace(/[_`~]/g, "").trim();
 }
 
 /**

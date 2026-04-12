@@ -10,9 +10,7 @@ import { llm } from "./llm.js";
 
 import { emailRegex, subjectRegex, sayingRegex, attachmentPatterns, SENTIMENT_KEYWORDS, stripMarkdown, detectSentiment } from './emailUtils.js';
 
-/**
- * Generate an email body using the LLM, based on sentiment and context.
- */
+
 /**
  * Generate an email body using the LLM, based on sentiment, context, and word count.
  */
@@ -715,28 +713,67 @@ try {
       let plainContent;
 
       // ── Smart formatting per tool type ──
-      if (prevTool === "news") {
-        // Extract structured headlines from news HTML
+if (prevTool === "news") {
         const headlines = [];
-        const cardRegex = /<span class="news-source">([^<]+)<\/span>[\s\S]*?<h3 class="news-summary-title">([^<]+)<\/h3>[\s\S]*?<p class="news-summary-text">([^<]*)<\/p>[\s\S]*?<a href="([^"]+)"[^>]*>Read full article/gi;
+        // This regex matches your news tool output precisely
+        const storyRegex = /\*\*(\d+)\.\s+(.+?)\*\*\s*\*\[(.+?)\]\*\n([\s\S]*?)\n🔗\s+(https?:\/\/[^\s]+)/gm;
+        
         let match;
-        while ((match = cardRegex.exec(prevOutput)) !== null) {
+        while ((match = storyRegex.exec(prevOutput)) !== null) {
           headlines.push({
-            source: match[1].trim(),
+            index: match[1],
             title: match[2].trim(),
-            summary: match[3].trim(),
-            url: match[4].trim()
+            source: match[3].trim(),
+            summary: match[4].trim(),
+            url: match[5].trim()
           });
         }
+
         if (headlines.length > 0) {
-          plainContent = "📰 Latest News Summary\n" + "=".repeat(40) + "\n\n";
-          headlines.forEach((h, i) => {
-            plainContent += `${i + 1}. [${h.source}] ${h.title}\n`;
-            if (h.summary && h.summary !== h.title) {
-              plainContent += `   ${h.summary}\n`;
+          let rawAnalysis = prevOutput.split(/### 📋 TOP STORIES/i)[0] || "";
+          rawAnalysis = rawAnalysis.replace(/### 🚨 TOPIC:.*?\n|### 🤖 AI ANALYSIS\n/gi, "").trim();
+          const topicLabel = context.chainContext?.topic || "News Summary";
+
+          isHtml = true; 
+          
+          let newsHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; padding: 10px;">`;
+          
+          // Header Section
+          newsHtml += `<h1 style="color: #d32f2f; font-size: 24px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">🚨 NEWS SUMMARY</h1>`;
+          
+          // AI Analysis Section - using display: block to prevent tailing
+          newsHtml += `<div style="background: #f8f9fa; border-left: 4px solid #1a73e8; padding: 15px; margin-bottom: 25px;">`;
+          newsHtml += `<h2 style="color: #1a73e8; font-size: 18px; margin-top: 0; display: block;">🤖 AI ANALYSIS</h2>`;
+          newsHtml += `<p style="margin-top: 10px; display: block;">${rawAnalysis.replace(/\n/g, '<br>')}</p>`;
+          newsHtml += `</div>`;
+          
+          newsHtml += `<h2 style="font-size: 16px; color: #666; text-transform: uppercase; margin-bottom: 15px;">📋 Top Stories</h2>`;
+
+          headlines.forEach((h) => {
+            newsHtml += `<div style="margin-bottom: 30px; border-top: 1px solid #f0f0f0; padding-top: 15px;">`;
+            
+            // Article Title - Explicitly block to prevent mid-word breaks or tailing
+            newsHtml += `<div style="font-weight: bold; font-size: 20px; color: #000; line-height: 1.3; display: block; margin-bottom: 5px;">${h.index}. ${h.title}</div>`;
+            
+            // Source line
+            newsHtml += `<div style="font-size: 13px; color: #888; margin-bottom: 10px; font-style: italic;">Source: ${h.source}</div>`;
+            
+            // Summary
+            if (h.summary) {
+                newsHtml += `<p style="margin: 10px 0; color: #444; font-size: 15px; display: block;">${h.summary}</p>`;
             }
-            plainContent += `   ${h.url}\n\n`;
+            
+            // The Button
+            newsHtml += `<a href="${h.url}" style="display: inline-block; background-color: #1a73e8; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 13px; margin-top: 5px;">🔗 READ FULL ARTICLE</a>`;
+            
+            newsHtml += `</div>`;
           });
+
+          newsHtml += `</div>`;
+          
+          // CRITICAL: We set plainContent to the same as newsHtml to bypass the generic stripper
+          plainContent = newsHtml; 
+          body = newsHtml;
         }
       } else if (prevTool === "weather") {
         // Extract weather data from HTML/text output
@@ -860,7 +897,16 @@ try {
       console.log("📨 [email] Auto-detected HTML tags in body. Switching to HTML mode.");
       isHtml = true;
     }
+    // --- NEW 11/04/2026 22:01: MARKDOWN TO HTML CONVERTER ---
+    // If we are sending an HTML email, we must convert LLM markdown (**) to HTML (<strong>)
+    if (isHtml && typeof body === 'string') {
+      // Convert **text** to <strong>text</strong>
+      body = body.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      // Convert *text* to <em>text</em> (for italics)
+      body = body.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    }
     console.log("📨 [email] Resolving attachments:", requestedAttachments);
+
 
     const attachments = [];
     for (const filename of requestedAttachments) {
@@ -879,6 +925,24 @@ try {
     console.log("📨 [email] Final attachments:", attachments);
 
     console.log("📨 [email] BUILDING DRAFT");
+
+    // --- FINAL MARKDOWN SCRUBBER ---
+    // This is the last line of defense. It removes any stray hashes or stars 
+    // from the body before it ever touches the email draft.
+// --- FINAL CLEANUP AND SMART WRAP ---
+    if (typeof body === 'string' && !isHtml) {
+      // We REMOVED \u200B from the forbidden list so it stays in the email
+      body = body.replace(/[#*]/g, "").trim();
+
+      body = body.split('\n').map(line => {
+        // Preserve our "anchor" lines (Zero Width Space)
+        if (line.includes("\u200B")) return line;
+        if (line.includes("\n")) return line;
+        if (line.length <= 100 || line.includes("🔗")) return line;
+        
+        return line.replace(/(.{1,100})(\s|$)/g, "$1\n").trim();
+      }).join('\n');
+    }
 
     const textLines = [];
     textLines.push("📧 **Email Draft:**\n");
@@ -900,7 +964,7 @@ try {
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&quot;/g, '"')
-        .replace(/\n{3,}/g, "\n\n")
+        .replace(/\n{8,}/g, "\n\n\n") // Be much more generous
         .trim();
       textLines.push(`**Message:**\n${plainPreview}`);
       textLines.push("\n_(Formatted as HTML email)_");

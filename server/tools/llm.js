@@ -84,28 +84,31 @@ function tripGeminiBreaker(seconds) {
 // Expose for direct use by tools that want Gemini specifically
 export { callGemini };
 
-async function fetchWithTimeout(url, body, timeoutMs = 1200_000) {
+// Replace your existing fetchWithTimeout with this:
+async function fetchWithTimeout(url, body, timeoutMs = 1200_000, externalSignal = null) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // If the user clicks stop, trigger our internal abort controller
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    externalSignal.addEventListener("abort", () => controller.abort());
+  }
 
   try {
     const res = await fetch(url, {
       method: "POST",
-      signal: controller.signal,
+      signal: controller.signal, // This now listens to both the timeout AND the user!
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
 
-    if (!res.ok) {
-      throw new Error(`LLM HTTP ${res.status}`);
-    }
+    if (res.body && typeof res.body.on === 'function') res.body.on('error', () => {});
 
-    const json = await res.json();
-    return json;
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
+    return await res.json();
   } catch (err) {
-    if (err.name === "AbortError") {
-      throw new Error(`LLM request timed out after ${timeoutMs}ms`);
-    }
+    if (err.name === "AbortError") throw new Error(`LLM request aborted or timed out`);
     throw err;
   } finally {
     clearTimeout(timeoutId);
@@ -145,14 +148,15 @@ export function pickModelForContent(text) {
 
 export async function llm(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
+  const externalSignal = configOptions.signal;
+  let { model, format, options = {}, skipLanguageDetection = false } = configOptions;
 
-  let { model, format, options = {} } = configOptions;
-
-  // Auto-detect Hebrew/Arabic in the prompt and switch to a capable model
-  // Only when no explicit model was requested (i.e., using default)
-  if (!model) {
+  // Auto-detect Hebrew/Arabic ONLY if we aren't explicitly skipping it
+  if (!model && !skipLanguageDetection) {
     const detectedModel = pickModelForContent(typeof prompt === "string" ? prompt : "");
     model = detectedModel || CONFIG.LLM_MODEL;
+  } else if (!model) {
+    model = CONFIG.LLM_MODEL;
   }
 
   // ── GEMINI ROUTE: If model is "gemini", use the Gemini API instead of Ollama ──
@@ -229,7 +233,7 @@ export async function llm(prompt, configOptions = {}) {
     const llmStartTime = performance.now();
     console.log(`🧠 [LLM] Sending prompt to ${ollamaModel}...`);
 
-    const response = await fetchWithTimeout(url, body, timeoutMs);
+    const response = await fetchWithTimeout(url, body, timeoutMs, externalSignal);
 
     const llmEndTime = performance.now();
     console.log(`⏱️ [LLM] Response received in ${((llmEndTime - llmStartTime) / 1000).toFixed(2)}s`);
@@ -258,6 +262,10 @@ export async function llm(prompt, configOptions = {}) {
     };
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+        console.log("🛑 [LLM] Request aborted safely.");
+        return { success: false, error: "Aborted" };
+      }
     console.error("[llm] Error:", err);
     return {
       tool: "llm",
@@ -271,6 +279,7 @@ export async function llm(prompt, configOptions = {}) {
 export async function llmStream(prompt, onChunk, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 300_000;
   const maxChunks = configOptions.maxChunks || 10000;
+  const externalSignal = configOptions.signal;
   
   const { model = CONFIG.LLM_MODEL, options = {} } = configOptions;
 
@@ -278,6 +287,11 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    externalSignal.addEventListener("abort", () => controller.abort());
+  }
 
   try {
     const body = {
@@ -296,6 +310,9 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
+
+    // 👉 ADD THIS LINE HERE TO PROTECT THE STREAM!
+    if (response.body && typeof response.body.on === 'function') response.body.on('error', () => {});
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -346,6 +363,10 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
     return { success: true };
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+        console.log("🛑 [LLM] Request aborted safely.");
+        return { success: false, error: "Aborted" };
+      }
     console.error("[llmStream] Error:", err);
     if (err.name === "AbortError") {
       return { success: false, error: `LLM stream timed out after ${timeoutMs}ms` };

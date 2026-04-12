@@ -89,8 +89,9 @@ export async function contacts(query) {
             memory.profile.contacts = {};
         }
 
-        // ADD CONTACT
-        if (lower.includes("add") || lower.includes("save") || (lower.includes("remember") && (lower.includes("contact") || lower.includes("name")))) {
+        // ADD CONTACT (but NOT alias/nickname commands — those are handled separately below)
+        if ((lower.includes("add") || lower.includes("save") || (lower.includes("remember") && (lower.includes("contact") || lower.includes("name")))) &&
+            !/\b(alias|nickname|aka)\b/i.test(lower)) {
             // Parse labeled format: "add contact, email: john@example.com, phone: +1234567890"
             const labeledEmailMatch = queryText.match(/email[:\s]+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
             const labeledPhoneMatch = queryText.match(/phone[:\s]+([\+\d\s\(\)-]+)/i);
@@ -150,6 +151,87 @@ export async function contacts(query) {
             };
         }
 
+        // DELETE CONTACT
+        if (/\b(delete|remove)\b/i.test(lower) && /\bcontact\b/i.test(lower)) {
+            // Extract the contact name from "delete contact John Smith" or "remove contact alias to Rafael"
+            const deleteMatch = queryText.match(/(?:delete|remove)\s+(?:the\s+)?contact\s+(.+)/i);
+            if (!deleteMatch) {
+                return {
+                    tool: "contacts", success: false, final: true,
+                    error: "Please specify which contact to delete. Example: \"Delete contact John Smith\""
+                };
+            }
+            const target = deleteMatch[1].trim();
+            const match = fuzzyMatchContact(target, memory.profile.contacts);
+            if (!match) {
+                return {
+                    tool: "contacts", success: false, final: true,
+                    error: `Contact "${target}" not found. Use "list all my contacts" to see available contacts.`
+                };
+            }
+            const deletedName = match.contact.name || match.key;
+            delete memory.profile.contacts[match.key];
+            await saveJSON(MEMORY_FILE, memory);
+            return {
+                tool: "contacts", success: true, final: true,
+                data: { text: `🗑️ Deleted contact: **${deletedName}**`, preformatted: true }
+            };
+        }
+
+        // ADD/REMOVE ALIAS
+        if (/\b(alias|nickname|also\s+known\s+as|aka)\b/i.test(lower)) {
+            const isRemove = /\b(delete|remove)\b/i.test(lower);
+            const aliasMatch = queryText.match(
+                /(?:add|set|create|delete|remove)\s+(?:an?\s+)?(?:alias|nickname|aka)\s+["']?([^"',]+?)["']?\s+(?:to|for|from|of)\s+(.+)/i
+            ) || queryText.match(
+                /(?:alias)\s+(.+?)\s+(?:as|:)\s+["']?([^"']+)["']?/i
+            );
+
+            if (!aliasMatch) {
+                return {
+                    tool: "contacts", success: false, final: true,
+                    error: "Could not parse alias command. Try:\n• \"Add alias Rafi to Rafael Efrati\"\n• \"Remove alias Rafi from Rafael Efrati\""
+                };
+            }
+
+            const aliasName = aliasMatch[1].trim();
+            const contactName = aliasMatch[2].trim();
+            const match = fuzzyMatchContact(contactName, memory.profile.contacts);
+            if (!match) {
+                return {
+                    tool: "contacts", success: false, final: true,
+                    error: `Contact "${contactName}" not found. Use "list all my contacts" to see available contacts.`
+                };
+            }
+
+            if (!match.contact.aliases) match.contact.aliases = [];
+
+            if (isRemove) {
+                const idx = match.contact.aliases.findIndex(a => a.toLowerCase() === aliasName.toLowerCase());
+                if (idx === -1) {
+                    return {
+                        tool: "contacts", success: false, final: true,
+                        error: `Alias "${aliasName}" not found on contact ${match.contact.name || match.key}.`
+                    };
+                }
+                match.contact.aliases.splice(idx, 1);
+                await saveJSON(MEMORY_FILE, memory);
+                return {
+                    tool: "contacts", success: true, final: true,
+                    data: { text: `🗑️ Removed alias "${aliasName}" from **${match.contact.name || match.key}**`, preformatted: true }
+                };
+            } else {
+                if (!match.contact.aliases.includes(aliasName)) {
+                    match.contact.aliases.push(aliasName);
+                }
+                await saveJSON(MEMORY_FILE, memory);
+                return {
+                    tool: "contacts", success: true, final: true,
+                    data: { text: `✅ Added alias "${aliasName}" to **${match.contact.name || match.key}**\nAliases: ${match.contact.aliases.join(", ")}`, preformatted: true }
+                };
+            }
+        }
+
         // LIST CONTACTS
         if (lower.includes("list") || lower.includes("all") || (lower.includes("show") && lower.includes("contact"))) {
             const contactList = Object.entries(memory.profile.contacts).map(([key, c]) => ({
@@ -188,13 +270,69 @@ export async function contacts(query) {
             };
         }
 
+        // LOOKUP CONTACT (query about a specific person)
+        if (/\b(what(?:'?s| is)|get|show|find|look\s*up)\b/i.test(lower) && /\b(email|phone|number|contact|info)\b/i.test(lower)) {
+            // "What's John's email?" / "Get Rafael's phone number"
+            const lookupMatch = queryText.match(/(?:what(?:'?s|\s+is)|get|show|find)\s+(\w+(?:\s+\w+)?)'?s?\s+(?:email|phone|number|contact|info)/i)
+                || queryText.match(/(?:email|phone|number|info)\s+(?:for|of)\s+(\w+(?:\s+\w+)?)/i);
+
+            if (lookupMatch) {
+                const target = lookupMatch[1].trim();
+                const match = fuzzyMatchContact(target, memory.profile.contacts);
+                if (match) {
+                    const c = match.contact;
+                    const parts = [`📇 **${c.name || match.key}**`];
+                    if (c.email) parts.push(`📧 Email: ${c.email}`);
+                    if (c.phone) parts.push(`📱 Phone: ${c.phone}`);
+                    if (c.aliases?.length) parts.push(`🏷️ Aliases: ${c.aliases.join(", ")}`);
+                    return {
+                        tool: "contacts", success: true, final: true,
+                        data: { text: parts.join("\n"), preformatted: true }
+                    };
+                }
+                return {
+                    tool: "contacts", success: false, final: true,
+                    error: `Contact "${target}" not found.`
+                };
+            }
+        }
+
+        // UPDATE CONTACT (change email/phone)
+        if (/\b(update|change|set|edit)\b/i.test(lower) && /\bcontact\b/i.test(lower)) {
+            const updateMatch = queryText.match(
+                /(?:update|change|set|edit)\s+(?:contact\s+)?(.+?)(?:'s)?\s+(?:email|phone|number)\s+(?:to\s+)?(.+)/i
+            );
+            if (updateMatch) {
+                const target = updateMatch[1].trim();
+                const newValue = updateMatch[2].trim();
+                const match = fuzzyMatchContact(target, memory.profile.contacts);
+                if (!match) {
+                    return {
+                        tool: "contacts", success: false, final: true,
+                        error: `Contact "${target}" not found.`
+                    };
+                }
+                const isEmail = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(newValue);
+                if (isEmail) {
+                    match.contact.email = newValue;
+                } else {
+                    match.contact.phone = newValue.replace(/\s+/g, "");
+                }
+                await saveJSON(MEMORY_FILE, memory);
+                return {
+                    tool: "contacts", success: true, final: true,
+                    data: { text: `✅ Updated **${match.contact.name || match.key}** — ${isEmail ? "📧 " + newValue : "📱 " + newValue}`, preformatted: true }
+                };
+            }
+        }
+
         // DEFAULT: Show help
         return {
             tool: "contacts",
             success: true,
             final: true,
             data: {
-                text: `📇 **Contact Management**\n\n**Commands:**\n• "Add contact: Name, email@example.com, 0541234567"\n• "List all my contacts"\n• "What's John's email?"\n• "Delete contact John"`,
+                text: `📇 **Contact Management**\n\n**Commands:**\n• "Add contact: Name, email@example.com, 0541234567"\n• "List all my contacts"\n• "What's John's email?"\n• "Delete contact John"\n• "Add alias Rafi to Rafael Efrati"\n• "Remove alias Rafi from Rafael Efrati"\n• "Update contact John's email to john@new.com"`,
                 preformatted: true
             }
         };

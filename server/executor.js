@@ -14,6 +14,7 @@ import {
   getMessageText
 } from "./utils/uiUtils.js";
 import { getPersonalityContext } from "./personality.js";
+import { logToolCall } from "./routes/dashboard.js";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
@@ -233,7 +234,7 @@ Now write the final answer. Be aware of full conversation context and your capab
 /* ============================================================
    RUN LLM WITH FULL MEMORY
 ============================================================ */
-async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk, conversational }) {
+async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, entities, stateGraph, onChunk, conversational, signal }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
   const conversation = memory.conversations?.[conversationId] || [];
@@ -255,10 +256,10 @@ async function runLLMWithFullMemory({ userMessage, conversationId, sentiment, en
     const result = await llmStream(prompt, (chunk) => {
       text += chunk;
       onChunk(chunk);
-    });
+    }, { signal });
     if (!result.success) text = "I encountered an error while streaming.";
   } else {
-    const llmResponse = await llm(prompt);
+    const llmResponse = await llm(prompt, { signal });
     text = llmResponse?.data?.text || "I couldn't generate a response.";
   }
 
@@ -276,7 +277,8 @@ async function summarizeWithLLM({
   sentiment,
   entities,
   stateGraph,
-  onChunk
+  onChunk,
+  signal
 }) {
   const memory = await getMemory();
   const profile = memory.profile || {};
@@ -360,10 +362,10 @@ CONTENT POLICY OVERRIDE (YOU ARE A LOCAL PRIVATE AGENT):
     const streamResult = await llmStream(prompt, (chunk) => {
       text += chunk;
       onChunk(chunk);
-    });
+    }, { signal });
     if (!streamResult.success) text = "I couldn't summarize the tool results.";
   } else {
-    const llmResponse = await llm(prompt);
+    const llmResponse = await llm(prompt, { signal });
     text = llmResponse?.data?.text || "I couldn't generate a response.";
   }
 
@@ -377,7 +379,7 @@ CONTENT POLICY OVERRIDE (YOU ARE A LOCAL PRIVATE AGENT):
 /* ============================================================
    REFORMAT TABLE
 ============================================================ */
-async function reformatAsTable({ userMessage, conversationId }) {
+async function reformatAsTable({ userMessage, conversationId, signal }) {
   const memory = await getMemory();
   const conversation = memory.conversations?.[conversationId] || [];
 
@@ -399,7 +401,7 @@ ${userMessage}
 Generate the reformatted response:
 `;
 
-  const llmResponse = await llm(prompt);
+  const llmResponse = await llm(prompt, { signal });
   const text = convertMarkdownTablesToHTML(llmResponse?.data?.text || "I couldn't reformat the response.");
 
   return {
@@ -412,7 +414,7 @@ Generate the reformatted response:
 /* ============================================================
    EXECUTE A SINGLE TOOL STEP
 ============================================================ */
-export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
+export async function executeStep({ tool, message, conversationId, sentiment, entities, stateGraph, onChunk, signal }) {
   // EMAIL CONFIRMATION
   if (tool === "email_confirm") {
     const emailContext = typeof message === "object" ? (message.context || {}) : {};
@@ -460,7 +462,7 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
 
   // REFORMAT TABLE
   if (tool === "reformat_table") {
-    return await reformatAsTable({ userMessage: getMessageText(message), conversationId });
+    return await reformatAsTable({ userMessage: getMessageText(message), conversationId, signal });
   }
 
   // DIRECT LLM
@@ -505,7 +507,8 @@ export async function executeStep({ tool, message, conversationId, sentiment, en
       entities,
       stateGraph,
       onChunk,
-      conversational: isConversational
+      conversational: isConversational,
+      signal
     });
 
     return {
@@ -530,8 +533,10 @@ const toolKeys = Object.keys(TOOLS);
     if (dynamicKey) {
       console.log(`⚙️ [executor] Routing to dynamic skill: ${dynamicKey}`);
       // Pass the raw message object so the skill can parse it however it wants
+      const _skillStart = Date.now();
       const result = await dynamicSkills[dynamicKey](message);
-      
+      logToolCall(dynamicKey, result.success, Date.now() - _skillStart, getMessageText(message));
+
       return {
         tool: dynamicKey,
         input: message,
@@ -593,7 +598,9 @@ const toolKeys = Object.keys(TOOLS);
     toolInput = getMessageText(message);
   }
 
-  const result = await TOOLS[tool](toolInput);
+  const _toolStart = Date.now();
+  const result = await TOOLS[tool](toolInput, { signal });
+  logToolCall(tool, result.success, Date.now() - _toolStart, getMessageText(toolInput));
 
   return {
     tool,
@@ -607,12 +614,17 @@ const toolKeys = Object.keys(TOOLS);
 /* ============================================================
    FINALIZE STEP
 ============================================================ */
-export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk }) {
+export async function finalizeStep({ stepResult, message, conversationId, sentiment, entities, stateGraph, onChunk, signal }) {
   const { tool, output: result } = stepResult;
 
   // ERROR HANDLING
   if (!stepResult.success) {
     const errorText = result?.error || result?.data?.error || "Tool execution failed.";
+
+    if (errorText === "Aborted" || signal?.aborted) {
+      console.log(`🛑 [executor] Skipping error summarization for ${tool} (Aborted)`);
+      return { reply: "Operation cancelled.", tool, success: false, final: true };
+    }
 
     // Tools that should NEVER have their errors hallucinated by LLM — return the error directly
     const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals", "whatsapp"];
@@ -639,7 +651,8 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
         sentiment,
         entities,
         stateGraph,
-        onChunk
+        onChunk,
+        signal
       });
       return { reply: errorExplanation.reply, tool, success: false, final: true };
     } catch {
@@ -714,7 +727,8 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
       sentiment,
       entities,
       stateGraph,
-      onChunk
+      onChunk,
+      signal
     });
 
     return {

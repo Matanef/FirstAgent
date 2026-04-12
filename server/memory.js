@@ -92,6 +92,80 @@ function clone(obj) {
 
 const BACKUP_FILE = MEMORY_FILE + ".bak";
 
+// ── ROTATING BACKUPS & DAILY SNAPSHOTS ──
+const MAX_ROTATING_BACKUPS = 5;
+const ROTATION_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes between rotations
+let _lastRotation = 0;
+
+/**
+ * Rotate memory.json.bak.1 → .bak.2 → .bak.3 → .bak.4 → .bak.5 (oldest deleted)
+ * Throttled to once every 5 minutes to avoid excessive I/O.
+ */
+async function rotateBackups(file) {
+  const now = Date.now();
+  if (now - _lastRotation < ROTATION_THROTTLE_MS) return;
+  _lastRotation = now;
+
+  try {
+    // Delete the oldest backup
+    const oldest = `${file}.bak.${MAX_ROTATING_BACKUPS}`;
+    try { await fs.unlink(oldest); } catch {}
+
+    // Shift existing backups: 4→5, 3→4, 2→3, 1→2
+    for (let i = MAX_ROTATING_BACKUPS - 1; i >= 1; i--) {
+      const src = `${file}.bak.${i}`;
+      const dst = `${file}.bak.${i + 1}`;
+      try { await fs.rename(src, dst); } catch {}
+    }
+
+    // Copy current file to .bak.1
+    if (fsSync.existsSync(file)) {
+      await fs.copyFile(file, `${file}.bak.1`);
+    }
+  } catch (err) {
+    console.warn("⚠️ [memory] Backup rotation failed:", err.message);
+  }
+}
+
+/**
+ * Create a daily snapshot if one doesn't exist yet for today.
+ * Cleans up snapshots older than 7 days.
+ */
+async function dailySnapshot(file) {
+  try {
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const snapshotPath = `${file}.daily.${today}`;
+
+    if (fsSync.existsSync(snapshotPath)) return; // Already snapshotted today
+
+    if (fsSync.existsSync(file)) {
+      await fs.copyFile(file, snapshotPath);
+      console.log(`📸 [memory] Daily snapshot created: ${path.basename(snapshotPath)}`);
+    }
+
+    // Clean up old snapshots (older than 7 days)
+    const dir = path.dirname(file);
+    const base = path.basename(file);
+    const files = await fs.readdir(dir);
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+
+    for (const f of files) {
+      const dailyMatch = f.match(new RegExp(`^${base.replace(".", "\\.")}\\.daily\\.(\\d{4}-\\d{2}-\\d{2})$`));
+      if (dailyMatch) {
+        const snapshotDate = new Date(dailyMatch[1]).getTime();
+        if (snapshotDate < sevenDaysAgo) {
+          try {
+            await fs.unlink(path.join(dir, f));
+            console.log(`🗑️ [memory] Cleaned old snapshot: ${f}`);
+          } catch {}
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ [memory] Daily snapshot failed:", err.message);
+  }
+}
+
 function ensureMemoryDirAndFileSync() {
   try {
     const dir = path.dirname(MEMORY_FILE);
@@ -198,6 +272,71 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
   try {
     ensureMemoryDirAndFileSync();
 
+    // ── TRACE: Log every save call with caller info for debugging data loss ──
+    const inConvos = Object.keys(obj?.conversations || {}).length;
+    const inProfile = Object.keys(obj?.profile || {}).length;
+    const hasEncProfile = !!(obj?.profile?._encrypted);
+    const caller = new Error().stack?.split("\n")[2]?.trim() || "unknown";
+    console.log(`💾 [memory] saveJSON called: ${inConvos} convos, profile(${hasEncProfile ? "enc" : inProfile + " keys"}) | from: ${caller}`);
+
+    // ── DATA LOSS PREVENTION: Refuse to overwrite real data with empty data ──
+    // This guards against stale _cache (empty) overwriting restored/real data on disk.
+    // If the file on disk has profile or conversations but the incoming save has neither,
+    // something went wrong (stale cache, race condition). Refuse the destructive write.
+    try {
+      if (fsSync.existsSync(file)) {
+        const diskRaw = JSON.parse(fsSync.readFileSync(file, "utf8"));
+        const diskConvos = Object.keys(diskRaw.conversations || {}).length;
+        const diskHasProfile = diskRaw.profile && (
+          diskRaw.profile._encrypted ||
+          Object.keys(diskRaw.profile).length > 0
+        );
+        const incomingConvos = Object.keys(obj.conversations || {}).length;
+        const incomingHasProfile = obj.profile && Object.keys(obj.profile).length > 0;
+
+        // BLOCK: disk has real data, incoming would wipe or severely reduce it
+        // Also catch partial wipes (e.g., 169 convos → 1 convo is suspicious)
+        const convoDrop = diskConvos > 5 && incomingConvos < diskConvos * 0.5;
+        if ((diskConvos > 0 && incomingConvos === 0) ||
+            (diskHasProfile && !incomingHasProfile) ||
+            convoDrop) {
+          console.error(
+            `🛑 [memory] DATA LOSS PREVENTED! Refusing to overwrite ${diskConvos} conversations + ` +
+            `profile(${diskHasProfile ? "present" : "empty"}) with empty data. ` +
+            `Incoming has ${incomingConvos} conversations, profile(${incomingHasProfile ? "present" : "empty"}). ` +
+            `This usually means _cache was stale. Reloading from disk instead.`
+          );
+          // Heal the cache from disk so future saves include the real data
+          const healed = await loadJSON(file);
+          // Merge incoming meta updates (moltbook heartbeats, etc.) into the healed version
+          if (obj.meta && typeof obj.meta === "object") {
+            healed.meta = { ...healed.meta, ...obj.meta };
+          }
+          _cache = healed;
+          _cacheMtime = Date.now();
+          // Now save the HEALED version (real data + incoming meta)
+          const healedStr = JSON.stringify(
+            IS_ENCRYPTION_ENABLED ? (() => {
+              const s = clone(healed);
+              if (s.profile && Object.keys(s.profile).length > 0)
+                s.profile = { _encrypted: encryptString(JSON.stringify(s.profile)) };
+              if (Array.isArray(s.durable) && s.durable.length > 0)
+                s.durable = [{ _encrypted: encryptString(JSON.stringify(s.durable)) }];
+              return s;
+            })() : healed,
+            null, 2
+          );
+          const healTmp = `${file}.tmp.${Date.now()}`;
+          await fs.writeFile(healTmp, healedStr, "utf8");
+          try { await fs.rename(healTmp, file); } catch { try { await fs.unlink(healTmp); } catch {} }
+          return true;
+        }
+      }
+    } catch (dlpErr) {
+      // If the DLP check itself fails, log but don't block — better to save than crash
+      console.warn("⚠️ [memory] Data loss prevention check failed:", dlpErr.message);
+    }
+
     // ── SAFETY: Back up current file before overwriting ──
     // If the rename/write fails mid-operation, we can recover from .bak on next boot.
     try {
@@ -208,6 +347,10 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
       // Non-fatal — backup failure shouldn't block saves
       console.warn("⚠️ [memory] Backup copy failed:", bakErr.message);
     }
+
+    // ── ROTATING BACKUPS & DAILY SNAPSHOTS (non-blocking, fire-and-forget) ──
+    rotateBackups(file).catch(() => {});
+    dailySnapshot(file).catch(() => {});
 
     const tmp = `${file}.tmp.${Date.now()}`;
     const safeData = validateMemoryShape(obj);
@@ -265,7 +408,37 @@ export async function reloadMemory() {
 }
 
 export async function getMemory() {
-  if (_cache) return _cache;
+  if (_cache) {
+    // ── STALENESS CHECK: detect if disk file was modified externally ──
+    // (e.g., manual restore, another worktree, or external tool).
+    // If disk mtime is newer than our cache, reload from disk.
+    try {
+      const stat = fsSync.statSync(MEMORY_FILE);
+      const diskMtime = stat.mtimeMs;
+      if (diskMtime > _cacheMtime + 1000) {
+        // Disk is newer — but only reload if disk has MORE data than cache
+        // (prevents a corrupted/empty disk from wiping a good cache)
+        const diskData = await loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
+        const diskConvos = Object.keys(diskData.conversations || {}).length;
+        const diskProfile = Object.keys(diskData.profile || {}).length;
+        const cacheConvos = Object.keys(_cache.conversations || {}).length;
+        const cacheProfile = Object.keys(_cache.profile || {}).length;
+
+        if (diskConvos >= cacheConvos && diskProfile >= cacheProfile) {
+          console.log(`🔄 [memory] Disk file is newer (${new Date(diskMtime).toISOString()}) — reloading (disk: ${diskConvos} convos, ${diskProfile} profile keys)`);
+          // Preserve any in-memory meta updates (moltbook heartbeats etc.)
+          if (_cache.meta && typeof _cache.meta === "object") {
+            diskData.meta = { ...diskData.meta, ..._cache.meta };
+          }
+          _cache = diskData;
+          _cacheMtime = Date.now();
+        }
+      }
+    } catch {
+      // stat/read failed — keep using cache
+    }
+    return _cache;
+  }
   return await reloadMemory();
 }
 

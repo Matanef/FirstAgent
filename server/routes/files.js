@@ -157,8 +157,85 @@ router.get("/debug/memory", async (req, res) => {
 });
 
 router.post("/debug/memory/reset", async (req, res) => {
+    // SAFETY: Require explicit confirmation header to prevent accidental wipes.
+    // The UI sends a confirm dialog, but an errant fetch or browser extension could trigger this.
+    const confirm = req.headers["x-confirm-reset"];
+    if (confirm !== "yes-reset-all-memory") {
+      return res.status(400).json({
+        error: "Memory reset requires X-Confirm-Reset: yes-reset-all-memory header",
+        message: "This destructive action is disabled by default. Add the confirmation header to proceed."
+      });
+    }
+    // Back up before reset so we can recover
+    try {
+      const fsSync = await import("fs");
+      fsSync.default.copyFileSync(MEMORY_FILE, MEMORY_FILE + ".pre-reset." + Date.now());
+    } catch {}
     await saveJSON(MEMORY_FILE, DEFAULT_MEMORY);
     res.json({ success: true, message: "Memory reset", memory: DEFAULT_MEMORY });
+});
+
+// ============================================================
+// MEMORY BACKUP LIST & RESTORE ENDPOINTS
+// ============================================================
+router.get("/debug/memory/backups", async (req, res) => {
+    try {
+        const dir = path.dirname(MEMORY_FILE);
+        const base = path.basename(MEMORY_FILE);
+        const files = await fs.readdir(dir);
+
+        const backups = [];
+        for (const f of files) {
+            if (f.startsWith(base) && f !== base && (f.includes(".bak") || f.includes(".daily") || f.includes(".pre-reset"))) {
+                try {
+                    const stat = await fs.stat(path.join(dir, f));
+                    backups.push({
+                        filename: f,
+                        sizeKB: Math.round(stat.size / 1024),
+                        modified: stat.mtime.toISOString(),
+                        type: f.includes(".daily") ? "daily" : f.includes(".pre-reset") ? "pre-reset" : "rotating"
+                    });
+                } catch {}
+            }
+        }
+
+        backups.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+        res.json({ success: true, backups, count: backups.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.post("/debug/memory/restore", async (req, res) => {
+    const confirm = req.headers["x-confirm-restore"];
+    if (confirm !== "yes-restore-backup") {
+        return res.status(400).json({
+            error: "Restore requires X-Confirm-Restore: yes-restore-backup header"
+        });
+    }
+
+    const { filename } = req.body;
+    if (!filename) return res.status(400).json({ error: "Missing 'filename' in body" });
+
+    try {
+        const backupPath = path.resolve(path.dirname(MEMORY_FILE), filename);
+        // Security: verify the backup is in the same directory
+        if (!backupPath.startsWith(path.resolve(path.dirname(MEMORY_FILE)))) {
+            return res.status(403).json({ error: "Access denied" });
+        }
+
+        const backupData = JSON.parse(await fs.readFile(backupPath, "utf8"));
+        // Create a pre-restore snapshot
+        try {
+            const { default: fsSync } = await import("fs");
+            fsSync.copyFileSync(MEMORY_FILE, MEMORY_FILE + ".pre-restore." + Date.now());
+        } catch {}
+
+        await saveJSON(MEMORY_FILE, backupData);
+        res.json({ success: true, message: `Restored from ${filename}`, restoredFrom: filename });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ============================================================

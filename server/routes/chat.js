@@ -72,6 +72,18 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
   let heartbeatInterval; 
   const startTime = Date.now();
   
+// 1. ADD THE ABORT CONTROLLER HERE
+  const abortController = new AbortController();
+  
+  // 2. LISTEN FOR THE BROWSER DISCONNECTING
+  res.on("close", () => {
+    // Only abort if the server hasn't naturally finished sending the response
+    if (!res.writableEnded) {
+      console.log("⚠️ [chat.js] Client disconnected prematurely! Aborting background operations...");
+      abortController.abort();
+    }
+  });
+
   try {
     let { message, conversationId, fileIds } = req.body;
     
@@ -131,6 +143,7 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       conversationId: id,
       clientIp: req.clientIp,
       fileIds: fileIds || [],
+      signal: abortController.signal,
       onChunk: (chunk) => res.write(`data: ${JSON.stringify({ type: "chunk", chunk })}\n\n`),
       onStep: (stepInfo) => {
         if (stepInfo.type === "thought") {
