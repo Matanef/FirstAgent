@@ -8,6 +8,7 @@ import TrainOfThought from "./components/TrainOfThought";
 import FileAttachmentBar from "./components/FileAttachmentBar";
 import DuplicateScannerPopup from "./components/DuplicateScannerPopup";
 import FolderPicker from "./components/FolderPicker";
+import DepthBar from "./components/DepthBar";
 import { API_URL, apiFetch } from "./api";
 import "./App.css";
 
@@ -571,6 +572,8 @@ function handleKeyDown(e) {
                 setFiles={setAttachedFiles}
                 disabled={loading}
               />
+
+              <DepthBar input={input} setInput={setInput} disabled={loading} />
 
               <div className="input-wrapper">
                 <FolderPicker

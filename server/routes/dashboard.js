@@ -102,13 +102,16 @@ router.get("/api/dashboard", async (req, res) => {
         .map(f => f.replace(".js", ""));
     } catch {}
 
-    // Scheduler info
+    // Scheduler info — schedules live at server/data/schedules.json (written by tools/scheduler.js)
+    // and use `status: "active" | "paused"`, not `enabled`.
     let schedulerInfo = { activeTasks: 0, nextFire: null };
     try {
-      const schedulerPath = path.resolve(__dirname, "..", "..", "utils", "schedules.json");
+      const schedulerPath = path.resolve(__dirname, "..", "data", "schedules.json");
       if (fsSync.existsSync(schedulerPath)) {
         const schedules = JSON.parse(fsSync.readFileSync(schedulerPath, "utf8"));
-        const active = Array.isArray(schedules) ? schedules.filter(s => s.enabled !== false) : [];
+        const active = Array.isArray(schedules)
+          ? schedules.filter(s => (s.status || "active") === "active")
+          : [];
         schedulerInfo.activeTasks = active.length;
       }
     } catch {}

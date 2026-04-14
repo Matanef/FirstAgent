@@ -17,6 +17,10 @@ import { llm, llmStream } from "../tools/llm.js";
 import { getMemory, getEnrichedProfile, saveJSON, MEMORY_FILE } from "../memory.js";
 import { getPersonalityContext } from "../personality.js";
 import { getKnowledgeContext, getRelevantKnowledge } from "../knowledge.js";
+import { listCollections, search as vectorSearch, getCollectionStats } from "../utils/vectorStore.js";
+import * as sourceDirectory from "../skills/deepResearch/sourceDirectory.js";
+import { extract as extractKeywords } from "../skills/deepResearch/keywordExtractor.js";
+import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
 import { classifyIntent } from "../utils/intentClassifier.js";
 import { buildUserToneInstruction } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js"; 
@@ -67,10 +71,129 @@ async function getRecentChanges(limit = 5) {
 }
 
 /**
+ * Subject-gated retrieval from the deepResearch vault. Closes the long-term
+ * learning loop so past research grounds future chat.
+ *
+ * Pipeline (matches the Knowledge OS RAG plan):
+ *   1. Extract keywords from the user message (no LLM phrase pass — keep chat fast).
+ *   2. Load research-sources.json and rank subjects via subjectMatcher.
+ *   3. Only query vector collections belonging to matched subjects:
+ *         research-{slug}-conclusions   (preferred — already synthesized)
+ *         research-{slug}-p{N}-articles (fallback if conclusion score is weak)
+ *   4. Format top hits as "ARCHIVED RESEARCH FINDINGS" with subject headings.
+ *
+ * Non-blocking: any failure degrades gracefully to empty string so the chat
+ * prompt still builds without RAG augmentation.
+ */
+async function getResearchContext(message) {
+  try {
+    if (!message || message.length < 12) return "";
+
+    // 1. Load subject directory. If empty, no research has been done yet.
+    const directory = await sourceDirectory.load();
+    const subjects = directory?.subjects || {};
+    if (Object.keys(subjects).length === 0) return "";
+
+    // 2. Extract keywords (skip LLM phrase pass — this is on the chat hot path).
+    const extracted = await extractKeywords(message, { usePhraseLLM: false });
+    if (!extracted.tokens?.length) return "";
+
+    // 3. Rank subjects — use a slightly lower floor than the skill itself so
+    //    chat retrieval triggers on softer matches (a user mentioning a topic
+    //    in passing shouldn't need to score as high as a research request).
+    const matched = rankSubjects(extracted, subjects, { limit: 3, minScore: 0.3 });
+    if (matched.length === 0) return "";
+
+    // 4. Index known vector collections once so we can filter to matched subjects.
+    const knownCollections = new Set(
+      (listCollections() || []).map(c => c.name).filter(Boolean)
+    );
+
+    const hits = [];
+    for (const m of matched) {
+      const conclusionsName = `research-${m.slug}-conclusions`;
+      if (knownCollections.has(conclusionsName)) {
+        try {
+          const results = await vectorSearch(conclusionsName, message, 2);
+          for (const r of results) {
+            hits.push({
+              ...r,
+              collection: conclusionsName,
+              tier: "conclusion",
+              subjectSlug: m.slug,
+              subjectTopic: m.subject?.topic || m.slug,
+              subjectScore: m.score
+            });
+          }
+        } catch { /* one bad collection shouldn't poison the rest */ }
+      }
+    }
+
+    // 5. If the best conclusion hit is weak, also pull article-level chunks from
+    //    the top matched subject only (keeps context budget bounded).
+    const topConclusion = hits.length > 0 ? Math.max(...hits.map(h => h.score || 0)) : 0;
+    if (topConclusion < 0.25 && matched.length > 0) {
+      const topSlug = matched[0].slug;
+      const articleCols = [...knownCollections].filter(n =>
+        n.startsWith(`research-${topSlug}-p`) && n.endsWith("-articles")
+      );
+      for (const name of articleCols) {
+        try {
+          const results = await vectorSearch(name, message, 2);
+          for (const r of results) {
+            hits.push({
+              ...r,
+              collection: name,
+              tier: "article",
+              subjectSlug: topSlug,
+              subjectTopic: matched[0].subject?.topic || topSlug,
+              subjectScore: matched[0].score
+            });
+          }
+        } catch {}
+      }
+    }
+
+    if (hits.length === 0) return "";
+
+    // 6. Rank, apply a relevance floor, and keep the top 3 overall.
+    hits.sort((a, b) => (b.score || 0) - (a.score || 0));
+    const top = hits.filter(h => (h.score || 0) >= 0.18).slice(0, 3);
+    if (top.length === 0) return "";
+
+    const lines = top.map((h, i) => {
+      const snippet = (h.text || "").trim().slice(0, 600).replace(/\s+/g, " ");
+      const promptIdx = h.metadata?.promptIndex;
+      const query = h.metadata?.query;
+      const title = h.metadata?.title;
+      const attribution =
+        promptIdx != null
+          ? `${h.subjectTopic} · prompt ${promptIdx}${query ? ` — "${query}"` : ""}`
+          : title
+            ? `${h.subjectTopic} · ${title}`
+            : h.subjectTopic;
+      return `[${i + 1}] ${attribution} (vector score ${(h.score || 0).toFixed(2)})\n${snippet}`;
+    });
+
+    const subjectList = matched.map(m => `"${m.subject?.topic || m.slug}"`).join(", ");
+
+    return `ARCHIVED RESEARCH FINDINGS (from your own deepResearch vault):
+Matched subjects: ${subjectList}
+
+${lines.join("\n\n")}
+
+Treat these as your own prior findings. Reference the subject by name if the user asks what you've researched. Do not claim you lack information on these topics — you have already studied them.`;
+  } catch (err) {
+    console.warn("[chatAgent] research retrieval failed (non-blocking):", err.message);
+    return "";
+  }
+}
+
+/**
  * Build user context from memory — profile, durable memories, knowledge.
  * This is the information the chatAgent "knows" about the user.
  */
-async function buildUserContext(conversationId) {
+async function buildUserContext(conversationId, message = "") {
   const parts = [];
 
   try {
@@ -143,6 +266,16 @@ async function buildUserContext(conversationId) {
     const knowledgeCtx = await getKnowledgeContext();
     if (knowledgeCtx) {
       parts.push(knowledgeCtx);
+    }
+  } catch { /* non-blocking */ }
+
+  // Research vault — semantic retrieval from deepResearch vector collections.
+  // Closes the long-term learning loop: findings written by deepResearch are
+  // now surfaced back into the chat context on relevant user messages.
+  try {
+    const researchCtx = await getResearchContext(message);
+    if (researchCtx) {
+      parts.push(researchCtx);
     }
   } catch { /* non-blocking */ }
 
@@ -372,7 +505,7 @@ export async function handleChat(message, recentTurns = [], options = {}) {
   const [recentChanges, personalityCtx, userContext] = await Promise.all([
     getRecentChanges(5),
     getPersonalityContext("chat").catch(() => ""),
-    buildUserContext(options.conversationId).catch(() => "")
+    buildUserContext(options.conversationId, message).catch(() => "")
   ]);
 
 // UNIFIED AGENT: Check if we need to run tools first!

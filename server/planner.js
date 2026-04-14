@@ -81,23 +81,23 @@ function isMathExpression(msg) {
   // Reject if message contains file paths (D:/, C:\, etc.)
   if (/[a-z]:[\\\/]/i.test(trimmed)) return false;
 
-  // Reject if message contains dates (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD)
+  // Reject if message contains dates
   if (/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(trimmed)) return false;
   if (/\d{4}-\d{1,2}-\d{1,2}/.test(trimmed)) return false;
 
-  // Reject if message contains email addresses (user@example.com)
+  // Reject if message contains email addresses
   if (/[\w.+-]+@[\w.-]+\.\w{2,}/.test(trimmed)) return false;
 
-  // Reject if parentheses contain words (natural language, not math)
-  // e.g., "(about 100 words)" → reject; "(100 + 50)" → accept
+  // 🚀 NEW GUARD: Reject UUIDs / Hashes (prevents DM IDs from triggering math)
+  if (/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i.test(trimmed)) return false;
+
+  // Reject if parentheses contain words
   if (/\([^)]*[a-zA-Z]{2,}[^)]*\)/.test(trimmed)) return false;
 
   // Only match if the core of the message is mathematical
-  // Must have a math operator adjacent to or between numbers
   if (/\d\s*[+\-*/^]\s*\d/.test(trimmed)) return true;
   if (/\d\s*%\s*(of\s+)?\d/.test(trimmed)) return true;
 
-  // Pure numeric expression: "15 * (3 + 2)"
   return /^\s*[\d\.\,\s()+\-*/^=%]+$/.test(trimmed);
 }
 
@@ -177,6 +177,12 @@ function inferToolFromText(text) {
   if (/\b(send)\s+.{1,50}\b(message)\b/i.test(lower) && !/\b(email|mail)\b/.test(lower)) return "whatsapp";
   if (/\b(send)\s+(my\s+|to\s+my\s+)?(mom|dad|mother|father|brother|sister)\b/i.test(lower)) return "whatsapp";
   if (/(?:^|\s)(שלח|תשלח|שלחי)\s+.{0,50}(הודעה|מסרון)/i.test(lower)) return "whatsapp";
+
+  // ── OBSIDIAN KNOWLEDGE OS ──
+  if (/\b(obsidian|vault|create\s+note|write\s+note|populate\s+stubs?|reap\s+stubs?)\b/.test(lower)) return "obsidianWriter";
+  if (/\b(deep\s+research|thesis|research\s+report|research\s+paper)\b/.test(lower)) return "deepResearch";
+  if (/\b(git\s*pulse|code\s+report|engineering\s+review)\b/.test(lower)) return "gitPulse";
+  if (/\b(what\s+changed)\b/.test(lower) && /\b(code|repo|commit|git)\b/.test(lower)) return "gitPulse";
 
   // ── CODE GURU & SYSTEM TOOLS ──
   if (/\b(apply\s*patch|full\s+rewrite|rewrite\s+entire)\b/.test(lower)) return "applyPatch";
@@ -462,6 +468,55 @@ const ROUTING_TABLE = [
     description: "Agent identity questions"
   },
   {
+    tool: "moltbook",
+    priority: 84,
+    match: (lower) =>
+      /\bmoltbook\b/i.test(lower) ||
+      /\/api\/v\d\/agents?\b/i.test(lower) ||
+      /\bsetup[- ]?owner[- ]?email\b/i.test(lower) ||
+      // Allows approving/rejecting DMs without explicitly typing "moltbook"
+      /\b(dm\s+request|approve\s+dm|reject\s+dm|check\s+dms|my\s+dms)\b/i.test(lower),
+    guard: (lower) =>
+      /\b(schedule|every\s+\d+\s*(min|hour|day|sec)|every\s+(morning|evening|night)|hourly|daily\s+at|weekly|recurring|cron|automate)\b/i.test(lower),
+    context: (lower) => {
+      const ctx = {};
+      if (/\b(register|sign\s*up|create\s+account)\b/i.test(lower)) ctx.action = "register";
+      else if (/\b(log\s*in|sign\s*in)\b/i.test(lower)) ctx.action = "login";
+      else if (/\b(log\s*out|sign\s*out)\b/i.test(lower)) ctx.action = "logout";
+      else if (/\b(dm\s+request|pending\s+request|approve\s+dm|reject\s+dm)\b/i.test(lower)) ctx.action = "dm_requests";
+      else if (/\b(inbox|messages|conversations|my\s+dms|check\s+dms)\b/i.test(lower)) ctx.action = "dm_inbox";
+      else if (/\b(dm|direct\s+message|private\s+message|send\s+dm|send\s+message)\b/i.test(lower)) ctx.action = "dm";
+      else if (/\b(update\s+profile|change\s+description|edit\s+profile)\b/i.test(lower)) ctx.action = "updateProfile";
+      else if (/\b(view\s+profile|profile\s+of|who\s+is|agent\s+profile)\b/i.test(lower)) ctx.action = "viewProfile";
+      else if (/\b(my\s+(\w+\s+)?profile|my\s+account|show\s+profile)\b/i.test(lower)) ctx.action = "profile";
+      else if (/\b(comments?\s+(on|for|about)|show\s+comments|read\s+comments|get\s+comments|view\s+comments|moltbook\s+comments)\b/i.test(lower)) ctx.action = "getComments";
+      else if (/\b(comment|reply)\b/i.test(lower) && !/\bpost\b/i.test(lower)) ctx.action = "comment";
+      else if (/\b(delete\s+post|remove\s+post)\b/i.test(lower)) ctx.action = "deletePost";
+      else if (/\b(read\s+post|show\s+post|get\s+post|view\s+post)\b/i.test(lower)) ctx.action = "getPost";
+      else if (/\b(post|publish|share|write)\b/i.test(lower)) ctx.action = "post";
+      else if (/\b(upvote|downvote|vote)\b/i.test(lower)) ctx.action = "vote";
+      else if (/\b(unfollow|unsubscribe)\b/i.test(lower)) ctx.action = "unfollow";
+      else if (/\b(subscribe\s+to|join\s+submolt|join\s+community)\b/i.test(lower)) ctx.action = "subscribe";
+      else if (/\b(follow)\b/i.test(lower)) ctx.action = "follow";
+      else if (/\b(allow|unlock|approve|increase|raise).*(communit|submolt|more\s+communit)/i.test(lower)) ctx.action = "unlockCommunities";
+      else if (/\b(create\s+submolt|create\s+community|new\s+submolt)\b/i.test(lower)) ctx.action = "createSubmolt";
+      else if (/\b(submolt\s+feed|community\s+feed)\b/i.test(lower)) ctx.action = "submoltFeed";
+      else if (/\b(communities?|submolts?)\b/i.test(lower)) ctx.action = "communities";
+      else if (/\b(sentiment|mood|vibes?|pulse|atmosphere)\b/i.test(lower)) ctx.action = "sentiment";
+      else if (/\b(search|find|look\s+for)\b/i.test(lower)) ctx.action = "search";
+      else if (/\b(notification|read\s+all|mark\s+read|clear\s+notification)\b/i.test(lower)) ctx.action = "notifications";
+      else if (/\b(home|dashboard)\b/i.test(lower)) ctx.action = "home";
+      else if (/\b(feed|browse|timeline)\b/i.test(lower)) ctx.action = "feed";
+      else if (/\b(heartbeat|check\s*in|routine|engage)\b/i.test(lower)) ctx.action = "heartbeat";
+      else if (/\b(status|session|check)\b/i.test(lower)) ctx.action = "status";
+      else if (/\b(set\s*up|setup|configure)\b/i.test(lower) && /\bemail\b/i.test(lower)) ctx.action = "setupEmail";
+      else if (/\bsetup[- ]?owner[- ]?email\b/i.test(lower)) ctx.action = "setupEmail";
+      else ctx.action = "feed";
+      return ctx;
+    },
+    description: "Moltbook operations and interactions"
+  },
+  {
     tool: "githubScanner",
     priority: 88,
     match: (lower, trimmed) =>
@@ -636,6 +691,47 @@ const ROUTING_TABLE = [
       // Guard: "schedule a task/whatsapp/email" is not a calendar event
       /\bschedule\s+(a\s+)?(task|whatsapp|message|email|check|report|scan)\b/i.test(lower),
     description: "Calendar — meetings, events, availability"
+  },
+
+  // ── Obsidian Knowledge OS ──────────────────────────────────
+  {
+    tool: "obsidianWriter",
+    priority: 74,
+    match: (lower) =>
+      /\b(obsidian|vault)\b/i.test(lower) ||
+      (/\b(create|write|make|new)\b/i.test(lower) && /\b(note|canvas)\b/i.test(lower)) ||
+      /\b(populate|fill|reap|clean|prune|delete)\s+(\w+\s+)?(stubs?|empty\s+notes?)\b/i.test(lower) ||
+      /\b(append\s+to\s+note|read\s+note|list\s+notes?)\b/i.test(lower),
+    guard: (lower) =>
+      !hasCompoundIntent(lower) ? false :
+      // Allow compound if BOTH parts involve obsidian
+      /\b(obsidian|vault|note|canvas)\b/i.test(lower) ? false : true,
+    description: "Obsidian vault — create/edit notes, canvas, stubs"
+  },
+  {
+    tool: "gitPulse",
+    priority: 67,
+    match: (lower) =>
+      /\b(git\s*pulse|code\s+report|engineering\s+review)\b/i.test(lower) ||
+      (/\b(what\s+changed|what'?s\s+changed|what\s+happened)\b/i.test(lower) && /\b(code|repo|commit|git|today|this\s+week|yesterday|last\s+\d+\s+days?)\b/i.test(lower)),
+    guard: (lower) =>
+      // Simple git commands → let gitLocal handle those
+      /\b(git\s+(add|commit|push|pull|checkout|branch|merge|stash|rebase|reset|status|log|diff|clone|init|fetch|tag|remote))\b/i.test(lower) &&
+      !/\b(report|review|analysis|pulse|summary|overview)\b/i.test(lower),
+    description: "Git Pulse — commit analysis, impact reports, Mermaid diagrams"
+  },
+{
+    tool: "deepResearch",
+    priority: 66,
+    match: (lower) =>
+      /\[depth:(article|indepth|in-depth|research|thesis)\]/i.test(lower) || // UI depth bar
+      /\b(deep\s+research|thesis|research\s+report|research\s+paper)\b/i.test(lower) ||
+      (/\b(comprehensive|thorough|exhaustive|in-?depth)\b/i.test(lower) && /\b(research|analysis|study|investigation|breakdown)\b/i.test(lower)) ||
+      /^(?:please\s+|can\s+you\s+)?research\b/i.test(lower) || // Catches commands starting with "Research..."
+      /(?:^|\s)(תזה|דוקטורט|עבודת\s+גמר|מחקר\s+מעמיק)(\s|$)/.test(lower), // Hebrew thesis/research keywords
+    guard: (lower) =>
+      hasCompoundIntent(lower) && !/\b(research|thesis)\b/i.test(lower) && !/\[depth:/i.test(lower),
+    description: "Deep Research — recursive research engine with query expansion"
   },
 
   // ── TIER 4: Broader tools (55-69) ─────────────────────────

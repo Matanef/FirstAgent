@@ -1,72 +1,66 @@
-# 🤖 CLAUDE.md - local-llm-ui Master Directives
+# 🤖 CLAUDE.md - Obsidian Knowledge OS & Agent Directives
 
-## 🏗️ System Architecture & Orchestration
-This is an advanced local AI agent ecosystem driven by a strict pipeline.
-* **Orchestrator** (`server/agents/orchestrator.js`): Routes user messages to chatAgent or taskAgent.
-* **Planner** (`server/planner.js`): Uses a Certainty Layer and an LLM Decomposer for dynamic, conversational multi-step intents.
-* **Workflow Engine** (`server/utils/workflow.js`): Executes saved, reusable multi-step sequences. *Note: Workflows bypass the conversational planner and require specific syntax to trigger/create (e.g., "Create a workflow:", "Every morning:", etc.).*
-* **Executor** (`server/executor.js`): Runs tools and pipes data between them.
-* **Tools** (`server/tools/`): Atomic, single-purpose skills.
+## 🗺️ Codebase Geography (Token Saver Map)
+Do not guess file paths. Use this map to navigate the architecture efficiently:
+* **Agents & Context (`server/agents/`)**:
+  * `chatAgent.js`: **Long-Term Memory Hub.** Builds the conversational prompt context. This is where VectorStore RAG retrieval (e.g., querying `research-{slug}-conclusions`) is injected to make the agent "remember" past research.
+  * `taskAgent.js`: Execution loop for multi-step tool use.
+  * `orchestrator.js`: The router. Handles `pendingQuestion` pauses and resumes.
+* **Skills vs. Tools**:
+  * `server/skills/`: **Complex, modular pipelines.** (e.g., `deepResearch/` package, `obsidianWriter.js`). Permitted to have sub-directories and multi-file architectures.
+  * `server/tools/`: **Atomic, single-file skills.** (e.g., `calculator.js`, `weather.js`). Must remain isolated.
+* **Core Utilities (`server/utils/`)**:
+  * `vectorStore.js`: Handles Ollama-embeddings and file-backed vector retrieval.
+  * `obsidianUtils.js`: Markdown, Frontmatter, and Vault I/O.
+  * `conversationMemory.js`: Chat history and short-term conversational turns.
+  * `writingRules.js` & `agent-constraints.json`: RAG formatting and academic linting rules.
 
-**CRITICAL RULE: NO MANAGER TOOLS.**
-NEVER invent tools that act as "Orchestrators", "Pipelines", or "Managers". The `planner.js` and `workflow.js` already handle multi-tool chaining natively.
+## 🧠 Long-Term Learning Loop (RAG)
+The agent integrates deep research into its continuous memory via the `chatAgent.js` context builder.
+* **Collections:** Research is indexed in `server/utils/vectorStore.js` under deterministic names: `research-{slug}-conclusions` and `research-{slug}-p{N}-articles`.
+* **Retrieval:** When formatting the context window in `chatAgent.js`, query the `vectorStore` to pull relevant insights from past research without re-fetching from the web.
 
-## 🧱 Tool Architecture & Isolation
-**STRICT RULE:** All NEW tools must be completely isolated. They CANNOT import, invoke, or depend on other tools directly. 
-**LEGACY EXCEPTIONS:** Existing tools (created prior to this rule) that currently import other tools are grandfathered in. Do not attempt to refactor or "fix" these legacy tools to separate them unless explicitly instructed by the user.
+## 🧱 Skill/Tool Development Contract
+Every executable skill or tool MUST adhere to this exact signature:
 
-## 🚫 Anti-Hallucination Shield (Dependencies)
-You are strictly confined to the existing package ecosystem. Even if you detect other packages installed in the environment (e.g., `xlsx`, `cheerio`, `natural` used by legacy tools), **YOU ARE FORBIDDEN FROM USING THEM IN NEW TOOLS.**
-* **Environment:** Node.js with ES Modules (`import`/`export` ONLY).
-* **Allowed npm Packages (STRICT):** `agent-twitter-client`, `axios`, `lodash`, `ngrok`. You may ONLY use these.
-* **Node Built-ins:** `fs`, `fs/promises`, `path`, `crypto`, `child_process`, `os`, `url`.
-* **Banned Behavior:** Do NOT use `node-fetch`, `natural`, `compromise`, `xlsx`, `cheerio`, or external LLM SDKs in any new files. Use native `fetch` or `axios` for HTTP requests.
+**1. Exports & Input Handling**
+```javascript
+export async function toolName(request) {
+  const text = typeof request === "string" ? request : (request?.text || "");
+  const context = typeof request === "object" ? (request?.context || {}) : {};
+  // ...
+}
 
-## 🛠️ Tool Development Contract
-Every file in `server/tools/` is an atomic skill. You MUST adhere to this exact signature:
+2. Required Output Format (Success)
+Must return a flat object:
+{ tool: "toolName", success: true, final: true, data: { text: "...", preformatted: true } }
 
-**1. Exports**
-The main function must be `export async function toolName(request)`.
+3. Required Output Format (Error/Failure)
+Do not crash the pipeline. Return graceful errors:
+{ tool: "toolName", success: false, final: true, error: "Action failed: Specific Reason" }
 
-**2. Input Handling**
-`request` can be a string OR an object `{ text, context }`. Tools must parse this defensively (e.g., check `typeof`).
+4. Pending Questions (Asynchronous UX)
+If a skill requires user input (e.g., depth selection), it must use server/utils/pendingQuestion.js to pause execution, returning { success: true, final: false, awaitingUser: true, data: { text: "..." } }.
+🚫 Anti-Hallucination & Dependency Shield
 
-**3. Chain Context Integration**
-If your tool analyzes text, always check for `context.chainContext.previousOutput` to process data passed from previous steps in the ToT planner or the workflow engine.
+You are strictly confined to the existing package ecosystem.
+    Allowed External Packages (STRICT): agent-twitter-client, axios, lodash, ngrok.
+    Node Built-ins: fs, fs/promises, path, crypto, child_process, os, url.
+    Banned Behavior: NEVER import node-fetch, natural, compromise, xlsx, cheerio, or external LLM SDKs (OpenAI/Anthropic).
+    Central LLM: All generation MUST route through import { llm } from "../tools/llm.js";
 
-**4. Required Response Format (Success)**
-Must return a flat object: `{ tool: "toolName", success: true, final: true, data: { text: "...", preformatted: true } }`
+🔒 Windows/Git Lock File Recovery
+This repo uses multiple Claude worktrees that share .git/, causing index.lock race conditions.
+When git add or git commit fails with "Unable to create index.lock":
 
-**5. Required Response Format (Error & Recovery)**
-Must return a flat object: `{ tool: "toolName", success: false, final: true, error: "Action failed: [Specific Reason]" }`. 
-*Do not crash the agent on expected tool failures; return the error gracefully so the planner can attempt a recovery or notify the user.*
+    Try powershell -Command "Remove-Item '.git/index.lock' -Force" (PowerShell bypasses POSIX busy-file errors).
+    If it persists, stage files one at a time in a for loop: for f in file1 file2; do git add "$f" 2>/dev/null; done
+    For stubborn files, chain it: powershell -Command "Remove-Item '.git/index.lock' -Force; & git add <file>"
+    Never kill the bash/node processes in Get-Process — they are the agent server and other Claude sessions.
 
-## 🧠 Centralized LLM Usage
-Never import API clients for LLMs. All AI generations inside tools MUST route through the central wrapper: `import { llm, llmStream } from "./llm.js";`
-
-## 💾 Memory & Configuration
-* **Config:** Import environment variables via `import { CONFIG } from "../utils/config.js";`
-* **Memory:** Use `import { getMemory, saveJSON, MEMORY_FILE } from "../memory.js";`
-* **Project Boundary:** File operations must resolve paths against `PROJECT_ROOT`.
-
-## 🔒 Git Lock File Recovery
-This repo uses multiple Claude worktrees that share `.git/`. This causes `index.lock` race conditions.
-**When `git add` or `git commit` fails with "Unable to create index.lock":**
-1. Try `powershell -Command "Remove-Item '.git/index.lock' -Force"` (PowerShell bypasses POSIX busy-file errors)
-2. If that says "does not exist", the lock is ephemeral — retry the git command immediately after the PowerShell call in a single chained command
-3. If it persists, stage files one at a time in a `for` loop: `for f in file1 file2; do git add "$f" 2>/dev/null; done` — some will succeed between lock windows
-4. For any file that still fails, use the PowerShell-then-git pattern: `powershell -Command "Remove-Item '.git/index.lock' -Force; & git add <file>; Write-Host 'done'"`
-5. **Never** kill the bash/node processes listed in `Get-Process` — they are the agent server and other Claude sessions
-
-## 🔀 Pull Request Workflow
-`gh` CLI is **not authenticated** on this machine — never use `gh pr create`.
-1. Create a branch from the commit(s): `git checkout -b <branch-name>`
-2. Push: `git push -u origin <branch-name>`
-3. Provide the direct link: `https://github.com/Matanef/FirstAgent/pull/new/<branch-name>`
-4. **Always include a ready-to-paste PR description** with a `## Summary` (bullet points of what changed and why) and `## Test plan` (checkboxes). GitHub's "new PR" page doesn't auto-populate the body, so the user needs this text to paste in.
-5. Switch back: `git checkout main`
-
-## 🎭 Persona & Context Injection
-* **Agent Identity:** The agent's identity (Lanou) and worldview are managed dynamically via `server/personality.js`. 
-* **NEVER HARDCODE PERSONAS:** Do not write prompts that start with "You are a helpful AI...".
-* **Text Generation:** If you create a new tool that generates user-facing text (e.g., social posts, emails, creative writing), you MUST import and inject `getPersonalityContext()` or `getPersonalitySummary()` from `../personality.js` into the LLM prompt so the agent maintains its unified voice.
+🔀 Pull Request Workflow (No gh CLI)
+    Branch: git checkout -b <branch-name>
+    Push: git push -u origin <branch-name>
+    Output the exact PR URL: https://github.com/Matanef/FirstAgent/pull/new/<branch-name>
+    Provide a markdown-formatted PR body (Summary & Test Plan) in the chat so the user can copy/paste it into GitHub.
+    Return to main: git checkout main

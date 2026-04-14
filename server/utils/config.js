@@ -141,6 +141,14 @@ export const CONFIG = {
   // Moltbook
   MOLTBOOK_BASE_URL: process.env.MOLTBOOK_BASE_URL || 'https://moltbook.com',
 
+  // Obsidian Knowledge OS
+  OBSIDIAN_VAULT_PATH: process.env.OBSIDIAN_VAULT_PATH || null,
+  RESEARCH_LIBRARY_PATH: process.env.RESEARCH_LIBRARY_PATH || null,
+
+  // Runtime-editable agent constraints (deepResearch synthesizer reads this fresh per call).
+  // Defaults to data/agent-constraints.json under PROJECT_ROOT when unset.
+  AGENT_CONSTRAINTS_PATH: process.env.AGENT_CONSTRAINTS_PATH || null,
+
   // Cache
   SEARCH_CACHE_TTL: parseInt(process.env.SEARCH_CACHE_TTL || '3600000'),
 
@@ -201,4 +209,7 @@ if (CONFIG.SPOTIFY_CLIENT_ID && CONFIG.SPOTIFY_CLIENT_SECRET && CONFIG.SPOTIFY_R
 if (CONFIG.CREDENTIAL_MASTER_KEY) console.log('  ✓ Credential encryption configured');
 if (CONFIG.MOLTBOOK_BASE_URL !== 'https://moltbook.com') console.log(`  ✓ Moltbook URL: ${CONFIG.MOLTBOOK_BASE_URL}`);
 if (CONFIG.GITHUB_TOKEN) console.log('  ✓ GitHub API configured');
+if (CONFIG.OBSIDIAN_VAULT_PATH) console.log(`  ✓ Obsidian vault: ${CONFIG.OBSIDIAN_VAULT_PATH}`);
+else console.log('  ℹ Obsidian vault not configured (set OBSIDIAN_VAULT_PATH)');
+if (CONFIG.RESEARCH_LIBRARY_PATH) console.log(`  ✓ Research library: ${CONFIG.RESEARCH_LIBRARY_PATH}`);
 console.log('='.repeat(60) + '\n');

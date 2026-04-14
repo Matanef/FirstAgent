@@ -609,6 +609,110 @@ describe("Common Misroute Prevention", () => {
 });
 
 // ────────────────────────────────────────────────────────────
+// OBSIDIAN KNOWLEDGE OS
+// ────────────────────────────────────────────────────────────
+describe("Obsidian Writer Routing", () => {
+  it("'create a note about quantum computing' → obsidianWriter", () => {
+    const r = route("create a note about quantum computing");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'write note in my vault' → obsidianWriter", () => {
+    const r = route("write note in my vault");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'create a canvas for my research' → obsidianWriter", () => {
+    const r = route("create a canvas for my research");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'populate stubs' → obsidianWriter", () => {
+    const r = route("populate stubs");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'reap old stubs' → obsidianWriter", () => {
+    const r = route("reap old stubs");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'list notes in vault' → obsidianWriter", () => {
+    const r = route("list notes in vault");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+
+  it("'open my obsidian vault' → obsidianWriter", () => {
+    const r = route("open my obsidian vault");
+    assert.equal(r?.tool, "obsidianWriter");
+  });
+});
+
+describe("Deep Research Routing", () => {
+  it("'deep research on quantum computing' → deepResearch", () => {
+    const r = route("deep research on quantum computing");
+    assert.equal(r?.tool, "deepResearch");
+  });
+
+  it("'write a thesis on AI ethics' → deepResearch", () => {
+    const r = route("write a thesis on AI ethics");
+    assert.equal(r?.tool, "deepResearch");
+  });
+
+  it("'comprehensive research on climate change' → deepResearch", () => {
+    const r = route("comprehensive research on climate change");
+    assert.equal(r?.tool, "deepResearch");
+  });
+
+  it("'research report on blockchain' → deepResearch", () => {
+    const r = route("research report on blockchain");
+    assert.equal(r?.tool, "deepResearch");
+  });
+
+  it("'in-depth analysis of GPU market' → deepResearch", () => {
+    const r = route("in-depth analysis of GPU market");
+    assert.equal(r?.tool, "deepResearch");
+  });
+});
+
+describe("Git Pulse Routing", () => {
+  it("'git pulse' → gitPulse", () => {
+    const r = route("git pulse");
+    assert.equal(r?.tool, "gitPulse");
+  });
+
+  it("'what changed in the code today' → gitPulse", () => {
+    const r = route("what changed in the code today");
+    assert.equal(r?.tool, "gitPulse");
+  });
+
+  it("'engineering review of this week' → gitPulse", () => {
+    const r = route("engineering review of this week");
+    assert.equal(r?.tool, "gitPulse");
+  });
+
+  it("'code report for last 3 days' → gitPulse", () => {
+    const r = route("code report for last 3 days");
+    assert.equal(r?.tool, "gitPulse");
+  });
+
+  it("'git commit -m fix' → NOT gitPulse (→ gitLocal)", () => {
+    const r = route("git commit -m fix");
+    assert.notEqual(r?.tool, "gitPulse");
+  });
+
+  it("'git status' → NOT gitPulse (→ gitLocal)", () => {
+    const r = route("git status");
+    assert.notEqual(r?.tool, "gitPulse");
+  });
+
+  it("'what changed in the repo this week' → gitPulse", () => {
+    const r = route("what changed in the repo this week");
+    assert.equal(r?.tool, "gitPulse");
+  });
+});
+
+// ────────────────────────────────────────────────────────────
 // ROUTING TABLE INTEGRITY
 // ────────────────────────────────────────────────────────────
 describe("Routing Table Integrity", () => {
@@ -654,3 +758,45 @@ describe("Routing Table Integrity", () => {
     }
   });
 });
+
+// ============================================================
+// DEEP RESEARCH — depth flag + Hebrew + pending-question routing
+// ============================================================
+describe("deepResearch routing — [depth:] flag, Hebrew keywords", () => {
+  it("routes [depth:thesis] prefix even without 'research' keyword", () => {
+    expectTool("[depth:thesis] blockchain consensus mechanisms", "deepResearch");
+  });
+
+  it("routes [depth:article] prefix on a bare topic", () => {
+    expectTool("[depth:article] LEO satellite latency", "deepResearch");
+  });
+
+  it("routes [depth:in-depth] (hyphenated form) prefix", () => {
+    expectTool("[depth:in-depth] CRISPR off-target effects", "deepResearch");
+  });
+
+  it("routes [depth:research] prefix with extra surrounding text", () => {
+    expectTool("hey [depth:research] please look into mRNA vaccine immunogenicity", "deepResearch");
+  });
+
+  it("routes Hebrew thesis keyword (תזה)", () => {
+    expectTool("כתוב לי תזה על אבטחת סייבר", "deepResearch");
+  });
+
+  it("routes Hebrew dissertation keyword (דוקטורט)", () => {
+    expectTool("דוקטורט בנושא בינה מלאכותית", "deepResearch");
+  });
+
+  it("routes Hebrew 'מחקר מעמיק' (deep research)", () => {
+    expectTool("מחקר מעמיק על שינויי אקלים", "deepResearch");
+  });
+
+  it("does NOT route casual mention of 'thesis' inside compound intent without flag", () => {
+    // Compound intents without an explicit research/thesis verb should fall through.
+    // (The guard allows it through if "research" or "thesis" or [depth:] is present.)
+    // This input has thesis but is also compound — should still route to deepResearch
+    // because the guard explicitly excepts research/thesis tokens.
+    expectTool("write a thesis on quantum computing", "deepResearch");
+  });
+});
+

@@ -156,6 +156,12 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   const trimmed = message.trim();
   const lower = trimmed.toLowerCase();
 
+  // ── STRICT OBSIDIAN OVERRIDE ─────────────────────────────────
+  // Bypasses all chat logic and momentum for Obsidian-specific commands
+  if (/\b(obsidian|stub notes?|vault|dataview|canvas)\b/i.test(lower)) {
+    return { mode: "task", confidence: 1.0, reason: "explicit_obsidian_override" };
+  }
+
   // ── STATE-AWARE ROUTING ──────────────────────────────────────
   // Check for pending conversational states BEFORE anything else.
   // "send it", "cancel", "confirm" etc. must route to task when a draft is pending.

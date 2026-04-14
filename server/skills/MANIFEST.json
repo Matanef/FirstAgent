@@ -6,6 +6,9 @@
     "spotify.js",
     "pikudTracker.js",
     "trafficScanner.js",
-    "attachmentDownloader.js"
+    "attachmentDownloader.js",
+    "obsidianWriter.js",
+    "deepResearch.js",
+    "gitPulse.js"
   ]
 }
