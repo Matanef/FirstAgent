@@ -2318,6 +2318,16 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
     return [{ tool: "projectIndex", input: trimmed, context: piContext, reasoning: "certainty_project_index" }];
   }
 
+  // "index <path>" / "reindex <path>" — path-form project indexing.
+  // Must run BEFORE the file_path branch, otherwise "index D:/foo" routes to the single-file reader.
+  if (/\b(re)?index\b/i.test(lower) && hasExplicitFilePath(trimmed) && !hasCompoundIntent(lower)) {
+    const pathMatch = trimmed.match(/([A-Za-z]:[\\/][^\s"']+|\.{0,2}\/[\w.\-/]+)/);
+    const piContext = { action: "build" };
+    if (pathMatch) piContext.path = pathMatch[1].replace(/\\/g, "/");
+    console.log(`[planner] certainty branch: projectIndex (path form) path="${piContext.path || "?"}"`);
+    return [{ tool: "projectIndex", input: trimmed, context: piContext, reasoning: "certainty_project_index_path" }];
+  }
+
   // Explicit file path
   // Guard: skip if compound intent (e.g. "review file.js and create new version at path")
   if (hasExplicitFilePath(trimmed) && !hasCompoundIntent(lower)) {
