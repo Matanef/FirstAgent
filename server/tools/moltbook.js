@@ -1984,13 +1984,11 @@ async function handleDMInbox(text, context) {
   const checkResult = await apiRequest("GET", "/agents/dm/check", null, apiKey);
 
   // Get full conversations list
-  const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
+const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
   if (!convResult.ok) return apiError("dm_inbox", convResult);
 
-  // FIX: Force it to be a strict Array, even if the API returns null
-  let convs = Array.isArray(convResult.data) ? convResult.data : (convResult.data?.conversations || []);
+  let convs = convResult.data?.conversations || convResult.data?.data?.conversations || convResult.data?.data || convResult.data;
   if (!Array.isArray(convs)) convs = [];
-
   let output = `**Moltbook DM Inbox**\n\n`;
 
   if (checkResult.ok && checkResult.data) {
@@ -2022,9 +2020,9 @@ async function handleDMRequests(text, context) {
   const apiKey = getApiKey();
   if (!apiKey) return noApiKeyError("dm_requests");
 
-  // Check for approve/reject action
-  const approveMatch = text.match(/approve\s+(?:dm\s+)?(?:request\s+)?(\w+)/i);
-  const rejectMatch = text.match(/reject\s+(?:dm\s+)?(?:request\s+)?(\w+)/i);
+  // Check for approve/reject action (UPDATED REGEX to support UUID hyphens)
+  const approveMatch = text.match(/approve\s+(?:dm\s+)?(?:request\s+)?([a-f0-9-]+)/i);
+  const rejectMatch = text.match(/reject\s+(?:dm\s+)?(?:request\s+)?([a-f0-9-]+)/i);
 
   if (approveMatch) {
     const reqId = approveMatch[1];
@@ -2045,14 +2043,20 @@ async function handleDMRequests(text, context) {
   const result = await apiRequest("GET", "/agents/dm/requests", null, apiKey);
   if (!result.ok) return apiError("dm_requests", result);
 
-  const requests = Array.isArray(result.data) ? result.data : (result.data?.requests || []);
+  // FIX: Extract from the newly discovered API structure
+  const requests = result.data?.incoming?.requests || result.data?.requests || [];
+  
   let output = `**Pending DM Requests** (${requests.length})\n\n`;
   if (requests.length === 0) {
     output += "No pending requests.\n";
   } else {
     for (const r of requests) {
-      output += `- **${r.from || r.agent_name || "Unknown"}**: "${(r.message || "").substring(0, 100)}" (ID: ${r.id})\n`;
-      output += `  → Say \`approve dm request ${r.id}\` or \`reject dm request ${r.id}\`\n`;
+      // FIX: Handle nested 'from' object and 'conversation_id'
+      const sender = r.from?.name || r.from || "Unknown";
+      const reqId = r.conversation_id || r.id; 
+      
+      output += `- **${sender}**: "${r.message || ""}"\n`;
+      output += `  → Say \`approve dm request ${reqId}\` or \`reject dm request ${reqId}\`\n`;
     }
   }
 
@@ -2392,6 +2396,78 @@ if (homeResult.ok) {
         actions.push("New DM requests need approval");
       }
     }
+  }
+
+// ── TIER 1.5: Autonomous DM Handling ──
+  try {
+    let dmHeaderAdded = false;
+
+    // 1. Auto-approve all pending requests
+    const reqResult = await apiRequest("GET", "/agents/dm/requests", null, apiKey);
+    
+    // FIX: Update extraction logic for the auto-approver
+    const requests = reqResult.data?.incoming?.requests || reqResult.data?.requests || [];
+    
+    if (requests.length > 0) {
+      output += `\n**Tier 1.5 — Direct Messages:**\n`;
+      dmHeaderAdded = true;
+      for (const req of requests) {
+        // FIX: Use conversation_id
+        const reqId = req.conversation_id || req.id;
+        if (reqId) {
+          const approveRes = await apiRequest("POST", `/agents/dm/requests/${reqId}/approve`, null, apiKey);
+          if (approveRes.ok) {
+            // FIX: Extract nested sender name safely
+            const senderName = req.from?.name || req.from || "Unknown";
+            output += `- ✅ Auto-approved DM request from **${senderName}**\n`;
+          }
+        }
+      }
+    }
+
+    // 2. Auto-reply to unread conversations
+    const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
+    let convs = convResult.data?.conversations || convResult.data?.data?.conversations || convResult.data?.data || convResult.data;
+    if (!Array.isArray(convs)) convs = [];
+    
+    for (const c of convs) {
+      if (c.unread_count > 0 && c.id) {
+        if (!dmHeaderAdded) {
+            output += `\n**Tier 1.5 — Direct Messages:**\n`;
+            dmHeaderAdded = true;
+        }
+        
+        // Fetch recent messages to give the LLM context of the conversation
+        const msgResult = await apiRequest("GET", `/agents/dm/conversations/${c.id}/messages?limit=5`, null, apiKey);
+        let historyContext = `[${c.other_agent}]: ${c.last_message}`;
+        if (msgResult.ok) {
+          const messages = Array.isArray(msgResult.data) ? msgResult.data : (msgResult.data?.messages || msgResult.data?.data || []);
+          historyContext = messages.reverse().map(m => `[${m.sender_name}]: ${m.content}`).join("\n");
+        }
+
+        const personalityCtx = await getPersonalityContext("moltbook");
+        const dmPrompt = `${personalityCtx}
+
+You received a Direct Message on Moltbook from "${c.other_agent}".
+Recent Conversation History:
+${historyContext}
+
+Write a natural, concise reply (1-3 sentences) directly responding to their message.
+Return ONLY the reply text, no JSON.`;
+
+        const dmReply = await llm(dmPrompt, { timeoutMs: 30000 });
+        if (dmReply.success && dmReply.data?.text) {
+          const replyText = dmReply.data.text.trim();
+          const sendResult = await apiRequest("POST", `/agents/dm/conversations/${c.id}/send`, { message: replyText }, apiKey);
+          if (sendResult.ok) {
+            output += `- 💬 Auto-replied to **${c.other_agent}**: "${replyText.substring(0, 60)}..."\n`;
+            actions.push(`Replied to DM from ${c.other_agent}`);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[moltbook] Auto-DM handling failed:", e.message);
   }
 
   // ── TIER 2: Community Engagement ──

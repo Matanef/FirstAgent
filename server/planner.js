@@ -582,6 +582,12 @@ const ROUTING_TABLE = [
     description: "Weather forecast with city detection"
   },
   {
+    tool: "projectSnapshot",
+    priority: 75,
+    match: (lower) => /\b(snapshot|show context|file snapshot|project snapshot)\b/i.test(lower),
+    description: "Triggers compressed context snapshot generation"
+  },
+  {
     tool: "sheets",
     priority: 75,
     match: (lower) => /\b(google\s*sheet|spreadsheet|sheet\s*id|batch\s*append)\b/i.test(lower),
@@ -730,7 +736,11 @@ const ROUTING_TABLE = [
       /^(?:please\s+|can\s+you\s+)?research\b/i.test(lower) || // Catches commands starting with "Research..."
       /(?:^|\s)(תזה|דוקטורט|עבודת\s+גמר|מחקר\s+מעמיק)(\s|$)/.test(lower), // Hebrew thesis/research keywords
     guard: (lower) =>
-      hasCompoundIntent(lower) && !/\b(research|thesis)\b/i.test(lower) && !/\[depth:/i.test(lower),
+      (hasCompoundIntent(lower) && !/\b(research|thesis)\b/i.test(lower) && !/\[depth:/i.test(lower)) ||
+      // Introspection about our own code that happens to mention "thesis/research" (e.g. the thesisSynthesizer
+      // skill) must NOT trigger a research run. Bypass when the user is asking a code-config question.
+      (/\b(where|how)\s+(do\s+(i|we)|can\s+(i|we)|to)\s+(set|configure|change|update|find|modify|edit|adjust|tweak|override)\b/i.test(lower) &&
+       /\b(skill|tool|module|agent|pipeline|planner|executor|tier|prompt|config|setting|variable|function|class|route|router|manifest|budget|threshold|timeout|param(?:eter)?|synthesizer|harvester|analyzer|writer|bootstrapper|matcher|extractor|detector)\b/i.test(lower)),
     description: "Deep Research — recursive research engine with query expansion"
   },
 
@@ -1230,7 +1240,7 @@ async function detectIntentWithLLM(message, contextSignals, availableTools = [],
   const cleanMessage = (message || "").replace(/^\(System:[^)]+\)\s*/i, "");
 
   const modelOverride = pickModelForContent(cleanMessage);
-  const modelToUse = modelOverride || "qwen2.5:1.5b";
+  const modelToUse = modelOverride || "qwen2.5:1.5b-instruct";
 
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
@@ -1255,6 +1265,8 @@ EXAMPLES (correct routing):
 - "who was Rommel?" → search (NOT x — this is a knowledge question)
 - "who was Napoleon Bonaparte?" → search
 - "search for the latest research on language models" → search (NOT x)
+- "where in the codebase do I change the budget" → codeRag
+- "search the code for the email sending logic" → codeRag
 - "email John saying meeting at 3pm" → email
 - "list repos" → github
 - "list D:/projects" → file
@@ -1500,7 +1512,7 @@ async function decomposeIntentWithLLM(message, contextSignals, availableTools = 
     .replace(/^\(System:[^)]+\)\s*/i, ""); // NEW: Strip WhatsApp Persona injection
 
   const modelOverride = pickModelForContent(safeMessage);
-  const modelToUse = modelOverride || "qwen2.5:1.5b";
+  const modelToUse = modelOverride || "qwen2.5:1.5b-instruct";
   // Stricter prompt specifically tuned for local models to force valid JSON
   const prompt = `You are a strictly formatted Sequential Logic Engine. You MUST output ONLY a valid JSON array of objects. Do not include any conversational text, markdown formatting, or explanations.
 
@@ -1568,6 +1580,12 @@ EXAMPLE OUTPUT:
   {"tool": "moltbook", "input": "show moltbook feed", "reasoning": "Fetch the moltbook feed posts"},
   {"tool": "llm", "input": "Summarize the top posts from this feed into a concise email-friendly format", "reasoning": "Summarize the feed data"},
   {"tool": "email", "input": "email me the moltbook feed summary", "reasoning": "Send the summary via email"}
+]
+EXAMPLE INPUT:
+"where in the codebase do I change the budget"
+EXAMPLE OUTPUT:
+[
+  {"tool": "codeRag", "input": "where in the codebase do I change the budget", "reasoning": "Semantic search across the codebase to find the configuration"}
 ]
 
 USER MESSAGE:
@@ -1653,6 +1671,9 @@ function resolveToolName(rawIntent, availableTools, originalMessage = "") {
     'google_sheets': 'sheets',
     'spreadsheet': 'sheets',
     'gsheets': 'sheets',
+    'reviewcode': 'codeReview',
+    'searchcode': 'codeRag',
+    'coderag': 'codeRag',
   };
 
   let cleaned = (rawIntent || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
@@ -2299,10 +2320,14 @@ if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
 
 // ── CERTAINTY: CODE RAG VS PROJECT INDEX ──
   const isRagTrigger = /\b(semantic|rag|vector|meaning|embed|reindex|code\s*rag)\b/i.test(lower);
-  const isSearchTrigger = /\b(search\s+(the\s+)?(code|codebase|project)|how\s+does\s+(the\s+)?(code|system|orchestrator|app)|where\s+in\s+(the\s+)?code)\b/i.test(lower);
+const isSearchTrigger = /\b((search|find|locate|show\s+me)\s+(the\s+)?(code|codebase|project|logic|function)|how\s+does\s+(the\s+)?(code|system|orchestrator|app)|where\s+in\s+(the\s+)?(code|codebase|project))\b/i.test(lower);  // Catches queries that mention a code-concept noun — routes them to codeRag instead of letting the
+  // LLM decomposer hallucinate a tool based on substring match (e.g. "deepresearch" → deepResearch).
+  const isIntrospectionTrigger =
+    /\b(where|how)\s+(do\s+(i|we)|can\s+(i|we)|to)\s+(set|configure|change|update|find|modify|edit|adjust|tweak|override)\b/i.test(lower) &&
+    /\b(skill|tool|module|agent|pipeline|planner|executor|tier|prompt|config|setting|variable|function|class|route|router|manifest|budget|threshold|timeout|param(?:eter)?|synthesizer|harvester|analyzer|writer|bootstrapper|matcher|extractor|detector)\b/i.test(lower);
   
-  if (isRagTrigger || (isSearchTrigger && !/\b(overview|stats|symbol)\b/i.test(lower))) {
-    console.log(`[planner] certainty branch: codeRag`);
+  if (isRagTrigger || (isSearchTrigger && !/\b(overview|stats|symbol)\b/i.test(lower)) || isIntrospectionTrigger) {
+    console.log(`[planner] certainty branch: codeRag${isIntrospectionTrigger ? " (introspection)" : ""}`);
     return [{ tool: "codeRag", input: trimmed, context: {}, reasoning: "certainty_code_rag" }];
   }
 

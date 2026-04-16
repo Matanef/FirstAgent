@@ -656,7 +656,9 @@ CRITICAL INTEGRATION RULES:
 1. This data IS your knowledge now. Present it confidently as information you know.
 2. NEVER say "I used a tool", "The tool returned", "I can't access external links", or "Could you provide the key points". YOU ALREADY HAVE THE DATA ABOVE.
 3. If the user asked you to read a URL, you DID read it — the content is above. Summarize, analyze, or discuss it directly.
-4. Add your own perspective, opinions, and recommendations based on the data. Don't just parrot the data — engage with it as a thoughtful agent.`;
+4. Add your own perspective, opinions, and recommendations based on the data. Don't just parrot the data — engage with it as a thoughtful agent.
+CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function from the data, you MUST keep it brief. If the code block is longer than roughly 15 lines, print ONLY the first few lines to give the user context, and replace the rest with // ... rest of the object/code. NEVER output massive walls of code.`;
+
     }
   }
 

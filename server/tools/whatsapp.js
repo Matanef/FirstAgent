@@ -281,7 +281,7 @@ async function detectWhatsAppIntent(text) {
     const isIdentityOnly = /^(yourself|yourselves|עצמך|עצמכם)$/i.test(hint);
     const composeInstruction = (hint.length > 1 && !isIdentityOnly)
       ? `Compose a message: ${hint}`
-      : "Compose a friendly, warm greeting message";
+      : "Compose a natural, conversational message to check in. Do not sound like a generic bot.";
     return {
       intent: "single_send",
       to: noBodyMatch[1].trim(),
@@ -322,7 +322,7 @@ async function sendTemplateMessage(cleanedNumber, text) {
   // This handles templates with unknown parameter counts gracefully.
   const attempts = [];
 
-  // Attempt 1: configured template WITH body parameter (if we have text)
+// Attempt 1: configured template WITH body parameter
   if (text && templateName !== "hello_world") {
     attempts.push({
       label: `${templateName} (with param)`,
@@ -331,7 +331,8 @@ async function sendTemplateMessage(cleanedNumber, text) {
         template: {
           name: templateName,
           language: { code: templateLang },
-          components: [{ type: "body", parameters: [{ type: "text", text: text.slice(0, 1024) }] }]
+          // Send a tiny string so Meta accepts it as a "Name"
+          components: [{ type: "body", parameters: [{ type: "text", text: "Lanou" }] }]
         }
       }
     });
@@ -425,7 +426,7 @@ export async function sendWhatsAppMessage(to, text, opts = {}) {
     // This works when the user actually has an open window (e.g., server restarted
     // but user had messaged recently). If they truly have no window, the follow-up
     // will fail silently — that's fine, the template was still delivered.
-    if (templateResult.usedTemplate === "hello_world" && text) {
+    if (text) {
       await new Promise(r => setTimeout(r, 1500));
       try {
         const url = `${WHATSAPP_API}/${phoneId}/messages`;
@@ -758,7 +759,7 @@ export async function whatsapp(request) {
           try {
             const { llm: llmCall } = await import("./llm.js");
 
-            // Load agent personality so it can write "as itself"
+// Load agent personality so it can write "as itself"
             let personalityContext = "";
             try {
               const { getPersonalitySummary } = await import("../personality.js");
@@ -778,14 +779,37 @@ export async function whatsapp(request) {
               }
             } catch { /* non-blocking */ }
 
+            // ── NEW: Manually grab relevant facts (like the Iran war) ──
+            // ── NEW: Manually grab relevant facts ONLY if requested ──
+            let knowledgeContext = "";
+            // Only fetch knowledge if the prompt implies asking for facts, news, or summaries
+            if (/\b(news|about|explain the|summarize|tell .* about)\b/i.test(text)) {
+              try {
+                const { getRelevantKnowledge } = await import("../knowledge.js");
+                knowledgeContext = await getRelevantKnowledge(text);
+              } catch { /* non-blocking */ }
+            }
+
             // Detect if the user wants the agent to write as itself
             const asAgent = /\b(as yourself|as you|introduce yourself|from your?self|in your (?:name|voice)|מעצמך|בשמך|הצג את עצמך)\b/i.test(text);
-            const senderContext = asAgent
-              ? `\nYou are writing AS YOURSELF (the AI agent). ${personalityContext ? `Your identity: ${personalityContext}` : ""} Introduce yourself naturally — you are the agent, not the user.`
-              : `\nYou are writing on behalf of the user (the agent's owner/developer). Do NOT introduce yourself as an AI.`;
+            
+            let senderContext = "";
+            if (asAgent) {
+              senderContext = `\nYou are writing AS YOURSELF (the AI agent). ${personalityContext ? `Your identity: ${personalityContext}` : ""}`;
+              
+              // Only introduce if there is NO known profile/history
+              if (recipientContext) { // If we found a profile, we know them
+                senderContext += `\n🚨 CRITICAL: You already know this person and have spoken before. DO NOT introduce yourself (no "Hi, I'm Lanou"). Jump straight into the conversation naturally based on your established identity.`;
+              } else {
+                senderContext += `\nIntroduce yourself naturally — you are the agent, not the user.`;
+              }
+            } else {
+              senderContext = `\nYou are writing on behalf of the user (the agent's owner/developer). Do NOT introduce yourself as an AI.`;
+            }
 
             const composePrompt = `Compose a short WhatsApp message based on these instructions.
 ${recipientContext}${senderContext}
+${knowledgeContext ? `\nBACKGROUND KNOWLEDGE:\n${knowledgeContext}\n` : ""}
 Instructions: ${parsed.message}
 Full user request: ${text}
 
@@ -796,15 +820,17 @@ RULES:
 - If a language preference is specified, write in that language.
 - Match the requested tone exactly.`;
 
-            // Pick a model that can handle the target language (Hebrew → Gemini/aya-expanse)
+
+            // Pick a model that can handle the target language
             let composeModel;
             try {
               const { pickModelForContent } = await import("./llm.js");
-              // Check if the prompt or recipient language requires a Hebrew-capable model
               const langHint = recipientContext.includes("Hebrew") ? "שלום" : composePrompt;
               composeModel = pickModelForContent(langHint);
             } catch { /* fallback to default */ }
 
+            // FIX: Set skipKnowledge back to TRUE to prevent deadlocking, 
+            // since we manually injected the knowledge into the prompt above!
             const composeResult = await llmCall(composePrompt, { skipKnowledge: true, timeoutMs: 30_000, model: composeModel });
             const composed = composeResult?.data?.text?.trim();
             if (composed && composed.length > 2) {

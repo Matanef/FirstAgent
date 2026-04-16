@@ -162,6 +162,17 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     return { mode: "task", confidence: 1.0, reason: "explicit_obsidian_override" };
   }
 
+// ── STRICT CODE-INTROSPECTION OVERRIDE ───────────────────────
+  // "where/how do I (set|configure|change|...) the X in the Y" — questions ABOUT our own code.
+  // Without this override, such queries score zero on task/chat patterns and stick to chat mode
+  // during an active conversation, losing the planner's codeRag routing entirely.
+  if (
+    /\b(where|how)\b.*?\b(do\s+(i|we)|can\s+(i|we)|to)\s+(set|configure|change|update|find|modify|edit|adjust|tweak|override)\b/i.test(lower) &&
+    /\b(skill|tool|module|agent|pipeline|planner|executor|tier|prompt|config|setting|variable|function|class|route|router|manifest|budget|threshold|timeout|param(?:eter)?|synthesizer|harvester|analyzer|writer|bootstrapper|matcher|extractor|detector|codebase|repo|repository)\b/i.test(lower)
+  ) {
+    return { mode: "task", confidence: 0.95, reason: "explicit_code_introspection_override" };
+  }
+
   // ── STATE-AWARE ROUTING ──────────────────────────────────────
   // Check for pending conversational states BEFORE anything else.
   // "send it", "cancel", "confirm" etc. must route to task when a draft is pending.

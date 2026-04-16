@@ -582,4 +582,8 @@ function bootstrapSchedules() {
 }
 
 // Delay bootstrap to let other modules initialize
-setTimeout(bootstrapSchedules, 3000);
+if (!process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === '0') {
+    setTimeout(bootstrapSchedules, 3000);
+} else {
+    console.log("[scheduler] Secondary instance detected, skipping bootstrap to prevent double-firing.");
+}

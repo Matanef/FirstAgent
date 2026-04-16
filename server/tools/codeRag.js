@@ -553,14 +553,61 @@ export async function codeRag(request) {
       };
     }
 
-    // ── Format results ──
+// ── Format results ──
     let output = `🔍 **Code Search: "${query}"**\n_Searched ${totalChunks} chunks (index: ${indexAge})_\n\n`;
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
+      let displayCode = r.code;
+      let displayStartLine = r.startLine;
+      let displayEndLine = r.endLine;
+
+      try {
+        // ========================================================
+        // 1. CONTEXT EXPANSION (Read physical file and grab +/- 15 lines)
+        // ========================================================
+        const fullFilePath = path.join(PROJECT_ROOT, r.file);
+        const fileContent = await fs.readFile(fullFilePath, "utf8");
+        const lines = fileContent.split("\n");
+
+        // Convert 1-based line numbers to 0-based array indexes, expand by 15
+        const expandedStartIdx = Math.max(0, r.startLine - 1 - 15);
+        const expandedEndIdx = Math.min(lines.length, r.endLine + 15);
+
+        let expandedLines = lines.slice(expandedStartIdx, expandedEndIdx);
+        displayStartLine = expandedStartIdx + 1; // Back to 1-based
+
+        // ========================================================
+        // 2. OUTPUT TRUNCATION (Idiot-Proofing the UI)
+        // ========================================================
+        const MAX_LINES = 30;
+        const MAX_CHARS = 1500;
+        let isTruncated = false;
+
+        if (expandedLines.length > MAX_LINES) {
+          expandedLines = expandedLines.slice(0, MAX_LINES);
+          isTruncated = true;
+        }
+        
+        displayEndLine = displayStartLine + expandedLines.length - 1;
+        displayCode = expandedLines.join("\n");
+
+        if (displayCode.length > MAX_CHARS) {
+          displayCode = displayCode.substring(0, MAX_CHARS);
+          isTruncated = true;
+        }
+
+        if (isTruncated) {
+          displayCode += "\n// ... rest of the object/code";
+        }
+      } catch (err) {
+        // Fallback to the raw AST chunk if the file read fails
+        displayCode = r.code.slice(0, 1500);
+      }
+
       output += `**${i + 1}. ${r.file}** → \`${r.name}\` (${r.type}) — score: ${r.score}\n`;
-      output += `Lines ${r.startLine}–${r.endLine}\n`;
-      output += `\`\`\`javascript\n${r.code.slice(0, 1500)}\n\`\`\`\n\n`;
+      output += `Lines ${displayStartLine}–${displayEndLine}\n`;
+      output += `\`\`\`javascript\n${displayCode}\n\`\`\`\n\n`;
     }
 
     return {

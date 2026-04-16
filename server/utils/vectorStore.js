@@ -296,13 +296,67 @@ export async function search(collection, query, limit = 5) {
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map(d => ({
-    text: d.text,
-    score: d.score,
-    metadata: d.metadata,
-    docId: d.docId,
-    chunkIndex: d.chunkIndex,
-  }));
+  // Get the top hits
+  const topHits = scored.slice(0, limit);
+
+  return topHits.map(d => {
+    // ========================================================
+    // 1. CONTEXT EXPANSION (Grab chunk before & after)
+    // ========================================================
+    const prev = docs.find(x => x.docId === d.docId && x.chunkIndex === d.chunkIndex - 1);
+    const next = docs.find(x => x.docId === d.docId && x.chunkIndex === d.chunkIndex + 1);
+
+    let expandedText = d.text;
+
+    // Cleanly prepend the previous chunk (removing duplicate overlap)
+    if (prev) {
+      const overlap = (prev.offset + prev.text.length) - d.offset;
+      expandedText = (overlap > 0 && overlap < prev.text.length)
+        ? prev.text.substring(0, prev.text.length - overlap) + expandedText
+        : prev.text + "\n" + expandedText;
+    }
+
+    // Cleanly append the next chunk (removing duplicate overlap)
+    if (next) {
+      const overlap = (d.offset + d.text.length) - next.offset;
+      expandedText = (overlap > 0 && overlap < next.text.length)
+        ? expandedText + next.text.substring(overlap)
+        : expandedText + "\n" + next.text;
+    }
+
+    // ========================================================
+    // 2. OUTPUT TRUNCATION (Idiot-Proofing the UI)
+    // ========================================================
+    const MAX_LINES = 30;   // Max lines to show in UI
+    const MAX_CHARS = 1500; // Max characters to show in UI
+
+    let finalLines = expandedText.split("\n");
+    let isTruncated = false;
+
+    if (finalLines.length > MAX_LINES) {
+      finalLines = finalLines.slice(0, MAX_LINES);
+      isTruncated = true;
+    }
+
+    let finalText = finalLines.join("\n");
+
+    if (finalText.length > MAX_CHARS) {
+      finalText = finalText.substring(0, MAX_CHARS);
+      isTruncated = true;
+    }
+
+    if (isTruncated) {
+      finalText += "\n\n// ... rest of the object/code";
+    }
+
+    return {
+      text: finalText,
+      score: d.score,
+      metadata: d.metadata,
+      docId: d.docId,
+      chunkIndex: d.chunkIndex,
+    };
+  });
 }
 
 /**
