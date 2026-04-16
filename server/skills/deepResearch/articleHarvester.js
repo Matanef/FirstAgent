@@ -12,6 +12,9 @@ import path from "path";
 import crypto from "crypto";
 import { CONFIG, PROJECT_ROOT } from "../../utils/config.js";
 import { stripHtmlToText, extractPdfText } from "../../utils/obsidianUtils.js";
+import { createLogger } from "../../utils/logger.js";
+
+const log = createLogger("articleHarvester", { consoleLevel: "warn" });
 
 const CACHE_DIR = path.resolve(PROJECT_ROOT, "data", "research-cache");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -39,6 +42,18 @@ function determineDomains(topic) {
 }
 
 /**
+ * Normalize a title for near-duplicate detection (same story across hosts).
+ * Lowercase, strip punctuation, collapse whitespace.
+ */
+export function normalizeTitleForDedup(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
  * Harvest articles for a single prompt.
  *
  * @param {string} prompt
@@ -49,7 +64,8 @@ function determineDomains(topic) {
  * @param {string[]} [opts.prioritySources]   subject's priority_sources — if set, ONLY these providers are queried
  * @param {string[]} [opts.skipDomains]       hostnames to drop
  * @param {string[]} [opts.preferDomains]     hostnames to upweight in dedupe ordering
- * @param {Set<string>} [opts.seenUrls]       cross-prompt dedupe set (mutated in-place)
+ * @param {Set<string>} [opts.seenUrls]       cross-prompt URL dedupe set (mutated in-place)
+ * @param {Set<string>} [opts.seenTitles]     cross-prompt normalized-title dedupe set (mutated in-place)
  * @returns {Promise<Array<{url, title, content, domain, source, fetchedAt, fromCache}>>}
  */
 export async function harvest(prompt, opts = {}) {
@@ -60,7 +76,8 @@ export async function harvest(prompt, opts = {}) {
     prioritySources = null,
     skipDomains = [],
     preferDomains = [],
-    seenUrls = new Set()
+    seenUrls = new Set(),
+    seenTitles = new Set()
   } = opts;
 
   const skipSet   = new Set((skipDomains || []).map(s => s.toLowerCase()));
@@ -85,14 +102,18 @@ export async function harvest(prompt, opts = {}) {
     if (s.status === "fulfilled" && Array.isArray(s.value)) collected.push(...s.value);
   }
 
-  // De-dupe by URL (cross-prompt aware via shared seenUrls), drop skipDomains
+  // De-dupe by URL AND normalized title (cross-prompt aware), drop skipDomains
   const uniq = [];
   for (const item of collected) {
     if (!item?.url) continue;
     if (seenUrls.has(item.url)) continue;
     const host = safeHost(item.url);
     if (host && skipSet.has(host)) continue;
+    // Title-based cross-host dedup (same story re-published on multiple domains)
+    const normTitle = normalizeTitleForDedup(item.title);
+    if (normTitle && seenTitles.has(normTitle)) continue;
     seenUrls.add(item.url);
+    if (normTitle) seenTitles.add(normTitle);
     item.domain = item.domain || host;
     uniq.push(item);
   }
@@ -261,20 +282,30 @@ async function fetchSerpResults(query, limit) {
   } catch { return []; }
 }
 
+/**
+ * Phase 2F — fetch a page with retry on transient errors.
+ * First attempt: 18s timeout. Retry (if ECONNRESET/ETIMEDOUT/5xx): 15s.
+ * Returns stripped text (up to 8000 chars) or "" on failure.
+ */
 async function fetchPage(url) {
   try {
-    const r = await axios.get(url, {
-      timeout: 12000,
-      maxRedirects: 3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; LanouResearchBot/1.0)",
-        "Accept": "text/html,application/xhtml+xml"
-      },
-      maxContentLength: 500 * 1024
-    });
-    const html = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
-    return stripHtmlToText(html).slice(0, 8000);
-  } catch { return ""; }
+    return await withRetry(async () => {
+      const r = await axios.get(url, {
+        timeout: 18000,
+        maxRedirects: 4,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; LanouResearchBot/1.0; academic use)",
+          "Accept": "text/html,application/xhtml+xml,*/*"
+        },
+        maxContentLength: 600 * 1024
+      });
+      const html = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      return stripHtmlToText(html).slice(0, 8000);
+    }, 2, 2500);
+  } catch (err) {
+    log(`fetchPage failed (${url}): ${err.message}`, "warn");
+    return "";
+  }
 }
 
 // ───────────────────────────── helpers ─────────────────────────────

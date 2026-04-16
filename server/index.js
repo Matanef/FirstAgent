@@ -24,6 +24,10 @@ import browseRoutes from "./routes/browse.js";
 import whatsappWebhook from "./routes/whatsappWebhook.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import { loadSkills } from "./executor.js";
+import { createLogger } from "./utils/logger.js";
+
+// File-only request log — high-frequency endpoints (dashboard, /api/logs) stay out of PM2 stdout
+const requestLog = createLogger("express", { silent: true });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,14 +57,22 @@ app.use(express.json({
 app.use("/", oauthCallback);
 
 
-// Request logging with IP extraction
+// Request logging with IP extraction.
+// All requests → logs/express/<date>.log (silent: file only, no PM2 flood).
+// High-signal requests (chat, files, webhooks) also → PM2 console.warn so they
+// remain visible without the 15-second /api/dashboard poll cluttering the stream.
+const SILENT_PATHS = new Set(["/api/dashboard", "/dashboard"]);
 app.use((req, res, next) => {
   const clientIp =
     req.headers["x-forwarded-for"]?.split(",")[0] ||
     req.ip ||
     req.connection?.remoteAddress;
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${clientIp}`);
   req.clientIp = clientIp;
+  requestLog(`${req.method} ${req.path} - IP: ${clientIp}`, "info");
+  // Echo important routes to PM2 stdout so they remain searchable in `pm2 logs`
+  if (!SILENT_PATHS.has(req.path) && req.method !== "GET") {
+    console.log(`[express] ${req.method} ${req.path} - IP: ${clientIp}`);
+  }
   next();
 });
 

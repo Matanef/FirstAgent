@@ -1,5 +1,9 @@
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
+import { createLogger } from "../utils/logger.js";
+
+// Silent logger: lifecycle info goes to logs/llm/ only, never to PM2 stdout
+const log = createLogger("llm", { silent: false, consoleLevel: "warn" });
 
 // ── GEMINI API BACKEND ──
 // Used for Hebrew/Arabic/multilingual prose where local models fail.
@@ -13,7 +17,7 @@ async function getGenAI() {
     _genai = new GoogleGenAI({});
     return _genai;
   } catch {
-    console.warn("[llm] @google/genai not available, Gemini disabled");
+    log("[llm] @google/genai not available, Gemini disabled", "warn");
     return null;
   }
 }
@@ -32,7 +36,7 @@ async function callGemini(prompt, timeoutMs = 120_000) {
     // Configurable via .env: GEMINI_MODEL=gemini-3-flash-preview (default: gemini-2.5-flash)
     const geminiModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const startTime = performance.now();
-    console.log(`🧠 [LLM] Sending prompt to ${geminiModel} (${prompt.length} chars)...`);
+    log(`Sending prompt to ${geminiModel} (${prompt.length} chars)`, "info");
 
     const response = await ai.models.generateContent({
       model: geminiModel,
@@ -41,7 +45,7 @@ async function callGemini(prompt, timeoutMs = 120_000) {
 
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
     const text = response.text || "";
-    console.log(`⏱️ [LLM] Gemini response received in ${elapsed}s (${text.length} chars)`);
+    log(`Gemini response in ${elapsed}s (${text.length} chars)`, "info");
 
     if (!text) {
       return { tool: "llm", success: false, final: true, data: { text: "Gemini returned an empty response." } };
@@ -78,7 +82,7 @@ export function geminiStatus() {
  */
 function tripGeminiBreaker(seconds) {
   _geminiCooldownUntil = Date.now() + seconds * 1000;
-  console.warn(`🔌 [llm] Gemini circuit breaker tripped — skipping API calls for ${seconds}s`);
+  log(`Gemini circuit breaker tripped — skipping API calls for ${seconds}s`, "warn");
 }
 
 // Expose for direct use by tools that want Gemini specifically
@@ -164,7 +168,7 @@ export async function llm(prompt, configOptions = {}) {
     const status = geminiStatus();
     if (status.coolingDown) {
       // Circuit breaker is active — skip API entirely, go straight to Ollama
-      console.warn(`🔌 [llm] Gemini circuit breaker active (${status.remainingSec}s left) — using local Ollama`);
+      log(`Gemini circuit breaker active (${status.remainingSec}s left) — using local Ollama`, "warn");
     } else {
       try {
         return await callGemini(prompt, timeoutMs);
@@ -180,13 +184,13 @@ export async function llm(prompt, configOptions = {}) {
           const googleSuggestedSec = retryMatch ? Number(retryMatch[1]) : 0;
           const cooldownSec = Math.max(300, googleSuggestedSec); // At least 5 minutes
           tripGeminiBreaker(cooldownSec);
-          console.warn(`[llm] Gemini 429 (quota) — falling back to local Ollama for ${cooldownSec}s`);
+          log(`Gemini 429 (quota) — falling back to local Ollama for ${cooldownSec}s`, "warn");
         } else if (is503) {
           // Server overloaded — moderate cooldown, it might recover
           tripGeminiBreaker(120);
-          console.warn(`[llm] Gemini 503 (overloaded) — falling back to local Ollama for 120s`);
+          log(`Gemini 503 (overloaded) — falling back to local Ollama for 120s`, "warn");
         } else {
-          console.warn(`[llm] Gemini failed (${errMsg}), falling back to local Ollama`);
+          log(`Gemini failed (${errMsg}), falling back to local Ollama`, "warn");
         }
         // Fall through to Ollama
       }
@@ -215,7 +219,7 @@ export async function llm(prompt, configOptions = {}) {
           finalPrompt = `${prefix}\n\n---\n\n${prompt}`;
         }
       } catch (e) {
-        console.warn("[llm] Context injection failed:", e.message);
+        log(`Context injection failed: ${e.message}`, "warn");
       }
     }
 
@@ -231,12 +235,12 @@ export async function llm(prompt, configOptions = {}) {
     };
 
     const llmStartTime = performance.now();
-    console.log(`🧠 [LLM] Sending prompt to ${ollamaModel}...`);
+    log(`Sending prompt to ${ollamaModel} (${finalPrompt.length} chars)`, "info");
 
     const response = await fetchWithTimeout(url, body, timeoutMs, externalSignal);
 
     const llmEndTime = performance.now();
-    console.log(`⏱️ [LLM] Response received in ${((llmEndTime - llmStartTime) / 1000).toFixed(2)}s`);
+    log(`Response received in ${((llmEndTime - llmStartTime) / 1000).toFixed(2)}s`, "info");
 
     const text =
       response?.response ||
@@ -263,10 +267,10 @@ export async function llm(prompt, configOptions = {}) {
 
   } catch (err) {
     if (err.name === 'AbortError') {
-        console.log("🛑 [LLM] Request aborted safely.");
+        log("Request aborted safely", "info");
         return { success: false, error: "Aborted" };
       }
-    console.error("[llm] Error:", err);
+    log(`Error: ${err.message}`, "error");
     return {
       tool: "llm",
       success: false,
@@ -364,10 +368,10 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
 
   } catch (err) {
     if (err.name === 'AbortError') {
-        console.log("🛑 [LLM] Request aborted safely.");
+        log("Stream aborted safely", "info");
         return { success: false, error: "Aborted" };
       }
-    console.error("[llmStream] Error:", err);
+    log(`llmStream error: ${err.message}`, "error");
     if (err.name === "AbortError") {
       return { success: false, error: `LLM stream timed out after ${timeoutMs}ms` };
     }

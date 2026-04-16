@@ -30,8 +30,105 @@ import * as articleAnalyzer from "./articleAnalyzer.js";
 import * as conclusionWriter from "./conclusionWriter.js";
 import * as promptRollup from "./promptRollup.js";
 import * as thesisSynthesizer from "./thesisSynthesizer.js";
+import { createLogger } from "../../utils/logger.js";
 
 const TOOL_NAME = "deepResearch";
+const log = createLogger("deepResearch");
+
+function safeJsonParse(text) {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch {}
+  const m = text.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch {} }
+  return null;
+}
+
+// ── Source dedup helpers (Phase 1B) ─────────────────────────────────────────
+/** Token-set Jaccard similarity on normalized title strings. */
+function jaccardSim(normA, normB) {
+  if (!normA || !normB) return 0;
+  const sa = new Set(normA.split(" ")), sb = new Set(normB.split(" "));
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  return inter / (sa.size + sb.size - inter);
+}
+
+/**
+ * Collapse analyses whose normalized titles have Jaccard > 0.85.
+ * When two analyses are near-duplicates, keep the one with higher relevance score.
+ */
+function dedupAnalysesByTitle(analyses) {
+  const kept = [];
+  for (const cand of analyses) {
+    const normTitle = articleHarvester.normalizeTitleForDedup(cand.frontmatter?.title || "");
+    let dupIdx = -1;
+    for (let k = 0; k < kept.length; k++) {
+      const kt = articleHarvester.normalizeTitleForDedup(kept[k].frontmatter?.title || "");
+      if (jaccardSim(normTitle, kt) > 0.85) { dupIdx = k; break; }
+    }
+    if (dupIdx === -1) {
+      kept.push(cand);
+    } else {
+      // Replace with the higher-relevance one
+      const candRel = cand.analysis?.relevance ?? 0;
+      const keptRel = kept[dupIdx].analysis?.relevance ?? 0;
+      if (candRel > keptRel) kept[dupIdx] = cand;
+    }
+  }
+  return kept;
+}
+
+function titleCaseFallback(s) {
+  return String(s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map(w => w.length >= 2 ? (w[0].toUpperCase() + w.slice(1).toLowerCase()) : w)
+    .join(" ");
+}
+
+/**
+ * Derive a clean academic title and a sane slug from the raw research topic.
+ * Single short LLM call + deterministic fallbacks. slugify() re-applied to the
+ * LLM output so pathological responses can't produce unsafe paths.
+ */
+async function deriveTitleAndSlug(rawTopic, tier) {
+  const prompt = `You are naming a ${tier}-level academic research write-up.
+
+Raw topic from the user: """${rawTopic}"""
+
+Produce:
+- title: a clean, readable academic title (<= 80 characters). Correct obvious typos (e.g. "mater" -> "matter"). Preserve the original language. No trailing punctuation.
+- slug: a url-safe lowercase-kebab-case slug (<= 50 characters). Letters and digits only, separated by single dashes. Strip articles ("the","a","an","and"). No trailing dashes.
+
+Return JSON only:
+{ "title": "string", "slug": "string" }`;
+
+  let parsed = null;
+  try {
+    const res = await llm(prompt, {
+      timeoutMs: 15000,
+      format: "json",
+      skipKnowledge: true,
+      skipLanguageDetection: true,
+      options: { temperature: 0.2, num_ctx: 1024 }
+    });
+    parsed = safeJsonParse(res?.data?.text || "");
+  } catch (err) {
+    log(`deriveTitleAndSlug LLM call failed: ${err.message}`, "warn");
+  }
+
+  let title = String(parsed?.title || "").trim();
+  let slug  = String(parsed?.slug  || "").trim();
+
+  if (!title || title.length > 120) title = titleCaseFallback(rawTopic).slice(0, 80);
+  if (!slug) slug = sourceDirectory.slugify(rawTopic);
+  // Always run the LLM slug through our canonical slugify() so the 50-char hash
+  // rule and the Hebrew-preserving character class are enforced.
+  slug = sourceDirectory.slugify(slug);
+
+  return { title, slug };
+}
 
 /**
  * Strip noise tokens to recover the bare research topic.
@@ -97,7 +194,7 @@ export async function deepResearch(request) {
           originalRequest: { text, context: { ...context, _pendingResume: true } }
         });
       } catch (err) {
-        console.warn("[deepResearch] setPendingQuestion failed:", err.message);
+        log(`setPendingQuestion failed: ${err.message}`, "warn");
       }
       return {
         tool: TOOL_NAME,
@@ -108,34 +205,50 @@ export async function deepResearch(request) {
       };
     }
     // No conversationId — degrade gracefully to article tier.
-    console.warn("[deepResearch] no tier and no conversationId — defaulting to article");
+    log("no tier and no conversationId — defaulting to article", "warn");
   }
   const effectiveTier = tier || "article";
 
   try {
     // ── Step 3: keyword extraction ─────────────────────────────────────────
+    log(`step=keywordExtract topic="${rawTopic}"`, "info");
     const extracted = await keywordExtractor.extract(rawTopic);
+    log(`step=keywordExtract done tokens=${extracted.tokens?.length} phrases=${extracted.phrases?.length} bigrams=${extracted.bigrams?.length}`, "info");
 
     // ── Step 4: subject matching with bounded bootstrap ────────────────────
+    log("step=subjectMatch", "info");
     let directory = await sourceDirectory.load();
     let matches = subjectMatcher.rank(extracted, directory.subjects, { limit: 6, maxCandidates: 12 });
     let bootstrap = null;
     if (matches.length === 0) {
+      log("step=subjectBootstrap (no match — bootstrapping new subject)", "info");
       bootstrap = await subjectBootstrapper.bootstrap(rawTopic, extracted, directory.subjects);
       directory = await sourceDirectory.load();
       matches = subjectMatcher.rank(extracted, directory.subjects, { limit: 6, maxCandidates: 12 });
     }
+    log(`step=subjectMatch done matches=${matches.length} topScore=${matches[0]?.score ?? "n/a"}`, "info");
 
     // The "active" subject for this run: nearest match if topic similarity is high,
-    // otherwise the bootstrapped slug, otherwise a freshly slugified topic.
+    // otherwise the bootstrapped slug, otherwise a freshly derived clean slug.
+    // LLM-derived title + slug pair gives readable folder names AND clean thesis titles.
+    const derived = await deriveTitleAndSlug(rawTopic, effectiveTier);
     const activeSlug = bootstrap?.slug
       || (matches[0] && matches[0].score >= 4 ? matches[0].slug : null)
-      || sourceDirectory.slugify(rawTopic);
+      || derived.slug;
+    const cleanTitle = derived.title;
+    log(`derived title="${cleanTitle}" slug="${activeSlug}" tier=${effectiveTier}`, "info");
 
     // Ensure subject entry exists (no-op merge if it does).
+    // Phase 1E — prefer multi-word phrases over single tokens so the keyword
+    // index maps "dark matter" and "gravitational lensing" not just "dark"/"matter".
+    const richKeywords = [
+      ...(extracted.phrases || []),
+      ...(extracted.bigrams  || []).slice(0, 8),
+      ...(extracted.tokens   || []).slice(0, 15)
+    ].filter((k, i, a) => k && a.indexOf(k) === i).slice(0, 35); // dedupe + cap
     await sourceDirectory.upsertSubject(activeSlug, {
       topic: rawTopic,
-      keywords: extracted.tokens.slice(0, 30),
+      keywords: richKeywords,
       depth: effectiveTier,
       lastResearched: new Date().toISOString()
     });
@@ -151,7 +264,8 @@ export async function deepResearch(request) {
 
     // ── Step 6: per-prompt write-as-you-go pipeline ────────────────────────
     const constraints = await loadAgentConstraints();
-    const seenUrls = new Set();
+    const seenUrls   = new Set();
+    const seenTitles = new Set(); // cross-prompt normalized-title dedup
     const promptResults = [];
     const maxPerPrompt = constraints.research.maxArticlesPerPrompt || 7;
     const tierLimits = { article: 3, indepth: 4, research: 6, thesis: 7 };
@@ -177,10 +291,11 @@ export async function deepResearch(request) {
         await writeNote(`${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/${promptIndex}/prompt.md`,
           fm + `# Prompt ${promptIndex}: ${promptSpec.query}\n\n_Harvesting articles…_\n`);
       } catch (err) {
-        console.warn(`[deepResearch] initial prompt.md write failed: ${err.message}`);
+        log(`initial prompt.md write failed: ${err.message}`, "warn");
       }
 
       // Harvest
+      log(`step=harvest prompt=${promptIndex} query="${promptSpec.query.slice(0, 80)}"`, "info");
       let articles = [];
       try {
         articles = await articleHarvester.harvest(promptSpec.query, {
@@ -190,11 +305,13 @@ export async function deepResearch(request) {
           prioritySources: subject?.priority_sources?.length ? subject.priority_sources : null,
           skipDomains: constraints.research.skipDomains || [],
           preferDomains: constraints.research.preferDomains || [],
-          seenUrls
+          seenUrls,
+          seenTitles
         });
       } catch (err) {
-        console.warn(`[deepResearch] harvest failed for prompt ${promptIndex}: ${err.message}`);
+        log(`step=harvest prompt=${promptIndex} error="${err.message}"`, "warn");
       }
+      log(`step=harvest prompt=${promptIndex} done articles=${articles.length}`, "info");
 
       // Local library scan for the first prompt only (cheap supplement).
       if (promptIndex === 1) {
@@ -209,6 +326,8 @@ export async function deepResearch(request) {
       // Per-article LLM analysis (sequential to respect 7B model limits)
       const analyses = [];
       for (let i = 0; i < articles.length; i++) {
+        const artUrl = articles[i]?.url || "(unknown)";
+        log(`step=analyze prompt=${promptIndex} article=${i + 1}/${articles.length} url="${artUrl.slice(0, 100)}"`, "info");
         try {
           const r = await articleAnalyzer.analyze({
             article: articles[i],
@@ -219,12 +338,54 @@ export async function deepResearch(request) {
             constraints
           });
           analyses.push(r);
+          log(`step=analyze prompt=${promptIndex} article=${i + 1} done relevance=${r.analysis?.relevance?.toFixed(2)} facts=${r.analysis?.facts?.length}`, "info");
         } catch (err) {
-          console.warn(`[deepResearch] analyze failed for ${articles[i]?.url}: ${err.message}`);
+          log(`step=analyze prompt=${promptIndex} article=${i + 1} url="${artUrl}" error="${err.message}"`, "warn");
+        }
+      }
+
+      // ── Phase 1B: Jaccard title dedup + self-review retry ─────────────────
+      let dedupedAnalyses = dedupAnalysesByTitle(analyses);
+      const minSurvivors = Math.ceil(articlesPerPrompt * 0.7);
+      log(`prompt ${promptIndex}: ${analyses.length} raw → ${dedupedAnalyses.length} after title-dedup (min=${minSurvivors})`, "info");
+
+      if (dedupedAnalyses.length < minSurvivors) {
+        log(`prompt ${promptIndex}: self-review retry (only ${dedupedAnalyses.length}/${minSurvivors} survived dedup)`, "warn");
+        try {
+          const retryArticles = await articleHarvester.harvest(promptSpec.query, {
+            topic: rawTopic,
+            limit: articlesPerPrompt,
+            perProvider: Math.max(2, Math.ceil(articlesPerPrompt / 2)),
+            prioritySources: subject?.priority_sources?.length ? subject.priority_sources : null,
+            skipDomains: constraints.research.skipDomains || [],
+            preferDomains: constraints.research.preferDomains || [],
+            seenUrls,
+            seenTitles
+          });
+          for (let ri = 0; ri < retryArticles.length; ri++) {
+            try {
+              const r = await articleAnalyzer.analyze({
+                article: retryArticles[ri],
+                topic: rawTopic,
+                topicSlug: activeSlug,
+                promptIndex,
+                articleIndex: analyses.length + ri + 1,
+                constraints
+              });
+              analyses.push(r);
+            } catch (err) {
+              log(`retry analyze failed ${retryArticles[ri]?.url}: ${err.message}`, "warn");
+            }
+          }
+          dedupedAnalyses = dedupAnalysesByTitle(analyses);
+          log(`prompt ${promptIndex}: after retry → ${dedupedAnalyses.length} analyses`, "info");
+        } catch (err) {
+          log(`prompt ${promptIndex}: retry harvest failed: ${err.message}`, "warn");
         }
       }
 
       // Conclusion + vector collection
+      log(`step=conclusionWriter prompt=${promptIndex} analyses=${dedupedAnalyses.length}`, "info");
       let conclusionResult = { conclusion: null, collectionName: conclusionWriter.articlesCollectionName(activeSlug, promptIndex), relativePath: null };
       try {
         conclusionResult = await conclusionWriter.write({
@@ -232,17 +393,18 @@ export async function deepResearch(request) {
           topicSlug: activeSlug,
           promptIndex,
           promptSpec,
-          analyses,
+          analyses: dedupedAnalyses,
           constraints
         });
+        log(`step=conclusionWriter prompt=${promptIndex} done path="${conclusionResult.relativePath}"`, "info");
       } catch (err) {
-        console.warn(`[deepResearch] conclusionWriter failed: ${err.message}`);
+        log(`step=conclusionWriter prompt=${promptIndex} error="${err.message}" stack="${err.stack}"`, "warn");
       }
 
       promptResults.push({
         promptIndex,
         promptSpec,
-        analyses,
+        analyses: dedupedAnalyses,   // deduplicated list used by rollup + thesis
         conclusion: conclusionResult.conclusion,
         collectionName: conclusionResult.collectionName,
         conclusionPath: conclusionResult.relativePath
@@ -261,34 +423,40 @@ export async function deepResearch(request) {
           collectionName: pr.collectionName
         });
       } catch (err) {
-        console.warn(`[deepResearch] rewritePrompt failed for ${pr.promptIndex}: ${err.message}`);
+        log(`rewritePrompt failed for ${pr.promptIndex}: ${err.message}`, "warn");
       }
     }
+    log(`step=writeMaster prompts=${promptResults.length}`, "info");
     let masterInfo = null;
     try {
       masterInfo = await promptRollup.writeMaster({
         topic: rawTopic,
         topicSlug: activeSlug,
+        cleanTitle,
         tier: effectiveTier,
         promptResults,
         relatedMatches: matches
       });
+      log(`step=writeMaster done path="${masterInfo?.relativePath}"`, "info");
     } catch (err) {
-      console.warn(`[deepResearch] writeMaster failed: ${err.message}`);
+      log(`step=writeMaster error="${err.message}" stack="${err.stack}"`, "error");
     }
 
     // ── Step 9: chunked thesis synthesis ───────────────────────────────────
+    log(`step=thesisSynthesizer tier=${effectiveTier} sections=pending`, "info");
     let thesisInfo = null;
     try {
       thesisInfo = await thesisSynthesizer.synthesize({
         topic: rawTopic,
         topicSlug: activeSlug,
+        cleanTitle,
         tier: effectiveTier,
         promptResults,
         constraints
       });
+      log(`step=thesisSynthesizer done words=${thesisInfo?.wordCount} stubs=${thesisInfo?.createdStubs?.length ?? 0}`, "info");
     } catch (err) {
-      console.warn(`[deepResearch] thesisSynthesizer failed: ${err.message}`);
+      log(`step=thesisSynthesizer error="${err.message}" stack="${err.stack}"`, "error");
     }
 
     // Persist source-count update
@@ -328,7 +496,7 @@ export async function deepResearch(request) {
       }
     };
   } catch (err) {
-    console.error("[deepResearch] pipeline failed:", err);
+    log(`pipeline failed: ${err.stack || err.message}`, "error");
     return {
       tool: TOOL_NAME,
       success: false,

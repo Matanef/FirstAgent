@@ -11,6 +11,9 @@ import {
   addDocument,
   deleteCollection
 } from "../../utils/vectorStore.js";
+import { createLogger } from "../../utils/logger.js";
+
+const log = createLogger("conclusionWriter", { consoleLevel: "warn" });
 
 function safeJsonParse(text) {
   if (!text) return null;
@@ -48,7 +51,19 @@ export async function write({ topic, topicSlug, promptIndex, promptSpec, analyse
 
   for (const a of analyses) {
     const meta = a.frontmatter || {};
-    const blob = `${a.analysis.summary}\n\nFacts:\n${(a.analysis.facts || []).map(f => `- ${f}`).join("\n")}`;
+    // Phase 3A — richer RAG blob: include entities and key facts so vector search
+    // can match on specific names, numbers, and findings — not just the summary sentence.
+    const entitiesLine = (a.analysis.entities || []).length
+      ? `\nKey entities: ${a.analysis.entities.join(", ")}`
+      : "";
+    const factsBlock = (a.analysis.facts || []).map(f => `- ${f}`).join("\n");
+    const blob = [
+      `Title: ${(meta.title || "").replace(/^"|"$/g, "")}`,
+      `Summary: ${a.analysis.summary}`,
+      entitiesLine,
+      factsBlock ? `\nFacts:\n${factsBlock}` : ""
+    ].filter(Boolean).join("\n");
+
     try {
       await addDocument(collectionName, blob, {
         title: meta.title,
@@ -57,11 +72,16 @@ export async function write({ topic, topicSlug, promptIndex, promptSpec, analyse
         source: meta.source,
         relevance: a.analysis.relevance,
         stance: a.analysis.stance,
+        entities: a.analysis.entities || [],
+        facts: (a.analysis.facts || []).slice(0, 5),
         articlePath: a.relativePath,
+        // Phase 3A — include paper upgrade metadata so RAG knows if this came from a real paper
+        paper_url:    meta.paper_url || null,
+        paper_doi:    meta.paper_doi || null,
         promptIndex
       });
     } catch (err) {
-      console.warn(`[conclusionWriter] addDocument failed for ${meta.url}: ${err.message}`);
+      log(`addDocument failed for ${meta.url}: ${err.message}`, "warn");
     }
   }
 
@@ -112,11 +132,18 @@ ${articleLinks || "_(none)_"}
 }
 
 async function synthesizeConclusion(topic, promptSpec, analyses) {
-  if (analyses.length === 0) {
+  // Phase 2F — exclude articles that failed all LLM analysis attempts
+  const usable = analyses.filter(a => a.analysis?.quality !== "failed");
+  if (usable.length === 0) {
+    const failedCount = analyses.length - usable.length;
+    log(`synthesizeConclusion: all ${failedCount} analyses are quality=failed for prompt "${promptSpec.query}"`, "warn");
     return { summary: "No usable sources were found for this prompt.", commonalities: [], contradictions: [], reasoning: [], openQuestions: [] };
   }
+  if (usable.length < analyses.length) {
+    log(`synthesizeConclusion: excluded ${analyses.length - usable.length} quality=failed analyses, using ${usable.length}/${analyses.length}`, "warn");
+  }
 
-  const blocks = analyses.map((a, i) => {
+  const blocks = usable.map((a, i) => {
     const t = a.frontmatter?.title?.replace(/^"|"$/g, "") || `Article ${i + 1}`;
     const facts = (a.analysis.facts || []).slice(0, 5).map(f => `  - ${f}`).join("\n");
     return `[Article ${i + 1}] ${t}\n  Summary: ${a.analysis.summary}\n  Stance: ${a.analysis.stance}\n  Facts:\n${facts}`;

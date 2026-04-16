@@ -122,7 +122,9 @@ const FALLBACK_CONSTRAINTS = {
     maxArticlesPerPrompt: 7,
     minFactsPerArticle: 3,
     skipDomains: [],
-    preferDomains: []
+    preferDomains: ["sciencedaily.com"],
+    thinArticleMinChars: 800,
+    thinArticleMinFacts: 2
   }
 };
 
@@ -336,12 +338,18 @@ export function buildBibliography(articleNotes) {
   unique.sort((a, b) => (a.title || a.source || "").localeCompare(b.title || b.source || ""));
 
   const lines = unique.map((a, i) => {
-    const title = a.title || "(untitled)";
-    const url = a.url ? ` <${a.url}>` : "";
+    const title  = (a.title || "(untitled)").replace(/^"|"$/g, "");
+    // Phase 3A — prefer the upgraded paper URL when present
+    const citUrl = a.paper_url || a.url || "";
+    const urlStr = citUrl ? ` <${citUrl}>` : "";
     const source = a.source ? ` — *${a.source}*` : "";
-    const date = a.date ? ` (${a.date.slice(0, 10)})` : "";
+    const date   = a.date ? ` (${a.date.slice(0, 10)})` : "";
     const authors = a.authors ? `${a.authors}. ` : "";
-    return `${i + 1}. ${authors}${title}${source}${date}.${url}`;
+    // Annotate source kind so readers know whether citation is a research paper or a web article
+    const kindBadge = a.paper_url || a.paper_doi
+      ? " **(paper)**"
+      : a.paper_source === "html" ? " *(OA landing)*" : " *(web)*";
+    return `${i + 1}. ${authors}${title}${source}${date}${kindBadge}.${urlStr}`;
   });
   return `## Bibliography\n\n${lines.join("\n")}\n`;
 }

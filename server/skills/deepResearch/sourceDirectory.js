@@ -148,10 +148,66 @@ async function _writeAtomic(data) {
   }
 }
 
+// ── Phase 1E: inverse keyword index ──────────────────────────────────────
+/**
+ * Build the top-level keywordIndex from all subjects.
+ * Maps each keyword token → sorted array of slugs that list it.
+ * Only tokens with length ≥ 3 are indexed.
+ *
+ * @param {Record<string,object>} subjects
+ * @returns {Record<string, string[]>}
+ */
+export function buildKeywordIndex(subjects) {
+  const idx = {};
+
+  function addToken(token, slug) {
+    if (!token || token.length < 3) return;
+    if (!idx[token]) idx[token] = [];
+    if (!idx[token].includes(slug)) idx[token].push(slug);
+  }
+
+  for (const [slug, subj] of Object.entries(subjects || {})) {
+    const phrases = [
+      ...(subj.keywords || []),
+      ...(subj.aliases || [])
+    ];
+    for (const kw of phrases) {
+      const clean = String(kw || "").toLowerCase().trim();
+      if (!clean) continue;
+      // Index the full phrase (spaces collapsed → single token, e.g. "darkmatter")
+      const compacted = clean.replace(/[^\p{L}\p{N}]+/gu, "");
+      addToken(compacted, slug);
+      // Also index each individual word (e.g. "dark", "matter") for single-word lookups
+      for (const word of clean.split(/\s+/)) {
+        const w = word.replace(/[^\p{L}\p{N}]/gu, "");
+        addToken(w, slug);
+      }
+    }
+  }
+
+  // Sort each slug list for deterministic output
+  for (const k of Object.keys(idx)) idx[k].sort();
+  return idx;
+}
+
+/**
+ * Look up which slugs are tagged with a given keyword token.
+ *
+ * @param {string} keyword   raw keyword (will be normalized)
+ * @returns {Promise<string[]>}
+ */
+export async function lookupKeyword(keyword) {
+  const data = await load();
+  const token = String(keyword || "").toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, "");
+  return (data.keywordIndex || {})[token] || [];
+}
+
 export async function save(data) {
   return await _withLock(async () => {
     if (!data || typeof data !== "object") throw new Error("save: data must be object");
     if (!data.subjects || typeof data.subjects !== "object") data.subjects = {};
+    // Rebuild inverse index on every write
+    data.keywordIndex = buildKeywordIndex(data.subjects);
     data._meta = { ...(data._meta || {}), version: 2, lastWritten: new Date().toISOString() };
     await _writeAtomic(data);
     return true;
@@ -166,6 +222,8 @@ export async function update(mutator) {
   return await _withLock(async () => {
     const data = await load();
     const next = (await mutator(data)) || data;
+    // Rebuild inverse index on every write
+    next.keywordIndex = buildKeywordIndex(next.subjects || {});
     next._meta = { ...(next._meta || {}), version: 2, lastWritten: new Date().toISOString() };
     await _writeAtomic(next);
     return next;
@@ -263,4 +321,4 @@ export function getPath() { return SOURCES_FILE; }
 // Synchronous existence check (used by some quick paths)
 export function fileExists() { return fsSync.existsSync(SOURCES_FILE); }
 
-export const _internals = { migrateSubject, normalizeDomains, mergeDomains, mergeUnique };
+export const _internals = { migrateSubject, normalizeDomains, mergeDomains, mergeUnique, buildKeywordIndex };

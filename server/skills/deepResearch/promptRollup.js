@@ -6,6 +6,9 @@
 
 import { writeNote, buildFrontmatter, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
 import { updateGraph } from "./sourceDirectory.js";
+import { createLogger } from "../../utils/logger.js";
+
+const log = createLogger("promptRollup", { consoleLevel: "warn" });
 
 /**
  * Per-prompt rewrite: replace the original prompt.md with one that includes the rollup.
@@ -74,7 +77,8 @@ ${articleLinks || "_(no articles)_"}
  * @param {Array}  args.promptResults    [{promptSpec, promptIndex, analyses, conclusion, collectionName, relativePath:promptPath}]
  * @param {Array<{slug,score}>} args.relatedMatches   matches found at start of run
  */
-export async function writeMaster({ topic, topicSlug, tier, promptResults, relatedMatches = [] }) {
+export async function writeMaster({ topic, topicSlug, cleanTitle, tier, promptResults, relatedMatches = [] }) {
+  const displayTitle = (cleanTitle && cleanTitle.trim()) || topic;
   // Aggregate metrics.
   const totalArticles = promptResults.reduce((s, p) => s + p.analyses.length, 0);
   const allRelevances = promptResults.flatMap(p => p.analyses.map(a => a.analysis.relevance));
@@ -90,11 +94,11 @@ export async function writeMaster({ topic, topicSlug, tier, promptResults, relat
 
   // Persist to sources file.
   try { await updateGraph(topicSlug, { connectivity, relatedness }); }
-  catch (err) { console.warn("[promptRollup] updateGraph failed:", err.message); }
+  catch (err) { log(`updateGraph failed: ${err.message}`, "warn"); }
 
   // Build _master.md
   const fm = buildFrontmatter({
-    title: `"${topic} — Research Master"`,
+    title: `"${displayTitle} — Research Master"`,
     type: "research-master",
     tier,
     prompt_count: promptResults.length,
@@ -125,7 +129,7 @@ export async function writeMaster({ topic, topicSlug, tier, promptResults, relat
     .map(([slug, prox]) => `- [[${slug}]] (proximity ${(prox * 100).toFixed(0)}%)`)
     .join("\n") || "_(none — this is a new subject island)_";
 
-  const body = `# ${topic} — Research Master
+  const body = `# ${displayTitle} — Research Master
 
 > [!summary] Run overview
 > - **Tier:** ${tier}
@@ -144,7 +148,7 @@ ${domainsBlock}
 ${relatedBlock}
 
 ## Final synthesis
-The thesis-level write-up is at [[${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/${topicSlug}|${topic}]].
+The thesis-level write-up is at [[${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/${topicSlug}|${displayTitle}]].
 `;
 
   const relativePath = `${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/_master.md`;
