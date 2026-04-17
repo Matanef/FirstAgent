@@ -162,6 +162,16 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     return { mode: "task", confidence: 1.0, reason: "explicit_obsidian_override" };
   }
 
+  // ── STRICT SELF-IMPROVEMENT INTROSPECTION OVERRIDE ───────────
+  // "what have you improved lately?", "have you improved recently?" — must reach selfImprovement
+  // tool. Without this, the chat classifier's personal-question patterns score it as chat (0.8)
+  // and the planner's technical override never runs.
+  if (
+    /\b(what\s+have\s+you\s+improved|what\s+did\s+you\s+improve|have\s+you\s+(improved|changed|updated)\s+recently|improved\s+lately|what\s+(changes?|updates?)\s+(have\s+you|did\s+you)\s+made?|recently\s+(improved|changed|updated))\b/i.test(lower)
+  ) {
+    return { mode: "task", confidence: 0.95, reason: "introspection_selfimprove" };
+  }
+
 // ── STRICT CODE-INTROSPECTION OVERRIDE ───────────────────────
   // "where/how do I (set|configure|change|...) the X in the Y" — questions ABOUT our own code.
   // Without this override, such queries score zero on task/chat patterns and stick to chat mode

@@ -67,6 +67,23 @@ export async function memorytool(request) {
   const contactUpdateMatch = lower.match(/(?:remember|save|update|set|store)?\s*(\w+?)[''\u2019]?s?\s+(phone|email|e-mail|address|number|whatsapp)\s+(?:is|number\s+is|to|as|=)\s+(.+)/i);
   if (contactUpdateMatch) {
     const [, contactName, field, value] = contactUpdateMatch;
+
+    // Guard: if the "contact name" is a self-referential pronoun, this is actually
+    // a profile field update (e.g., "my email is X" → save to profile, not a "My" contact).
+    if (["my", "i", "me", "myself"].includes(contactName.toLowerCase())) {
+      const fieldName = (field === "number" || field === "whatsapp") ? "phone" : (field === "e-mail" ? "email" : field.toLowerCase());
+      const cleanValue = value.trim().replace(/[.!]+$/, '');
+      const memory = await getMemory();
+      if (!memory.profile) memory.profile = {};
+      memory.profile[fieldName] = cleanValue;
+      await saveJSON(MEMORY_FILE, memory);
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `I've saved your ${fieldName} as "${cleanValue}".` }
+      };
+    }
     const memory = await getMemory();
     if (!memory.profile) memory.profile = {};
     if (!memory.profile.contacts) memory.profile.contacts = {};

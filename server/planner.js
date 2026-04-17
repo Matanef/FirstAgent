@@ -517,6 +517,14 @@ const ROUTING_TABLE = [
     description: "Moltbook operations and interactions"
   },
   {
+    tool: "systemMonitor",
+    priority: 90,
+    match: (lower) =>
+      /\b(system\s+health(\s+check)?|health\s+check|server\s+status|server\s+health|cpu\s+usage|memory\s+usage|disk\s+usage|process\s+monitor|system\s+monitor|system\s+performance|pm2\s+status|resource\s+usage|system\s+resources?)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    description: "System health, CPU/memory/disk monitoring, server/PM2 status"
+  },
+  {
     tool: "githubScanner",
     priority: 88,
     match: (lower, trimmed) =>
@@ -803,7 +811,9 @@ const ROUTING_TABLE = [
     tool: "x",
     priority: 60,
     match: (lower) =>
-      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower),
+      /\b(tweet|twitter|trending\s+on\s+x|x\s+trends?|twitter\s+trends?|tweets?\s+(about|from|by)|top\s+tweets?|x\s+posts?|complaint|pain\s*point|post\s+(on|to)\s+(x|twitter))\b/i.test(lower) ||
+      // Also catch: "analyze tweets sentiment about X", "tweet sentiment", "100 tweets about X"
+      (/\b(tweet|twitter)\b/i.test(lower) && /\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)),
     guard: (lower, trimmed) => {
       const isScheduling = /\b(schedules?|recurring|cron|hourly|daily|weekly|every\s+\d)\b/i.test(lower);
       const isMultiToolChain = /\b(google\s*sheet|spreadsheet|append|aggregate|categorize\s+.*(save|write|sheet)|save\s+to\s+(sheet|sheets))\b/i.test(lower);
@@ -856,7 +866,8 @@ const ROUTING_TABLE = [
     tool: "nlp_tool",
     priority: 55,
     match: (lower) => /\b(sentiment|analyze\s+text|text\s+analysis|classify\s+text|extract\s+entities|named\s+entities|NER)\b/i.test(lower),
-    guard: (lower) => hasCompoundIntent(lower),
+    // Guard: if "tweet" or "twitter" is mentioned, defer to x tool (higher priority, real data)
+    guard: (lower) => hasCompoundIntent(lower) || /\b(tweet|twitter|x\s+posts?)\b/i.test(lower),
     description: "NLP text analysis, sentiment, entity extraction"
   },
 
@@ -1835,7 +1846,8 @@ const rawMessage = (message || "").trim();
 if (
     !isSchedulingIntent &&
     !/\b(codetransform|filewrite|filereview)\b/i.test(lower) && (
-      /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) || 
+      /\b(self[- ]?evolve|evolution[- ]?cycle)\b/i.test(lower) ||
+      /\bevolve\s+(your|my|the|our|this)\s+\w+/i.test(lower) ||
       (/\.js\b/.test(lower) && /\b(specifically|force\s+run|evolve)\b/i.test(lower))
     )
   ) {
@@ -1879,8 +1891,11 @@ if (
   }
 
 // ── UNIFIED MCP ROUTING: Handles priority and context detection ──
-if (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) || 
-   (/\bgithub\b/i.test(lower) && /\b(search|find|list\s+tools|call|mcp)\b/i.test(lower))) {
+// Guard: compound requests should NOT be grabbed here (they need multi-step routing).
+// E.g., "Look at GitHub repos and evolve your planner" is a compound, not an MCP query.
+if (!hasCompoundIntent(lower) &&
+   (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
+   (/\bgithub\b/i.test(lower) && /\b(search|find|list\s+tools|call|mcp)\b/i.test(lower)))) {
     
     console.log("[planner] Priority Routing: mcpBridge");
     const mcpContext = { source: "priority_routing" };

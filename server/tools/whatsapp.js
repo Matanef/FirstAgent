@@ -876,11 +876,17 @@ RULES:
 - Match the requested tone exactly.`;
 
 
-            // Pick a model that can handle the target language
+            // Pick a model that can handle the target language.
+            // Detect Hebrew/Arabic from the actual user message text, not just the contact label,
+            // so circuit-breaker fallback lands on aya-expanse:8b instead of the default model.
             let composeModel;
             try {
               const { pickModelForContent } = await import("./llm.js");
-              const langHint = recipientContext.includes("Hebrew") ? "שלום" : composePrompt;
+              const rawUserText = typeof request === "string" ? request : (request?.text || "");
+              const hebrewCharCount = (rawUserText.match(/[\u0590-\u05FF]/g) || []).length;
+              const arabicCharCount = (rawUserText.match(/[\u0600-\u06FF]/g) || []).length;
+              const isRtlContent = hebrewCharCount > 3 || arabicCharCount > 3 || recipientContext.includes("Hebrew") || recipientContext.includes("Arabic");
+              const langHint = isRtlContent ? "שלום" : composePrompt;
               composeModel = pickModelForContent(langHint);
             } catch { /* fallback to default */ }
 

@@ -13,7 +13,14 @@ const DOWNLOAD_DIR = path.resolve("D:/local-llm-ui/downloads");
  */
 async function downloadFile(url, filename) {
   try {
-    const response = await fetch(url);
+    // Use a real browser User-Agent to avoid bot-detection redirects / alternative content
+    const fetchHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "identity"
+    };
+    const response = await fetch(url, { headers: fetchHeaders });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -179,8 +186,25 @@ export async function webDownload(request) {
           const pageTitle = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : '';
           extractedTitle = pageTitle;
 
+          // Try to isolate the main article content before generic stripping.
+          // Many pages have sidebars/digests early in the HTML that pollute extraction.
+          const semanticPatterns = [
+            /<article[^>]*>([\s\S]*?)<\/article>/i,
+            /<main[^>]*>([\s\S]*?)<\/main>/i,
+            /<div[^>]*\bclass="[^"]*(?:article[-_]body|post[-_]content|entry[-_]content|story[-_]body|article[-_]content|news[-_]body|content[-_]body|main[-_]content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+            /<div[^>]*\bid="[^"]*(?:article[-_]body|post[-_]content|entry[-_]content|story[-_]body|article[-_]content|main[-_]content|content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+          ];
+          let sourceHtml = fullContent;
+          for (const pat of semanticPatterns) {
+            const m = fullContent.match(pat);
+            if (m && m[1] && m[1].length > 500) {
+              sourceHtml = m[1];
+              break;
+            }
+          }
+
           // Strip scripts, styles, nav, header, footer, then tags
-          plainText = fullContent
+          plainText = sourceHtml
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
             .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')

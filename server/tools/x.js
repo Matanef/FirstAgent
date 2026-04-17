@@ -119,6 +119,11 @@ function detectXIntent(text) {
 
 function extractSearchQuery(text) {
   let query = text
+    // Strip "Analyze N tweets sentiment about", "100 tweets sentiment about", etc.
+    .replace(/\banalyze\s+\d+\s+tweets?\s+(?:sentiment\s+)?(?:about|on|for|regarding)\s*/gi, "")
+    .replace(/\b\d+\s+tweets?\s+(?:sentiment\s+)?(?:about|on|for|regarding)\s*/gi, "")
+    .replace(/\bsentiment\s+(?:analysis\s+)?(?:of|about|for)\s+tweets?\s+(?:about|on|for|regarding)?\s*/gi, "")
+    .replace(/\banalyze\s+(?:tweets?\s+)?(?:sentiment\s+)?(?:about|on|for|regarding)\s*/gi, "")
     .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(tweets?|posts?|x\s+posts?)\s*(about|on|for|regarding|related\s+to)?\s*/gi, "")
     .replace(/\b(search|find|get|show|look\s+up|fetch)\s+(x|twitter)\s+(for|about)\s*/gi, "")
     .replace(/\b(search|find|get)\s+(for|about)\s*/gi, "")
