@@ -21,7 +21,7 @@ import { listCollections, search as vectorSearch, getCollectionStats } from "../
 import * as sourceDirectory from "../skills/deepResearch/sourceDirectory.js";
 import { extract as extractKeywords } from "../skills/deepResearch/keywordExtractor.js";
 import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
-import { classifyIntent } from "../utils/intentClassifier.js";
+import { classifyIntent, classifyIntentWithRoutingOverride } from "../utils/intentClassifier.js";
 import { buildUserToneInstruction } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js"; 
 
@@ -300,7 +300,7 @@ async function buildUserContext(conversationId, message = "") {
 // If yes, it delegates to the taskAgent SILENTLY (onChunk: null),
 // grabs the data, and returns it to be injected into the prompt.
 async function resolveWithTools(message, options, recentTurns) {
-  const classification = classifyIntent(message, recentTurns, options.fileIds);
+  const classification = await classifyIntentWithRoutingOverride(message, recentTurns, options.fileIds);
   console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence}, reason=${classification.reason}`);
 
   if (classification.mode === "task") {

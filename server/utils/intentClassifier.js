@@ -315,3 +315,48 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   // Default to task (user expects actions)
   return { mode: "task", confidence: 0.5, reason: "ambiguous_default_task" };
 }
+
+/**
+ * Async wrapper around classifyIntent that consults the routing table for
+ * high-confidence tool matches. If a rule with priority ≥ 70 fires, it
+ * overrides a weak chat classification so the planner handles the message
+ * instead of keeping it inside chatAgent.
+ *
+ * Threshold rationale:
+ *   Priority ≥ 70 → Tier 3+ (email, weather, calendar, x, finance, sports,
+ *     youtube, news, memory, code tools) — specific enough to trust over chat.
+ *   Priority < 70 → broad catch-alls (search, llm fallback) — too noisy to
+ *     override chat, would swallow real conversational turns.
+ *
+ * Uses dynamic import to avoid circular dep at module load time.
+ *
+ * @param {string} message
+ * @param {Array}  recentHistory
+ * @param {Array}  fileIds
+ * @returns {Promise<{ mode: "chat"|"task", confidence: number, reason: string }>}
+ */
+export async function classifyIntentWithRoutingOverride(message, recentHistory = [], fileIds = []) {
+  const result = classifyIntent(message, recentHistory, fileIds);
+
+  // Only challenge weak chat classifications — high-confidence chat and all
+  // task classifications pass straight through.
+  if (result.mode !== "chat" || result.confidence >= 0.9) return result;
+
+  try {
+    const { evaluateRoutingTable } = await import("../routing/index.js");
+    const lower   = (message || "").trim().toLowerCase();
+    const trimmed = (message || "").trim();
+    const routingMatch = await evaluateRoutingTable(lower, trimmed, {});
+
+    if (routingMatch?.[0]?.priority >= 70) {
+      const tool = routingMatch[0].tool;
+      console.log(`[intentClassifier] Routing override: "${tool}" (priority ${routingMatch[0].priority}) beats chat (${result.confidence.toFixed(2)})`);
+      return { mode: "task", confidence: 0.85, reason: `routing_table_override_${tool}` };
+    }
+  } catch (e) {
+    // routing module not yet loaded or import failed — fall back to original result
+    console.warn("[intentClassifier] Routing override check failed:", e.message);
+  }
+
+  return result;
+}
