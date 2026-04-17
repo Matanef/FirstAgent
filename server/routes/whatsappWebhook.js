@@ -202,8 +202,7 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
       return;
     }
 
-    // Incoming message
-    const message = value?.messages?.[0];
+    // Incoming message (already extracted above as `message`)
     if (!message) return;
     if (message.type !== "text") {
       console.log(`📱 [WhatsApp] Received ${message.type} (non-text) — skipping`);
