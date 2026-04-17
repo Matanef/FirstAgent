@@ -8,7 +8,7 @@ import { llm } from "./llm.js";
 import { loadReviewCache, saveReviewCache } from "../utils/cacheReview.js"
 import { validateCode } from "../utils/codeValidator.js";
 
-const FAST_REVIEW_MODEL = process.env.FAST_REVIEW_MODEL || "qwen2.5-coder:14b";   // <— FAST MODEL FOR ALL CODE REVIEWS
+const FAST_REVIEW_MODEL = process.env.FAST_REVIEW_MODEL || "qwen2.5-coder:7b";   // <— FAST MODEL FOR ALL CODE REVIEWS
 const FILE_TIMEOUT = Number(process.env.FILE_TIMEOUT) || 300_000;            // 60s per file
 const ARCH_TIMEOUT = Number(process.env.ARCH_TIMEOUT) || 600_000;            // 90s for architecture review
 

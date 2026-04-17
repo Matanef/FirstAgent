@@ -362,6 +362,8 @@ body {
 }
 
 .message-role {
+  font-family: 'DisposableDroid BB', monospace;
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -392,9 +394,12 @@ body {
 }
 
 .message-text {
+  font-family: 'DisposableDroid BB', monospace;
+  font-size: 0.84rem;
   white-space: pre-wrap;
   word-wrap: break-word;
   line-height: 1.7;
+  word-spacing: -0.17rem;
 }
 
 .message-note {
@@ -1579,14 +1584,15 @@ body {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.875rem 1rem;
+  padding: 0.4rem 1rem;
   color: var(--text-primary);
-  font-size: 1rem;
-  font-family: inherit;
+  font-size: 0.9rem;
+  font-family: 'DisposableDroid BB', monospace;
   resize: none;
   max-height: 120px;
   transition: border-color 0.2s;
   width: 1475px;
+  word-spacing: -0.17rem;
 }
 
 .message-input:focus {

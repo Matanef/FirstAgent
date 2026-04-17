@@ -3,10 +3,37 @@
 // TWO-WAY LOOP: incoming message → agent pipeline → auto-reply via WhatsApp
 // STATEFUL CONVERSATIONS: greeting, weather, news categories, calendar, tasks
 
+import fs from "fs"; // Ensure fs is imported
+import path from "path";
+import { PROJECT_ROOT } from "../utils/config.js";
 import express from "express";
 import crypto from "crypto";
 import { getState, setState, clearState, touchConversationWindow } from "../utils/whatsappState.js";
 import { getUserByPhone, buildUserToneInstruction } from "../utils/userProfiles.js";
+
+async function releasePendingMessages(phone, sendWhatsAppMessage) {
+  const pendingFile = path.resolve(PROJECT_ROOT, "data", "pending_whatsapp.json");
+  if (!fs.existsSync(pendingFile)) return;
+
+  try {
+    const data = JSON.parse(fs.readFileSync(pendingFile, "utf8"));
+    const messages = data[phone];
+
+    if (messages && messages.length > 0) {
+      console.log(`🚀 [WhatsApp] Releasing ${messages.length} pending messages for ${phone}`);
+      
+      for (const msg of messages) {
+        await sendWhatsAppMessage(phone, msg.text);
+        await new Promise(r => setTimeout(r, 1000)); // Delay between messages
+      }
+
+      delete data[phone]; // Clear the stash for this user
+      fs.writeFileSync(pendingFile, JSON.stringify(data, null, 2));
+    }
+  } catch (e) {
+    console.error("❌ [WhatsApp] Release failed:", e.message);
+  }
+}
 
 const router = express.Router();
 
@@ -159,6 +186,7 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
+    const message = value?.messages?.[0];
 
     // Status updates (delivered, read, failed, etc.) — log details and skip
     if (value?.statuses) {
@@ -182,28 +210,27 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
       return;
     }
 
-    const messageId = message.id;
+const messageId = message.id;
     const from = message.from;
     const body = message.text?.body || "";
-    const contactName = value?.contacts?.[0]?.profile?.name || "Unknown";
-    const timestamp = new Date(parseInt(message.timestamp) * 1000).toLocaleString();
 
     // ── DUPLICATE GUARD ──
-    if (processedMessages.has(messageId)) {
-      console.log(`📱 [WhatsApp] Duplicate ${messageId} — skipping`);
-      return;
-    }
+    if (processedMessages.has(messageId)) return;
     trackMessage(messageId);
 
-    // ── 24-HOUR WINDOW: record that this user messaged us ──
+    // ── 24-HOUR WINDOW ──
     touchConversationWindow(from);
+
+    // ── PREPARE WHATSAPP TOOL (Moved up here to avoid double-declaration) ──
+    const { sendWhatsAppMessage: _sendWA } = await import("../tools/whatsapp.js");
+    const sendWhatsAppMessage = (to, text) => _sendWA(to, text, { skipWindowCheck: true });
+
+    // ── RELEASE PENDING MESSAGES (Option 1 Trigger) ──
+    await releasePendingMessages(from, sendWhatsAppMessage);
 
     // ── LOOP GUARD ──
     const botNumber = process.env.WHATSAPP_BOT_NUMBER || process.env.WHATSAPP_PHONE_ID;
-    if (from === botNumber) {
-      console.log("[WhatsApp] Skipping self-sent (loop guard)");
-      return;
-    }
+    if (from === botNumber) return;
 
     // ── EMPTY GUARD ──
     if (!body.trim()) return;
@@ -216,9 +243,7 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
     console.log(`📱 [WhatsApp] From: ${displayName} (${from})${userProfile ? ` [${userProfile.role}]` : ""} → "${body}"`);
     console.log("─".repeat(60));
 
-    const { sendWhatsAppMessage: _sendWA } = await import("../tools/whatsapp.js");
     // All webhook replies are responses to an incoming message — window is guaranteed open.
-    const sendWhatsAppMessage = (to, text) => _sendWA(to, text, { skipWindowCheck: true });
     const lower = body.trim().toLowerCase();
 
     // ──────────────────────────────────────────────────────

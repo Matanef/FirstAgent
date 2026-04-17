@@ -268,20 +268,34 @@ export default function SmartContent({ message, conversationId }) {
                 </>
             );
 
-        case "code":
-            const codeMatch = (message.content || "").match(/```(\w+)?\n([\s\S]*?)```/);
-            if (codeMatch) {
-                // Extract text before and after the code block
-                const fullContent = message.content || "";
-                const codeBlockFull = codeMatch[0];
-                const idx = fullContent.indexOf(codeBlockFull);
-                const textBefore = fullContent.substring(0, idx).trim();
-                const textAfter = fullContent.substring(idx + codeBlockFull.length).trim();
+        case "code": {
+            // Parse ALL fenced code blocks, not just the first. The previous implementation
+            // matched a single block then dumped the remainder as plain text, which caused
+            // subsequent ```blocks``` to render as literal backticks in chat output.
+            const fullContent = message.content || "";
+            const blockRe = /```(\w+)?\n?([\s\S]*?)```/g;
+            const parts = [];
+            let lastIndex = 0;
+            let m;
+            while ((m = blockRe.exec(fullContent)) !== null) {
+                if (m.index > lastIndex) {
+                    const txt = fullContent.substring(lastIndex, m.index).trim();
+                    if (txt) parts.push({ kind: "text", value: txt });
+                }
+                parts.push({ kind: "code", language: m[1] || "text", code: m[2] });
+                lastIndex = m.index + m[0].length;
+            }
+            if (lastIndex < fullContent.length) {
+                const tail = fullContent.substring(lastIndex).trim();
+                if (tail) parts.push({ kind: "text", value: tail });
+            }
+            if (parts.length > 0) {
                 return (
                     <>
-                        {textBefore && <div className="message-text" style={{ marginBottom: "0.5rem" }}>{textBefore}</div>}
-                        <CodeBlock code={codeMatch[2]} language={codeMatch[1] || "text"} />
-                        {textAfter && <div className="message-text" style={{ marginTop: "0.5rem" }}>{textAfter}</div>}
+                        {parts.map((p, i) => p.kind === "code"
+                            ? <CodeBlock key={i} code={p.code} language={p.language} />
+                            : <div key={i} className="message-text" style={{ margin: "0.5rem 0", whiteSpace: "pre-wrap" }}>{p.value}</div>
+                        )}
                     </>
                 );
             }
@@ -299,6 +313,7 @@ export default function SmartContent({ message, conversationId }) {
                 );
             }
             return <div className="message-text">{message.content}</div>;
+        }
 
         case "filesystem":
             return (

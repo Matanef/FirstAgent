@@ -583,7 +583,7 @@ Comprehensive code review covering quality, security, performance, and architect
 
 **Example prompts:**
 1. `"Code review D:/project/server"` — Full review of a directory
-2. `"Security audit of my server code"` — Security-focused review
+2. `"Security audit of my D:/local-llm-ui/server code"` — Security-focused review
 3. `"Check for code smells in the tools folder"` — Quality review
 4. `"Architecture review of the planner"` — Architecture analysis
 
@@ -658,6 +658,11 @@ Local Retrieval-Augmented Generation for the codebase. Chunks code into semantic
 3. `"Reindex the codebase"` — Rebuild embeddings
 4. `"Search the codebase for error handling patterns"` — Pattern search
 5. `"Where in the code is weather data fetched?"` — Feature location
+6. `reindex code` -	Rebuild the full code index
+7. `reindex the codebase` - Same
+8. `build code index` -	Same
+9. `code rag index` - Same
+10. `code rag rebuild` - Same
 
 ---
 
@@ -1923,3 +1928,23 @@ These contain first-person pronouns but are tool requests:
 29. `"I think the stock price of Tesla is interesting, show me"` → [finance] (tool intent)
 30. `"I feel like checking my emails"` → [email] (tool intent)
 31. `"Show me what I have on my calendar tomorrow"` → [calendar] (tool intent)
+
+
+
+### deepResearch
+
+. [depth:article] Ethernet vs. Wi-Fi 7 for gaming latency
+   → Article tier, ~1500w, 3 prompts. Fastest end-to-end smoke test.
+
+2. Write a comprehensive in-depth guide to Obsidian Dataview queries.
+   → In-Depth tier, ~2200w, 4 prompts. Tests lexicon match + keyword extraction.
+
+3. [depth:research] Impact of GLP-1 agonists on non-diabetic weight loss
+   → Research tier, ~3500w, 4 prompts. Tests Europe PMC routing + academic structure.
+
+4. כתוב תזה על ההשפעה של עבודה מרחוק על תרבות ארגונית בהייטק הישראלי
+   → Thesis tier, Hebrew. Tests Hebrew keyword detection + unicode slug + chunked synthesis.
+
+5. Research LEO satellite latency
+   → NO depth keyword. Should trigger the pending-question; reply "3" or "research" and
+     the pipeline resumes with research tier. Tests the pause/resume hook end-to-end.

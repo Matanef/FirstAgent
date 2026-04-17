@@ -1056,17 +1056,20 @@ const ROUTING_TABLE = [
       // Hebrew/Arabic conversational catch-all: if the text is predominantly non-Latin,
       // route to llm instead of letting the tiny intent decomposer (which can't read Hebrew) hallucinate.
       // Only fires when NO higher-priority tool matched.
+      // 🚀 NEW: Catch short Hebrew affirmations like "כן", "אוקיי", "סבבה"
+      const shortAffirmation = /^(כן|סבבה|אוקיי|טוב|מעולה|אוקי|נכון)$/.test(trimmed);
+      
       const hebrew = (trimmed.match(/[\u0590-\u05FF]/g) || []).length;
-      const arabic = (trimmed.match(/[\u0600-\u06FF]/g) || []).length;
       const latin = (trimmed.match(/[a-zA-Z]/g) || []).length;
-      return (hebrew + arabic) > 3 && (hebrew + arabic) > latin;
+      
+      return shortAffirmation || ((hebrew > 1) && (hebrew > latin));
     },
     guard: (lower) =>
       // Don't catch tool-specific Hebrew commands (whatsapp, send, etc.) — those have dedicated routes
       // Note: \b doesn't work with Hebrew chars, so use lookahead/behind or just substring match
       /\b(whatsapp)\b/i.test(lower) || /(וואטסאפ|ווטסאפ)/.test(lower) ||
       /(^|\s)(שלח|תשלח|שלחי)(\s|$)/.test(lower),
-    description: "Hebrew/Arabic conversational — route to LLM (bypass tiny decomposer)"
+    description: "Hebrew conversational catch-all"
   },
 {
     tool: "search",

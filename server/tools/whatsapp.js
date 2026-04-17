@@ -8,7 +8,33 @@ import path from "path";
 import { PROJECT_ROOT } from "../utils/config.js";
 import { getConversationWindow } from "../utils/whatsappState.js";
 
+// ============================================================
+// Whatsapp Pending message - webhook trigger
+// ============================================================
+
+async function stashPendingMessage(phone, text) {
+  const pendingFile = path.resolve(PROJECT_ROOT, "data", "pending_whatsapp.json");
+  try {
+    let pendingData = {};
+    if (fs.existsSync(pendingFile)) {
+      pendingData = JSON.parse(fs.readFileSync(pendingFile, "utf8"));
+    }
+    
+    if (!pendingData[phone]) pendingData[phone] = [];
+    
+    // Don't stash duplicate identical messages
+    if (!pendingData[phone].some(m => m.text === text)) {
+      pendingData[phone].push({ text, timestamp: new Date().toISOString() });
+      fs.writeFileSync(pendingFile, JSON.stringify(pendingData, null, 2));
+      console.log(`📥 [WhatsApp] Stashed pending message for ${phone}`);
+    }
+  } catch (e) {
+    console.error("❌ [WhatsApp] Failed to stash message:", e.message);
+  }
+}
+
 const WHATSAPP_API = "https://graph.facebook.com/v18.0";
+
 
 // ============================================================
 // PHONE NUMBER NORMALIZATION
@@ -322,21 +348,31 @@ async function sendTemplateMessage(cleanedNumber, text) {
   // This handles templates with unknown parameter counts gracefully.
   const attempts = [];
 
-// Attempt 1: configured template WITH body parameter
-  if (text && templateName !== "hello_world") {
-    attempts.push({
-      label: `${templateName} (with param)`,
-      payload: {
-        messaging_product: "whatsapp", to: cleanedNumber, type: "template",
-        template: {
-          name: templateName,
-          language: { code: templateLang },
-          // Send a tiny string so Meta accepts it as a "Name"
-          components: [{ type: "body", parameters: [{ type: "text", text: "Lanou" }] }]
+// Attempt 1: Named Variable + Full Template Structure
+attempts.push({
+  label: `${templateName} (Named Var + Structure)`,
+  payload: {
+    messaging_product: "whatsapp",
+    to: cleanedNumber,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: "he" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            {
+              type: "text",
+              parameter_name: "updater_name", // 👈 This MUST match your screenshot exactly
+              text: "מערכת לנו"
+            }
+          ]
         }
-      }
-    });
+      ]
+    }
   }
+});
 
   // Attempt 2: configured template WITHOUT parameters (template has no {{1}} placeholders)
   if (templateName !== "hello_world") {
@@ -344,7 +380,7 @@ async function sendTemplateMessage(cleanedNumber, text) {
       label: `${templateName} (no params)`,
       payload: {
         messaging_product: "whatsapp", to: cleanedNumber, type: "template",
-        template: { name: templateName, language: { code: templateLang } }
+        template: { name: templateName, language: { code: "he" } }
       }
     });
   }
@@ -357,6 +393,24 @@ async function sendTemplateMessage(cleanedNumber, text) {
       template: { name: "hello_world", language: { code: "en_US" } }
     }
   });
+
+  // Attempt 4: No components at all (Standard for some Approved templates)
+  attempts.push({
+    label: `${templateName} (Minimalist)`,
+    payload: {
+      messaging_product: "whatsapp",
+      to: cleanedNumber,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "he" }
+      }
+    }
+  });
+
+  if (attempts.length > 0) {
+    console.log("🔍 WHATSAPP PAYLOAD ATTEMPT 1:", JSON.stringify(attempts[0].payload, null, 2));
+  }
 
   let lastError = "";
   for (const attempt of attempts) {
@@ -444,6 +498,7 @@ export async function sendWhatsAppMessage(to, text, opts = {}) {
       } catch (err) {
         // Follow-up failed (no real window) — template was still delivered
         console.warn(`⚠️ [WhatsApp] Follow-up text failed (expected if no real window): ${err.response?.data?.error?.message || err.message}`);
+        await stashPendingMessage(cleanedNumber, text);
         return {
           success: true,
           to: cleanedNumber,
