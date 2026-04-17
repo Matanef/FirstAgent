@@ -8,6 +8,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { llm } from "./llm.js";
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -145,10 +146,67 @@ async function selfImprovement(request) {
       const oldest = sortedTs.length ? sortedTs[sortedTs.length - 1].toLocaleDateString() : "—";
       const newest = sortedTs.length ? sortedTs[0].toLocaleDateString() : "—";
 
+      // ── LLM SELF-REFLECTION ──
+      // Ask the LLM to reason about the changes in first-person.
+      // This is "on-demand understanding": the agent reasons about its own history
+      // right now, but this knowledge is NOT carried into other conversations.
+      let reflectionHtml = "";
+      let reflectionText = "";
+      try {
+        const changesSummary = improvements
+          .slice(0, 10)
+          .map((imp, i) => `${i + 1}. [${imp.category}] ${imp.action}${imp.reason ? ` — ${imp.reason}` : ""}`)
+          .join("\n");
+
+        const reflectionPrompt = `You are Lanou, an AI agent. Below is a log of recent changes made to your own code and behavior.
+Read each change and write a short first-person reflection (3–5 sentences) that:
+1. Summarizes what was improved in plain language
+2. Explains WHY these changes matter for how you work
+3. Is honest — if a change fixes a bug you had, say so
+
+Recent changes to my code:
+${changesSummary}
+
+Write your reflection in first person ("I improved...", "I fixed...", "I now handle...").
+Be specific and direct. No preamble like "Here is my reflection:".`;
+
+        const llmResult = await llm(reflectionPrompt, {
+          skipKnowledge: true,
+          timeoutMs: 30_000,
+          temperature: 0.4
+        });
+        const reflectionRaw = llmResult?.data?.text?.trim() || "";
+        if (reflectionRaw.length > 20) {
+          reflectionText = reflectionRaw;
+          reflectionHtml = `
+            <div class="self-reflection" style="
+              background: var(--bg-secondary);
+              border-left: 3px solid var(--accent);
+              border-radius: 6px;
+              padding: 1rem 1.2rem;
+              margin-bottom: 1.2rem;
+              font-size: 0.92rem;
+              line-height: 1.6;
+              color: var(--text-primary);
+            ">
+              <div style="font-size:0.78rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">
+                🧠 My understanding of these changes
+              </div>
+              <div>${reflectionRaw.replace(/\n/g, "<br>")}</div>
+              <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.6rem;font-style:italic;">
+                Note: this reflection is reasoned on demand from the change log — it does not persist into other conversations.
+              </div>
+            </div>`;
+        }
+      } catch (e) {
+        // LLM reflection is best-effort — don't fail the whole response
+      }
+
       // Build HTML report
       const html = `
         <div class="improvements-report">
           <h2>🔧 Recent Self-Improvements</h2>
+          ${reflectionHtml}
           <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:1rem;">
             Showing ${improvements.length} improvements from <strong>${oldest}</strong> to <strong>${newest}</strong>.
             Sources: git commits, self-evolution cycles, and logged improvements.
@@ -183,7 +241,8 @@ async function selfImprovement(request) {
         final: true,
         data: {
           html,
-          text: `Recent improvements:\n\n${text}\n\n(Showing ${Math.min(10, improvements.length)} of ${improvements.length} total)`,
+          text: (reflectionText ? `My reflection on recent changes:\n\n${reflectionText}\n\n---\n\n` : "") +
+                `Recent improvements:\n\n${text}\n\n(Showing ${Math.min(10, improvements.length)} of ${improvements.length} total)`,
           improvements
         }
       };
