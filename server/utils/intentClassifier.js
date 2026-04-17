@@ -133,12 +133,18 @@ const TASK_PATTERNS = [
   /\b(translate|convert|transform)\b/i,
   /\b(download|upload|install|npm)\b/i,
   /\b(run|execute|start|stop)\s+(the\s+)?(workflow|briefing|market\s+check)\b/i,
-  /\b(delete|remove|cancel)\b/i,
+  // delete/remove/cancel — require a task-specific object so "remove that idea" doesn't fire
+  /\b(delete|remove)\s+(the\s+|this\s+|a\s+|my\s+)?(event|meeting|appointment|task|reminder|file|note|record|entry|email|message|contact|alarm|workflow|schedule|item|row|column)\b/i,
+  /\b(cancel)\s+(the\s+|this\s+|a\s+|my\s+)?(event|meeting|appointment|task|order|booking|subscription|workflow|schedule|job|reminder)\b/i,
   // File paths
   /[a-z]:[\\/]/i,
   /\.{0,2}\/[\w.-]+\/[\w.-]+/,
-  // Math expressions
-  /\d\s*[+\-*/^]\s*\d/,
+  // Math expressions — treat + * / ^ as unambiguous; treat - carefully to avoid matching
+  // range notation like "3-4 prompts", "1-2 days", "100-200 items".
+  // Use full-number boundaries (lookbehind + lookahead) so "0-2" inside "100-200 items"
+  // doesn't sneak through, and reject if the result is followed by a word character.
+  /\d\s*[+*/^]\s*\d/,
+  /(?<!\d)\d+\s*-\s*\d+(?!\d)(?!\s*[a-zA-Z])/,
 ];
 
 /**
@@ -284,6 +290,20 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     chatScore += 1; // Mild boost — actively chatting and this message also has chat patterns
   } else if (taskScore === 0 && chatScore === 0 && recentChatCount >= 3 && isRecentConversation) {
     chatScore += 1; // Ambiguous message during active chat — slight lean toward chat
+  }
+
+  // RESILIENCE GUARD: A single weak task-pattern match during active chat is not enough to
+  // hijack the conversation. Bump chatScore so the ambiguous tie-break logic can resolve it,
+  // rather than hard-committing to mode=task at 0.8 confidence from one noisy signal.
+  // Excluded: explicit tool names (high-confidence), file attachments (user intent is clear),
+  // and code-introspection reasons (already guarded above with STRICT overrides).
+  if (
+    taskScore === 1 && chatScore === 0 &&
+    lastTurnWasChat && isRecentConversation &&
+    !taskReasons.some(r => r.startsWith("explicit_tool") || r.startsWith("attached_files"))
+  ) {
+    chatScore += 1; // Treat as ambiguous — let tie-break decide
+    chatReasons.push("weak_task_in_active_chat");
   }
   // When scores are tied AND we're in active chat, boost chat.
   // The user is sharing/conversing — a casual "news" mention shouldn't override distress signals.
