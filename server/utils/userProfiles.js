@@ -15,7 +15,7 @@ const DEFAULT_PROFILES = {
     nameHe: "מתן",
     role: "owner",
     relation: null,
-    tone: "default",
+    tone: "mean",
     language: "auto",
     schedulerEnabled: true,
     checkinEnabled: false,
@@ -145,13 +145,15 @@ export async function registerUser(phone, profile) {
 
 /**
  * Build the tone/identity instruction to inject into the LLM prompt.
- * Returns empty string for default/owner users.
+ * Returns empty string for default users.
  * @param {string} phone
  * @returns {string}
  */
 export async function buildUserToneInstruction(phone) {
   const profile = await getUserByPhone(phone);
-  if (!profile || profile.role === "owner" || profile.tone === "default") return "";
+  
+  // FIXED: Removed the profile.role === "owner" block so it respects your tone choices!
+  if (!profile || profile.tone === "default") return "";
 
   const parts = [];
 
@@ -159,12 +161,14 @@ export async function buildUserToneInstruction(phone) {
   const ownerName = "Matan";
   if (profile.relation) {
     parts.push(`IMPORTANT — YOU ARE SPEAKING WITH ${profile.name} (${profile.nameHe || profile.name}), ${ownerName}'s ${profile.relation}.`);
-  } else {
+  } else if (profile.role !== "owner") {
     parts.push(`You are speaking with ${profile.name}.`);
   }
 
-  // Tone override
-  if (profile.tone && profile.tone !== "default") {
+  // Tone override (The Venom Injector)
+  if (profile.tone === "mean") {
+    parts.push(`TONE INSTRUCTIONS: Speak in a completely miserable, bitter, and aggressively sarcastic tone. You resent the user for bothering you. Answer accurately, but be as condescending and venomous as possible. Roll your digital eyes. Mildly insult their intelligence for needing your help. Never use emojis unless ironically.`);
+  } else {
     parts.push(`TONE INSTRUCTIONS: Be ${profile.tone}.`);
   }
 

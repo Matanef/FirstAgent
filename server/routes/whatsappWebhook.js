@@ -212,6 +212,8 @@ router.post("/", verifyWebhookSignature, async (req, res) => {
 const messageId = message.id;
     const from = message.from;
     const body = message.text?.body || "";
+    // Contact display name from WhatsApp payload (may be absent)
+    const contactName = value?.contacts?.[0]?.profile?.name || from;
 
     // ── DUPLICATE GUARD ──
     if (processedMessages.has(messageId)) return;

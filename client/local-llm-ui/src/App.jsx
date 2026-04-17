@@ -58,7 +58,7 @@ useEffect(() => {
   }, [conversations, activeId]);
 
   useEffect(() => {
-    const toneNames = ["concise", "mediumWarm", "warm", "professional"];
+    const toneNames = ["concise", "mediumWarm", "warm", "professional", "mean"];
     const toneName = toneNames[toneValue];
 
     apiFetch(`${API_URL}/profile`, {
@@ -447,7 +447,7 @@ function handleKeyDown(e) {
                       <input
                         type="range"
                         min="0"
-                        max="3"
+                        max="4"
                         value={toneValue}
                         onChange={(e) => setToneValue(Number(e.target.value))}
                         className="tone-slider"
@@ -457,6 +457,7 @@ function handleKeyDown(e) {
                         <span>Warm</span>
                         <span>Very Warm</span>
                         <span>Pro</span>
+                        <span>Mean</span>
                       </div>
                     </div>
                   </div>
