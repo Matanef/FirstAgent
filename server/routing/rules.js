@@ -322,34 +322,9 @@ export const ROUTING_TABLE = [
       /\b(obsidian|vault|note|canvas)\b/i.test(lower) ? false : true,
     description: "Obsidian vault — create/edit notes, canvas, stubs"
   },
-  {
-    tool: "gitPulse",
-    priority: 67,
-    match: (lower) =>
-      /\b(git\s*pulse|code\s+report|engineering\s+review)\b/i.test(lower) ||
-      (/\b(what\s+changed|what'?s\s+changed|what\s+happened)\b/i.test(lower) && /\b(code|repo|commit|git|today|this\s+week|yesterday|last\s+\d+\s+days?)\b/i.test(lower)),
-    guard: (lower) =>
-      // Simple git commands → let gitLocal handle those
-      /\b(git\s+(add|commit|push|pull|checkout|branch|merge|stash|rebase|reset|status|log|diff|clone|init|fetch|tag|remote))\b/i.test(lower) &&
-      !/\b(report|review|analysis|pulse|summary|overview)\b/i.test(lower),
-    description: "Git Pulse — commit analysis, impact reports, Mermaid diagrams"
-  },
-  {
-    tool: "deepResearch",
-    priority: 66,
-    match: (lower) =>
-      /\[depth:(article|indepth|in-depth|research|thesis)\]/i.test(lower) || // UI depth bar
-      /\b(deep\s+research|thesis|research\s+report|research\s+paper)\b/i.test(lower) ||
-      (/\b(comprehensive|thorough|exhaustive|in-?depth)\b/i.test(lower) && /\b(research|analysis|study|investigation|breakdown)\b/i.test(lower)) ||
-      /^(?:please\s+|can\s+you\s+)?research\b/i.test(lower) || // Catches commands starting with "Research..."
-      /(?:^|\s)(תזה|דוקטורט|עבודת\s+גמר|מחקר\s+מעמיק)(\s|$)/.test(lower), // Hebrew thesis/research keywords
-    guard: (lower) =>
-      (hasCompoundIntent(lower) && !/\b(research|thesis)\b/i.test(lower) && !/\[depth:/i.test(lower)) ||
-      // Introspection about our own code that happens to mention "thesis/research" must NOT trigger a research run.
-      (/\b(where|how)\s+(do\s+(i|we)|can\s+(i|we)|to)\s+(set|configure|change|update|find|modify|edit|adjust|tweak|override)\b/i.test(lower) &&
-       /\b(skill|tool|module|agent|pipeline|planner|executor|tier|prompt|config|setting|variable|function|class|route|router|manifest|budget|threshold|timeout|param(?:eter)?|synthesizer|harvester|analyzer|writer|bootstrapper|matcher|extractor|detector)\b/i.test(lower)),
-    description: "Deep Research — recursive research engine with query expansion"
-  },
+  // gitPulse and deepResearch routing rules are self-registered by their skill
+  // files (server/skills/gitPulse.js, server/skills/deepResearch.js) via the
+  // ROUTING export — picked up by loadSkills() in executor.js (Phase 2).
 
   // ── TIER 4: Broader tools (55-69) ─────────────────────────
   {

@@ -26,6 +26,10 @@ const SKILLS_DIR = path.join(__dirname, "skills");
 // This object holds our dynamically loaded plugin functions
 export const dynamicSkills = {};
 
+// Routing rules self-registered by skills via their ROUTING export.
+// Populated by loadSkills(); consumed by server/routing/index.js at query time.
+export const skillRoutingRules = [];
+
 /**
  * Sanitize untrusted content (web scrapes, API responses, documents) before
  * injecting into LLM prompts. Strips common prompt injection patterns.
@@ -96,6 +100,17 @@ export async function loadSkills() {
                     dynamicSkills[key] = func;
                     console.log(`🔌 [Skills] Loaded: ${key} (from ${file})`);
                 }
+            }
+
+            // Collect optional ROUTING export — skill self-registers its routing rule
+            if (skillModule.ROUTING && typeof skillModule.ROUTING === "object") {
+                const rule = { ...skillModule.ROUTING };
+                if (!rule.tool) {
+                    // Fallback: use the first exported function name as tool identifier
+                    rule.tool = Object.keys(skillModule).find(k => typeof skillModule[k] === "function") || file.replace(".js", "");
+                }
+                skillRoutingRules.push(rule);
+                console.log(`🗺️  [Skills] Routing rule registered: ${rule.tool} (priority ${rule.priority})`);
             }
         }
     } catch (err) {
