@@ -290,44 +290,61 @@ const messageId = message.id;
     }
 
 // ──────────────────────────────────────────────────────
-    // GENERIC: Route through full agent pipeline
+    // GENERIC: Classify intent, then route accordingly
     // ──────────────────────────────────────────────────────
-    console.log(`🤖 [WhatsApp] Routing through agent pipeline: "${body.slice(0, 60)}..."`);
-
-    const { executeAgent } = await import("../utils/coordinator.js");
 
     // Build user-specific tone instruction for non-default users
     const userToneInstruction = await buildUserToneInstruction(from);
 
-// ── PERSONA OVERRIDE FOR WHATSAPP ──
+    // ── PERSONA OVERRIDE FOR WHATSAPP ──
     let personaPrefix = `(System: You are Lanou, communicating via WhatsApp.`;
-    
+
     // 1. Always inject the user's identity if we know it
     if (userProfile && userProfile.name) {
         personaPrefix += ` You are speaking with ${userProfile.name}`;
         if (userProfile.relation) personaPrefix += ` (Matan's ${userProfile.relation}).`;
         else personaPrefix += `.`;
-        
+
         if (userProfile.role !== "admin" && userProfile.role !== "developer") {
            personaPrefix += ` Answer warmly and conversationally. Do NOT output raw terminal data, JSON, or tool diagnostics. Summarize any tool findings in natural language.`;
         }
     }
-    
-// 2. Add identity override instructions if they ask who you are
+
+    // 2. Add identity override instructions if they ask who you are
     if (/^(what('s| is) your name|who are you|what are you|איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)[?.!]?\s*$/i.test(body.trim())) {
         personaPrefix += ` The user is asking about your identity. Answer briefly and conversationally as Lanou. Do not search the web or run tools.`;
     }
-    
+
     personaPrefix += `) `;
     const contextualMessage = `${personaPrefix}\n${body}`;
 
-    const result = await executeAgent({
-      message: contextualMessage,
-      conversationId: `whatsapp_${from}`,
-      clientIp: "whatsapp",
-      userProfile,
-      userToneInstruction
-    });
+    // ── INTENT CLASSIFICATION ──
+    // Classify the raw body (not the persona-wrapped message) so system instructions
+    // don't pollute the scoring. Route chat messages through chatAgent so they get
+    // a conversational LLM response instead of falling through to the search catch-all.
+    const { classifyIntentWithRoutingOverride } = await import("../utils/intentClassifier.js");
+    const classification = await classifyIntentWithRoutingOverride(body, [], []);
+    const isChat = classification.mode === "chat";
+    console.log(`🤖 [WhatsApp] Intent: ${classification.mode} (${classification.confidence.toFixed(2)}, ${classification.reason}) — routing to ${isChat ? "chatAgent" : "taskPipeline"}`);
+
+    let result;
+    if (isChat) {
+      const { handleChat } = await import("../agents/chatAgent.js");
+      result = await handleChat(contextualMessage, [], {
+        conversationId: `whatsapp_${from}`,
+        userProfile,
+        userToneInstruction
+      });
+    } else {
+      const { executeAgent } = await import("../utils/coordinator.js");
+      result = await executeAgent({
+        message: contextualMessage,
+        conversationId: `whatsapp_${from}`,
+        clientIp: "whatsapp",
+        userProfile,
+        userToneInstruction
+      });
+    }
     console.log(`🤖 [WhatsApp] Pipeline complete — tool: ${result.tool}, success: ${result.success}`);
 
     // ── Intercept email drafts: save state so "send it" works ──
