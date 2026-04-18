@@ -89,6 +89,10 @@ export const CONFIG = {
   // Search
   SERPAPI_KEY: process.env.SERPAPI_KEY,
 
+  // Academic Research APIs (open-access sources — no paywall)
+  CORE_API_KEY: process.env.CORE_API_KEY,                       // core.ac.uk — free, register at https://core.ac.uk/services/api
+  SEMANTIC_SCHOLAR_KEY: process.env.SEMANTIC_SCHOLAR_KEY || "", // optional: higher rate limits at https://api.semanticscholar.org/
+
   // Weather
   OPENWEATHER_KEY: process.env.OPENWEATHER_KEY,
 
@@ -212,4 +216,6 @@ if (CONFIG.GITHUB_TOKEN) console.log('  ✓ GitHub API configured');
 if (CONFIG.OBSIDIAN_VAULT_PATH) console.log(`  ✓ Obsidian vault: ${CONFIG.OBSIDIAN_VAULT_PATH}`);
 else console.log('  ℹ Obsidian vault not configured (set OBSIDIAN_VAULT_PATH)');
 if (CONFIG.RESEARCH_LIBRARY_PATH) console.log(`  ✓ Research library: ${CONFIG.RESEARCH_LIBRARY_PATH}`);
+if (CONFIG.CORE_API_KEY) console.log('  ✓ CORE academic API configured');
+if (CONFIG.SEMANTIC_SCHOLAR_KEY) console.log('  ✓ Semantic Scholar API key configured (higher rate limits)');
 console.log('='.repeat(60) + '\n');

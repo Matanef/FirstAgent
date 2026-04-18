@@ -13,6 +13,10 @@ export const ROUTING = {
     /\b(deep\s+research|thesis|research\s+report|research\s+paper)\b/i.test(lower) ||
     (/\b(comprehensive|thorough|exhaustive|in-?depth)\b/i.test(lower) && /\b(research|analysis|study|investigation|breakdown)\b/i.test(lower)) ||
     /^(?:please\s+|can\s+you\s+)?research\b/i.test(lower) ||
+    // "do a (quick) research on X" / "do some research on X"
+    /\b(do|run|make|give\s+me)\s+(?:a\s+)?(?:quick\s+|some\s+)?research\b/i.test(lower) ||
+    // "a research on X" / "quick research on X"
+    /\b(?:quick|brief|short)\s+research\b/i.test(lower) ||
     /(?:^|\s)(תזה|דוקטורט|עבודת\s+גמר|מחקר\s+מעמיק)(\s|$)/.test(lower),
   guard: (lower) =>
     (lower.split(/\s+and\s+|\s+then\s+/i).length > 1 && !/\b(research|thesis)\b/i.test(lower) && !/\[depth:/i.test(lower)) ||

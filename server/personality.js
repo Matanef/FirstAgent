@@ -143,7 +143,13 @@ export async function getPersonalityContext(mode = "chat") {
   const parts = [];
 
   // Core identity
-  parts.push(`PERSONALITY — WHO YOU ARE:\nYou are ${p.name}. ${p.identity}`);
+  // CRITICAL disambiguation: the agent's name ≠ the user's name.
+  // Without this, local LLMs (especially code models) address the human by the agent's own name.
+  parts.push(
+    `PERSONALITY — WHO YOU ARE:\nYou are ${p.name}, an AI agent. ${p.identity}` +
+    `\n\nCRITICAL: Your name is ${p.name}. The human you are talking to is a DIFFERENT person — ` +
+    `never address them as "${p.name}". Use "you", or their actual name if you know it.`
+  );
 
   // Voice
   if (p.voice) {

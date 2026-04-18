@@ -30,10 +30,16 @@ import * as articleAnalyzer from "./articleAnalyzer.js";
 import * as conclusionWriter from "./conclusionWriter.js";
 import * as promptRollup from "./promptRollup.js";
 import * as thesisSynthesizer from "./thesisSynthesizer.js";
+import { seedIfNeeded } from "./academicJournalSeeder.js";
 import { createLogger } from "../../utils/logger.js";
 
 const TOOL_NAME = "deepResearch";
 const log = createLogger("deepResearch");
+
+// ── One-time academic journal RSS seed (runs asynchronously, non-blocking) ──
+// Adds 38 FT50 journal feeds to research-sources.json on first startup.
+// Subsequent calls are no-ops (flag stored in _meta.academicJournalsSeeded).
+seedIfNeeded().catch(err => log(`Academic seed error (non-blocking): ${err.message}`, "warn"));
 
 function safeJsonParse(text) {
   if (!text) return null;
@@ -442,6 +448,49 @@ export async function deepResearch(request) {
       log(`step=writeMaster error="${err.message}" stack="${err.stack}"`, "error");
     }
 
+    // ── Step 8.5: Info sufficiency check ──────────────────────────────────
+    // If total harvested articles fall below the tier minimum, do one extra
+    // CORE-targeted pass before writing. This avoids thin research on hard topics.
+    const MIN_SOURCES = { article: 4, indepth: 7, research: 10, thesis: 14 };
+    const totalAnalyses = promptResults.reduce((s, p) => s + p.analyses.length, 0);
+    const minRequired = MIN_SOURCES[effectiveTier] || 6;
+    if (totalAnalyses < minRequired) {
+      console.log(`[deepResearch] ℹ️ Info sufficiency: ${totalAnalyses}/${minRequired} sources for "${effectiveTier}" tier — running supplemental CORE harvest`);
+      try {
+        const supplemental = await articleHarvester.harvest(rawTopic, {
+          topic: rawTopic,
+          limit: Math.min(minRequired - totalAnalyses + 2, 5),
+          perProvider: 3,
+          prioritySources: ["core", "semanticscholar", "doaj"],
+          skipDomains: constraints.research.skipDomains || [],
+          seenUrls,
+          seenTitles
+        });
+        if (supplemental.length > 0) {
+          console.log(`[deepResearch] Supplemental harvest added ${supplemental.length} articles`);
+          // Attach to the last prompt's results
+          const lastPr = promptResults[promptResults.length - 1];
+          for (const art of supplemental) {
+            try {
+              const r = await articleAnalyzer.analyze({
+                article: art,
+                topic: rawTopic,
+                topicSlug: activeSlug,
+                promptIndex: lastPr.promptIndex,
+                articleIndex: lastPr.analyses.length + 1,
+                constraints
+              });
+              lastPr.analyses.push(r);
+            } catch {}
+          }
+        }
+      } catch (suppErr) {
+        log(`supplemental harvest failed (non-blocking): ${suppErr.message}`, "warn");
+      }
+    } else {
+      log(`step=infoCheck ok total=${totalAnalyses} min=${minRequired}`, "info");
+    }
+
     // ── Step 9: chunked thesis synthesis ───────────────────────────────────
     log(`step=thesisSynthesizer tier=${effectiveTier} sections=pending`, "info");
     let thesisInfo = null;
@@ -454,7 +503,9 @@ export async function deepResearch(request) {
         promptResults,
         constraints
       });
-      log(`step=thesisSynthesizer done words=${thesisInfo?.wordCount} stubs=${thesisInfo?.createdStubs?.length ?? 0}`, "info");
+      const stubCount = thesisInfo?.createdStubs?.length ?? 0;
+      log(`step=thesisSynthesizer done words=${thesisInfo?.wordCount} stubs=${stubCount}`, "info");
+      console.log(`[deepResearch] Thesis complete: ${thesisInfo?.wordCount ?? 0} words, ${stubCount} stubs created`);
     } catch (err) {
       log(`step=thesisSynthesizer error="${err.message}" stack="${err.stack}"`, "error");
     }
