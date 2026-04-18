@@ -14,6 +14,7 @@ export async function handleMessage({
   onStep,
   signal,
 }) {
+  const turnStart = Date.now();
   // 1. Load recent conversation turns
   const recentTurns = await getRecentTurns(conversationId, 5);
 
@@ -70,5 +71,9 @@ export async function handleMessage({
     timestamp: new Date().toISOString(),
   });
 
+  const totalMs = Date.now() - turnStart;
+  if (totalMs > 2000) {
+    console.log(`⏱️  [orchestrator] turn handled in ${totalMs}ms (tool=${result.tool || "chat"}, mode=${result.mode || "chat"})`);
+  }
   return result;
 }

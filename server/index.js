@@ -92,13 +92,16 @@ app.use(dashboardRoutes);
 // START SERVER
 // ============================================================
 app.listen(PORT, async () => {
+  const bootStart = Date.now();
   console.log("\n" + "=".repeat(70));
   console.log("🤖 AI AGENT SERVER");
   console.log(`📡 http://localhost:${PORT}`);
   console.log(`📂 Project root: ${PROJECT_ROOT}`);
   console.log("=".repeat(70) + "\n");
 
+  console.time("[boot] loadSkills");
   await loadSkills();
+  console.timeEnd("[boot] loadSkills");
 
   // ── Auto-prune old conversations (non-blocking) ──
   import("./utils/conversationMemory.js")
@@ -108,9 +111,11 @@ app.listen(PORT, async () => {
   // ── Auto-start ngrok tunnel for WhatsApp webhooks ──
   if (process.env.WHATSAPP_TOKEN && process.env.NGROK_AUTHTOKEN) {
     try {
+      console.time("[boot] webhookTunnel");
       const { webhookTunnel } = await import("./tools/webhookTunnel.js");
       console.log("🔗 [startup] Opening ngrok tunnel for WhatsApp webhooks...");
       const result = await webhookTunnel({ text: "open tunnel", context: { action: "open" } });
+      console.timeEnd("[boot] webhookTunnel");
       if (result.success) {
         console.log(`✅ [startup] Tunnel active — update Meta webhook URL if needed`);
       } else {
@@ -120,6 +125,8 @@ app.listen(PORT, async () => {
       console.warn(`⚠️ [startup] Could not auto-start tunnel: ${e.message}`);
     }
   }
+
+  console.log(`⏱️  [boot] total ready in ${Date.now() - bootStart}ms`);
 });
 
 process.on("SIGINT", () => {

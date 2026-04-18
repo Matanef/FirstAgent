@@ -93,7 +93,12 @@ export async function loadSkills() {
             const filePath = path.join(SKILLS_DIR, file);
             const fileUrl = pathToFileURL(filePath).href;
 
+            const t0 = Date.now();
             const skillModule = await import(fileUrl);
+            const importMs = Date.now() - t0;
+            if (importMs > 250) {
+                console.log(`⏱️  [Skills] ${file} imported in ${importMs}ms`);
+            }
 
             for (const [key, func] of Object.entries(skillModule)) {
                 if (typeof func === "function") {

@@ -88,6 +88,22 @@ async function getRecentChanges(limit = 5) {
  * Non-blocking: any failure degrades gracefully to empty string so the chat
  * prompt still builds without RAG augmentation.
  */
+// Cache vector-collection names so we don't re-scan the disk on every chat turn.
+// Collections only change when deepResearch writes a new one — a 60s staleness
+// window is far shorter than a typical research run, so invalidation is a non-issue.
+let _collectionCache = { names: null, expiresAt: 0 };
+function getCachedCollectionNames() {
+  const now = Date.now();
+  if (_collectionCache.names && now < _collectionCache.expiresAt) {
+    return _collectionCache.names;
+  }
+  const names = new Set(
+    (listCollections() || []).map(c => c.name).filter(Boolean)
+  );
+  _collectionCache = { names, expiresAt: now + 60_000 };
+  return names;
+}
+
 async function getResearchContext(message) {
   try {
     if (!message || message.length < 12) return "";
@@ -107,10 +123,9 @@ async function getResearchContext(message) {
     const matched = rankSubjects(extracted, subjects, { limit: 3, minScore: 0.3 });
     if (matched.length === 0) return "";
 
-    // 4. Index known vector collections once so we can filter to matched subjects.
-    const knownCollections = new Set(
-      (listCollections() || []).map(c => c.name).filter(Boolean)
-    );
+    // 4. Index known vector collections. Cached for 60s because listCollections()
+    //    reads the filesystem and this runs on every chat turn.
+    const knownCollections = getCachedCollectionNames();
 
     const hits = [];
     for (const m of matched) {
@@ -199,8 +214,18 @@ Treat these as your own prior findings. Reference the subject by name if the use
 async function buildUserContext(conversationId, message = "") {
   const parts = [];
 
+  // Load enriched profile ONCE — used by both the user-context block and
+  // the tone-injection block further down. Duplicating this call doubled
+  // disk I/O per chat turn and was a measurable contributor to slow responses.
+  let enriched = null;
   try {
-    const enriched = await getEnrichedProfile(conversationId);
+    enriched = await getEnrichedProfile(conversationId);
+  } catch (e) {
+    console.warn("[chatAgent] Could not load enriched profile:", e.message);
+  }
+
+  try {
+    if (!enriched) throw new Error("enriched profile unavailable");
 
     // User profile
     const self = enriched.self || {};
@@ -297,7 +322,8 @@ async function buildUserContext(conversationId, message = "") {
       toneInstruction = await buildUserToneInstruction(phone);
     } else {
       // UI path — build a synthetic profile from enriched memory fields.
-      const enriched = await getEnrichedProfile(conversationId);
+      // Reuses the `enriched` object loaded at the top of this function
+      // instead of triggering a second getEnrichedProfile() disk read.
       const self = enriched?.self || {};
       const uiProfile = {
         name: self.name,
