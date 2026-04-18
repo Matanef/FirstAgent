@@ -238,6 +238,28 @@ async function executeScheduledTask(schedule) {
         if (!shouldSend) {
           console.log(`[scheduler] Skipping WhatsApp notification for ${recipient} (schedulerEnabled=false)`);
         } else {
+          // ── Duplicate-message guard ──
+          // If the agent pipeline already used the `whatsapp` tool to message
+          // this recipient, skip the scheduler-side summary — otherwise the
+          // user receives every scheduled result TWICE (once from the agent's
+          // own whatsapp tool, once from the status envelope below). This was
+          // the root cause of the "10 messages in 2 minutes, each duplicated"
+          // barrage.
+          const agentAlreadyMessaged = (() => {
+            const steps = Array.isArray(results) ? results : [results];
+            return steps.some(r => {
+              if (!r) return false;
+              const tool = r.tool || r.output?.tool;
+              if (tool !== "whatsapp" && tool !== "sendWhatsApp") return false;
+              // Only count successful sends (skip errors).
+              return r.success !== false && r.output?.success !== false;
+            });
+          })();
+          if (agentAlreadyMessaged) {
+            console.log(`[scheduler] Agent already sent WhatsApp message for "${schedule.task}" — skipping scheduler summary to prevent duplicate.`);
+            return results;
+          }
+
           const { sendWhatsAppMessage } = await import("./whatsapp.js");
 
           // Extract meaningful result text from the agent pipeline output
