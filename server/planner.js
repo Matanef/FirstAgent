@@ -32,7 +32,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Track last routing decision for user correction feedback
-let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null };
+let _lastRoutingDecision = { userMessage: null, tool: null, reasoning: null, confidence: null, priority: null, triggerWord: null };
 
 // ============================================================
 // UTIL: list available tools (reads server/tools/*.js + dynamic skills)
@@ -715,10 +715,15 @@ export async function plan({ message, chatContext = {}, signal }) {
 
   // Track the routing decision for user correction feedback
   if (result && result.length > 0 && !result[0]?.context?.correctionLogged) {
+    const firstStep = result[0];
     _lastRoutingDecision = {
       userMessage: (message || "").trim().substring(0, 200),
       tool: result.map(s => s.tool).join(" → "),
-      reasoning: result[0]?.reasoning || "unknown",
+      reasoning: firstStep?.reasoning || "unknown",
+      confidence: firstStep?.confidence ?? null,
+      priority: firstStep?.priority ?? null,
+      // Best-effort: extract the tool name as the "trigger word" (the word that matched a routing rule)
+      triggerWord: firstStep?.tool ?? null,
     };
   }
 
@@ -746,6 +751,9 @@ const rawMessage = (message || "").trim();
       previousUserMessage: _lastRoutingDecision.userMessage,
       previousToolUsed: _lastRoutingDecision.tool,
       previousReasoning: _lastRoutingDecision.reasoning,
+      confidence: _lastRoutingDecision.confidence,
+      routingPriority: _lastRoutingDecision.priority,
+      triggerWord: _lastRoutingDecision.triggerWord,
     });
 
     // If user specified the correct tool ("use X instead", "should have been X")

@@ -296,24 +296,63 @@ export function detectCorrection(message) {
 }
 
 /**
- * Log a user correction about routing
+ * Extract the N words immediately before and after a trigger word in a message.
+ * Used to build context snapshots for learning from past corrections.
+ *
+ * @param {string} message - Full message text
+ * @param {string} triggerWord - Word to centre the window on (first occurrence)
+ * @param {number} n - Words on each side (default 3)
+ * @returns {{ before: string, after: string }}
+ */
+export function extractNgramContext(message, triggerWord, n = 3) {
+  if (!message || !triggerWord) return { before: "", after: "" };
+  const words = message.toLowerCase().split(/\s+/);
+  const target = triggerWord.toLowerCase();
+  const idx = words.findIndex(w => w.replace(/[^a-z0-9]/gi, "") === target.replace(/[^a-z0-9]/gi, ""));
+  if (idx === -1) return { before: "", after: "" };
+  return {
+    before: words.slice(Math.max(0, idx - n), idx).join(" "),
+    after:  words.slice(idx + 1, idx + 1 + n).join(" ")
+  };
+}
+
+/**
+ * Log a user correction about routing.
+ * Enriched version: captures confidence, routing reason, priority, and N-gram context
+ * around the word(s) that triggered the misroute so future scans can learn from it.
+ *
  * @param {Object} correction - Correction data from detectCorrection()
- * @param {Object} context - Previous message context
+ * @param {Object} context - Previous routing context
  * @returns {Object} The logged entry
  */
 export async function logCorrection(correction, context = {}) {
+  // Build N-gram context around the first "interesting" word of the previous message
+  // (the word that likely triggered the wrong tool choice).
+  let ngramContext = { before: "", after: "" };
+  const prevMsg = context.previousUserMessage || "";
+  const triggerWord = context.triggerWord || (context.previousToolUsed ? context.previousToolUsed : null);
+  if (prevMsg && triggerWord) {
+    ngramContext = extractNgramContext(prevMsg, triggerWord);
+  }
+
   const entry = {
     timestamp: new Date().toISOString(),
     type: correction.type,
     userMessage: correction.message,
     correctTool: correction.correctTool || null,
-    previousUserMessage: context.previousUserMessage || null,
+    previousUserMessage: prevMsg || null,
     previousToolUsed: context.previousToolUsed || null,
     previousReasoning: context.previousReasoning || null,
+    // ── Enriched fields ──
+    confidence: context.confidence ?? null,           // classifier confidence at time of routing
+    routingPriority: context.routingPriority ?? null, // priority of winning routing rule (if any)
+    triggerWord: triggerWord || null,                 // word that likely triggered the misroute
+    contextBefore: ngramContext.before,               // 3 words before trigger
+    contextAfter: ngramContext.after,                 // 3 words after trigger
   };
 
   await appendLog(CORRECTIONS_LOG, entry, LOGS_DIR);
-  console.log(`📝 Routing correction logged: ${entry.type}${entry.correctTool ? ` → ${entry.correctTool}` : ""} (was: ${entry.previousToolUsed || "unknown"})`);
+  console.log(`📝 Routing correction logged: ${entry.type}${entry.correctTool ? ` → ${entry.correctTool}` : ""} (was: ${entry.previousToolUsed || "unknown"}, confidence was: ${entry.confidence ?? "?"}, priority: ${entry.routingPriority ?? "?"})`);
   return entry;
 }
 
