@@ -124,14 +124,21 @@ const TASK_PATTERNS = [
   /\b(fix|correct)\s+(the\s+)?(grammar|spelling|syntax|typos?)\b/i,
   /\b(improve|evolve|self[- ]?evolve|self[- ]?improve|upgrade)\b/i,
   /\b(weather|forecast|temperature)\s*(in|for|at|today|tomorrow|this\s+week)?\b/i,
-  /\b(stock|share|ticker|price\s+of|market)\b/i,
+  // Finance — "share" alone is too ambiguous (common verb); require stock-specific context
+  /\b(stock|ticker)\b/i,
+  /\bshares?\s+(of|in|at|price|market|stock)\b/i,
+  /\bstock\s+(market|price|ticker|chart)\b/i,
+  /\bprice\s+of\s+\w+/i,
   /(?<!\bon\s+the\s+)(?<!\bin\s+the\s+)\b(news|headlines?|articles?)\b/i,
   /\b(sport|score|match|fixture|standings?|nba|nfl|premier\s+league)\b/i,
   /\b(moltbook|heartbeat|submolt)\b/i,
   /\b(github|trending|repos?|repository)\b/i,
   /\b(calculate|compute|solve|math|equation)\b/i,
   /\b(translate|convert|transform)\b/i,
-  /\b(download|upload|install|npm)\b/i,
+  // upload/download — require a file-type object so "upload a photo for the park" (feature
+  // description) doesn't fire; "install" and "npm" remain unconditional (always technical)
+  /\b(upload|download)\s+(the\s+|a\s+|my\s+|this\s+)?(file|document|image|photo|video|pdf|csv|zip|backup|attachment|dataset|package)\b/i,
+  /\b(install|npm)\b/i,
   /\b(run|execute|start|stop)\s+(the\s+)?(workflow|briefing|market\s+check)\b/i,
   // delete/remove/cancel — require a task-specific object so "remove that idea" doesn't fire
   /\b(delete|remove)\s+(the\s+|this\s+|a\s+|my\s+)?(event|meeting|appointment|task|reminder|file|note|record|entry|email|message|contact|alarm|workflow|schedule|item|row|column)\b/i,
@@ -293,10 +300,10 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   }
 
   // RESILIENCE GUARD: A single weak task-pattern match during active chat is not enough to
-  // hijack the conversation. Bump chatScore so the ambiguous tie-break logic can resolve it,
-  // rather than hard-committing to mode=task at 0.8 confidence from one noisy signal.
-  // Excluded: explicit tool names (high-confidence), file attachments (user intent is clear),
-  // and code-introspection reasons (already guarded above with STRICT overrides).
+  // hijack the conversation (1 match → 0.8 conf — too aggressive).
+  // Bump chatScore so the ambiguous tie-break logic can resolve it instead.
+  // NOT extended to taskScore=2: two legitimate patterns firing = real task intent.
+  // Explicit tool names (+5 each) and file attachments are always trustworthy — excluded.
   if (
     taskScore === 1 && chatScore === 0 &&
     lastTurnWasChat && isRecentConversation &&
