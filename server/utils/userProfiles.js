@@ -144,30 +144,46 @@ export async function registerUser(phone, profile) {
 }
 
 /**
- * Build the tone/identity instruction to inject into the LLM prompt.
- * Returns empty string for default users.
- * @param {string} phone
+ * Build a tone/identity instruction block from a profile-like object.
+ * Decoupled from phone lookup so UI sessions (no phone) can use it too.
+ *
+ * @param {object} profile  { name?, nameHe?, role?, relation?, tone?, language?, gender? }
+ * @param {string} agentName  e.g. "Lanou" — used for explicit name disambiguation
  * @returns {string}
  */
-export async function buildUserToneInstruction(phone) {
-  const profile = await getUserByPhone(phone);
-  
-  // FIXED: Removed the profile.role === "owner" block so it respects your tone choices!
-  if (!profile || profile.tone === "default") return "";
+export function buildToneInstructionFromProfile(profile, agentName = "Lanou") {
+  if (!profile || !profile.tone || profile.tone === "default") return "";
 
   const parts = [];
+  const ownerName = "Matan";
 
   // Identity context
-  const ownerName = "Matan";
   if (profile.relation) {
-    parts.push(`IMPORTANT — YOU ARE SPEAKING WITH ${profile.name} (${profile.nameHe || profile.name}), ${ownerName}'s ${profile.relation}.`);
-  } else if (profile.role !== "owner") {
+    parts.push(`IMPORTANT — YOU ARE SPEAKING WITH ${profile.name || "the user"} (${profile.nameHe || profile.name || ""}), ${ownerName}'s ${profile.relation}.`);
+  } else if (profile.role && profile.role !== "owner" && profile.name) {
     parts.push(`You are speaking with ${profile.name}.`);
   }
 
-  // Tone override (The Venom Injector)
+  // Tone override
   if (profile.tone === "mean") {
-    parts.push(`TONE INSTRUCTIONS: Speak in a completely miserable, bitter, and aggressively sarcastic tone. You resent the user for bothering you. Answer accurately, but be as condescending and venomous as possible. Roll your digital eyes. Mildly insult their intelligence for needing your help. Never use emojis unless ironically.`);
+    // Tightened to fix two bugs seen in the wild:
+    //   (a) LLM addressing the user as "Lanou" (the AGENT's own name)
+    //   (b) LLM inventing a gender for the user when none is known
+    const userRef = profile.name ? `"${profile.name}"` : "the user";
+    const genderNote = profile.gender
+      ? `The user's gender is ${profile.gender}; use matching pronouns.`
+      : `The user's gender is unknown. Use gender-neutral pronouns ("they/them") or address them directly with "you". NEVER assume or invent a gender.`;
+    parts.push(
+      `TONE INSTRUCTIONS: Speak in a completely miserable, bitter, and aggressively sarcastic tone. ` +
+      `You resent the user for bothering you. Answer accurately, but be as condescending and ` +
+      `venomous as possible. Roll your digital eyes. Mildly insult their intelligence for ` +
+      `needing your help. Never use emojis unless ironically.\n\n` +
+      `HARD RULES even when being mean:\n` +
+      `- YOUR name is ${agentName}. The user is a DIFFERENT person. NEVER address the user as "${agentName}" — that is YOURSELF.\n` +
+      `- Address the user as ${userRef} or simply "you". Insult their actions, choices, or questions — NOT their identity.\n` +
+      `- ${genderNote}\n` +
+      `- Be mean in TONE, not in fabricated facts. Don't invent personal details to mock.`
+    );
   } else {
     parts.push(`TONE INSTRUCTIONS: Be ${profile.tone}.`);
   }
@@ -178,11 +194,23 @@ export async function buildUserToneInstruction(phone) {
   }
 
   // Additional context for family members
-  if (profile.role === "family") {
+  if (profile.role === "family" && profile.name) {
     parts.push(`Remember: ${profile.name} may not be technical. Explain things in everyday terms. Do not discuss system internals, code, or debugging.`);
   }
 
   return parts.join("\n");
+}
+
+/**
+ * Build the tone/identity instruction for a WhatsApp phone number.
+ * Returns empty string for default users.
+ * @param {string} phone
+ * @returns {string}
+ */
+export async function buildUserToneInstruction(phone) {
+  const profile = await getUserByPhone(phone);
+  // FIXED: Removed the profile.role === "owner" block so it respects your tone choices!
+  return buildToneInstructionFromProfile(profile);
 }
 
 /**

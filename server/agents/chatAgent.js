@@ -22,7 +22,7 @@ import * as sourceDirectory from "../skills/deepResearch/sourceDirectory.js";
 import { extract as extractKeywords } from "../skills/deepResearch/keywordExtractor.js";
 import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
 import { classifyIntent, classifyIntentWithRoutingOverride } from "../utils/intentClassifier.js";
-import { buildUserToneInstruction } from "../utils/userProfiles.js";
+import { buildUserToneInstruction, buildToneInstructionFromProfile } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js";
 import { setPendingQuestion, getPendingQuestion } from "../utils/pendingQuestion.js";
 import { evaluateRoutingTable } from "../routing/index.js";
@@ -211,7 +211,10 @@ async function buildUserContext(conversationId, message = "") {
     if (self.email) profileFields.push(`Email: ${self.email}`);
     if (self.phone) profileFields.push(`Phone: ${self.phone}`);
     if (self.occupation) profileFields.push(`Occupation: ${self.occupation}`);
-    if (enriched.tone) profileFields.push(`Preferred tone: ${enriched.tone}`);
+    // NOTE: tone is intentionally NOT added as a "Preferred tone: X" profile line here.
+    // A vague "Preferred tone: mean" confuses local LLMs (they improvise — misaddressing
+    // the user, inventing genders, etc). Structured tone instructions are injected
+    // further down via buildToneInstructionFromProfile() for both UI and WhatsApp paths.
 
     // Age
     if (enriched.self?.age || enriched.profile?.age) {
@@ -282,17 +285,36 @@ async function buildUserContext(conversationId, message = "") {
     }
   } catch { /* non-blocking */ }
 
-  // ── Per-user tone/identity injection (WhatsApp multi-user support) ──
-  if (conversationId?.startsWith("whatsapp_")) {
-    try {
+  // ── Per-user tone/identity injection ──
+  // Applies to BOTH WhatsApp (by phone) AND UI sessions (by profile.tone from memory).
+  // Bug fix: previously the structured tone template only fired for WhatsApp, leaving
+  // UI users with a vague "Preferred tone: mean" line. Local LLMs improvised badly —
+  // misaddressing the user by the agent's own name, inventing genders, etc.
+  try {
+    let toneInstruction = "";
+    if (conversationId?.startsWith("whatsapp_")) {
       const phone = conversationId.replace("whatsapp_", "");
-      const toneInstruction = await buildUserToneInstruction(phone);
-      if (toneInstruction) {
-        parts.push(toneInstruction);
-      }
-    } catch (e) {
-      console.warn("[chatAgent] User tone injection failed:", e.message);
+      toneInstruction = await buildUserToneInstruction(phone);
+    } else {
+      // UI path — build a synthetic profile from enriched memory fields.
+      const enriched = await getEnrichedProfile(conversationId);
+      const self = enriched?.self || {};
+      const uiProfile = {
+        name: self.name,
+        nameHe: self.nameHe,
+        gender: self.gender,
+        tone: enriched?.tone || self.tone,
+        language: self.language,
+        role: self.role,
+        relation: self.relation
+      };
+      toneInstruction = buildToneInstructionFromProfile(uiProfile);
     }
+    if (toneInstruction) {
+      parts.push(toneInstruction);
+    }
+  } catch (e) {
+    console.warn("[chatAgent] User tone injection failed:", e.message);
   }
 
   return parts.join("\n\n");

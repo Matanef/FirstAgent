@@ -76,18 +76,29 @@ const SOURCE_NAME_TO_FETCHER = {
   web:             fetchSerpResults,
   core:            fetchCore,    // CORE open-access repository (core.ac.uk)
   doaj:            fetchDoaj,    // Directory of Open Access Journals (doaj.org)
+  googlescholar:   fetchGoogleScholar, // Google Scholar via SerpAPI (PDF links when available)
 };
 
-// Smart domain router — same heuristics as legacy code.
+// Smart domain router — baseline open-access providers + topic-triggered extras.
 function determineDomains(topic) {
   const lower = (topic || "").toLowerCase();
   const out = [];
+
+  // Topic-triggered specialty providers
   if (/\b(medicine|biology|health|disease|drug|clinical|vaccine|genetics|virus|cancer|therapy)\b/.test(lower)) out.push("medicine");
-  if (/\b(physics|math|computer science|algorithm|quantum|astronomy|machine learning|ai|neural network)\b/.test(lower)) out.push("arxiv");
+  // arXiv: broadened to include software/engineering/CS-adjacent topics. Previously
+  // "software architecture" topics missed all arXiv results because "software" wasn't
+  // a trigger word.
+  if (/\b(physics|math|computer\s+science|algorithm|quantum|astronomy|machine\s+learning|ai|neural\s+network|software|programming|engineering|robotics|cryptography|distributed\s+systems|compiler|dataset)\b/.test(lower)) out.push("arxiv");
   if (/\b(market|cybersecurity|pure-play|business|stock|industry|startup|valuation|trend|economy|finance|company)\b/.test(lower)) out.push("web");
-  if (CONFIG.CORE_API_KEY) out.push("core"); // CORE covers all academic fields
+
+  // Baseline open-access academic providers — always try these
+  if (CONFIG.CORE_API_KEY) out.push("core");  // CORE covers all academic fields
+  out.push("doaj");                            // DOAJ — free, no key, no rate limit
+  out.push("semanticscholar");                 // S2 — has its own 429 circuit breaker
+  if (CONFIG.SERPAPI_KEY) out.push("googlescholar"); // Google Scholar via SerpAPI
+
   if (out.length === 0) { out.push("web"); out.push("general"); }
-  out.push("semanticscholar"); // baseline
   return [...new Set(out)];
 }
 
@@ -270,8 +281,21 @@ export async function scanLocalLibrary(topic, opts = {}) {
 
 // ───────────────────────────── fetchers ─────────────────────────────
 
+// ── Semantic Scholar rate-limit circuit breaker ─────────────────────────
+// Unauthenticated S2 is limited to ~100 req per 5 min. When a 429 is seen we
+// skip further S2 calls for S2_COOLDOWN_MS. Prevents the harvester from
+// hammering S2 once rate-limited (every prompt was emitting a pointless 429).
+const S2_COOLDOWN_MS = 5 * 60 * 1000;
+let _s2CooldownUntil = 0;
+
 async function fetchSemanticScholar(query, limit) {
   const kw = extractSearchKeywords(query);
+  const now = Date.now();
+  if (now < _s2CooldownUntil) {
+    const remainSec = Math.ceil((_s2CooldownUntil - now) / 1000);
+    console.log(`[articleHarvester] S2: cooldown (rate-limited, ${remainSec}s left) — skipping`);
+    return [];
+  }
   console.log(`[articleHarvester] S2: querying "${kw}" (limit ${limit})`);
   try {
     const headers = {};
@@ -297,7 +321,12 @@ async function fetchSemanticScholar(query, limit) {
     return mapped;
   } catch (err) {
     const status = err?.response?.status;
-    console.log(`[articleHarvester] S2 error: ${status ? `HTTP ${status}` : err.message}`);
+    if (status === 429) {
+      _s2CooldownUntil = Date.now() + S2_COOLDOWN_MS;
+      console.log(`[articleHarvester] S2 error: HTTP 429 — engaging ${Math.round(S2_COOLDOWN_MS / 60000)}min cooldown`);
+    } else {
+      console.log(`[articleHarvester] S2 error: ${status ? `HTTP ${status}` : err.message}`);
+    }
     log(`Semantic Scholar error (query="${kw}"): ${err.message}`, "warn");
     return [];
   }
@@ -441,6 +470,61 @@ async function fetchDoaj(query, limit) {
     const status = err?.response?.status;
     console.log(`[articleHarvester] DOAJ error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
     log(`DOAJ API error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
+}
+
+/**
+ * Google Scholar via SerpAPI (engine=google_scholar).
+ * Google Scholar itself has no public API and aggressive anti-bot, but SerpAPI
+ * provides a reliable wrapper that exposes PDF links via the `resources` field.
+ *
+ * Returns up to `limit` results, prioritizing entries with a direct PDF link.
+ */
+async function fetchGoogleScholar(query, limit) {
+  if (!CONFIG.SERPAPI_KEY) {
+    console.log(`[articleHarvester] GScholar: SERPAPI_KEY not set — skipping`);
+    return [];
+  }
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] GScholar: querying "${kw}" (limit ${limit})`);
+  try {
+    const r = await axios.get("https://serpapi.com/search.json", {
+      params: {
+        q: kw,
+        api_key: CONFIG.SERPAPI_KEY,
+        engine: "google_scholar",
+        num: Math.min(limit, 10)
+      },
+      timeout: 15000
+    });
+    const organic = r.data?.organic_results || [];
+    const items = organic.map(x => {
+      // Prefer a direct PDF link surfaced in `resources` — Scholar often
+      // exposes free full-text PDFs hosted on university repositories.
+      const pdfResource = (x.resources || []).find(res => (res.file_format || "").toUpperCase() === "PDF");
+      const pdfUrl = pdfResource?.link;
+      const url = pdfUrl || x.link;
+      if (!url) return null;
+      const authors = (x.publication_info?.authors || []).map(a => a.name).filter(Boolean).join(", ");
+      const snippet = x.snippet || "";
+      return {
+        url,
+        title: x.title || "(untitled)",
+        content: [
+          snippet ? `Abstract: ${snippet}` : "",
+          authors ? `Authors: ${authors}` : "",
+          x.publication_info?.summary ? `Venue: ${x.publication_info.summary}` : ""
+        ].filter(Boolean).join("\n"),
+        domain: pdfUrl ? safeHost(pdfUrl) : "scholar.google.com"
+      };
+    }).filter(Boolean);
+    console.log(`[articleHarvester] GScholar: got ${items.length} results for "${kw}" (${items.filter(i => /\.pdf/i.test(i.url)).length} with direct PDF)`);
+    return items;
+  } catch (err) {
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] GScholar error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`Google Scholar (SerpAPI) error (query="${kw}"): ${err.message}`, "warn");
     return [];
   }
 }
