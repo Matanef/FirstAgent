@@ -366,6 +366,56 @@ export async function getRecentCorrections(limit = 20) {
 }
 
 /**
+ * Find past routing corrections similar to the current message.
+ * Uses Jaccard word-set overlap to score similarity between the new message
+ * and the previousUserMessage of each logged correction.
+ *
+ * Returns entries sorted by similarity score (highest first), filtered to ≥ minScore.
+ * Each result: { correctTool, previousToolUsed, userMessage, score, type }
+ *
+ * @param {string} message - Current user message
+ * @param {number} limit   - Max results to return (default 5)
+ * @param {number} minScore - Minimum Jaccard similarity (default 0.3)
+ * @returns {Promise<Array>}
+ */
+export async function findSimilarCorrections(message, limit = 5, minScore = 0.3) {
+  if (!message) return [];
+
+  const entries = await readLog(CORRECTIONS_LOG, 200);
+  if (entries.length === 0) return [];
+
+  // Only consider entries that have a correctTool (we know what it should have been)
+  const actionable = entries.filter(e => e.correctTool && e.previousUserMessage);
+  if (actionable.length === 0) return [];
+
+  const msgWords = new Set(
+    message.toLowerCase().split(/\W+/).filter(w => w.length > 2)
+  );
+
+  const scored = actionable.map(entry => {
+    const entryWords = new Set(
+      entry.previousUserMessage.toLowerCase().split(/\W+/).filter(w => w.length > 2)
+    );
+    // Jaccard similarity: |intersection| / |union|
+    const intersection = [...msgWords].filter(w => entryWords.has(w)).length;
+    const union = new Set([...msgWords, ...entryWords]).size;
+    const score = union > 0 ? intersection / union : 0;
+    return {
+      correctTool: entry.correctTool,
+      previousToolUsed: entry.previousToolUsed || null,
+      userMessage: entry.previousUserMessage,
+      score,
+      type: entry.type
+    };
+  });
+
+  return scored
+    .filter(e => e.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/**
  * Build a correction summary string for the LLM decomposer prompt
  * Tells the LLM about past mistakes so it can avoid them
  * @returns {string} Summary text or empty string

@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { getMemory } from "./memory.js";
 import { CONFIG } from "./utils/config.js";
-import { detectCorrection, logCorrection, buildCorrectionContext } from "./intentDebugger.js";
+import { detectCorrection, logCorrection, buildCorrectionContext, findSimilarCorrections } from "./intentDebugger.js";
 import { dynamicSkills } from "./executor.js";
 import { logRoutingDecision } from "./routes/dashboard.js";
 
@@ -451,7 +451,7 @@ async function handleCompoundIntent(trimmed, lower, chatContext = {}, signal) {
  * Uses the LLM as a "Sequential Logic Engine" — returns a JSON array of steps.
  * Falls back to null on failure (caller should use single-tool classifier).
  */
-async function decomposeIntentWithLLM(message, contextSignals, availableTools = [], signal) {
+async function decomposeIntentWithLLM(message, contextSignals, availableTools = [], signal, pastCorrectionHint = null) {
   const signalText = contextSignals.length > 0
     ? `\nCONTEXT SIGNALS: ${contextSignals.join(", ")}`
     : "";
@@ -546,7 +546,7 @@ EXAMPLE OUTPUT:
 
 USER MESSAGE:
 "${safeMessage}"
-${await buildCorrectionContext()}
+${await buildCorrectionContext()}${pastCorrectionHint ? `\n\nPAST-CORRECTION HINT: A similar message ("${pastCorrectionHint.userMessage?.slice(0, 80)}") was previously corrected — the user said to use "${pastCorrectionHint.correctTool}" instead of "${pastCorrectionHint.previousToolUsed || "unknown"}". Similarity score: ${pastCorrectionHint.score.toFixed(2)}. Prefer "${pastCorrectionHint.correctTool}" unless the current message is clearly different.` : ""}
 OUTPUT ONLY THE JSON ARRAY:`;
 
 try {
@@ -1649,8 +1649,33 @@ Be thorough and detailed — cover ALL the articles provided. Do NOT truncate or
   const contextSignals = extractContextSignals(trimmed);
   console.log("[planner] Context signals:", contextSignals);
 
+  // ── PAST-CORRECTION HINT ──────────────────────────────────
+  // Before asking the LLM to guess, check if the user has corrected a similar
+  // message before. High-similarity matches (≥ 0.6) skip the LLM entirely.
+  // Medium-similarity matches (0.4–0.59) inject a hint into the decomposer prompt.
+  let pastCorrectionHint = null;
+  try {
+    const similar = await findSimilarCorrections(trimmed, 3, 0.4);
+    if (similar.length > 0) {
+      const top = similar[0];
+      console.log(`[planner] Past correction hint: "${top.correctTool}" (similarity ${top.score.toFixed(2)}, was: ${top.previousToolUsed || "?"}) for "${top.userMessage?.slice(0, 60)}"`);
+      if (top.score >= 0.6) {
+        // High confidence — route directly, skip LLM
+        const resolvedTool = resolveToolName(top.correctTool, availableTools);
+        if (resolvedTool) {
+          console.log(`[planner] Past correction: direct route to "${resolvedTool}" (score ${top.score.toFixed(2)} ≥ 0.6)`);
+          return [{ tool: resolvedTool, input: trimmed, context: {}, reasoning: "past_correction_match" }];
+        }
+      }
+      // Medium confidence — pass as hint to LLM decomposer
+      pastCorrectionHint = top;
+    }
+  } catch (e) {
+    console.warn("[planner] Past-correction check failed:", e.message);
+  }
+
   // Try multi-step decomposition first
-  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools);
+  const decomposedSteps = await decomposeIntentWithLLM(trimmed, contextSignals, availableTools, undefined, pastCorrectionHint);
 
   if (decomposedSteps && decomposedSteps.length > 0) {
     // Resolve and validate each step's tool name
