@@ -753,8 +753,19 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1 && t
     });
   }
 
-  // Resolve the display text: coordinator's .reply (LLM-synthesized) > .data.text > .data.message > fallback
-  const displayText = toolResult.reply || toolResult.data?.text || toolResult.data?.message || "Task completed.";
+  // When the tool returns a rich HTML widget, the widget IS the output — don't also
+  // stream the markdown text or users see the content twice (once as plain text, once
+  // in the dedicated widget panel). Email/email_confirm are excluded because they need
+  // the text reply to show the draft / confirmation message in chat.
+  const hasHtmlWidget = !!(toolResult.data?.html);
+  const NEEDS_BOTH_TEXT_AND_HTML = new Set(["email", "email_confirm"]);
+  const suppressTextForWidget = hasHtmlWidget && !NEEDS_BOTH_TEXT_AND_HTML.has(toolResult.tool);
+
+  // Resolve the display text: coordinator's .reply > .data.text > .data.message > fallback
+  // Use null when suppressing so the chat bubble is hidden (client handles null gracefully)
+  const displayText = suppressTextForWidget
+    ? null
+    : (toolResult.reply || toolResult.data?.text || toolResult.data?.message || "Task completed.");
 
   // Stream the preformatted text directly back to the UI
   if (options.onChunk && displayText) {

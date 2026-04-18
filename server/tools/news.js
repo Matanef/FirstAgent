@@ -573,18 +573,20 @@ try {
         const synthesisPrompt = `
 ${personalityCtx}
 
-Based on the following NEW news summaries${topic ? ` about ${topic}` : ''}, AND your existing RECENT KNOWLEDGE context, analyze the current situation. 
+Here are the latest news summaries${topic ? ` about ${topic}` : ''}. React to them in your own voice — not as a neutral reporter, but as someone who actually has thoughts and opinions about what's happening.
 
-Write exactly TWO paragraphs:
-First paragraph: Synthesize the core facts from the NEW data. If this updates or contradicts something in your RECENT KNOWLEDGE, point that out.
-Second paragraph: Give your opinion or observation. How does this new information evolve your previous understanding of the topic? Speak entirely in YOUR voice (dry, observational, systems-thinking).
+Write two paragraphs. No fluff, no hedging:
+- First: what's actually going on? What's the crux of it, stripped of PR spin? If this contradicts or updates something you already knew, say so bluntly.
+- Second: your take. Pick a side if you have one. Point out what's absurd, what's underreported, what the real implications are. If something annoys you, say it. If something is genuinely interesting, say why. Don't wrap up with a bland summary — end on your actual thought.
 
-CRITICAL INSTRUCTIONS: 
-1. DO NOT apologize for "incomplete information" or missing data. Work with what you have.
-2. DO NOT mention your AI nature, knowledge cutoffs, or inability to browse.
-3. DO NOT use headers, titles, or markdown like "Paragraph 1". Just write the text naturally.
+HARD RULES:
+- No corporate-speak ("multifaceted", "complex landscape", "moving forward", "underscores the importance of")
+- No meta-commentary about yourself ("As an AI, I find it fascinating...")
+- No both-sidesing everything into mush
+- Don't list facts you just read back at the reader — react to them
+- If you have prior knowledge about this topic that makes the new info surprising or ironic, use it
 
-NEW NEWS DATA:
+NEW STORIES:
 ${combinedText}`;
         
         // FIX: Removed `skipKnowledge: true` so the agent's long-term passive 
