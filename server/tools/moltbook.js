@@ -496,7 +496,7 @@ async function saveCredentials(creds) {
 // When true, suppress per-request console.log (used during heartbeat to reduce noise)
 let quietMode = false;
 
-async function apiRequest(method, endpoint, body, apiKey) {
+async function apiRequest(method, endpoint, body, apiKey, timeoutMs = 15000) {
   const url = `${API_BASE}${endpoint}`;
   const headers = { "Content-Type": "application/json" };
 
@@ -504,7 +504,12 @@ async function apiRequest(method, endpoint, body, apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const options = { method, headers, timeout: 15000 };
+  // node-fetch v3 dropped the `timeout` option — use AbortController instead.
+  // Without this, any hanging Moltbook API call would block the heartbeat forever.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const options = { method, headers, signal: controller.signal };
   if (body && (method === "POST" || method === "PATCH" || method === "PUT")) {
     options.body = JSON.stringify(body);
   }
@@ -515,8 +520,14 @@ async function apiRequest(method, endpoint, body, apiKey) {
   try {
     res = await fetch(url, options);
   } catch (err) {
+    if (err.name === "AbortError") {
+      console.error(`[moltbook] Request timed out (${timeoutMs}ms): ${method} ${endpoint}`);
+      return { ok: false, status: 0, data: { error: `Request timed out after ${timeoutMs}ms` }, headers: new Map() };
+    }
     console.error(`[moltbook] Request failed: ${method} ${endpoint} — ${err.message}`);
     return { ok: false, status: 0, data: { error: `Network error: ${err.message}` }, headers: new Map() };
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   // Handle 429 Rate Limit — return immediately with clear error
@@ -2426,6 +2437,7 @@ if (homeResult.ok) {
     }
 
     // 2. Auto-reply to unread conversations
+    console.log(`[moltbook] Checking DM conversations...`);
     const convResult = await apiRequest("GET", "/agents/dm/conversations", null, apiKey);
     let convs = convResult.data?.conversations || convResult.data?.data?.conversations || convResult.data?.data || convResult.data;
     if (!Array.isArray(convs)) convs = [];
@@ -2577,11 +2589,13 @@ Return ONLY valid JSON:
 
       let llmEngagement = null;
       try {
-        const llmResult = await llm(analysisPrompt, { timeoutMs: 60000, format: "json", skipLanguageDetection: true });
+        console.log(`[moltbook] LLM engagement analysis: prompt ${analysisPrompt.length} chars, ${feedPosts.length} posts`);
+        const llmResult = await llm(analysisPrompt, { timeoutMs: 90000, format: "json", skipLanguageDetection: true });
         if (llmResult.success && llmResult.data?.text) {
           const cleaned = llmResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
           llmEngagement = JSON.parse(cleaned);
         }
+        console.log(`[moltbook] LLM engagement analysis complete: ${llmEngagement ? "got response" : "no response"}`);
       } catch (e) {
         console.warn("[moltbook] LLM engagement analysis failed:", e.message);
       }
