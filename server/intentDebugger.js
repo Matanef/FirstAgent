@@ -6,8 +6,25 @@ import { PROJECT_ROOT } from "./utils/config.js";
 import { appendLog, readLog } from "./utils/jsonlLogger.js";
 
 const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
-const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");
+const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");       // legacy (frozen Feb 2026)
+const TELEMETRY_LOG = path.join(LOGS_DIR, "telemetry.jsonl");       // live — written by chat.js
 const CORRECTIONS_LOG = path.join(LOGS_DIR, "routing-corrections.jsonl");
+
+/**
+ * Normalise a raw log entry to a common shape regardless of which file it came from.
+ * telemetry.jsonl → { tool, success, executionTime, conversationId }
+ * intent-debug.jsonl (legacy) → { detectedTool, reasoning, confidence, userMessage, success }
+ */
+function normaliseEntry(entry) {
+  return {
+    tool: entry.tool || entry.detectedTool || "unknown",
+    success: !!entry.success,
+    confidence: entry.confidence ?? null,
+    userMessage: entry.userMessage || null,
+    reasoning: entry.reasoning || null,
+    timestamp: entry.timestamp
+  };
+}
 
 /**
  * Log intent routing decision
@@ -34,7 +51,16 @@ export async function logIntentDecision(decision) {
  * @returns {Object} Accuracy statistics
  */
 export async function getIntentAccuracyReport() {
-  const entries = await readLog(INTENT_LOG, 500);
+  // Read from the live telemetry log (written by chat.js after every tool execution).
+  // Fall back to merging with the legacy intent-debug.jsonl if it has entries not in telemetry.
+  const [liveEntries, legacyEntries] = await Promise.all([
+    readLog(TELEMETRY_LOG, 2000),
+    readLog(INTENT_LOG, 500)
+  ]);
+
+  // Use live telemetry as primary source; legacy entries are pre-Feb-2026 history
+  const allRaw = [...liveEntries, ...legacyEntries];
+  const entries = allRaw.map(normaliseEntry);
 
   const report = {
     totalDecisions: entries.length,
@@ -47,14 +73,14 @@ export async function getIntentAccuracyReport() {
   let successCount = 0;
 
   for (const entry of entries) {
-    const tool = entry.detectedTool || "unknown";
+    const tool = entry.tool;
 
     if (!report.byTool[tool]) {
       report.byTool[tool] = {
         total: 0,
         successes: 0,
         failures: 0,
-        averageConfidence: 0,
+        averageConfidence: null,
         confidenceSum: 0,
         confidenceCount: 0
       };
@@ -69,7 +95,7 @@ export async function getIntentAccuracyReport() {
       report.byTool[tool].failures++;
       report.failedDecisions.push({
         message: entry.userMessage,
-        tool: entry.detectedTool,
+        tool: entry.tool,
         reasoning: entry.reasoning,
         timestamp: entry.timestamp
       });
@@ -83,7 +109,7 @@ export async function getIntentAccuracyReport() {
     if (entry.confidence !== null && entry.confidence < 0.5) {
       report.lowConfidenceDecisions.push({
         message: entry.userMessage,
-        tool: entry.detectedTool,
+        tool: entry.tool,
         confidence: entry.confidence,
         timestamp: entry.timestamp
       });
@@ -110,7 +136,8 @@ export async function getIntentAccuracyReport() {
  * @returns {Array} Detected patterns
  */
 export async function detectMisroutingPatterns() {
-  const entries = await readLog(INTENT_LOG, 500);
+  const rawEntries = await readLog(TELEMETRY_LOG, 500);
+  const entries = rawEntries.map(normaliseEntry);
   const patterns = [];
 
   // Pattern 1: Repeated failures for similar queries
