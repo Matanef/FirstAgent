@@ -131,6 +131,19 @@ export function parsePendingAnswer(message, expects) {
     return null;
   }
 
+  // Ambiguity clarification (used by Phase 4 — user picks 1/2/3 or types intent)
+  if (expects === "clarification_choice") {
+    // Numeric: 1=chat, 2=search, 3=tool
+    if (/^1\b/.test(m) || /\b(chat|just\s+chat|talk|conversation|keep\s+chatting)\b/.test(m)) return "chat";
+    if (/^2\b/.test(m) || /\b(search|look\s+up|find|lookup|google)\b/.test(m)) return "search";
+    if (/^3\b/.test(m) || /\b(tool|run|execute|use\s+a\s+tool|skill)\b/.test(m)) return "tool";
+    // Hebrew
+    if (/(?:^|\s)(שיחה|צ'אט|סתם\s+לדבר)(\s|$)/.test(m)) return "chat";
+    if (/(?:^|\s)(חיפוש|לחפש|תחפש)(\s|$)/.test(m)) return "search";
+    if (/(?:^|\s)(כלי|הרץ|בצע)(\s|$)/.test(m)) return "tool";
+    return null; // unrecognised — leave pending entry intact
+  }
+
   // Default: echo back trimmed message — caller decides what to do with it
   return message.trim();
 }

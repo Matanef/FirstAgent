@@ -24,8 +24,9 @@ import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
 import { classifyIntent, classifyIntentWithRoutingOverride } from "../utils/intentClassifier.js";
 import { buildUserToneInstruction } from "../utils/userProfiles.js";
 import { handleTask } from "./taskAgent.js";
-import { setPendingQuestion } from "../utils/pendingQuestion.js";
+import { setPendingQuestion, getPendingQuestion } from "../utils/pendingQuestion.js";
 import { evaluateRoutingTable } from "../routing/index.js";
+import { logCorrection } from "../intentDebugger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -308,7 +309,7 @@ const SILENT_TOOLS = new Set([
 ]);
 
 async function resolveWithTools(message, options, recentTurns) {
-  // ── TOOL-INTERCEPT RESUME ──────────────────────────────────
+  // ── TOOL-INTERCEPT RESUME (Phase 3) ───────────────────────
   // If the user just answered a tool-intercept question ("yes"/"no"), honour it.
   const interceptResume = options.resolvedPending?._skill === "__tool_intercept__"
     ? options.resolvedPending
@@ -320,6 +321,31 @@ async function resolveWithTools(message, options, recentTurns) {
     return null;
   }
   // interceptResume?.yes_no === "yes" → fall through normally (skip intercept check below)
+
+  // ── AMBIGUITY CLARIFICATION RESUME (Phase 4) ──────────────
+  // If the user just answered a clarification question, act on their choice.
+  if (options.resolvedPending?._skill === "__ambiguity_clarification__") {
+    const choice = options.resolvedPending.clarification_choice;
+    console.log(`[chatAgent] Ambiguity clarification resumed: choice="${choice}"`);
+
+    // Log as a clarification_resolved correction so routing learns from it
+    try {
+      await logCorrection(
+        { type: "clarification_resolved", correctTool: choice === "search" ? "search" : (choice === "tool" ? "llm" : null), message },
+        { previousToolUsed: null, previousUserMessage: options.resolvedPending._originalRequest }
+      );
+    } catch { /* non-critical */ }
+
+    if (choice === "chat") {
+      // User wants to chat — skip tools entirely
+      return null;
+    }
+    if (choice === "search") {
+      // Prepend "search for:" so the routing table's search rule fires cleanly
+      message = `search for: ${message}`;
+    }
+    // choice === "tool" → fall through, let LLM decomposer figure it out
+  }
 
   const classification = await classifyIntentWithRoutingOverride(message, recentTurns, options.fileIds);
   console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence.toFixed(2)}, reason=${classification.reason}`);
@@ -371,6 +397,7 @@ async function resolveWithTools(message, options, recentTurns) {
           return {
             tool: "chatAgent",
             success: true,
+            final: true,
             mode: "chat",
             reply: question,
             data: { text: question, mode: "clarification", interceptedTool: plannedTool }
@@ -379,6 +406,61 @@ async function resolveWithTools(message, options, recentTurns) {
       }
     }
     // ── END TOOL-INTERCEPT CHECK ───────────────────────────────
+
+    // ── AMBIGUITY CLARIFICATION CHECK (Phase 4) ───────────────
+    // When confidence is very low AND no routing rule was confident enough AND we're not
+    // already in a pending-question flow, ask the user what they meant.
+    if (
+      !interceptResume &&
+      !options.resolvedPending &&
+      classification.confidence < 0.6 &&
+      classification.reason === "ambiguous_default_task" &&
+      options.conversationId
+    ) {
+      // Peek routing table — if any rule fires at priority ≥ 55, skip the clarification
+      // (the routing table is confident enough on its own)
+      const lower = message.toLowerCase().trim();
+      const trimmed = message.trim();
+      let hasStrongRoutingMatch = false;
+      try {
+        const peek = await evaluateRoutingTable(lower, trimmed, {});
+        if (peek?.[0]?.priority >= 55) hasStrongRoutingMatch = true;
+      } catch { /* non-critical */ }
+
+      if (!hasStrongRoutingMatch) {
+        // Make sure we don't have an active pending question already
+        const existing = await getPendingQuestion(options.conversationId).catch(() => null);
+        if (!existing) {
+          const snippet = trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
+          const question = `I'm not sure what you'd like me to do with _"${snippet}"_. Did you mean:\n\n1. 💬 Chat about this\n2. 🔍 Search for information\n3. 🛠️ Run a tool\n\n_Just reply with a number or tell me directly._`;
+
+          await setPendingQuestion(options.conversationId, {
+            skill: "__ambiguity_clarification__",
+            question,
+            expects: "clarification_choice",
+            originalRequest: trimmed
+          });
+
+          console.log(`[chatAgent] Ambiguity clarification: asking user what to do with "${snippet}" (confidence ${classification.confidence.toFixed(2)})`);
+
+          if (options.onStep) {
+            options.onStep({ type: "thought", phase: "THOUGHT",
+              content: `Ambiguous request (confidence ${classification.confidence.toFixed(2)}, no routing match ≥ 55) — asking user to clarify intent.`,
+              timestamp: new Date().toISOString() });
+          }
+
+          return {
+            tool: "chatAgent",
+            success: true,
+            final: true,
+            mode: "chat",
+            reply: question,
+            data: { text: question, mode: "clarification", ambiguous: true }
+          };
+        }
+      }
+    }
+    // ── END AMBIGUITY CLARIFICATION CHECK ─────────────────────
 
     if (options.onStep) {
       options.onStep({
