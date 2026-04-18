@@ -182,6 +182,8 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   if (
     /\b(what\s+have\s+you\s+improved|what\s+did\s+you\s+improve|have\s+you\s+(improved|changed|updated)\s+recently|improved\s+lately|what\s+(changes?|updates?)\s+(have\s+you|did\s+you)\s+made?|recently\s+(improved|changed|updated))\b/i.test(lower) ||
     /\b(how\s+accurate|what\s+is\s+your\s+accuracy|accuracy\s+of\s+your|routing\s+accuracy|your\s+routing\s+accuracy|how\s+well\s+do\s+you\s+route|what\s+issues?\s+(have\s+you|did\s+you)\s+detect)\b/i.test(lower) ||
+    /\b(how\s+can\s+you\s+improve|ways?\s+(to|you\s+can)\s+improve\s+your)\b/i.test(lower) ||
+    /\b(improve\s+your\s+(tool\s+selection|routing|performance|accuracy|decisions?|tool\s+use|classification))\b/i.test(lower) ||
     /\b(selfimprovement|self.improvement|self.evolve|selfevolve)\b/i.test(lower)
   ) {
     return { mode: "task", confidence: 0.95, reason: "introspection_selfimprove" };

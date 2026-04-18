@@ -873,7 +873,7 @@ ASSISTANT:`;
       await llmStream(prompt, (chunk) => {
         replyText += chunk;
         options.onChunk(chunk);
-      }, { skipKnowledge: true, signal: options.signal });
+      }, { skipKnowledge: true, signal: options.signal, timeoutMs: 90_000 });
     } else {
       const result = await llm(prompt, { skipKnowledge: true, signal: options.signal });
       replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
