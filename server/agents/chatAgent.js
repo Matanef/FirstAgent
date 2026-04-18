@@ -23,7 +23,9 @@ import { extract as extractKeywords } from "../skills/deepResearch/keywordExtrac
 import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
 import { classifyIntent, classifyIntentWithRoutingOverride } from "../utils/intentClassifier.js";
 import { buildUserToneInstruction } from "../utils/userProfiles.js";
-import { handleTask } from "./taskAgent.js"; 
+import { handleTask } from "./taskAgent.js";
+import { setPendingQuestion } from "../utils/pendingQuestion.js";
+import { evaluateRoutingTable } from "../routing/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -299,17 +301,91 @@ async function buildUserContext(conversationId, message = "") {
 // The chatAgent asks the intent classifier if tools are needed.
 // If yes, it delegates to the taskAgent SILENTLY (onChunk: null),
 // grabs the data, and returns it to be injected into the prompt.
+// Tools that are unambiguous enough to run silently mid-conversation without asking.
+const SILENT_TOOLS = new Set([
+  "calculator", "weather", "memoryTool", "selfImprovement", "selfEvolve",
+  "news", "sports", "youtube", "finance", "financeFundamentals"
+]);
+
 async function resolveWithTools(message, options, recentTurns) {
+  // ── TOOL-INTERCEPT RESUME ──────────────────────────────────
+  // If the user just answered a tool-intercept question ("yes"/"no"), honour it.
+  const interceptResume = options.resolvedPending?._skill === "__tool_intercept__"
+    ? options.resolvedPending
+    : null;
+
+  if (interceptResume?.yes_no === "no") {
+    // User declined the tool — fall straight through to conversational LLM
+    console.log("[chatAgent] Tool intercept: user declined, staying in chat mode");
+    return null;
+  }
+  // interceptResume?.yes_no === "yes" → fall through normally (skip intercept check below)
+
   const classification = await classifyIntentWithRoutingOverride(message, recentTurns, options.fileIds);
-  console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence}, reason=${classification.reason}`);
+  console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence.toFixed(2)}, reason=${classification.reason}`);
 
   if (classification.mode === "task") {
+
+    // ── TOOL-INTERCEPT CHECK ───────────────────────────────────
+    // When a tool is about to fire mid-active-conversation with low confidence,
+    // pause and ask the user rather than silently committing.
+    // Skip if: user already said "yes", confidence is high, or we're not in active chat.
+    if (!interceptResume && classification.confidence < 0.75) {
+      const lastTurn = recentTurns.length > 0 ? recentTurns[recentTurns.length - 1] : null;
+      const lastTurnWasChat = lastTurn?.mode === "chat";
+      const lastTurnAge = lastTurn?.timestamp
+        ? (Date.now() - new Date(lastTurn.timestamp).getTime()) / 60000
+        : Infinity;
+      const isRecentConversation = lastTurnAge < 5;
+
+      if (lastTurnWasChat && isRecentConversation && options.conversationId) {
+        // Cheaply peek which tool the routing table would choose (no LLM call)
+        const lower = message.toLowerCase().trim();
+        const trimmed = message.trim();
+        let plannedTool = null;
+        try {
+          const routingPeek = await evaluateRoutingTable(lower, trimmed, {});
+          if (routingPeek?.[0]?.tool && !SILENT_TOOLS.has(routingPeek[0].tool)) {
+            plannedTool = routingPeek[0].tool;
+          }
+        } catch { /* routing peek failed — skip intercept */ }
+
+        if (plannedTool) {
+          const question = `I noticed you might be in the middle of a conversation, but this looks like it could also be a task for the **${plannedTool}** tool.\n\nShould I proceed with the tool, or would you prefer to just chat?\n_(Reply **yes** to run the tool, or **no** to keep chatting)_`;
+
+          await setPendingQuestion(options.conversationId, {
+            skill: "__tool_intercept__",
+            question,
+            expects: "yes_no",
+            originalRequest: { text: message, plannedTool }
+          });
+
+          console.log(`[chatAgent] Tool intercept: pausing before "${plannedTool}" (confidence ${classification.confidence.toFixed(2)})`);
+
+          if (options.onStep) {
+            options.onStep({ type: "thought", phase: "THOUGHT",
+              content: `Low-confidence task routing (${classification.confidence.toFixed(2)}) mid-conversation — asking user to confirm before running "${plannedTool}".`,
+              timestamp: new Date().toISOString() });
+          }
+
+          return {
+            tool: "chatAgent",
+            success: true,
+            mode: "chat",
+            reply: question,
+            data: { text: question, mode: "clarification", interceptedTool: plannedTool }
+          };
+        }
+      }
+    }
+    // ── END TOOL-INTERCEPT CHECK ───────────────────────────────
+
     if (options.onStep) {
-      options.onStep({ 
-        type: "thought", 
-        phase: "THOUGHT", 
-        content: `Decided to consult tools. Reason: ${classification.reason}`, 
-        timestamp: new Date().toISOString() 
+      options.onStep({
+        type: "thought",
+        phase: "THOUGHT",
+        content: `Decided to consult tools. Reason: ${classification.reason}`,
+        timestamp: new Date().toISOString()
       });
     }
 
@@ -321,7 +397,7 @@ async function resolveWithTools(message, options, recentTurns) {
       fileIds: options.fileIds,
       onChunk: null, // CRITICAL: Stop the taskAgent from talking directly to the user
       onStep: options.onStep, // Allow thoughts/plans to still stream
-      signal: options.signal // 👈 PASS SIGNAL TO TASK AGENT
+      signal: options.signal
     });
 
     return taskResult;

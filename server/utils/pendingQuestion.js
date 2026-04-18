@@ -105,6 +105,13 @@ export function parsePendingAnswer(message, expects) {
   const m = message.trim().toLowerCase();
   if (!m) return null;
 
+  // yes/no confirmation (used by tool-intercept warnings)
+  if (expects === "yes_no") {
+    if (/^(yes|yeah|yep|sure|ok|okay|go\s+ahead|proceed|do\s+it|confirm|run\s+it)[!?.\s]*$/i.test(m)) return "yes";
+    if (/^(no|nope|nah|don'?t|stop|cancel|just\s+chat|keep\s+chatting|skip\s+(the\s+)?tool|just\s+talk)[!?.\s]*$/i.test(m)) return "no";
+    return null; // unrecognised — leave pending entry intact
+  }
+
   if (expects === "depth") {
     // Numeric short answers: 1=article, 2=indepth, 3=research, 4=thesis
     const numMatch = m.match(/^([1-4])\b/);
