@@ -195,6 +195,17 @@ export const ROUTING_TABLE = [
     match: (lower) => /\b(snapshot|show context|file snapshot|project snapshot)\b/i.test(lower),
     description: "Triggers compressed context snapshot generation"
   },
+  // ── selfImprovement: diagnostics & introspection (78) ─────────
+  {
+    tool: "selfImprovement",
+    priority: 78,
+    match: (lower) =>
+      /\b(how\s+accurate|routing\s+accuracy|your\s+accuracy|success\s+rate|routing\s+report|tool\s+usage\s+stats?)\b/i.test(lower) ||
+      /\b(what\s+issues?\s+(have\s+you|did\s+you)\s+detect|detected\s+issues?|routing\s+issues?)\b/i.test(lower) ||
+      /\b(how\s+(good|well)\s+(is\s+your|do\s+you|are\s+you)\s+routing|how\s+are\s+you\s+routing)\b/i.test(lower) ||
+      /\b(selfimprovement|self.improvement)\b/i.test(lower),
+    description: "Routing accuracy diagnostics and self-improvement reports"
+  },
   {
     tool: "sheets",
     priority: 75,

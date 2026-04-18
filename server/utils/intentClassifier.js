@@ -176,11 +176,13 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   }
 
   // ── STRICT SELF-IMPROVEMENT INTROSPECTION OVERRIDE ───────────
-  // "what have you improved lately?", "have you improved recently?" — must reach selfImprovement
-  // tool. Without this, the chat classifier's personal-question patterns score it as chat (0.8)
-  // and the planner's technical override never runs.
+  // "what have you improved lately?", "how accurate is your routing?", "what issues have you detected?" —
+  // must reach selfImprovement. Without this, the chat classifier's personal-question patterns score
+  // these as chat (0.8) and the planner's technical override never runs.
   if (
-    /\b(what\s+have\s+you\s+improved|what\s+did\s+you\s+improve|have\s+you\s+(improved|changed|updated)\s+recently|improved\s+lately|what\s+(changes?|updates?)\s+(have\s+you|did\s+you)\s+made?|recently\s+(improved|changed|updated))\b/i.test(lower)
+    /\b(what\s+have\s+you\s+improved|what\s+did\s+you\s+improve|have\s+you\s+(improved|changed|updated)\s+recently|improved\s+lately|what\s+(changes?|updates?)\s+(have\s+you|did\s+you)\s+made?|recently\s+(improved|changed|updated))\b/i.test(lower) ||
+    /\b(how\s+accurate|what\s+is\s+your\s+accuracy|accuracy\s+of\s+your|routing\s+accuracy|your\s+routing\s+accuracy|how\s+well\s+do\s+you\s+route|what\s+issues?\s+(have\s+you|did\s+you)\s+detect)\b/i.test(lower) ||
+    /\b(selfimprovement|self.improvement|self.evolve|selfevolve)\b/i.test(lower)
   ) {
     return { mode: "task", confidence: 0.95, reason: "introspection_selfimprove" };
   }
@@ -242,7 +244,7 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   }
 
   // Explicit tool name override (runs for ALL message lengths)
-  const EXPLICIT_TOOLS = ["pikud", "tracker", "spotify", "moltbook", "github", "sandbox", "alarm", "scheduler", "weather", "email", "news", "finance", "sports"];
+  const EXPLICIT_TOOLS = ["pikud", "tracker", "spotify", "moltbook", "github", "sandbox", "alarm", "scheduler", "weather", "email", "news", "finance", "sports", "selfimprovement", "selfevolve", "deepresearch"];
   for (const tool of EXPLICIT_TOOLS) {
     if (lower.includes(tool)) {
       taskScore += 5;

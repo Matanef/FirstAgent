@@ -154,7 +154,7 @@ async function selfImprovement(request) {
       let reflectionText = "";
       try {
         const changesSummary = improvements
-          .slice(0, 10)
+          .slice(0, 5)
           .map((imp, i) => `${i + 1}. [${imp.category}] ${imp.action}${imp.reason ? ` — ${imp.reason}` : ""}`)
           .join("\n");
 
@@ -172,11 +172,14 @@ Be specific and direct. No preamble like "Here is my reflection:".`;
 
         const llmResult = await llm(reflectionPrompt, {
           skipKnowledge: true,
-          timeoutMs: 30_000,
+          timeoutMs: 20_000,
           temperature: 0.4
         });
         const reflectionRaw = llmResult?.data?.text?.trim() || "";
-        if (reflectionRaw.length > 20) {
+        const isLlmError = reflectionRaw.toLowerCase().startsWith("the language model encountered") ||
+          reflectionRaw.toLowerCase().includes("aborted or timed out") ||
+          reflectionRaw.toLowerCase().includes("llm error");
+        if (reflectionRaw.length > 20 && !isLlmError) {
           reflectionText = reflectionRaw;
           reflectionHtml = `
             <div class="self-reflection" style="
