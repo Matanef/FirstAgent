@@ -5,6 +5,27 @@ import { createLogger } from "../utils/logger.js";
 // Silent logger: lifecycle info goes to logs/llm/ only, never to PM2 stdout
 const log = createLogger("llm", { silent: false, consoleLevel: "warn" });
 
+// ── ACTIVE GENERATION TRACKER ──
+// Only one Ollama streaming generation should be active at a time.
+// When a new llmStream starts, it aborts any previous controller so Ollama
+// doesn't queue new requests behind a stale generation the user already cancelled.
+// This is safe for single-user local deployments; multi-user setups would need
+// a per-user tracker.
+let _activeStreamController = null;
+
+/**
+ * Abort any currently-running Ollama stream.
+ * Called automatically at the start of each new llmStream.
+ * Can also be called directly from chat.js when the user clicks Stop.
+ */
+export function abortActiveStream() {
+  if (_activeStreamController && !_activeStreamController.signal.aborted) {
+    log("Aborting previous Ollama generation before starting new one", "info");
+    _activeStreamController.abort();
+  }
+  _activeStreamController = null;
+}
+
 // ── GEMINI API BACKEND ──
 // Used for Hebrew/Arabic/multilingual prose where local models fail.
 // Falls back gracefully to local Ollama if API key is missing.
@@ -284,13 +305,22 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 300_000;
   const maxChunks = configOptions.maxChunks || 10000;
   const externalSignal = configOptions.signal;
-  
+
   const { model = CONFIG.LLM_MODEL, options = {} } = configOptions;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
+  // Abort any previously active Ollama stream. This ensures that when the user
+  // clicks Stop and then sends a new message, the old generation is explicitly
+  // killed before the new fetch is issued — so Ollama doesn't queue the new
+  // request behind a stale one.
+  abortActiveStream();
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Register this controller as the globally active one
+  _activeStreamController = controller;
 
   if (externalSignal) {
     if (externalSignal.aborted) controller.abort();
@@ -378,5 +408,9 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
     return { success: false, error: err.message };
   } finally {
     clearTimeout(timeoutId);
+    // Clear the global tracker if this is still the active controller
+    if (_activeStreamController === controller) {
+      _activeStreamController = null;
+    }
   }
 }

@@ -12,6 +12,7 @@ import {
 import { handleMessage as orchestratorHandle } from "../agents/orchestrator.js";
 import { calculateConfidence } from "../audit.js";
 import { logTelemetry } from "../telemetryAudit.js";
+import { abortActiveStream } from "../tools/llm.js";
 
 const router = express.Router();
 
@@ -81,6 +82,9 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
     if (!res.writableEnded) {
       console.log("⚠️ [chat.js] Client disconnected prematurely! Aborting background operations...");
       abortController.abort();
+      // Also explicitly abort the active Ollama stream so Ollama stops generating
+      // immediately — prevents the next request from queuing behind a stale generation.
+      abortActiveStream();
     }
   });
 
