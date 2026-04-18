@@ -110,9 +110,18 @@ function tripGeminiBreaker(seconds) {
 export { callGemini };
 
 // Replace your existing fetchWithTimeout with this:
-async function fetchWithTimeout(url, body, timeoutMs = 1200_000, externalSignal = null) {
+async function fetchWithTimeout(url, body, timeoutMs = 180_000, externalSignal = null) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Watchdog: if the Ollama connection goes silent the user sees nothing for
+  // minutes. Emit a progress log every 30s so it's obvious the server is still
+  // stuck on the upstream, not crashed.
+  const startedAt = Date.now();
+  const watchdogId = setInterval(() => {
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    log(`still waiting for LLM response (${elapsedSec}s elapsed, timeout at ${Math.round(timeoutMs / 1000)}s)`, "warn");
+  }, 30_000);
 
   // If the user clicks stop, trigger our internal abort controller
   if (externalSignal) {
@@ -137,6 +146,7 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000, externalSignal 
     throw err;
   } finally {
     clearTimeout(timeoutId);
+    clearInterval(watchdogId);
   }
 }
 
