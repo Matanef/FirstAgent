@@ -31,6 +31,7 @@ import * as conclusionWriter from "./conclusionWriter.js";
 import * as promptRollup from "./promptRollup.js";
 import * as thesisSynthesizer from "./thesisSynthesizer.js";
 import { seedIfNeeded } from "./academicJournalSeeder.js";
+import { addFact } from "../../knowledge.js";
 import { createLogger } from "../../utils/logger.js";
 
 const TOOL_NAME = "deepResearch";
@@ -517,6 +518,40 @@ export async function deepResearch(request) {
       depth: effectiveTier,
       lastResearched: new Date().toISOString()
     });
+
+    // ── Step 9.5: Feed completed research back into the knowledge store ──
+    // Every internal deepResearch LLM call passes skipKnowledge:true to avoid
+    // polluting the knowledge graph with scaffolding calls. But the FINAL
+    // synthesis IS worth remembering — the agent should know it researched
+    // this topic and carry forward a one-line summary of what it learned.
+    //
+    // Aggregates top-level findings from each prompt's conclusion summary into
+    // a single compact fact, stored with a 1-year expiry. Best-effort — never
+    // blocks the pipeline.
+    try {
+      const topConclusions = promptResults
+        .map(p => (p.conclusion?.summary || "").trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      if (topConclusions.length > 0) {
+        const factBlob = topConclusions
+          .map(s => s.length > 320 ? s.slice(0, 317) + "..." : s)
+          .join(" | ");
+        await addFact({
+          topic: rawTopic,
+          fact: `Researched ${effectiveTier} (${totalSources} sources): ${factBlob}`,
+          source: `deepResearch:${activeSlug}`,
+          ongoing: false,
+          expiryDays: 365
+        });
+        console.log(`[deepResearch] 📚 Knowledge: stored finding for "${rawTopic.slice(0, 60)}" (${totalSources} sources, expires in 365d)`);
+      } else {
+        console.log(`[deepResearch] 📚 Knowledge: no usable conclusions to store — skipping addFact`);
+      }
+    } catch (err) {
+      console.log(`[deepResearch] 📚 Knowledge: addFact failed (non-blocking): ${err.message}`);
+      log(`knowledge addFact failed: ${err.message}`, "warn");
+    }
 
     // ── Step 10: chat reply ────────────────────────────────────────────────
     const finalPath = thesisInfo?.relativePath || masterInfo?.relativePath || `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/`;

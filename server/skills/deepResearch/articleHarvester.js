@@ -19,6 +19,53 @@ const log = createLogger("articleHarvester", { consoleLevel: "warn" });
 const CACHE_DIR = path.resolve(PROJECT_ROOT, "data", "research-cache");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+// ───────────────────────────── keyword extractor ─────────────────────────
+// Academic APIs (CORE, DOAJ, Semantic Scholar) expect KEYWORDS, not full
+// sentences/questions. promptPlanner emits human-readable research prompts
+// like "Expert opinions on how leaders can foster organizational resilience
+// through effective..." which collapse recall in keyword-based search engines
+// and even trip DOAJ's 400-char query limit.
+//
+// This function converts such a prompt into 3–6 content keywords by stripping
+// stopwords/question-words and capping length. The original prompt is still
+// shown to humans in the Obsidian notes; only the API query gets shortened.
+const SEARCH_STOPWORDS = new Set([
+  "a","an","the","and","or","but","of","in","on","at","to","for","with","by","from","as",
+  "is","are","was","were","be","been","being","am","do","does","did","have","has","had",
+  "what","which","who","whom","whose","when","where","why","how","whether",
+  "this","that","these","those","their","them","they","it","its","our","your","you","we","i",
+  "some","any","all","more","most","much","many","few","several","about","into","over","upon",
+  "can","could","should","would","may","might","must","shall","will",
+  "recent","latest","trends","expert","opinions","analysis","data-driven","data","driven",
+  "contribute","contributing","influence","influences","impact","impacts","effective",
+  "role","roles","developing","foster","quick","do","give","make","run"
+]);
+
+export function extractSearchKeywords(prompt, maxWords = 6) {
+  if (!prompt || typeof prompt !== "string") return "";
+  const cleaned = prompt
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = cleaned.split(" ")
+    .filter(t => t.length >= 3 && !SEARCH_STOPWORDS.has(t));
+  // Preserve original ordering but dedupe
+  const seen = new Set();
+  const picked = [];
+  for (const t of tokens) {
+    if (seen.has(t)) continue;
+    seen.add(t);
+    picked.push(t);
+    if (picked.length >= maxWords) break;
+  }
+  // Fallback: if stopword-stripping left us with nothing, take raw leading words
+  if (picked.length < 2) {
+    return cleaned.split(" ").slice(0, maxWords).join(" ");
+  }
+  return picked.join(" ");
+}
+
 const SOURCE_NAME_TO_FETCHER = {
   semanticscholar: fetchSemanticScholar,
   arxiv:           fetchArxiv,
@@ -224,15 +271,17 @@ export async function scanLocalLibrary(topic, opts = {}) {
 // ───────────────────────────── fetchers ─────────────────────────────
 
 async function fetchSemanticScholar(query, limit) {
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] S2: querying "${kw}" (limit ${limit})`);
   try {
     const headers = {};
     if (CONFIG.SEMANTIC_SCHOLAR_KEY) headers["x-api-key"] = CONFIG.SEMANTIC_SCHOLAR_KEY;
     const r = await axios.get("https://api.semanticscholar.org/graph/v1/paper/search", {
-      params: { query, limit, fields: "title,abstract,url,year,authors,openAccessPdf,externalIds" },
+      params: { query: kw, limit, fields: "title,abstract,url,year,authors,openAccessPdf,externalIds" },
       headers,
       timeout: 12000
     });
-    return (r.data?.data || []).filter(x => x.abstract).map(x => {
+    const mapped = (r.data?.data || []).filter(x => x.abstract).map(x => {
       // Prefer open-access PDF URL so the scraper can fetch full text
       const oaUrl = x.openAccessPdf?.url;
       const doi = x.externalIds?.DOI;
@@ -244,7 +293,14 @@ async function fetchSemanticScholar(query, limit) {
         domain: oaUrl ? safeHost(oaUrl) : "semanticscholar.org"
       };
     });
-  } catch { return []; }
+    console.log(`[articleHarvester] S2: got ${mapped.length} results for "${kw}"`);
+    return mapped;
+  } catch (err) {
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] S2 error: ${status ? `HTTP ${status}` : err.message}`);
+    log(`Semantic Scholar error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
 }
 
 async function fetchArxiv(query, limit) {
@@ -305,18 +361,20 @@ async function fetchWikipedia(query, limit) {
  */
 async function fetchCore(query, limit) {
   if (!CONFIG.CORE_API_KEY) {
+    console.log(`[articleHarvester] CORE: CORE_API_KEY not set — skipping`);
     log("CORE_API_KEY not set — skipping CORE fetch", "warn");
     return [];
   }
-  console.log(`[articleHarvester] CORE: querying "${query.slice(0, 80)}" (limit ${limit})`);
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] CORE: querying "${kw}" (limit ${limit})`);
   try {
     const r = await axios.get("https://api.core.ac.uk/v3/search/works", {
-      params: { q: query, limit },
+      params: { q: kw, limit },
       headers: { "Authorization": `Bearer ${CONFIG.CORE_API_KEY}` },
       timeout: 15000
     });
     const results = (r.data?.results || []).filter(x => x.abstract || x.downloadUrl || x.fullTextUrl);
-    console.log(`[articleHarvester] CORE: got ${results.length} results for "${query.slice(0, 60)}"`);
+    console.log(`[articleHarvester] CORE: got ${results.length} results for "${kw}"`);
     return results.map(x => {
         // Prefer direct download link so the scraper gets full text
         const url = x.downloadUrl || x.fullTextUrl || `https://core.ac.uk/works/${x.id}`;
@@ -336,7 +394,9 @@ async function fetchCore(query, limit) {
         };
       });
   } catch (err) {
-    log(`CORE API error: ${err.message}`, "warn");
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] CORE error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`CORE API error (query="${kw}"): ${err.message}`, "warn");
     return [];
   }
 }
@@ -347,9 +407,10 @@ async function fetchCore(query, limit) {
  * Rate limit: 2 req/s (5 queued). We stay well within this.
  */
 async function fetchDoaj(query, limit) {
-  console.log(`[articleHarvester] DOAJ: querying "${query.slice(0, 80)}" (limit ${limit})`);
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] DOAJ: querying "${kw}" (limit ${limit})`);
   try {
-    const encoded = encodeURIComponent(query);
+    const encoded = encodeURIComponent(kw);
     const r = await axios.get(`https://doaj.org/api/search/articles/${encoded}`, {
       params: { pageSize: Math.min(limit, 10) },
       timeout: 12000
@@ -374,11 +435,12 @@ async function fetchDoaj(query, limit) {
         domain: safeHost(url) || "doaj.org"
       };
     }).filter(Boolean);
-    console.log(`[articleHarvester] DOAJ: got ${items.length} results for "${query.slice(0, 60)}"`);
+    console.log(`[articleHarvester] DOAJ: got ${items.length} results for "${kw}"`);
     return items;
   } catch (err) {
-    console.log(`[articleHarvester] DOAJ error: ${err.message}`);
-    log(`DOAJ API error: ${err.message}`, "warn");
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] DOAJ error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`DOAJ API error (query="${kw}"): ${err.message}`, "warn");
     return [];
   }
 }
@@ -405,6 +467,8 @@ async function fetchSerpResults(query, limit) {
  * Returns stripped text (up to 8000 chars) or "" on failure.
  */
 async function fetchPage(url) {
+  const isPdf = /\.pdf(\?|$)/i.test(url);
+  const short = url.length > 80 ? url.slice(0, 77) + "..." : url;
   try {
     return await withRetry(async () => {
       const r = await axios.get(url, {
@@ -417,10 +481,16 @@ async function fetchPage(url) {
         maxContentLength: 3 * 1024 * 1024  // 3MB — enough for large PDFs
       });
       const html = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      const rawBytes = Buffer.byteLength(html, "utf8");
       const text = stripHtmlToText(html);
-      return smartSlice(text, url);
+      const sliced = smartSlice(text, url);
+      if (isPdf || rawBytes > 150 * 1024) {
+        console.log(`[articleHarvester] fetch ✓ ${(rawBytes / 1024).toFixed(0)}KB → text ${text.length}ch → slice ${sliced.length}ch: ${short}`);
+      }
+      return sliced;
     }, 2, 2500);
   } catch (err) {
+    console.log(`[articleHarvester] fetch ✗ ${err.message} (${short})`);
     log(`fetchPage failed (${url}): ${err.message}`, "warn");
     return "";
   }

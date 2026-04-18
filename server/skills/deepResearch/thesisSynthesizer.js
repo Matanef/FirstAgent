@@ -291,6 +291,113 @@ ${paragraph}
 }
 
 /**
+ * Polish pass — two-stage critique + targeted repair for research/thesis tiers.
+ *
+ * Stage 1 (critique): LLM identifies 3–6 specific weak spots (unclear sentences,
+ *                     weak transitions, unsupported claims). Returns JSON list.
+ * Stage 2 (repair):   For each identified spot, rewrite just that paragraph
+ *                     (bounded, targeted — not a full rewrite of the article).
+ *
+ * Rationale: small local models (qwen2.5:7b) are measurably better at critiquing
+ * text than generating it from scratch. A second-pass self-critique over the
+ * already-written draft catches exactly the kind of wobbly claims and rough
+ * transitions that appear in long single-pass generations.
+ *
+ * Gated to research/thesis tiers because it adds ~3–5 LLM calls; not worth it
+ * for article/indepth where the draft is already compact.
+ */
+async function polishDraft({ draft, topic, tier }) {
+  const MAX_CRITIQUE_INPUT = 12000; // what we send to the critic
+  const inputSample = draft.length <= MAX_CRITIQUE_INPUT
+    ? draft
+    : draft.slice(0, MAX_CRITIQUE_INPUT);
+
+  const critiquePrompt = `You are an academic editor reviewing a ${tier}-level draft on "${topic}".
+
+Identify 3–6 SPECIFIC weak spots in the draft below. For each, quote the exact
+problematic sentence or short paragraph (≤ 240 chars), and state briefly what is
+wrong (unclear claim, weak transition, unsupported assertion, redundancy, first-person,
+jargon without definition, etc.).
+
+Do NOT comment on anything that is already good. Do NOT suggest a rewrite here —
+just identify and name the problem. If nothing is seriously wrong, return an empty
+issues array.
+
+Draft (may be truncated):
+"""
+${inputSample}
+"""
+
+Return JSON only:
+{
+  "issues": [
+    { "excerpt": "exact quote from the draft (≤ 240 chars)", "reason": "short problem description" }
+  ]
+}`;
+
+  let critique = null;
+  try {
+    const res = await llm(critiquePrompt, {
+      timeoutMs: 60000,
+      format: "json",
+      skipKnowledge: true,
+      skipLanguageDetection: true,
+      options: { temperature: 0.25, num_ctx: 8192 }
+    });
+    critique = safeJsonParse(res?.data?.text || "");
+  } catch (err) {
+    log(`polish critique failed: ${err.message}`, "warn");
+    return null;
+  }
+
+  const issues = Array.isArray(critique?.issues) ? critique.issues.slice(0, 6) : [];
+  if (issues.length === 0) {
+    console.log(`[thesisSynthesizer] polish: critic found no issues — skipping repair`);
+    return draft;
+  }
+  console.log(`[thesisSynthesizer] polish: critic flagged ${issues.length} issue(s) — repairing...`);
+
+  // Stage 2: repair each flagged excerpt (sequentially — local LLM)
+  let repaired = draft;
+  for (let i = 0; i < issues.length; i++) {
+    const { excerpt, reason } = issues[i] || {};
+    if (!excerpt || typeof excerpt !== "string" || excerpt.length < 20) continue;
+    // Only attempt repair if the excerpt actually appears in the draft
+    if (!repaired.includes(excerpt)) continue;
+
+    const repairPrompt = `Rewrite the passage below to fix ONLY this issue: ${reason}.
+
+Rules:
+- Keep meaning and approximate length (±25%).
+- Keep third-person academic voice.
+- Preserve any [[wikilinks]] and URLs intact.
+- Output the rewritten passage ONLY — no preamble, no quotation marks.
+
+Passage:
+"""
+${excerpt}
+"""`;
+    try {
+      const res = await llm(repairPrompt, {
+        timeoutMs: 45000,
+        skipKnowledge: true,
+        skipLanguageDetection: true,
+        options: { temperature: 0.25, num_ctx: 3072 }
+      });
+      const replacement = String(res?.data?.text || "").trim();
+      if (replacement && replacement.length > 20 && replacement !== excerpt) {
+        repaired = repaired.replace(excerpt, replacement);
+        console.log(`[thesisSynthesizer] polish: repaired ${i + 1}/${issues.length} (${reason.slice(0, 50)})`);
+      }
+    } catch (err) {
+      log(`polish repair ${i + 1} failed: ${err.message}`, "warn");
+    }
+  }
+
+  return repaired;
+}
+
+/**
  * Top-level synthesis driver.
  *
  * @param {object} args
@@ -306,11 +413,16 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   // > outline's own title > raw topic. cleanTitle is what users see in the H1 + frontmatter.
   const finalTitle = (cleanTitle && cleanTitle.trim()) || topic;
 
+  console.log(`[thesisSynthesizer] ▶ starting synthesis: tier=${tier} prompts=${promptResults.length} topic="${String(topic).slice(0, 60)}"`);
+
   // 1. Build conclusions vector collection.
   const conclusionsCollection = await indexConclusions(topicSlug, promptResults);
+  console.log(`[thesisSynthesizer] ✓ conclusions indexed (collection=${conclusionsCollection})`);
 
   // 2. Build outline.
+  console.log(`[thesisSynthesizer] ⏳ building outline (LLM pass 1/N)...`);
   const outline = await buildOutline({ topic, tier, promptResults });
+  console.log(`[thesisSynthesizer] ✓ outline built: ${outline.sections?.length || 0} sections`);
 
   // 3. Collect known citation URLs from harvested article frontmatter (deterministic guardrail).
   const articleNotes = promptResults.flatMap(p => (p.analyses || []).map(a => a.frontmatter || {}));
@@ -323,7 +435,10 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   // 4. Section-by-section synthesis.
   const writtenSections = [];
   const prevSummaries = [];
-  for (const section of outline.sections) {
+  const totalSections = outline.sections.length;
+  for (let idx = 0; idx < outline.sections.length; idx++) {
+    const section = outline.sections[idx];
+    console.log(`[thesisSynthesizer] ⏳ composing section ${idx + 1}/${totalSections}: "${section.heading}" (budget=${section.word_budget}w)`);
     log(`step=writeSection id="${section.id}" heading="${section.heading}" budget=${section.word_budget}`, "info");
     let text = await writeSection({
       topic,
@@ -338,6 +453,7 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
     // Phase 1C: one expand/trim pass if section is significantly off budget
     text = await adjustSectionLength(text, section, topic, tier);
     const finalWords = wordCount(text);
+    console.log(`[thesisSynthesizer] ✓ section ${idx + 1}/${totalSections} done: ${finalWords}w (raw=${rawWords}, budget=${section.word_budget})`);
     log(`step=writeSection id="${section.id}" done words=${finalWords} (raw=${rawWords} budget=${section.word_budget})`, "info");
     writtenSections.push({ section, text });
     // 1-line summary fed into the next section's anti-duplication context.
@@ -371,10 +487,12 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   }
 
   // 8. Lint pass.
+  console.log(`[thesisSynthesizer] ⏳ linting draft...`);
   let lintReport = lint(draft, { tier, knownUrls: knownCitationUrls });
 
   // 9. Targeted rewrite for first-person violations (one pass, capped).
   if (lintReport.offendingParagraphs.length > 0) {
+    console.log(`[thesisSynthesizer] ⏳ rewriting ${Math.min(6, lintReport.offendingParagraphs.length)} first-person paragraph(s)...`);
     let rewritten = draft;
     for (const op of lintReport.offendingParagraphs.slice(0, 6)) {
       const replacement = await rewriteParagraph(op.paragraph, op.reason);
@@ -396,9 +514,32 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
     lintReport = lint(draft, { tier, knownUrls: knownCitationUrls });
   }
 
+  // 10b. Polish pass — ONLY for research + thesis tiers (expensive for lower tiers).
+  //      The model critiques its own draft to surface weak claims, unclear
+  //      sentences, and missing transitions, then applies targeted repair.
+  //      Not a full rewrite — just a focused patch over rough spots.
+  if (tier === "research" || tier === "thesis") {
+    try {
+      console.log(`[thesisSynthesizer] ⏳ polish pass (${tier} tier — critique + targeted repair)...`);
+      const polished = await polishDraft({ draft, topic, tier });
+      if (polished && polished.trim().length > draft.length * 0.6) {
+        draft = polished;
+        lintReport = lint(draft, { tier, knownUrls: knownCitationUrls });
+        console.log(`[thesisSynthesizer] ✓ polish pass applied (${wordCount(draft)}w after)`);
+      } else {
+        console.log(`[thesisSynthesizer] ⚠ polish pass produced no usable output — keeping original draft`);
+      }
+    } catch (err) {
+      console.log(`[thesisSynthesizer] ⚠ polish pass failed (non-fatal): ${err.message}`);
+      log(`polishDraft failed: ${err.message}`, "warn");
+    }
+  }
+
   // 11. Persist.
+  console.log(`[thesisSynthesizer] ⏳ writing final article to disk...`);
   const relativePath = `${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/${topicSlug}.md`;
   await writeNote(relativePath, headerFm + draft);
+  console.log(`[thesisSynthesizer] ✓ article saved: ${relativePath} (${wordCount(draft)}w)`);
 
   // 12. Phase 1D — stub creation for all [[wikilinks]] in the thesis.
   //     resolveWikilinks() checks each link against the vault, creates

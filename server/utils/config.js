@@ -1,5 +1,5 @@
 // server/utils/config.js (CORRECTED - properly detects Gmail OAuth)
-import 'dotenv/config';
+import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -8,6 +8,14 @@ const __dirname = path.dirname(__filename);
 
 // Dynamic project root — works regardless of where the repo is cloned
 export const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+
+// ⚠️ Single source of truth: server/.env (NOT project-root .env).
+// Historical bug: `import 'dotenv/config'` loads from CWD (project root), while
+// server/index.js loads from server/.env explicitly. This caused CORE_API_KEY
+// (read here in config.js) to silently miss values that were only in server/.env.
+// Fix: always load server/.env explicitly from this file too.
+const SERVER_ENV_PATH = path.resolve(__dirname, "..", ".env");
+dotenv.config({ path: SERVER_ENV_PATH });
 
 const warnings = [];
 
