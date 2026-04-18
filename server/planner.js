@@ -841,32 +841,43 @@ if (
   }
 
 // ── UNIFIED MCP ROUTING: Handles priority and context detection ──
-// Guard: compound requests should NOT be grabbed here (they need multi-step routing).
-// E.g., "Look at GitHub repos and evolve your planner" is a compound, not an MCP query.
-if (!hasCompoundIntent(lower) &&
-   (/\b(mcp|sqlite|postgres|youtube)\b/i.test(lower) ||
-   (/\bgithub\b/i.test(lower) && /\b(search|find|list\s+tools|call|mcp)\b/i.test(lower)))) {
-    
+// Guard #1: compound intents need multi-step routing.
+// Guard #2: informational intents ("research MCP", "explain MCP") must NOT
+// steal from deepResearch. The old rule matched the bare word "mcp" anywhere
+// in the message, so "research MCP in AI ecosystems" misrouted to mcpBridge.
+// Guard #3: require an imperative command targeting the bridge — list servers,
+// list tools on <server>, call X on <server>, disconnect <server>, etc.
+{
+  const isInformationalAboutMCP = /\b(research|learn|explain|describe|tell\s+me\s+about|what\s+is|overview\s+of|study|summar[iy]|compare|understand|deep\s*dive)\b/i.test(lower);
+  const hasImperativeMCP =
+    /\b(list|show|available)\s+(?:mcp\s+)?servers?\b/i.test(lower) ||
+    /\b(list|show)\s+tools?\s+(?:on|for)\s+\S+/i.test(lower) ||
+    /\b(call|run|execute|invoke)\s+\S+\s+(?:on|via|through)\s+\S+/i.test(lower) ||
+    /\b(disconnect|close|stop)\s+\S+\s*(mcp|server)\b/i.test(lower) ||
+    /\b(connect\s+to)\s+\S+\s*mcp\b/i.test(lower) ||
+    /\bmcp\s+(server|tool|bridge)\b/i.test(lower);
+
+  if (!hasCompoundIntent(lower) && hasImperativeMCP && !isInformationalAboutMCP) {
     console.log("[planner] Priority Routing: mcpBridge");
     const mcpContext = { source: "priority_routing" };
 
-    // Smart Action Detection
     if (/\b(list|show|available)\b.*\bservers?\b/i.test(lower)) {
-        mcpContext.action = "list_servers";
+      mcpContext.action = "list_servers";
     } else if (/\b(list|show|tools?)\b/i.test(lower)) {
-        mcpContext.action = "list_tools";
+      mcpContext.action = "list_tools";
     } else if (/\b(disconnect|close|stop)\b/i.test(lower)) {
-        mcpContext.action = "disconnect";
-    } else if (/\b(call|run|execute|use|ask)\b/i.test(lower)) {
-        mcpContext.action = "call_tool";
+      mcpContext.action = "disconnect";
+    } else if (/\b(call|run|execute|use|ask|invoke)\b/i.test(lower)) {
+      mcpContext.action = "call_tool";
     }
 
-    return [{ 
-      tool: "mcpBridge", 
-      input: trimmed, 
-      context: mcpContext, 
-      reasoning: "certainty_mcp_priority" 
+    return [{
+      tool: "mcpBridge",
+      input: trimmed,
+      context: mcpContext,
+      reasoning: "certainty_mcp_priority"
     }];
+  }
 }
 
   // Compute available tools once per plan
