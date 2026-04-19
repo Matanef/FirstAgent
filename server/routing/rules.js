@@ -461,10 +461,15 @@ export const ROUTING_TABLE = [
   {
     tool: "shopping",
     priority: 54,
-    match: (lower) =>
-      /\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(lower) ||
-      (/\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(lower)) ||
-      (/\bwhat\s+are\s+the\s+best\s+\w+/i.test(lower) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(lower)),
+    match: (lower, trimmed) => {
+      // Strip URLs before matching so words inside URL paths (e.g.
+      // "/product/claude-code") don't trigger shopping. Real shopping
+      // queries use these words in prose, not in a URL.
+      const urlStripped = ((trimmed || lower) + "").replace(/https?:\/\/\S+/gi, " ").toLowerCase();
+      return /\b(buy|shop|price|product|amazon|order|purchase|deal|discount|coupon)\b/i.test(urlStripped) ||
+        (/\b(best|top|cheapest|affordable)\s+\w+\s*(for|under|around|headphone|keyboard|laptop|phone|tablet|monitor|mouse|chair|camera|speaker|earbuds)\b/i.test(urlStripped)) ||
+        (/\bwhat\s+are\s+the\s+best\s+\w+/i.test(urlStripped) && /\b(wireless|bluetooth|gaming|mechanical|ergonomic|portable|budget)\b/i.test(urlStripped));
+    },
     guard: (lower) =>
       /\b(stock|share|invest|market|ticker|cybersecurity|crypto|bitcoin|earnings)\b/i.test(lower) ||
       /\bprice\s*(drop|drops|dropped|crash|fell|decline|surge|rally|increase|decrease)\b/i.test(lower) ||
