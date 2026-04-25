@@ -296,54 +296,92 @@ const messageId = message.id;
     // Build user-specific tone instruction for non-default users
     const userToneInstruction = await buildUserToneInstruction(from);
 
-    // ── PERSONA OVERRIDE FOR WHATSAPP ──
-    let personaPrefix = `(System: You are Lanou, communicating via WhatsApp.`;
+    // ── PERSONA / SYSTEM-CHANNEL CONTEXT FOR WHATSAPP ──
+    // Build persona instructions separately from the user message. Since we moved to
+    // system/user channel separation (llm.js + chatAgent.js), persona MUST NOT be
+    // prepended onto the classifier/planner input — doing that caused the planner's
+    // LLM decomposer to misroute inbound replies (e.g. Shirly's "blood test" reply
+    // → codeReview because the persona preamble looked like a code-review request).
+    const personaParts = [
+      "You are Lanou, communicating via WhatsApp.",
+    ];
 
-    // 1. Always inject the user's identity if we know it
     if (userProfile && userProfile.name) {
-        personaPrefix += ` You are speaking with ${userProfile.name}`;
-        if (userProfile.relation) personaPrefix += ` (Matan's ${userProfile.relation}).`;
-        else personaPrefix += `.`;
+      let line = `You are speaking with ${userProfile.name}`;
+      if (userProfile.relation) line += ` (Matan's ${userProfile.relation}).`;
+      else line += ".";
+      personaParts.push(line);
 
-        if (userProfile.role !== "admin" && userProfile.role !== "developer") {
-           personaPrefix += ` Answer warmly and conversationally. Do NOT output raw terminal data, JSON, or tool diagnostics. Summarize any tool findings in natural language.`;
-        }
+      if (userProfile.role !== "admin" && userProfile.role !== "developer" && userProfile.role !== "owner") {
+        // Non-owner (family/friend/unknown): force polite persona regardless of any
+        // "mean/sarcastic" tone set elsewhere. The mean persona is owner-only.
+        personaParts.push(
+          `You are speaking with ${userProfile.name}, who is NOT the system owner (Matan). ` +
+          `OVERRIDE any "mean", "sarcastic", or "bitter" tone — always be warm, polite, and helpful. ` +
+          `Never call them "mate" or use generic English nicknames; address them by their name. ` +
+          `Do NOT output raw terminal data, JSON, or tool diagnostics. Summarize any tool findings in natural language.`
+        );
+      }
+    } else {
+      // Unknown sender (no profile): default to polite + warn we don't know them.
+      personaParts.push(
+        "You do not have a profile for this sender. Default to a warm, polite tone. " +
+        "Never use insults, sarcasm, or the 'mean' persona with unknown contacts. " +
+        "Never call them 'mate' or invent nicknames; ask for their name if needed."
+      );
     }
 
-    // 2. Add identity override instructions if they ask who you are
+    // ── LANGUAGE AUTO-DETECT ──
+    // If the incoming message contains Hebrew characters, force the reply in Hebrew.
+    // This catches family replies (e.g. "הגיע") where the profile may not declare a language.
+    const hebrewCharCount = (body.match(/[\u0590-\u05FF]/g) || []).length;
+    if (hebrewCharCount >= 2) {
+      personaParts.push("LANGUAGE: The user wrote in Hebrew — respond ENTIRELY in Hebrew (עברית).");
+    } else if (userProfile?.language && userProfile.language !== "auto" && userProfile.language !== "en") {
+      personaParts.push(`LANGUAGE: Respond in ${userProfile.language}.`);
+    }
+
     if (/^(what('s| is) your name|who are you|what are you|איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)[?.!]?\s*$/i.test(body.trim())) {
-        personaPrefix += ` The user is asking about your identity. Answer briefly and conversationally as Lanou. Do not search the web or run tools.`;
+      personaParts.push("The user is asking about your identity. Answer briefly and conversationally as Lanou. Do not search the web or run tools.");
     }
 
-    personaPrefix += `) `;
-    const contextualMessage = `${personaPrefix}\n${body}`;
+    const systemContext = personaParts.join(" ");
+    // Merge WhatsApp persona into userToneInstruction so downstream consumers
+    // (chatAgent systemPrompt) receive both.
+    const combinedToneInstruction = [userToneInstruction, systemContext].filter(Boolean).join("\n\n");
 
     // ── INTENT CLASSIFICATION ──
-    // Classify the raw body (not the persona-wrapped message) so system instructions
-    // don't pollute the scoring. Route chat messages through chatAgent so they get
-    // a conversational LLM response instead of falling through to the search catch-all.
+    // Classify the raw body (no persona pollution).
     const { classifyIntentWithRoutingOverride } = await import("../utils/intentClassifier.js");
     const classification = await classifyIntentWithRoutingOverride(body, [], []);
     const isChat = classification.mode === "chat";
     console.log(`🤖 [WhatsApp] Intent: ${classification.mode} (${classification.confidence.toFixed(2)}, ${classification.reason}) — routing to ${isChat ? "chatAgent" : "taskPipeline"}`);
 
+    // Incoming WhatsApp messages are live user turns — give their LLM calls
+    // user priority so they jump ahead of any queued background work
+    // (scheduler, selfEvolve, heartbeats) on the single-GPU gate.
+    const { runWithLLMPriority } = await import("../utils/llmContext.js");
+
     let result;
     if (isChat) {
       const { handleChat } = await import("../agents/chatAgent.js");
-      result = await handleChat(contextualMessage, [], {
+      // Pass the RAW user body — persona flows separately via userToneInstruction.
+      result = await runWithLLMPriority("user", () => handleChat(body, [], {
         conversationId: `whatsapp_${from}`,
         userProfile,
-        userToneInstruction
-      });
+        userToneInstruction: combinedToneInstruction
+      }));
     } else {
       const { executeAgent } = await import("../utils/coordinator.js");
-      result = await executeAgent({
-        message: contextualMessage,
+      // Pass the RAW user body — the planner/decomposer must never see persona text,
+      // or it will misroute inbound replies to unrelated tools.
+      result = await runWithLLMPriority("user", () => executeAgent({
+        message: body,
         conversationId: `whatsapp_${from}`,
         clientIp: "whatsapp",
         userProfile,
-        userToneInstruction
-      });
+        userToneInstruction: combinedToneInstruction
+      }));
     }
     console.log(`🤖 [WhatsApp] Pipeline complete — tool: ${result.tool}, success: ${result.success}`);
 

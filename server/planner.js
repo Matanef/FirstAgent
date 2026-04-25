@@ -716,8 +716,14 @@ export async function plan({ message, chatContext = {}, signal }) {
   // Track the routing decision for user correction feedback
   if (result && result.length > 0 && !result[0]?.context?.correctionLogged) {
     const firstStep = result[0];
+    // Strip any (System: ...) persona preamble so stored message reflects what
+    // the user actually said — otherwise Jaccard similarity in
+    // findSimilarCorrections is dominated by persona boilerplate.
+    const rawMsg = (message || "").trim();
+    const sysMatch = rawMsg.match(/^(\(System:[^)]+\)\s*)([\s\S]*)$/i);
+    const cleanMsg = (sysMatch ? sysMatch[2].trim() : rawMsg).substring(0, 200);
     _lastRoutingDecision = {
-      userMessage: (message || "").trim().substring(0, 200),
+      userMessage: cleanMsg,
       tool: result.map(s => s.tool).join(" → "),
       reasoning: firstStep?.reasoning || "unknown",
       confidence: firstStep?.confidence ?? null,

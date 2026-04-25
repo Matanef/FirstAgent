@@ -25,6 +25,7 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const DATA_DIR = path.resolve(__dirname, "..", "..", "data");
 const TOOLS_DIR = path.resolve(__dirname);
+const SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 
 const AUDIT_LOG = path.join(DATA_DIR, "smart-evolution-log.json");
 const PENDING_FILE = path.join(DATA_DIR, "pending-evolution-proposal.json");
@@ -212,6 +213,154 @@ async function scanExistingTools() {
   return { toolFiles, toolDescriptions, toolCount: toolFiles.length, graph, plannerIntents, usagePatterns, agentInterests };
 }
 
+// ─── HELPER: Scan existing skills (server/skills/) ───────────────
+// Skills are the NEW primary extension unit. Tools are legacy. When proposing new
+// capabilities, we prefer suggesting skills or skill compositions over new tools.
+async function scanExistingSkills() {
+  const skillFiles = [];
+  const skillDescriptions = [];
+  let allowedSkills = [];
+
+  try {
+    const manifestRaw = await fs.readFile(path.join(SKILLS_DIR, "MANIFEST.json"), "utf8");
+    const manifest = JSON.parse(manifestRaw);
+    if (Array.isArray(manifest.allowed)) allowedSkills = manifest.allowed;
+  } catch (e) {
+    console.warn("[smartEvolution] skills MANIFEST.json not found or unreadable:", e.message);
+  }
+
+  try {
+    const files = await fs.readdir(SKILLS_DIR);
+    for (const f of files) {
+      if (!f.endsWith(".js")) continue;
+      if (f.includes(".backup") || f.includes(".tmp")) continue;
+      skillFiles.push(f);
+    }
+  } catch (e) {
+    console.warn("[smartEvolution] skills dir scan failed:", e.message);
+  }
+
+  // Build one-line descriptions by reading the first doc-comment of each skill file.
+  for (const f of skillFiles) {
+    const skillName = f.replace(".js", "");
+    const enabled = allowedSkills.includes(f);
+    let desc = "(no description)";
+    try {
+      const content = await fs.readFile(path.join(SKILLS_DIR, f), "utf8");
+      const firstLines = content.split("\n").slice(0, 10);
+      const commentLine = firstLines.find(l =>
+        /^\/\/\s*.{10,}/.test(l) && !/^\/\/\s*server\//.test(l)
+      ) || firstLines.find(l => /^\s*\*\s+[A-Z].{10,}/.test(l));
+      if (commentLine) {
+        desc = commentLine.replace(/^\/\/\s*/, "").replace(/^\s*\*\s+/, "").trim();
+      }
+    } catch { /* non-critical */ }
+    skillDescriptions.push(`${skillName} — ${desc}${enabled ? "" : "  [DISABLED via MANIFEST]"}`);
+  }
+
+  console.log(`[smartEvolution] Scanned ${skillFiles.length} skill files (${allowedSkills.length} enabled)`);
+  return { skillFiles, skillDescriptions, skillCount: skillFiles.length, allowedSkills };
+}
+
+// ─── HELPER: Find unmet user demand ──────────────────────────────
+// Reads routing-corrections.jsonl + telemetry to surface requests the agent
+// couldn't route well: misroutes the user corrected, ambiguity fallbacks, and
+// corrections referencing a tool that does not exist. These are the strongest
+// signal for "this use case needs a NEW skill" — build what the user asked for.
+async function findUnmetDemand() {
+  const CORRECTIONS_LOG = path.resolve(PROJECT_ROOT, "logs", "routing-corrections.jsonl");
+  const TELEMETRY_LOG   = path.resolve(DATA_DIR, "telemetry.json");
+
+  const demand = {
+    unresolvedCorrections: [],   // corrections where correctTool is null or unresolved
+    misroutes: [],               // "should have been X" where X exists — pattern of misroute
+    ambiguousMessages: [],       // clarification_resolved or ambiguous_default_task
+    chatFallbacks: [],           // telemetry entries where planner fell back to llm
+    summary: ""
+  };
+
+  // ── 1. Corrections log ──
+  let correctionEntries = [];
+  try {
+    const raw = await fs.readFile(CORRECTIONS_LOG, "utf8");
+    correctionEntries = raw.split(/\r?\n/).filter(Boolean).map(l => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch { /* file may not exist yet */ }
+
+  // Load tool list once for "does correctTool exist?" check
+  let knownTools = new Set();
+  try {
+    const files = await fs.readdir(TOOLS_DIR);
+    for (const f of files) {
+      if (f.endsWith(".js") && !f.includes(".backup")) knownTools.add(f.replace(".js", ""));
+    }
+    const skillFiles = await fs.readdir(SKILLS_DIR).catch(() => []);
+    for (const f of skillFiles) {
+      if (f.endsWith(".js")) knownTools.add(f.replace(".js", ""));
+    }
+  } catch { /* non-critical */ }
+
+  for (const e of correctionEntries.slice(-100)) {
+    const msg = (e.previousUserMessage || e.userMessage || "").slice(0, 160);
+    if (!msg) continue;
+
+    if (e.type === "clarification_resolved" || e.previousReasoning === "ambiguous_default_task") {
+      demand.ambiguousMessages.push({ msg, resolvedTo: e.correctTool || null });
+      continue;
+    }
+
+    if (e.correctTool && !knownTools.has(e.correctTool) && e.correctTool !== "llm") {
+      // User asked for a tool that doesn't exist — strongest signal for new skill
+      demand.unresolvedCorrections.push({ msg, requestedTool: e.correctTool, previousTool: e.previousToolUsed || null });
+    } else if (e.correctTool && e.previousToolUsed && e.correctTool !== e.previousToolUsed) {
+      // A real misroute the user corrected — pattern matters
+      demand.misroutes.push({ msg, previousTool: e.previousToolUsed, correctTool: e.correctTool });
+    } else if (!e.correctTool && e.type === "wrong_tool") {
+      // User said "wrong tool" without specifying — still a signal
+      demand.unresolvedCorrections.push({ msg, requestedTool: null, previousTool: e.previousToolUsed || null });
+    }
+  }
+
+  // ── 2. Telemetry — chat fallbacks ──
+  try {
+    const telemetry = JSON.parse(await fs.readFile(TELEMETRY_LOG, "utf8"));
+    if (Array.isArray(telemetry)) {
+      for (const t of telemetry.slice(-200)) {
+        const reason = t.reasoning || t.reason || "";
+        if (t.tool === "llm" && /fallback_|ambiguous|unresolved/i.test(reason)) {
+          const snippet = (t.input || t.message || "").toString().slice(0, 160);
+          if (snippet) demand.chatFallbacks.push({ msg: snippet, reason });
+        }
+      }
+    }
+  } catch { /* telemetry may not exist */ }
+
+  // Deduplicate chatFallbacks + cap lists
+  const seen = new Set();
+  demand.chatFallbacks = demand.chatFallbacks.filter(e => {
+    const k = e.msg.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(-15);
+  demand.unresolvedCorrections = demand.unresolvedCorrections.slice(-10);
+  demand.misroutes = demand.misroutes.slice(-10);
+  demand.ambiguousMessages = demand.ambiguousMessages.slice(-10);
+
+  const total =
+    demand.unresolvedCorrections.length +
+    demand.misroutes.length +
+    demand.ambiguousMessages.length +
+    demand.chatFallbacks.length;
+  demand.summary = total > 0
+    ? `${demand.unresolvedCorrections.length} requested-but-missing tool(s), ${demand.misroutes.length} misroute(s), ${demand.ambiguousMessages.length} ambiguous message(s), ${demand.chatFallbacks.length} chat-fallback(s)`
+    : "no unmet demand signals found";
+
+  console.log(`[smartEvolution] findUnmetDemand: ${demand.summary}`);
+  return demand;
+}
+
 // ─── HELPER: Check tool name conflicts ───────────────────────────
 async function checkToolNameConflict(proposedName) {
   const filename = proposedName.endsWith(".js") ? proposedName : `${proposedName}.js`;
@@ -342,19 +491,30 @@ async function runEvolutionPipeline(options = {}) {
 
   const systemInfo = await collectSystemInfo();
   const toolScan = await scanExistingTools();
+  const skillScan = await scanExistingSkills();
+  const unmetDemand = await findUnmetDemand();
 
-  console.log(`[smartEvolution] Deep scan: ${toolScan.toolDescriptions.length} descriptions, ${toolScan.plannerIntents ? "intents loaded" : "no intents"}, usage: ${toolScan.usagePatterns || "none"}, interests: ${toolScan.agentInterests || "none"}`);
+  console.log(`[smartEvolution] Deep scan: ${toolScan.toolDescriptions.length} tool descriptions, ${skillScan.skillCount} skills, ${toolScan.plannerIntents ? "intents loaded" : "no intents"}, usage: ${toolScan.usagePatterns || "none"}, interests: ${toolScan.agentInterests || "none"}`);
 
   output += `  Hardware: ${systemInfo.cpu.cores}-core ${systemInfo.cpu.model.substring(0, 40)}, ${systemInfo.ram.total} RAM\n`;
   output += `  GPU: ${systemInfo.gpu.substring(0, 60)}\n`;
   output += `  Ollama: v${systemInfo.ollama.version}, ${systemInfo.ollama.models.length} models\n`;
-  output += `  Tools: ${toolScan.toolCount} existing tools (${toolScan.toolDescriptions.length} with descriptions)\n`;
+  output += `  Tools (legacy): ${toolScan.toolCount} files (${toolScan.toolDescriptions.length} with descriptions)\n`;
+  output += `  Skills (primary): ${skillScan.skillCount} files (${skillScan.allowedSkills.length} enabled via MANIFEST)\n`;
   output += `  Planner intents: ${toolScan.plannerIntents ? "loaded" : "not available"}\n`;
   output += `  Usage patterns: ${toolScan.usagePatterns || "no telemetry"}\n`;
   output += `  Agent interests: ${toolScan.agentInterests || "none learned yet"}\n`;
+  output += `  Unmet demand: ${unmetDemand.summary}\n`;
   output += `  Dependencies: ${systemInfo.dependencies.length} npm packages\n\n`;
 
-  await appendAuditLog({ step: 1, action: "scan", toolCount: toolScan.toolCount, models: systemInfo.ollama.models.map(m => m.name) });
+  await appendAuditLog({
+    step: 1,
+    action: "scan",
+    toolCount: toolScan.toolCount,
+    skillCount: skillScan.skillCount,
+    unmetDemand: unmetDemand.summary,
+    models: systemInfo.ollama.models.map(m => m.name)
+  });
 
   // ── STEP 2: RESEARCH ──────────────────────────────────────────
   output += "**Step 2/10 — External Research**\n";
@@ -401,12 +561,58 @@ async function runEvolutionPipeline(options = {}) {
     ? `\nAGENT'S LEARNED INTERESTS:\n${toolScan.agentInterests}\nThe agent's user is interested in these topics — consider tools that serve these interests.\n`
     : "";
 
-  const thinkPrompt = `You are the strategic planning module of an autonomous AI agent system. Your job is to identify ONE new tool that would meaningfully extend this system's capabilities.
+  // Build unmet-demand section — this is the STRONGEST signal for a new skill.
+  // It lists real messages the agent misrouted or couldn't handle, grouped by type.
+  const demandLines = [];
+  if (unmetDemand.unresolvedCorrections.length > 0) {
+    demandLines.push("  Requested tools that DO NOT EXIST (user explicitly asked for a capability we lack):");
+    for (const e of unmetDemand.unresolvedCorrections.slice(-6)) {
+      demandLines.push(`    • "${e.msg}" → user said should use "${e.requestedTool || "<unspecified>"}"${e.previousTool ? ` (we used ${e.previousTool})` : ""}`);
+    }
+  }
+  if (unmetDemand.misroutes.length > 0) {
+    demandLines.push("  Confirmed misroutes (pattern of mis-classification):");
+    for (const e of unmetDemand.misroutes.slice(-6)) {
+      demandLines.push(`    • "${e.msg}" → routed to ${e.previousTool}, should have been ${e.correctTool}`);
+    }
+  }
+  if (unmetDemand.ambiguousMessages.length > 0) {
+    demandLines.push("  Ambiguous messages where the agent had to ask the user:");
+    for (const e of unmetDemand.ambiguousMessages.slice(-6)) {
+      demandLines.push(`    • "${e.msg}"${e.resolvedTo ? ` (resolved to ${e.resolvedTo})` : ""}`);
+    }
+  }
+  if (unmetDemand.chatFallbacks.length > 0) {
+    demandLines.push("  Planner fallbacks to raw LLM (no tool matched):");
+    for (const e of unmetDemand.chatFallbacks.slice(-6)) {
+      demandLines.push(`    • "${e.msg}" (${e.reason})`);
+    }
+  }
+  const unmetDemandSection = demandLines.length > 0
+    ? `\nUNMET USER DEMAND (real past requests with no good routing match — PRIORITIZE THESE):\n${demandLines.join("\n")}\nIf any pattern above points to a clearly missing capability, propose a skill that serves it.\n`
+    : "";
 
-CURRENT TOOLS WITH DESCRIPTIONS (${toolScan.toolCount} tools):
+  // Build skills inventory section — skills are the preferred extension surface now.
+  const existingSkillsList = skillScan.skillDescriptions.length > 0
+    ? skillScan.skillDescriptions.map(d => `  - ${d}`).join("\n")
+    : "  (no skills yet)";
+
+  const thinkPrompt = `You are the strategic planning module of an autonomous AI agent system. Your job is to identify ONE new SKILL (preferred) or a composition of existing skills that would meaningfully extend this system's capabilities.
+
+ARCHITECTURE CONTEXT (READ FIRST):
+- This system is transitioning from a tool-based to a SKILL-based architecture.
+- Skills live in server/skills/ and are the PRIMARY extension surface going forward.
+- Tools (server/tools/) are LEGACY and should not be extended with new additions unless a capability truly cannot be expressed as a skill.
+- When proposing, strongly prefer a new SKILL over a new tool. Only fall back to suggesting a tool if the capability fundamentally requires tool-level primitives (e.g. a new streaming transport).
+- You may also propose a SKILL COMPOSITION — a bundle that combines 2–3 existing skills to solve a larger workflow — instead of building something new.
+
+CURRENT SKILLS (${skillScan.skillCount} files, ${skillScan.allowedSkills.length} enabled):
+${existingSkillsList}
+
+CURRENT TOOLS — LEGACY, FOR OVERLAP-DETECTION ONLY (${toolScan.toolCount} tools):
 ${existingToolsList}
 
-READ THE LIST ABOVE CAREFULLY. Each line shows "toolName — description". Do NOT suggest a tool that overlaps with ANY existing tool. For example, if "weather — fetches weather forecasts" exists, do NOT suggest weatherForecast.
+READ BOTH LISTS CAREFULLY. Do NOT suggest anything that overlaps with an existing skill OR an existing tool. For example, if "weather — fetches weather forecasts" already exists, do NOT suggest weatherForecast.
 
 SYSTEM PROFILE:
 - OS: ${systemInfo.os.platform} ${systemInfo.os.arch}
@@ -419,30 +625,38 @@ SYSTEM PROFILE:
 
 INSTALLED NPM DEPENDENCIES (you can ONLY use these + Node.js built-ins):
 ${systemInfo.dependencies.join(", ")}
-${usageSection}${intentSection}${interestsSection}
+${usageSection}${intentSection}${interestsSection}${unmetDemandSection}
 GITHUB RESEARCH (trending tools and patterns):
 ${researchFindings.substring(0, 5000)}
 ${userPrompt ? `\nCRITICAL USER DIRECTIVE:\nThe user explicitly requested: "${userPrompt}"\nYou MUST follow these instructions. If the user forbids a topic, completely ignore that topic. Base your idea on their specific request.` : ""}
 
-TASK: Identify ONE new tool that would most benefit this agent system. Requirements:
-1. Must fill a REAL gap — read every tool description above and confirm your suggestion doesn't overlap
-2. The toolName MUST be unique — cannot match any existing tool name (not even partially)
-3. Must be implementable with ONLY the installed npm dependencies listed above OR Node.js built-in modules (fs, path, os, child_process, http, crypto, etc.)
-4. Must be compatible with the hardware (consider RAM, GPU, model capabilities)
-5. Must follow ES Module pattern (import/export, async functions)
-6. Must be practically useful — not a demo or toy
-7. Think about what workflows the user does FREQUENTLY (based on usage data) and what's missing from those workflows
-8. Consider what would make compound tool chains more powerful (e.g., a tool that produces data other tools could consume)
+TASK: Propose ONE of the following, in order of preference:
+(A) A new SKILL that fills a real gap (PREFERRED — skills are the forward-looking surface).
+(B) A SKILL COMPOSITION that chains 2–3 existing skills to solve a larger workflow.
+(C) ONLY as a last resort: a new TOOL, if the capability truly cannot be expressed as a skill.
 
-Examples of BAD suggestions: anything that duplicates an existing tool's description, a tool requiring npm packages NOT in the dependency list, vague "manager" tools with no clear use case.
+Requirements (apply to skills AND tools):
+1. Must fill a REAL gap — read every skill AND tool description above and confirm no overlap.
+2. The name MUST be unique — cannot match any existing skill or tool name, not even partially.
+3. Implementable with ONLY the installed npm dependencies listed above OR Node.js built-in modules (fs, path, os, child_process, http, crypto, etc.).
+4. Compatible with the hardware (consider RAM, GPU, model capabilities).
+5. ES Module pattern (import/export, async functions).
+6. Practically useful — not a demo or toy.
+7. Prioritise gaps near frequently-used surfaces (see usage data).
+8. For compositions, specify the exact skills to chain and the data flowing between them.
+9. triggerExamples MUST be 2–4 concrete user messages this skill would handle — if UNMET USER DEMAND was listed above, copy the actual phrasing from those entries where possible so the new skill is demonstrably tied to real past requests.
 
-Return ONLY valid JSON:
+Examples of BAD suggestions: anything duplicating an existing skill or tool, requiring an npm package not in the dependency list, a vague "manager" or "orchestrator" (those are handled by the planner natively).
+
+Return ONLY valid JSON. The "kind" field MUST be "skill", "composition", or "tool":
 {
-  "toolName": "camelCaseToolName",
-  "filename": "camelCaseToolName.js",
-  "description": "One-line description of what the tool does",
-  "rationale": "2-3 sentences explaining why this fills a gap. Reference specific existing tools it complements and specific user workflows it would improve.",
+  "kind": "skill",
+  "toolName": "camelCaseName",
+  "filename": "camelCaseName.js",
+  "description": "One-line description of what this skill does",
+  "rationale": "2-3 sentences explaining why this fills a gap. Reference specific existing skills/tools it complements and specific user workflows it would improve. If kind=composition, list the exact skills being chained.",
   "capabilities": ["capability1", "capability2", "capability3"],
+  "triggerExamples": ["verbatim example user message this skill would serve", "another real-world trigger phrase"],
   "dependsOn": ["npm-package-or-builtin-it-uses"],
   "risks": ["potential issue 1", "potential issue 2"],
   "complexity": "low|medium|high",
@@ -508,6 +722,11 @@ If you genuinely cannot identify a useful new tool, respond with:
 
 **Capabilities:**
 ${(proposal.capabilities || []).map(c => `  - ${c}`).join("\n")}
+
+**Trigger Examples (real user phrasings this serves):**
+${(proposal.triggerExamples || []).length > 0
+    ? proposal.triggerExamples.map(t => `  - "${t}"`).join("\n")
+    : "  (none provided)"}
 
 **Dependencies:** ${(proposal.dependsOn || []).join(", ") || "none"}
 
@@ -859,6 +1078,7 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
       filename: `server/tools/${filename}`,
       description: proposal.description,
       capabilities: proposal.capabilities || [],
+      triggerExamples: proposal.triggerExamples || [],
       dependencies: proposal.dependsOn || [],
       complexity: proposal.complexity || "medium",
       addedAt: new Date().toISOString(),

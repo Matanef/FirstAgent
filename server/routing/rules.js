@@ -65,7 +65,16 @@ export const ROUTING_TABLE = [
       /\b(what('s| is) your name|who are you|what are you|your identity|tell me about yourself)\b/i.test(lower) ||
       /^(איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)/i.test(lower) ||
       /^\(system:\s*the user asked about your identity/i.test(lower),
-    description: "Agent identity questions"
+    // Guard: when the user is already mid-conversation, a casual "what's your name?"
+    // should stay in chat mode so the agent keeps its 10-turn rolling history and
+    // reasons from context, instead of getting kicked into a fresh task-mode ToT
+    // pipeline that introduces itself to someone it's been talking to for 10 turns.
+    // The system-prefixed variant still routes to this rule (cold identity probes).
+    guard: (lower, trimmed, ctx) => {
+      if (/^\(system:/i.test(trimmed)) return false; // never block cold identity probes
+      return ctx?.isRecentConversation === true && ctx?.lastTurnWasChat === true;
+    },
+    description: "Agent identity questions (cold / first-contact only)"
   },
   {
     tool: "moltbook",
@@ -141,7 +150,11 @@ export const ROUTING_TABLE = [
   {
     tool: "duplicateScanner",
     priority: 86,
-    match: (lower) => /\b(duplicates?|duplication|find\s+duplicates?|scan\s+duplicates?|duplicate\s+files?)\b/i.test(lower),
+    // Require explicit scan/find intent with "duplicate", OR an explicit file/folder noun after "duplicate".
+    // Bare "duplicate" (e.g. "duplicate messages", "duplicate process") must NOT fire the scanner.
+    match: (lower) => /\b(find|scan|look\s+for|search\s+for|show\s+me|list|detect|deduplicate)\s+(all\s+|the\s+)?duplicates?\b/i.test(lower)
+                   || /\bduplicate\s+(files?|folders?|directories?|entries?|images?|photos?|videos?|songs?|documents?|pdfs?)\b/i.test(lower)
+                   || /\bscan\s+(for\s+)?duplicates?\b/i.test(lower),
     context: (lower, trimmed) => {
       const ctx = {};
       const pathMatch = trimmed.match(/(?:in|under|at|from)\s+([a-zA-Z]:[\\\/][^\s,]+|[.\/][^\s,]+)/i);
@@ -199,13 +212,57 @@ export const ROUTING_TABLE = [
   {
     tool: "selfImprovement",
     priority: 78,
+    // Require interrogative framing or an explicit request for a report/improvement action.
+    // Bare mentions like "the issues are routing issues" must NOT fire — that's conversation.
     match: (lower) =>
       /\b(how\s+accurate|routing\s+accuracy|your\s+accuracy|success\s+rate|routing\s+report|tool\s+usage\s+stats?)\b/i.test(lower) ||
-      /\b(what\s+issues?\s+(have\s+you|did\s+you)\s+detect|detected\s+issues?|routing\s+issues?)\b/i.test(lower) ||
+      /\b(what\s+issues?\s+(have\s+you|did\s+you)\s+detect|detected\s+issues?)\b/i.test(lower) ||
+      /\b(show|give|run|generate|print)\s+(me\s+)?(your\s+|the\s+)?(routing|self.?improvement|diagnostic|accuracy)\s+(report|stats?|analysis|diagnostic|summary)\b/i.test(lower) ||
       /\b(how\s+(good|well)\s+(is\s+your|do\s+you|are\s+you)\s+routing|how\s+are\s+you\s+routing)\b/i.test(lower) ||
       /\b(how\s+can\s+you\s+improve|improve\s+your\s+(tool\s+selection|routing|accuracy|decisions?|classification))\b/i.test(lower) ||
       /\b(selfimprovement|self.improvement)\b/i.test(lower),
     description: "Routing accuracy diagnostics and self-improvement reports"
+  },
+  // ── search: explicit "search for X" — high priority so it beats chat classifier (72) ─────
+  // The general search rule at priority 30 can't override a chat classification
+  // (threshold is 70). But an explicit imperative like "search for …" is a crystal-clear
+  // task signal and deserves to win. Kept narrow on purpose: only triggers on the
+  // "search for" phrasing, not the broader "what is X" general-knowledge patterns.
+  {
+    tool: "search",
+    priority: 72,
+    match: (lower) =>
+      /\bsearch\s+for\s+.+/i.test(lower) &&
+      // Avoid grabbing x/twitter searches — those have their own route
+      !/\bsearch\s+for\s+\w+\s+on\s+(?:x|twitter)\b/i.test(lower),
+    guard: (lower, trimmed) =>
+      // Don't fire if the query is actually about the codebase — codeRag (priority 77) takes precedence
+      /\b(code\s*base|codebase|repo|repository)\b/i.test(lower) ||
+      hasExplicitFilePath(trimmed),
+    description: "Explicit 'search for X' — promoted above chat-override threshold"
+  },
+  // ── codeRag: semantic search over own codebase (77) ───────────
+  {
+    tool: "codeRag",
+    priority: 77,
+    // Explicit codebase-Q&A phrasing. Must mention code/codebase/repo/source AND
+    // either an info-seeking verb or an indexing action. Avoids matching casual
+    // "code" mentions in chat ("this code is buggy").
+    match: (lower) =>
+      // Indexing commands
+      /\b(index|reindex|re-index|rebuild)\s+(the\s+)?(code\s*base|codebase|code|repo|repository|project)\b/i.test(lower) ||
+      // Q&A against the codebase
+      /\b(based\s+on|according\s+to|look\s+at|check|search|grep|find|locate|show\s+me|in)\s+(your|my|the|our|this)\s+(code\s*base|codebase|code|repo|repository|source\s+code|project\s+code)\b/i.test(lower) ||
+      /\b(where|which\s+file|what\s+file|how)\s+(in\s+)?(your|my|the|our|this)\s+(code\s*base|codebase|code|repo|project)\b/i.test(lower) ||
+      /\b(find|search\s+for|look\s+up)\s+(code|function|class|module|handler)\s+(that|which|for|handling)\b/i.test(lower) ||
+      // Direct tool name
+      /\b(code\s*rag|coderag)\b/i.test(lower),
+    guard: (lower) => hasCompoundIntent(lower),
+    context: (lower) => {
+      if (/\b(index|reindex|re-index|rebuild)\b/i.test(lower)) return { action: "index" };
+      return { action: "search" };
+    },
+    description: "Semantic search over the project's own codebase (indexing + Q&A)"
   },
   {
     tool: "sheets",
@@ -493,7 +550,13 @@ export const ROUTING_TABLE = [
   {
     tool: "calculator",
     priority: 51,
-    match: (lower) => /\b(calculate|compute|solve|what\s+is\s+\d|how\s+much\s+is|convert\s+\d|percentage\s+of)\b/i.test(lower),
+    // BUG FIX (2026-04-21): previous pattern had trailing \b that failed on multi-digit
+    // numbers — "what is 23" would try to match "what is 2" but the following '3' is also
+    // a word char so \b failed and the whole alternation missed. Use \d+ and drop the
+    // trailing \b requirement for numeric terminators.
+    match: (lower) =>
+      /\b(?:calculate|compute|solve|how\s+much\s+is|percentage\s+of)\b/i.test(lower) ||
+      /\b(?:what\s+is|convert)\s+\d+/i.test(lower),
     description: "Calculator — explicit keywords"
   },
   {
@@ -627,11 +690,18 @@ export const ROUTING_TABLE = [
   },
   {
     tool: "memorytool",
-    priority: 42,
+    priority: 60,
     match: (lower) =>
-      /\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower),
-    guard: (lower) => /\b(password|credential)\b/i.test(lower),
-    description: "Memory read — recall stored user info"
+      // Direct memory lookups
+      /\b(what do you (know|remember)|my\s+(name|email|location|contacts?|preferences?)|who\s+am\s+i)\b/i.test(lower) ||
+      // Questions about the user or their relations/attributes:
+      //   "what is my mom's name", "who is my sister", "what's my dad's phone",
+      //   "do you remember my favorite color", "what is my address"
+      /\b(what(?:'s| is)|who(?:'s| is| are)|where(?:'s| is)|when(?:'s| is)|do\s+you\s+(?:remember|know|recall))\s+(?:is\s+)?my\s+[\w'’]+(?:['’]s)?(?:\s+\w+)?/i.test(lower) ||
+      // Hebrew equivalents: "מה השם של אמא שלי", "מי האחות שלי", "מה שלי"
+      /(מה|מי|איפה|מתי).{0,30}(שלי|שלנו)/u.test(lower),
+    guard: (lower) => /\b(password|credential|api[-\s]?key|token|secret)\b/i.test(lower),
+    description: "Memory read — recall stored user info (incl. family/relations)"
   },
   {
     tool: "lotrJokes",
