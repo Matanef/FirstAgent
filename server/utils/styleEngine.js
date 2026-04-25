@@ -135,7 +135,7 @@ export function detectSatisfaction(userMessage) {
 export async function updatePreferencesFromFeedback(signal) {
   if (signal === "neutral") return;
 
-  await withMemoryLock(async () => {
+
     const mem = await getMemory();
     mem.profile = mem.profile || {};
     mem.profile.preferences = mem.profile.preferences || {};
@@ -165,7 +165,7 @@ export async function updatePreferencesFromFeedback(signal) {
     mem.meta = mem.meta || {};
     mem.meta.lastUpdated = new Date().toISOString();
     await saveJSON(MEMORY_FILE, mem);
-  });
+
 }
 
 // ============================================================

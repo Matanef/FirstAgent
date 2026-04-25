@@ -494,11 +494,7 @@ export async function news(request, options = {}) {
     // Filter out stale RSS articles (older than 7 days)
     // Flash items are always fresh (scraped just now)
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const freshRssItems = rssItems.filter(item => {
-      if (!item.date) return true;
-      const pubDate = new Date(item.date).getTime();
-      return !isNaN(pubDate) && pubDate > sevenDaysAgo;
-    });
+const freshRssItems = rssItems.filter(item => item.date ? new Date(item.date).getTime() > sevenDaysAgo : true);
 
     // Topic filter only applies to RSS items — flash headlines always show
     let filteredRssItems = topic ? filterByTopic(freshRssItems, topic) : freshRssItems;

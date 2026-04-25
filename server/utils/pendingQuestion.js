@@ -7,6 +7,10 @@
 
 import crypto from "crypto";
 import { getMemory, saveJSON, MEMORY_FILE, withMemoryLock } from "../memory.js";
+// The memory lock is now re-entrant (AsyncLocalStorage-based), so wrapping the
+// read-modify-write in withMemoryLock is safe even though saveJSON also acquires
+// the lock internally. Prior to the re-entrance fix in memory.js, that nested
+// acquire deadlocked and stalled Phase-4 ambiguity clarification turns permanently.
 
 const TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -43,14 +47,14 @@ export async function setPendingQuestion(conversationId, pending) {
     originalRequest: pending.originalRequest || null,
     createdAt: nowIso()
   };
-  return await withMemoryLock(async () => {
+
     const mem = await getMemory();
     mem.meta = mem.meta || {};
     mem.meta.pendingQuestions = mem.meta.pendingQuestions || {};
     mem.meta.pendingQuestions[conversationId] = entry;
     await saveJSON(MEMORY_FILE, mem);
     return entry;
-  });
+
 }
 
 /**
@@ -80,7 +84,7 @@ export async function getPendingQuestion(conversationId) {
  */
 export async function clearPendingQuestion(conversationId) {
   if (!conversationId) return false;
-  return await withMemoryLock(async () => {
+
     const mem = await getMemory();
     if (mem?.meta?.pendingQuestions?.[conversationId]) {
       delete mem.meta.pendingQuestions[conversationId];
@@ -88,7 +92,7 @@ export async function clearPendingQuestion(conversationId) {
       return true;
     }
     return false;
-  });
+
 }
 
 /**

@@ -103,6 +103,17 @@ app.listen(PORT, async () => {
   await loadSkills();
   console.timeEnd("[boot] loadSkills");
 
+  // Start recurring schedule timers. This MUST be explicit (not a side
+  // effect of importing scheduler.js) — otherwise any script that imports
+  // the tools barrel becomes a zombie scheduler. See scheduler.js header.
+  try {
+    const { bootstrapSchedules } = await import("./tools/scheduler.js");
+    // Keep the 3s delay so other modules finish wiring first.
+    setTimeout(bootstrapSchedules, 3000);
+  } catch (e) {
+    console.warn("⚠️ [startup] Scheduler bootstrap skipped:", e.message);
+  }
+
   // ── Auto-prune old conversations (non-blocking) ──
   import("./utils/conversationMemory.js")
     .then(mod => mod.pruneOldConversations())

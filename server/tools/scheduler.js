@@ -16,6 +16,14 @@ const SCHEDULES_FILE = path.join(DATA_DIR, "schedules.json");
 // In-memory timers
 const activeTimers = new Map();
 
+// ── Safety rails ──
+// Currently-executing schedule IDs (prevents concurrent re-entry when a task
+// runs longer than its interval, e.g. a 120-min research task on a 90-min interval).
+const _running = new Set();
+// Minimum fraction of the interval that must elapse between fires. Prevents
+// timer drift / restart storms from triggering a barrage of back-to-back runs.
+const DEBOUNCE_RATIO = 0.8;
+
 // ── Notification system ──
 const notifications = [];
 const MAX_NOTIFICATIONS = 50;
@@ -195,6 +203,45 @@ function detectSchedulerIntent(text) {
  * Uses dynamic imports to avoid circular dependencies.
  */
 async function executeScheduledTask(schedule) {
+  // ── Concurrency guard ──
+  // If a previous run of this same schedule is still in-flight, bail. This
+  // prevents setInterval from stacking runs when the task takes longer than
+  // its interval.
+  if (_running.has(schedule.id)) {
+    console.warn(`[scheduler] Skipping "${schedule.task}" — previous run still in progress (id=${schedule.id}).`);
+    return null;
+  }
+
+  // ── Debounce guard ──
+  // For interval schedules, enforce a minimum gap since last fire. Guards
+  // against PM2 restart bursts re-creating timers and firing immediately,
+  // or against clock drift / aggressive re-bootstrapping.
+  if (schedule.type === "interval" && schedule.lastRun && schedule.intervalMs) {
+    const sinceLast = Date.now() - new Date(schedule.lastRun).getTime();
+    const minGap = schedule.intervalMs * DEBOUNCE_RATIO;
+    if (sinceLast < minGap) {
+      console.warn(`[scheduler] Skipping "${schedule.task}" — only ${Math.round(sinceLast / 1000)}s since last run (min ${Math.round(minGap / 1000)}s).`);
+      return null;
+    }
+  }
+
+  // ── Daily already-ran-today guard ──
+  // If a daily task already ran today (local time), skip. Protects against
+  // mid-day PM2 restarts re-firing a daily whose scheduled time already passed.
+  if (schedule.type === "daily" && schedule.lastRun) {
+    const last = new Date(schedule.lastRun);
+    const now = new Date();
+    const sameDay =
+      last.getFullYear() === now.getFullYear() &&
+      last.getMonth() === now.getMonth() &&
+      last.getDate() === now.getDate();
+    if (sameDay) {
+      console.warn(`[scheduler] Skipping daily "${schedule.task}" — already ran today at ${last.toLocaleTimeString()}.`);
+      return null;
+    }
+  }
+
+  _running.add(schedule.id);
   console.log(`\n⏰ [scheduler] Executing task: "${schedule.task}"`);
   try {
     const { executeAgent } = await import("../utils/coordinator.js");
@@ -206,8 +253,13 @@ async function executeScheduledTask(schedule) {
       const schedules = loadSchedules();
       const idx = schedules.findIndex(s => s.id === schedule.id);
       if (idx !== -1) {
-        schedules[idx].lastRun = new Date().toISOString();
+        const nowIso = new Date().toISOString();
+        schedules[idx].lastRun = nowIso;
         schedules[idx].runCount = (schedules[idx].runCount || 0) + 1;
+        // Mirror back onto the in-memory object the timer closure holds so
+        // the debounce / same-day guards see the fresh lastRun next tick.
+        schedule.lastRun = nowIso;
+        schedule.runCount = schedules[idx].runCount;
         await saveSchedules(schedules); // Use the async version we'll define below
       }
     } catch (dbErr) {
@@ -313,6 +365,8 @@ async function executeScheduledTask(schedule) {
       error: err.message,
       timestamp: new Date().toISOString()
     });
+  } finally {
+    _running.delete(schedule.id);
   }
 }
 
@@ -587,7 +641,33 @@ export async function scheduler(query) {
 // AUTO-BOOTSTRAP: Restart active schedules on server startup
 // ──────────────────────────────────────────────────────────
 
-function bootstrapSchedules() {
+// Module-level guard so we never start two sets of timers inside the same process.
+let _bootstrapped = false;
+
+/**
+ * Start all active schedule timers. MUST be called explicitly from the real
+ * server entry point (`server/index.js`). Previously this ran automatically
+ * at module import via `setTimeout(bootstrapSchedules, 3000)`, which had a
+ * nasty side effect: any script that transitively imported `scheduler.js`
+ * (including one-liner smoke tests like `node -e "import('./coordinator.js')"`)
+ * would silently start all timers and turn into a zombie scheduler, because
+ * the live `setInterval`s kept the event loop alive forever. Three such
+ * zombies left running from prior debugging sessions were firing every
+ * schedule 3–4× in parallel with the real PM2 process.
+ *
+ * Import is now side-effect free. Explicit call required.
+ */
+export function bootstrapSchedules() {
+  if (_bootstrapped) {
+    console.warn("[scheduler] bootstrapSchedules() already called — skipping duplicate.");
+    return;
+  }
+  // PM2 cluster-mode safety: only the first instance should own the timers.
+  if (process.env.NODE_APP_INSTANCE && process.env.NODE_APP_INSTANCE !== "0") {
+    console.log(`[scheduler] Secondary instance (NODE_APP_INSTANCE=${process.env.NODE_APP_INSTANCE}) — skipping bootstrap.`);
+    _bootstrapped = true;
+    return;
+  }
   try {
     const schedules = loadSchedules();
     const active = schedules.filter(s => s.status === "active");
@@ -598,14 +678,8 @@ function bootstrapSchedules() {
         startTimer(s);
       });
     }
+    _bootstrapped = true;
   } catch (err) {
     console.error("[scheduler] Bootstrap error:", err.message);
   }
-}
-
-// Delay bootstrap to let other modules initialize
-if (!process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === '0') {
-    setTimeout(bootstrapSchedules, 3000);
-} else {
-    console.log("[scheduler] Secondary instance detected, skipping bootstrap to prevent double-firing.");
 }

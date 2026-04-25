@@ -41,6 +41,11 @@ export function isMathExpression(msg) {
   if (/\d\s*[+\-*/^]\s*\d/.test(trimmed)) return true;
   if (/\d\s*%\s*(of\s+)?\d/.test(trimmed)) return true;
 
+  // Word operators — "23 times 47", "5 plus 10", "100 divided by 4", "9 minus 3", "6 multiplied by 7".
+  // Regression caught by stress-routing-regression: "what is 23 times 47" was falling through
+  // to chatAgent because the symbolic-operator check above doesn't see word math.
+  if (/\d+\s+(?:times|plus|minus|divided\s+by|multiplied\s+by|over|modulo|mod|to\s+the\s+power\s+of|raised\s+to)\s+\d+/i.test(trimmed)) return true;
+
   return /^\s*[\d\.\,\s()+\-*/^=%]+$/.test(trimmed);
 }
 

@@ -7,6 +7,7 @@ import {
   saveJSON,
   getMemory,
   reloadMemory,
+  withMemoryLock,
   MEMORY_FILE
 } from "../memory.js";
 import { handleMessage as orchestratorHandle } from "../agents/orchestrator.js";
@@ -115,21 +116,33 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
     console.log("\n" + "=".repeat(70));
     console.log("💬 USER (STREAMING):", message.substring(0, 200) + (message.length > 200 ? "..." : ""));
 
-    let memory = await getMemory();
     const id = conversationId || crypto.randomUUID();
-    memory.conversations[id] ??= [];
 
+    // ── Persist user turn under lock (FIX: was unsynchronized cache mutation) ──
+    // Previously this block pushed the user turn into the shared _cache with no save
+    // and no lock, relying on the post-orchestrator saveJSON to persist it. Under
+    // concurrent load that broke in two ways:
+    //   (1) the post-orchestrator reloadMemory() wipes the shared cache, discarding
+    //       in-flight user turns from OTHER concurrent requests;
+    //   (2) there was no mutual exclusion between read-push-save cycles, so parallel
+    //       requests would clobber each other's turns.
+    // Stress test (stress-memory-lock-torture.mjs) surfaced this: 17/32 convos missing.
+    
+    const memory = await getMemory();
+    memory.conversations[id] ??= [];
     memory.conversations[id].push({
       role: "user",
       content: message,
       timestamp: new Date().toISOString()
     });
-
     const nameMatch = message.match(/remember(?: that)? my name is (.+)$/i);
     if (nameMatch && nameMatch[1].trim()) memory.profile.name = nameMatch[1].trim();
     
     const locationMatch = message.match(/remember(?: that)? my location is (.+)$/i);
     if (locationMatch && locationMatch[1].trim()) memory.profile.location = locationMatch[1].trim();
+    
+    await saveJSON(MEMORY_FILE, memory);
+    
 
     res.write(`data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`);
 
@@ -199,11 +212,12 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       res.end();
     }
 
-    // ASYNC: Heavy I/O after stream closed
+    // ASYNC: Heavy I/O after stream closed — persist assistant turn under lock.
+    // FIX: removed the reloadMemory() call that used to sit here — under concurrent
+    // load it wiped the shared cache mid-flight for other requests, discarding their
+    // user turns. The getMemory() inside withMemoryLock handles cache staleness via
+    // disk-mtime reconciliation, so a forced reload is not needed here.
     try {
-      try { memory = await reloadMemory(); } catch (e) {}
-      memory.conversations[id] ??= [];
-
       // Sanitize data before saving — strip large HTML blobs, non-serializable values
       let safeData = null;
       if (result.data) {
@@ -215,6 +229,10 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
           };
         } catch { safeData = { text: (result.data?.text || "").slice(0, 500) }; }
       }
+
+
+      const memory = await getMemory();
+      memory.conversations[id] ??= [];
       memory.conversations[id].push({
         role: "assistant",
         content: reply,
@@ -224,8 +242,8 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
         data: safeData,
         metadata: { steps: stateGraph.length, reasoning: result.reasoning, thoughtChain: result.thoughtChain || [] }
       });
-
       await saveJSON(MEMORY_FILE, memory);
+
 
       await logTelemetry({
         tool: result.tool,

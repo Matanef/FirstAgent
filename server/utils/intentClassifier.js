@@ -89,7 +89,18 @@ const CHAT_PATTERNS = [
   /\b(as you know|you know that)\b.*\b(i am|i'm|i live|i have|my)\b/i,
   /\b(today was|today is|yesterday was)\s+(a\s+)?(tiring|hard|rough|tough|bad|terrible|awful|scary|stressful|exhausting|long|crazy|intense|horrible|devastating)\b/i,
   /\b(i'?m?\s+(so\s+)?(tired|exhausted|scared|sad|angry|frustrated|stressed|upset|worried|anxious|depressed|devastated|shaken))\b/i,
-  /\b(missiles?|rockets?|bombs?|bombing|shelling|shrapnel|war|attack|shelter|sirens?|alarms?|earthquake|flood|fire|accident|died|killed|death|funeral|injured|wounded|casualt(?:y|ies)|devastation|destruction|destroyed|explosion|impact\s+sites?|evacuation|displaced|refugees?|cluster\s+(?:bomb|missile|munition))\b/i,
+  // Distress/crisis vocabulary — split into two tiers to avoid tech-chat false positives
+  // (regression: "killed the process", "zombie processes", "fire up", "flood of requests",
+  //  "fork bomb", "attack the problem", "destroyed the DB" all fired chat mode on debug talk).
+  //
+  // Tier A — standalone war/disaster-specific terms rare in technical conversation.
+  /\b(missiles?|rockets?|bombing|shelling|shrapnel|sirens?|earthquake|funeral|casualt(?:y|ies)|devastation|evacuation|displaced|refugees?|cluster\s+(?:bomb|missile|munition)|impact\s+sites?|shelter\s+(?:in|with|from|during))\b/i,
+  // Tier B — tech-ambiguous emotional terms (war, attack, fire, flood, accident, died,
+  // killed, death, injured, wounded, destroyed, explosion, bombs). These ONLY count as
+  // chat-mode distress when they sit close to a personal/collective anchor (i, my, we,
+  // our, family, friend, home, house, neighborhood, city, country) within a short window.
+  /\b(i|my|we|our|family|friend|friends?|home|house|neighborhood|city|country|town|village)\b[\s\S]{0,40}\b(war|attack|attacks|attacked|fire|flood|accident|accidents|died|killed|death|deaths|injured|wounded|destroyed|destruction|explosion|explosions|bombs?|bombed)\b/i,
+  /\b(war|attack|attacks|attacked|fire|flood|accident|accidents|died|killed|death|deaths|injured|wounded|destroyed|destruction|explosion|explosions|bombs?|bombed)\b[\s\S]{0,40}\b(i|my|we|our|family|friend|friends?|home|house|neighborhood|city|country|town|village)\b/i,
 ];
 
 /**
@@ -98,7 +109,10 @@ const CHAT_PATTERNS = [
  */
 const TASK_PATTERNS = [
   // Explicit commands (Added run, call, execute, trigger, play)
-  /\b(search|find|look\s+up|google|fetch|get|check|show|list|display|browse|run|call|execute|start|trigger|play)\b/i,
+  // Removed bare "get" — too overloaded in English ("get stuck", "i get it", "let me get back to you").
+  // Kept it as a qualified form: "get <noun>" where the noun-ish phrase is clearly an action target.
+  /\b(search|find|look\s+up|google|fetch|check|show|list|display|browse|run|call|execute|start|trigger|play)\b/i,
+  /\bget\s+(me\s+)?(the\s+|a\s+|an\s+)?(weather|news|sports?|price|stock|time|date|forecast|report|info|information|update|list|link|file|email|messages?|result)/i,
   // Fixed plural support for messages and emails
   /\b(send|compose|write|draft|reply)\s+(an?\s+)?(emails?|messages?|whatsapp|texts?|sms|dms?)\b/i,
   // Natural language "send [person/relation] a [adjective] message" — recipient between verb and noun
@@ -134,6 +148,11 @@ const TASK_PATTERNS = [
   /\b(moltbook|heartbeat|submolt)\b/i,
   /\b(github|trending|repos?|repository)\b/i,
   /\b(calculate|compute|solve|math|equation)\b/i,
+  // Word-operator arithmetic — "what is 23 times 47", "100 divided by 4", etc.
+  // Without this, natural-language math lands in chat mode because no other TASK_PATTERN
+  // matches and the routing-override threshold (priority ≥ 70) blocks the calculator rules.
+  /\d+\s+(?:times|plus|minus|divided\s+by|multiplied\s+by|to\s+the\s+power\s+of|raised\s+to)\s+\d+/i,
+  /\bwhat\s+is\s+\d+\s*(?:[+\-*/^%]|times|plus|minus|divided|multiplied)/i,
   /\b(translate|convert|transform)\b/i,
   // upload/download — require a file-type object so "upload a photo for the park" (feature
   // description) doesn't fire; "install" and "npm" remain unconditional (always technical)
@@ -295,7 +314,7 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   const lastTurnAge = lastTurn?.timestamp
     ? (Date.now() - new Date(lastTurn.timestamp).getTime()) / 60000 // minutes
     : Infinity;
-  const isRecentConversation = lastTurnAge < 5; // last message was <5 min ago
+  const isRecentConversation = lastTurnAge < 10; // last message was <10 min ago (typed chats often have long thinking gaps)
 
   if (taskScore === 0 && chatScore > 0 && lastTurnWasChat && isRecentConversation) {
     chatScore += 1; // Mild boost — actively chatting and this message also has chat patterns
@@ -377,7 +396,19 @@ export async function classifyIntentWithRoutingOverride(message, recentHistory =
     const { evaluateRoutingTable } = await import("../routing/index.js");
     const lower   = (message || "").trim().toLowerCase();
     const trimmed = (message || "").trim();
-    const routingMatch = await evaluateRoutingTable(lower, trimmed, {});
+    // Pass active-chat signals into the routing context so rules can guard against
+    // firing mid-conversation (e.g. the identity rule should NOT pull a running
+    // chat into task mode — that strips the rolling-turns context and makes the
+    // agent re-introduce itself to someone it's been talking to for 10 turns).
+    const lastTurn = recentHistory.length > 0 ? recentHistory[recentHistory.length - 1] : null;
+    const lastTurnAgeMin = lastTurn?.timestamp
+      ? (Date.now() - new Date(lastTurn.timestamp).getTime()) / 60000
+      : Infinity;
+    const routingCtx = {
+      lastTurnWasChat: lastTurn?.mode === "chat",
+      isRecentConversation: lastTurnAgeMin < 10,
+    };
+    const routingMatch = await evaluateRoutingTable(lower, trimmed, routingCtx);
 
     if (routingMatch?.[0]?.priority >= 70) {
       const tool = routingMatch[0].tool;

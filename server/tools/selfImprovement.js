@@ -412,12 +412,25 @@ Be specific and direct. No preamble like "Here is my reflection:".`;
       };
     }
 
-    // Default: unknown query
+    // Default: unknown query.
+    // IMPORTANT: this is a help/menu response, NOT an error — returning success:false with
+    // a bulleted list in `error` made the UI render it as a chat-shaped failure bubble
+    // (observed regression: user asked a casual diagnostics-adjacent question, got
+    // what looked like a confused mid-conversation "here's what I can do" from the
+    // agent persona). Return success:true with preformatted text so it renders as a
+    // proper tool card and the executor doesn't treat it as a failure path.
+    const helpText = "**selfImprovement — available queries:**\n" +
+      "- \"what have you improved lately?\"\n" +
+      "- \"how accurate is your routing?\"\n" +
+      "- \"what issues have you detected?\"\n" +
+      "- \"review your own logic (planner/executor)\"\n" +
+      "- \"suggest improvements to make you smarter\"\n" +
+      "- \"generate weekly report\"";
     return {
       tool: "selfImprovement",
-      success: false,
+      success: true,
       final: true,
-      error: "I can help with:\n- 'what have you improved lately?'\n- 'how accurate is your routing?'\n- 'what issues have you detected?'\n- 'Review your own logic (planner/executor)'\n- 'suggest improvements to make you smarter'"
+      data: { text: helpText, preformatted: true, kind: "help" }
     };
 
   } catch (err) {
