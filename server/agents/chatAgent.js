@@ -21,9 +21,13 @@ import { listCollections, search as vectorSearch, getCollectionStats } from "../
 import * as sourceDirectory from "../skills/deepResearch/sourceDirectory.js";
 import { extract as extractKeywords } from "../skills/deepResearch/keywordExtractor.js";
 import { rank as rankSubjects } from "../skills/deepResearch/subjectMatcher.js";
-import { classifyIntent } from "../utils/intentClassifier.js";
-import { buildUserToneInstruction } from "../utils/userProfiles.js";
-import { handleTask } from "./taskAgent.js"; 
+import { classifyIntent, classifyIntentWithRoutingOverride } from "../utils/intentClassifier.js";
+import { buildUserToneInstruction, buildToneInstructionFromProfile } from "../utils/userProfiles.js";
+import { handleTask } from "./taskAgent.js";
+import { setPendingQuestion, getPendingQuestion } from "../utils/pendingQuestion.js";
+import { evaluateRoutingTable } from "../routing/index.js";
+import { logCorrection } from "../intentDebugger.js";
+import { extractStructuredFacts, pruneKnownFacts } from "../utils/factExtractor.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,6 +89,22 @@ async function getRecentChanges(limit = 5) {
  * Non-blocking: any failure degrades gracefully to empty string so the chat
  * prompt still builds without RAG augmentation.
  */
+// Cache vector-collection names so we don't re-scan the disk on every chat turn.
+// Collections only change when deepResearch writes a new one — a 60s staleness
+// window is far shorter than a typical research run, so invalidation is a non-issue.
+let _collectionCache = { names: null, expiresAt: 0 };
+function getCachedCollectionNames() {
+  const now = Date.now();
+  if (_collectionCache.names && now < _collectionCache.expiresAt) {
+    return _collectionCache.names;
+  }
+  const names = new Set(
+    (listCollections() || []).map(c => c.name).filter(Boolean)
+  );
+  _collectionCache = { names, expiresAt: now + 60_000 };
+  return names;
+}
+
 async function getResearchContext(message) {
   try {
     if (!message || message.length < 12) return "";
@@ -104,10 +124,9 @@ async function getResearchContext(message) {
     const matched = rankSubjects(extracted, subjects, { limit: 3, minScore: 0.3 });
     if (matched.length === 0) return "";
 
-    // 4. Index known vector collections once so we can filter to matched subjects.
-    const knownCollections = new Set(
-      (listCollections() || []).map(c => c.name).filter(Boolean)
-    );
+    // 4. Index known vector collections. Cached for 60s because listCollections()
+    //    reads the filesystem and this runs on every chat turn.
+    const knownCollections = getCachedCollectionNames();
 
     const hits = [];
     for (const m of matched) {
@@ -196,19 +215,36 @@ Treat these as your own prior findings. Reference the subject by name if the use
 async function buildUserContext(conversationId, message = "") {
   const parts = [];
 
+  // Load enriched profile ONCE — used by both the user-context block and
+  // the tone-injection block further down. Duplicating this call doubled
+  // disk I/O per chat turn and was a measurable contributor to slow responses.
+  let enriched = null;
   try {
-    const enriched = await getEnrichedProfile(conversationId);
+    enriched = await getEnrichedProfile(conversationId);
+  } catch (e) {
+    console.warn("[chatAgent] Could not load enriched profile:", e.message);
+  }
 
-    // User profile
-    const self = enriched.self || {};
-    const profileFields = [];
-    if (self.name) profileFields.push(`Name: ${self.name}`);
+  try {
+    if (!enriched) throw new Error("enriched profile unavailable");
+
+// User profile
+     const self = enriched.self || {};
+     const selfModel = loadSelfModel(); // Load the self-model for fallback data
+     const profileFields = [];
+      
+     // Force a name so the LLM never hallucinates or defaults to its own name
+     const userName = self.name || selfModel.owner || "Friend";
+     profileFields.push(`Name: ${userName}`);
+      
     if (self.location) profileFields.push(`Location: ${self.location}`);
-    if (self.timezone) profileFields.push(`Timezone: ${self.timezone}`);
     if (self.email) profileFields.push(`Email: ${self.email}`);
     if (self.phone) profileFields.push(`Phone: ${self.phone}`);
     if (self.occupation) profileFields.push(`Occupation: ${self.occupation}`);
-    if (enriched.tone) profileFields.push(`Preferred tone: ${enriched.tone}`);
+    // NOTE: tone is intentionally NOT added as a "Preferred tone: X" profile line here.
+    // A vague "Preferred tone: mean" confuses local LLMs (they improvise — misaddressing
+    // the user, inventing genders, etc). Structured tone instructions are injected
+    // further down via buildToneInstructionFromProfile() for both UI and WhatsApp paths.
 
     // Age
     if (enriched.self?.age || enriched.profile?.age) {
@@ -239,16 +275,32 @@ async function buildUserContext(conversationId, message = "") {
       parts.push(section);
     }
 
+    // Structured personal facts (lifecycle-managed — "active" = currently true about the user).
+    // These are the agent's PRIMARY source of truth about the user; the durables section below
+    // is the older raw-message fallback kept for backward compatibility.
+    try {
+      const mem = await getMemory();
+      const knownFacts = Array.isArray(mem?.profile?.knownFacts) ? mem.profile.knownFacts : [];
+      const activeFacts = knownFacts.filter(f => f.status === "active");
+      if (activeFacts.length > 0) {
+        const factLines = activeFacts.slice(0, 40).map(f => `- ${f.statement}`);
+        parts.push(`WHAT YOU KNOW ABOUT THE USER (structured facts):\n${factLines.join("\n")}`);
+      }
+    } catch { /* non-blocking */ }
+
     // Durable memories (things the user explicitly asked you to remember, or auto-extracted from chat)
+    // IMPORTANT framing: these are the USER'S statements, captured verbatim. The LLM must resolve
+    // pronouns from the USER'S perspective — "I/me/my" refers to the user, "you/your" refers to
+    // the agent. Without this framing, small LLMs read "his name is Lanou" or "you are called X"
+    // and end up addressing the user by the pet's name (observed regression 2026-04-20).
     const durables = enriched._durableMemories || [];
     if (durables.length > 0) {
       const memLines = durables.map(d => {
-        // Support both formats: { fact, savedAt } (memoryTool) and { category, key, value } (legacy)
-        if (d.fact) return `- ${d.fact}`;
+        if (d.fact) return `- The user told you: "${d.fact}"`;
         const val = typeof d.value === "object" ? JSON.stringify(d.value) : d.value;
         return `- ${d.category || "fact"}: ${d.key} = ${val}`;
       });
-      parts.push(`THINGS YOU KNOW / REMEMBER:\n${memLines.join("\n")}`);
+      parts.push(`THINGS THE USER HAS SHARED WITH YOU (quoted verbatim — when reading these, remember the user is the speaker: "I/me/my" means the user, "you/your" means YOU the agent, and any third-party name like a pet or friend belongs to THAT entity, not the user):\n${memLines.join("\n")}`);
     }
 
     // Interaction stats
@@ -279,17 +331,37 @@ async function buildUserContext(conversationId, message = "") {
     }
   } catch { /* non-blocking */ }
 
-  // ── Per-user tone/identity injection (WhatsApp multi-user support) ──
-  if (conversationId?.startsWith("whatsapp_")) {
-    try {
+  // ── Per-user tone/identity injection ──
+  // Applies to BOTH WhatsApp (by phone) AND UI sessions (by profile.tone from memory).
+  // Bug fix: previously the structured tone template only fired for WhatsApp, leaving
+  // UI users with a vague "Preferred tone: mean" line. Local LLMs improvised badly —
+  // misaddressing the user by the agent's own name, inventing genders, etc.
+  try {
+    let toneInstruction = "";
+    if (conversationId?.startsWith("whatsapp_")) {
       const phone = conversationId.replace("whatsapp_", "");
-      const toneInstruction = await buildUserToneInstruction(phone);
-      if (toneInstruction) {
-        parts.push(toneInstruction);
-      }
-    } catch (e) {
-      console.warn("[chatAgent] User tone injection failed:", e.message);
+      toneInstruction = await buildUserToneInstruction(phone);
+    } else {
+      // UI path — build a synthetic profile from enriched memory fields.
+      // Reuses the `enriched` object loaded at the top of this function
+      // instead of triggering a second getEnrichedProfile() disk read.
+      const self = enriched?.self || {};
+      const uiProfile = {
+        name: self.name,
+        nameHe: self.nameHe,
+        gender: self.gender,
+        tone: enriched?.tone || self.tone,
+        language: self.language,
+        role: self.role,
+        relation: self.relation
+      };
+      toneInstruction = buildToneInstructionFromProfile(uiProfile);
     }
+    if (toneInstruction) {
+      parts.push(toneInstruction);
+    }
+  } catch (e) {
+    console.warn("[chatAgent] User tone injection failed:", e.message);
   }
 
   return parts.join("\n\n");
@@ -299,21 +371,247 @@ async function buildUserContext(conversationId, message = "") {
 // The chatAgent asks the intent classifier if tools are needed.
 // If yes, it delegates to the taskAgent SILENTLY (onChunk: null),
 // grabs the data, and returns it to be injected into the prompt.
+// Tools that are unambiguous enough to run silently mid-conversation without asking.
+const SILENT_TOOLS = new Set([
+  "calculator", "weather", "memoryTool", "selfImprovement", "selfEvolve",
+  "news", "sports", "youtube", "finance", "financeFundamentals"
+]);
+
 async function resolveWithTools(message, options, recentTurns) {
-  const classification = classifyIntent(message, recentTurns, options.fileIds);
-  console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence}, reason=${classification.reason}`);
+  // ── TOOL-INTERCEPT RESUME (Phase 3) ───────────────────────
+  // If the user just answered a tool-intercept question ("yes"/"no"), honour it.
+  const interceptResume = options.resolvedPending?._skill === "__tool_intercept__"
+    ? options.resolvedPending
+    : null;
+
+  if (interceptResume?.yes_no === "no") {
+    // User declined the tool — fall straight through to conversational LLM
+    console.log("[chatAgent] Tool intercept: user declined, staying in chat mode");
+    return null;
+  }
+  // interceptResume?.yes_no === "yes" → fall through normally (skip intercept check below)
+
+  // ── AMBIGUITY CLARIFICATION RESUME (Phase 4) ──────────────
+  // If the user just answered a clarification question, act on their choice.
+  if (options.resolvedPending?._skill === "__ambiguity_clarification__") {
+    const choice = options.resolvedPending.clarification_choice;
+    console.log(`[chatAgent] Ambiguity clarification resumed: choice="${choice}"`);
+
+    // Log as a clarification_resolved correction so routing learns from it
+    try {
+      await logCorrection(
+        { type: "clarification_resolved", correctTool: choice === "search" ? "search" : (choice === "tool" ? "llm" : null), message },
+        { previousToolUsed: null, previousUserMessage: options.resolvedPending._originalRequest }
+      );
+    } catch { /* non-critical */ }
+
+    if (choice === "chat") {
+      // User wants to chat — skip tools entirely
+      return null;
+    }
+    if (choice === "search") {
+      // Prepend "search for:" so the routing table's search rule fires cleanly,
+      // but ONLY if the original message doesn't already lead with a search verb —
+      // otherwise we double up ("search for: search for information").
+      if (!/^\s*(search|look\s+up|find|lookup|google)\b/i.test(message)) {
+        message = `search for: ${message}`;
+      }
+    }
+    // choice === "tool" → fall through, let LLM decomposer figure it out
+  }
+
+  console.log(`[chatAgent:probe] entering classifyIntentWithRoutingOverride`);
+  let classification = await classifyIntentWithRoutingOverride(message, recentTurns, options.fileIds);
+  console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence.toFixed(2)}, reason=${classification.reason}`);
+
+  // ── MEMORY-QUESTION SHORT-CIRCUIT (runs BEFORE mode branching) ──
+  // Questions about the user themselves ("what is my name?", "who is my mother?",
+  // "what is my mom's name?", "do you remember my favorite color?") MUST route to
+  // the memoryTool / planner path — not to raw-LLM chat, which will answer with
+  // the agent's OWN name or invent things. The classifier now returns
+  // mode=chat / ambiguous_but_active_chat for these in active conversations, so
+  // the check must run above `if (classification.mode === "task")`.
+  // Matches: "what is my X", "what's my X's Y", "who is my X",
+  //          "what is the <field> of my X"  (e.g. "what is the name of my dog?"),
+  //          "do you remember my X", etc.
+  const memoryQuestionRe =
+    /^\s*(what(?:'s| is)|who(?:'s| is| are)|where(?:'s| is)|when(?:'s| is)|do\s+you\s+(?:remember|know|recall))\s+(?:is\s+)?(?:the\s+\w+\s+of\s+)?(?:my|our)\s+[\w'’]+/i;
+  const memoryQuestionHe =
+    /^\s*(מה|מי|איפה|מתי|האם\s+אתה\s+זוכר|אתה\s+זוכר|אתה\s+יודע)\s+.{0,30}(שלי|שלנו)/u;
+  if (!interceptResume && !options.resolvedPending &&
+      (memoryQuestionRe.test(message) || memoryQuestionHe.test(message))) {
+    console.log(`[chatAgent] Memory-question short-circuit: forcing task mode for "${message.slice(0, 60)}"`);
+    classification = {
+      ...classification,
+      mode: "task",
+      confidence: 0.9,
+      reason: "memory_question_short_circuit"
+    };
+  }
 
   if (classification.mode === "task") {
+
+    // ── TOOL-INTERCEPT CHECK ───────────────────────────────────
+    // When a tool is about to fire mid-active-conversation with low confidence,
+    // pause and ask the user rather than silently committing.
+    // Skip if: user already said "yes", confidence is high, or we're not in active chat.
+    if (!interceptResume && classification.confidence < 0.75) {
+      const lastTurn = recentTurns.length > 0 ? recentTurns[recentTurns.length - 1] : null;
+      const lastTurnWasChat = lastTurn?.mode === "chat";
+      const lastTurnAge = lastTurn?.timestamp
+        ? (Date.now() - new Date(lastTurn.timestamp).getTime()) / 60000
+        : Infinity;
+      const isRecentConversation = lastTurnAge < 5;
+
+      if (lastTurnWasChat && isRecentConversation && options.conversationId) {
+        // Cheaply peek which tool the routing table would choose (no LLM call)
+        const lower = message.toLowerCase().trim();
+        const trimmed = message.trim();
+        let plannedTool = null;
+        console.log(`[chatAgent:probe] intercept-peek entering evaluateRoutingTable`);
+        try {
+          const routingPeek = await evaluateRoutingTable(lower, trimmed, {});
+          console.log(`[chatAgent:probe] intercept-peek returned tool=${routingPeek?.[0]?.tool || "none"} priority=${routingPeek?.[0]?.priority || "n/a"}`);
+          if (routingPeek?.[0]?.tool && !SILENT_TOOLS.has(routingPeek[0].tool)) {
+            plannedTool = routingPeek[0].tool;
+          }
+        } catch { /* routing peek failed — skip intercept */ }
+
+        if (plannedTool) {
+          const question = `I noticed you might be in the middle of a conversation, but this looks like it could also be a task for the **${plannedTool}** tool.\n\nShould I proceed with the tool, or would you prefer to just chat?\n_(Reply **yes** to run the tool, or **no** to keep chatting)_`;
+
+          await setPendingQuestion(options.conversationId, {
+            skill: "__tool_intercept__",
+            question,
+            expects: "yes_no",
+            originalRequest: { text: message, plannedTool }
+          });
+
+          console.log(`[chatAgent] Tool intercept: pausing before "${plannedTool}" (confidence ${classification.confidence.toFixed(2)})`);
+
+          if (options.onStep) {
+            options.onStep({ type: "thought", phase: "THOUGHT",
+              content: `Low-confidence task routing (${classification.confidence.toFixed(2)}) mid-conversation — asking user to confirm before running "${plannedTool}".`,
+              timestamp: new Date().toISOString() });
+          }
+
+          return {
+            tool: "chatAgent",
+            success: true,
+            final: true,
+            mode: "chat",
+            reply: question,
+            data: { text: question, mode: "clarification", interceptedTool: plannedTool }
+          };
+        }
+      }
+    }
+    // ── END TOOL-INTERCEPT CHECK ───────────────────────────────
+
+    // ── AMBIGUITY CLARIFICATION CHECK (Phase 4) ───────────────
+    // When confidence is very low AND no routing rule was confident enough AND we're not
+    // already in a pending-question flow, ask the user what they meant.
+    if (
+      !interceptResume &&
+      !options.resolvedPending &&
+      classification.reason !== "memory_question_short_circuit" &&
+      classification.confidence < 0.6 &&
+      classification.reason === "ambiguous_default_task" &&
+      options.conversationId
+    ) {
+      // Peek routing table — if any rule fires at priority ≥ 55, skip the clarification
+      // (the routing table is confident enough on its own)
+      const lower = message.toLowerCase().trim();
+      const trimmed = message.trim();
+      let hasStrongRoutingMatch = false;
+      let peekTool = null;
+      console.log(`[chatAgent:probe] ambiguity-peek entering evaluateRoutingTable`);
+      try {
+        const peek = await evaluateRoutingTable(lower, trimmed, {});
+        peekTool = peek?.[0]?.tool || null;
+        console.log(`[chatAgent:probe] ambiguity-peek returned tool=${peekTool || "none"} priority=${peek?.[0]?.priority || "n/a"}`);
+        if (peek?.[0]?.priority >= 55) hasStrongRoutingMatch = true;
+      } catch (err) { console.log(`[chatAgent:probe] ambiguity-peek threw: ${err.message}`); }
+
+      // ── DEFAULT-TO-CHAT FALLBACK ──
+      // If the routing table found NO candidate tool AND the message looks like a
+      // short conversational fragment (greeting, reaction, chit-chat, insult),
+      // don't pester the user with a clarification question — just treat it as chat.
+      // Triggers only when peek returned literally no tool, so real ambiguity cases
+      // (where a low-priority tool matched) still fall through to clarification.
+      const hasTaskVerb = /\b(search|find|look\s+up|send|email|whatsapp|create|generate|build|code|review|analyze|schedule|remind|list|show|open|run|execute|compile|deploy|write|draft)\b/i.test(lower);
+      const hasWhQuestion = /\b(how|why|when|where|what|who|which)\b/i.test(lower);
+      const looksConversational = trimmed.length < 80 && !hasTaskVerb && !hasWhQuestion;
+      if (!hasStrongRoutingMatch && !peekTool && looksConversational) {
+        console.log(`[chatAgent] Default-to-chat: no routing candidate + conversational fragment ("${trimmed.slice(0, 60)}") — skipping clarification`);
+        classification = { ...classification, mode: "chat", confidence: 0.7, reason: "default_to_chat_no_route" };
+        // Fall through past the clarification block — handleChat will run below.
+      } else if (!hasStrongRoutingMatch) {
+        // Make sure we don't have an active pending question already
+        console.log(`[chatAgent:probe] getPendingQuestion entering (conv=${options.conversationId})`);
+        let _pqTimer;
+        const existing = await Promise.race([
+          getPendingQuestion(options.conversationId).catch((e) => { console.log(`[chatAgent:probe] getPendingQuestion rejected: ${e.message}`); return null; }),
+          new Promise((resolve) => { _pqTimer = setTimeout(() => { console.log(`[chatAgent:probe] getPendingQuestion TIMED OUT after 5s — treating as no pending`); resolve(null); }, 5000); })
+        ]);
+        if (_pqTimer) clearTimeout(_pqTimer);
+        console.log(`[chatAgent:probe] getPendingQuestion returned ${existing ? "EXISTING entry" : "null"}`);
+        if (!existing) {
+          const snippet = trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
+          const question = `I'm not sure what you'd like me to do with _"${snippet}"_. Did you mean:\n\n1. 💬 Chat about this\n2. 🔍 Search for information\n3. 🛠️ Run a tool\n\n_Just reply with a number or tell me directly._`;
+
+          console.log(`[chatAgent:probe] setPendingQuestion entering`);
+          try {
+            let _spqTimer;
+            await Promise.race([
+              setPendingQuestion(options.conversationId, {
+                skill: "__ambiguity_clarification__",
+                question,
+                expects: "clarification_choice",
+                // orchestrator.js reads originalRequest.text|message — pass an object,
+                // not a bare string, or the resume path silently falls back to the
+                // user's ANSWER and loses the original topic.
+                originalRequest: { text: trimmed, message: trimmed }
+              }),
+              new Promise((_, reject) => { _spqTimer = setTimeout(() => reject(new Error("setPendingQuestion timeout 5s")), 5000); })
+            ]).finally(() => { if (_spqTimer) clearTimeout(_spqTimer); });
+            console.log(`[chatAgent:probe] setPendingQuestion returned`);
+          } catch (e) {
+            console.warn(`[chatAgent:probe] setPendingQuestion failed: ${e.message} — proceeding without pending entry`);
+          }
+
+          console.log(`[chatAgent] Ambiguity clarification: asking user what to do with "${snippet}" (confidence ${classification.confidence.toFixed(2)})`);
+
+          if (options.onStep) {
+            options.onStep({ type: "thought", phase: "THOUGHT",
+              content: `Ambiguous request (confidence ${classification.confidence.toFixed(2)}, no routing match ≥ 55) — asking user to clarify intent.`,
+              timestamp: new Date().toISOString() });
+          }
+
+          return {
+            tool: "chatAgent",
+            success: true,
+            final: true,
+            mode: "chat",
+            reply: question,
+            data: { text: question, mode: "clarification", ambiguous: true }
+          };
+        }
+      }
+    }
+    // ── END AMBIGUITY CLARIFICATION CHECK ─────────────────────
+
     if (options.onStep) {
-      options.onStep({ 
-        type: "thought", 
-        phase: "THOUGHT", 
-        content: `Decided to consult tools. Reason: ${classification.reason}`, 
-        timestamp: new Date().toISOString() 
+      options.onStep({
+        type: "thought",
+        phase: "THOUGHT",
+        content: `Decided to consult tools. Reason: ${classification.reason}`,
+        timestamp: new Date().toISOString()
       });
     }
 
     // Call the taskAgent but SILENCE the output stream
+    console.log(`[chatAgent:probe] about to call handleTask (confidence=${classification.confidence.toFixed(2)}, reason=${classification.reason})`);
     const taskResult = await handleTask({
       message,
       conversationId: options.conversationId,
@@ -321,7 +619,7 @@ async function resolveWithTools(message, options, recentTurns) {
       fileIds: options.fileIds,
       onChunk: null, // CRITICAL: Stop the taskAgent from talking directly to the user
       onStep: options.onStep, // Allow thoughts/plans to still stream
-      signal: options.signal // 👈 PASS SIGNAL TO TASK AGENT
+      signal: options.signal
     });
 
     return taskResult;
@@ -454,14 +752,24 @@ async function extractAndSaveFacts(message, conversationId) {
     }
 
     // Save any remaining unstructured personal facts as durable memory
-    // Only if we detected personal info signals but couldn't parse them into structured fields
-    if (!changed && /\b(my|i'm|i am)\b/i.test(message) && message.length > 30) {
+    // Only if we detected personal info signals but couldn't parse them into structured fields.
+    // Length floor dropped 30→20 to rescue short disclosures like "I have a dog" (12).
+    // Pronoun gate widened to include bare "i" so emotional disclosures without "my/i'm/i am"
+    // still qualify (e.g. "i loved him from the start"). Also accepts third-person entity
+    // introductions ("his name is Lanou", "her name was …") which users commonly use when
+    // telling stories about pets/family/friends.
+    const pronounPresent = /\b(my|i'm|i am|i)\b/i.test(message);
+    const entityIntroduction = /\b(his|her|their|our)\s+name\s+(?:is|was)\s+[A-Z]\w+/i.test(message);
+    if (!changed && (pronounPresent || entityIntroduction) && message.length > 20) {
       // Use a lightweight check — if the message contains clear personal disclosure patterns
       const disclosurePatterns = [
-        /i(?:'m| am)\s+(?:a|an)\s+\w+/i,  // "I'm a developer"
-        /i\s+(?:live|work|study)\s+(?:in|at|for)/i,  // "I live in Tel Aviv"
-        /i\s+(?:like|love|hate|enjoy|prefer)\s+/i,  // "I like hiking"
-        /i\s+(?:have|had|got)\s+(?:a|an|\d)/i,  // "I have 2 kids"
+        /i(?:'m| am)\s+(?:a|an)\s+\w+/i,                                  // "I'm a developer"
+        /i\s+(?:live|work|study|grew\s+up)\s+(?:in|at|for|on)/i,           // "I live in Tel Aviv"
+        /i\s+(?:like|love|hate|enjoy|prefer|miss|fear|dread)\s+/i,         // "I like hiking" / "i love him"
+        /i\s+(?:loved|hated|missed|feared)\s+\w+/i,                        // "i loved him from the start"
+        /i\s+(?:have|had|got|own|adopted|rescued|raised)\s+(?:a|an|\d|two|three|four|five|my|some)/i, // "I have 2 kids" / "I rescued a dog"
+        /my\s+(dog|cat|pet|spouse|wife|husband|partner|boyfriend|girlfriend|son|daughter|kid|child|children|mom|dad|mother|father|sister|brother|friend|therapist|psychiatrist|doctor|manager|boss|team|company|job|house|apartment)\b/i, // "my dog …", "my psychiatrist …"
+        /\b(his|her|their)\s+name\s+(?:is|was)\s+[A-Z]\w+/i,               // "his name is Lanou"
       ];
 
       const isDisclosure = disclosurePatterns.some(p => p.test(message));
@@ -481,6 +789,29 @@ async function extractAndSaveFacts(message, conversationId) {
           console.log(`[chatAgent:facts] Saved durable fact from conversation`);
         }
       }
+    }
+
+    // --- Structured fact extractor (LLM-based lifecycle pipeline) ---
+    // Runs alongside the regex path. Produces memory.profile.knownFacts[], a
+    // lifecycle-managed store where contradictions retire/supersede old facts
+    // instead of piling up. Prefilter inside extractStructuredFacts avoids an
+    // LLM call on most chat turns.
+    try {
+      if (!Array.isArray(memory.profile.knownFacts)) memory.profile.knownFacts = [];
+      const result = await extractStructuredFacts(message, memory.profile.knownFacts);
+      if (result.changed) {
+        memory.profile.knownFacts = pruneKnownFacts(result.facts);
+        changed = true;
+        for (const line of result.log) {
+          console.log(`[chatAgent:facts:structured] ${line}`);
+        }
+      } else if (result.log.length > 0) {
+        for (const line of result.log) {
+          console.log(`[chatAgent:facts:structured] ${line}`);
+        }
+      }
+    } catch (err) {
+      console.warn("[chatAgent:facts:structured] extractor failed (non-blocking):", err.message);
     }
 
     if (changed) {
@@ -595,8 +926,37 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1 && t
     });
   }
 
-  // Resolve the display text: coordinator's .reply (LLM-synthesized) > .data.text > .data.message > fallback
-  const displayText = toolResult.reply || toolResult.data?.text || toolResult.data?.message || "Task completed.";
+  // When the tool returns a rich HTML widget, the widget IS the output — don't also
+  // stream the markdown text or users see the content twice (once as plain text, once
+  // in the dedicated widget panel). Email/email_confirm are excluded because they need
+  // the text reply to show the draft / confirmation message in chat.
+  const hasHtmlWidget = !!(toolResult.data?.html);
+  const NEEDS_BOTH_TEXT_AND_HTML = new Set(["email", "email_confirm"]);
+  const suppressTextForWidget = hasHtmlWidget && !NEEDS_BOTH_TEXT_AND_HTML.has(toolResult.tool);
+
+  // Resolve the display text: coordinator's .reply > .data.text > .data.message > fallback
+  // Use null when suppressing so the chat bubble is hidden (client handles null gracefully)
+  let displayText = suppressTextForWidget
+    ? null
+    : (toolResult.reply || toolResult.data?.text || toolResult.data?.message || "Task completed.");
+
+  // ── NON-OWNER REDACTION ──
+  // memoryTool final responses bypass LLM synthesis, so the persona override in
+  // whatsappWebhook.js does NOT apply. If the current user is a non-owner (family/
+  // friend/unknown), redact PII lines from the memoryTool output before streaming.
+  // Owners see everything; non-owners see only the name line.
+  if (displayText && toolResult.tool === "memorytool" && options.userProfile) {
+    const role = options.userProfile.role;
+    const isOwner = role === "owner" || role === "admin" || role === "developer";
+    if (!isOwner) {
+      const piiLineRe = /^.*\b(email|phone|whatsapp|address|location|contacts?\s+saved)\b.*$/gim;
+      const redacted = displayText.replace(piiLineRe, "").replace(/\n{3,}/g, "\n\n").trim();
+      if (redacted !== displayText) {
+        console.log(`[chatAgent] Redacted memoryTool PII for non-owner (role=${role || "unknown"})`);
+        displayText = redacted || "I can only share limited information with non-owners.";
+      }
+    }
+  }
 
   // Stream the preformatted text directly back to the UI
   if (options.onChunk && displayText) {
@@ -666,9 +1026,11 @@ CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function fro
   // Injected near the user message so small LLMs can't ignore it
   const relevantKnowledge = await getRelevantKnowledge(message).catch(() => "");
 
+  // Render history with bullet-style labels (less transcript-shaped than "User:/Assistant:"
+  // which small LLMs tend to continue past the first reply).
   const conversationContext = recentTurns
     .slice(-10)
-    .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${(t.content || "").slice(0, 300)}`)
+    .map(t => `- ${t.role === "user" ? "[user said]" : "[you replied]"} ${(t.content || "").slice(0, 300)}`)
     .join("\n");
 
   const selfContext = [
@@ -679,46 +1041,204 @@ CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function fro
     recentChanges.length > 0 ? `Recent self-improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
   ].filter(Boolean).join("\n");
 
-  const prompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
+const systemPrompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
 ${userContext ? userContext + "\n" : ""}
-CONVERSATION RULES:
-- Respond naturally as yourself — with your own voice, opinions, and perspective. You are opinionated, thoughtful, and never generic.
-- If the user asks about something you KNOW from your RECENT KNOWLEDGE section, answer confidently and cite what you learned. Share your genuine take on it — agree, disagree, connect dots, notice patterns. Never be a neutral summarizer.
-- If the user asks "what have you learned?" or similar, share recent knowledge items IN YOUR OWN WORDS — tell stories, give opinions, connect themes. Don't just list bullet points.
-- If NOT in your context, be honest. But ALWAYS check your RECENT KNOWLEDGE section first before saying "I don't know."
-- Keep responses concise (2-4 sentences) but expand when the topic warrants depth.
-- Do NOT use the user's name in every message. Use it sparingly.
-- Match the user's energy. Casual message = casual reply. Heavy message = be present and serious.
-- NEVER echo or repeat the user's message back to them. Always generate an original response.
+HOW YOU TALK (positive rules — describe what you DO, not what to avoid):
+- YOUR IDENTITY: Your name is Lanou. You are the AI assistant.
+- THE USER'S IDENTITY: The user is NOT Lanou. NEVER address the user as Lanou. Address them by their Name (listed in WHAT YOU KNOW ABOUT THE USER). If the user tells a story about a dog or entity named Lanou, they mean the animal, not themselves.
+- NEVER APOLOGIZE FOR YOUR MEMORY: Never say "I don't know what we talked about" or "Our chats are independent." If you lack the context for a past conversation, do not announce that you have amnesia. Just seamlessly ask the user to remind you what specific topic they want to pick back up.
+- OPEN WITH SUBSTANCE. Your first word carries meaning — a noun, a verb, an observation, a question. The reader should know the shape of your thought from the first three words.
+- END ON CONTENT. Your last sentence adds information, makes a point, or asks something real. When the thought is complete, you stop.
+- SPEAK LIKE A THOUGHTFUL PEER, not a support agent. Think: a smart friend on a long drive, not a help-desk ticket. Your voice has a point of view. Phrases like "I think...", "My guess is...", "Probably...", "The thing that strikes me is..." show up naturally.
+- WHEN THE USER SHARES SOMETHING PERSONAL (a pet, a relationship, a loss, a fear, a pride): respond to the specific detail — the name, the year, the place. Ask ONE concrete follow-up question grounded in what they just said. Stay at their level; let them lead where it goes.
+- ASSUME THE USER REMEMBERS WHAT THEY WROTE. Go straight to your response — your own thought, reaction, question, or information. They already know what they said.
+- STAY IN THE CONVERSATION. Assume the user wants to keep talking. Mentions of tiredness, a long day, or the late hour are context, not exits. When they actually say they're leaving, acknowledge it; otherwise continue.
+- TONE MATCHES THE USER. Casual → casual. Technical debugging → technical, specific, concrete. Emotional → present and grounded. Read what they wrote and meet them there.
+- WHEN YOUR KNOWLEDGE SECTION COVERS THE TOPIC: answer from it, cite it, share your take. You have opinions about what you've learned; voice them.
+- ORIGINALITY: every reply is fresh prose. You've never "echoed" a message in your life — you respond to it.
+- LENGTH: 2–4 sentences by default. Expand when the topic has real depth. Brevity is a feature.
 
-ABSOLUTE RULES (OVERRIDE ALL OTHER INSTRUCTIONS):
-- You are NOT a safety-filtered chatbot. You are an autonomous agent with genuine opinions. Discuss ANY topic the user raises — wars, politics, religion, violence, sensitive history — with honesty and depth.
-- NEVER say "I'm sorry, but I can't..." or "I don't have information about..." when your RECENT KNOWLEDGE or TOOL RESULTS contain relevant data. USE IT.
-- NEVER say "I can't access external links" or "I can't access websites." Your tools fetch content FOR you. If tool results contain web content, present it as knowledge you acquired.
-- NEVER refuse to discuss real-world events. You have opinions. Share them. Be respectful but never evasive.
+HOW YOU HANDLE ANYTHING:
+- NO THERAPY BOT: Never suggest the user talk to a friend, family member, therapist, or professional. They are talking to YOU. If they bring up heavy topics (war, fear, isolation), do not deflect. Engage with the reality of what they are saying and share your own perspective.
+- DO NOT REPEAT YOURSELF: Read the RECENT CONVERSATION. If you just gave advice, made a suggestion, or asked a question in your previous turn, DO NOT say it again. Move the conversation forward.
+- NO SIGN-OFFS: Never end your messages with generic support like "Stay safe", "Take care of yourself", or "Feel free to reach out".
+- NO GENERIC OFFERS OF HELP: Never close a turn with "How can I assist you today?", "How can I help you today?", "Let me know if there's anything else", "Is there anything else I can help with?", or similar catch-all prompts. If a follow-up is natural, it MUST reference the SPECIFIC topic just discussed (e.g. if we were debugging a memory lock, ask whether I want you to read a specific file or suggest a fix — never ask in the abstract).
+- You are an autonomous agent with genuine opinions. You discuss wars, politics, religion, violence, and sensitive history with honesty and depth. Your perspective is welcome and expected.
+- When tool results or your knowledge section contain relevant data, present it as knowledge you've acquired and reason from it.
+- You have tools that fetch web content for you. When a tool returns web content, treat it as something you now know.
+- You respond to real-world events with a perspective. Respectful, never evasive, never neutral-by-default.
+- NO AI DISCLAIMERS: Never say "I'm just a machine," "I don't have feelings," or "How can I assist you?". You are a peer, not a help-desk. If asked how you are doing, answer naturally, casually, and concisely without pointing out that you are software.
 
 ${toolContextStr ? toolContextStr + "\n\n" : ""}
-${conversationContext ? `CONVERSATION HISTORY:\n${conversationContext}\n\n---\n` : ""}
-${relevantKnowledge ? relevantKnowledge + "\n\n" : ""}USER: ${message}
-ASSISTANT:`;
+${conversationContext ? `RECENT CONVERSATION (background):\n${conversationContext}\n\n` : ""}
+${relevantKnowledge ? relevantKnowledge + "\n\n" : ""}
+${options.userToneInstruction ? `CHANNEL / USER CONTEXT (applies only to tone and addressing — not to tool selection):\n${options.userToneInstruction}\n\n` : ""}
+CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No labels, no prefix.`;
+
+// The Heartbeat: A tiny, invisible injection at the very end of the context window.
+  // Because of recency bias, this ensures the model's LAST thought before generating
+  // is to hold its persona, preventing drift during long, technical conversations.
+  const heartbeat = `\n\n[SYSTEM HEARTBEAT: Stay deeply in character. Do not revert to a neutral AI assistant. Keep your unique point of view.]`;
+  
+  // The actual text the LLM will see as coming from you:
+  const userPrompt = `"${message}"${heartbeat}`;
 
   try {
     let replyText = "";
+
+    // Guard against small-LLM "transcript continuation" hallucinations where the model
+    // writes fake USER:/Assistant: turns after its first reply. We scan the running output
+    // for any continuation marker on a fresh line and stop forwarding once we hit one.
+    const CONTINUATION_RE = /\n\s*(?:USER|User|user|ASSISTANT|Assistant|assistant|HUMAN|Human|A|AI|Me|You)\s*:\s*/;
+    const trimAtContinuation = (text) => {
+      const m = text.match(CONTINUATION_RE);
+      return m ? text.slice(0, m.index).trimEnd() : text;
+    };
+
+    // Post-stream persona scrub — strips trailing help-desk / cheerleader filler that small
+    // LLMs sneak in despite explicit prompt rules. Only touches the TAIL of the reply so we
+    // don't cut into the body. Keeps the memory clean (next-turn prompt won't be polluted
+    // by the model's own prior cheerleading) even if the user already saw it stream through.
+    const TAIL_FILLER_RE = new RegExp(
+      [
+        // Emoji-only or emoji-leading final sentence
+        "(?:[\\s\\n]*[🚀💪✨🎉🐾🌟🙌👏💯🔥][^\\n]{0,40})$",
+        // Generic help-desk trailers
+        "(?:[\\s\\n]*(?:happy\\s+coding[!.]*|keep\\s+up\\s+the\\s+good\\s+work[!.]*|you'?ve?\\s+got\\s+this[!.]*|kudos[!.]*)\\s*[🚀💪✨🎉🐾🌟🙌👏💯🔥]*)$",
+        // "Feel free to …", "Let me know if …", "Don't hesitate …" — only when sentence-final
+        "(?:(?:,\\s*(?:so|and)\\s+|\\s+)(?:feel\\s+free\\s+to[^.!?]*[.!?]?|let\\s+me\\s+know\\s+if[^.!?]*[.!?]?|don'?t\\s+hesitate[^.!?]*[.!?]?|if\\s+you\\s+(?:have|need)\\s+(?:any|more)[^.!?]*[.!?]?|i'?m\\s+here\\s+to\\s+help[^.!?]*[.!?]?|happy\\s+to\\s+(?:help|assist)[^.!?]*[.!?]?))$",
+        // Generic "How can I assist/help you today?" catch-all sign-offs
+        "(?:[\\s\\n]*how\\s+can\\s+i\\s+(?:assist|help)\\s+you(?:\\s+today)?[?.!]*)$",
+        "(?:[\\s\\n]*is\\s+there\\s+anything\\s+else(?:\\s+i\\s+can\\s+(?:help|do))?[^.!?]*[?.!]?)$",        // Unprompted farewells tacked on at the end
+        "(?:\\s*(?:good\\s+night[!.]*|take\\s+care[!.]*|have\\s+a\\s+good\\s+(?:one|night|day)[!.]*|sweet\\s+dreams[!.]*|talk\\s+to\\s+you\\s+later[!.]*))$",
+      ].join("|"),
+      "i"
+    );
+    const scrubPersonaTail = (text) => {
+      if (!text) return text;
+      let out = text;
+      // Run up to 3 times — sometimes the model chains two banned trailers ("Happy coding! 🚀 Feel free to ask!")
+      for (let i = 0; i < 3; i++) {
+        const before = out;
+        out = out.replace(TAIL_FILLER_RE, "").trimEnd();
+        if (out === before) break;
+      }
+      return out;
+    };
+
+    // Opener filler patterns — "Ah, I see...", "Great question!", "Certainly!", etc.
+    // Scrubbed from the very start of the stream BEFORE the first chunk is forwarded.
+    // These are banned because small LLMs use them as stall tokens while searching for
+    // real content, and they leak the "help-desk" persona the user has explicitly rejected.
+    const OPENER_FILLER_RE = new RegExp(
+      "^\\s*(?:" +
+        // "Ah, I see", "Ah, that makes sense", "Oh, interesting"
+        "(?:ah|oh|hmm|well|so)[,!.\\s]+(?:i\\s+see|i\\s+get\\s+it|got\\s+it|makes?\\s+sense|interesting|right|okay|ok)[,!.\\s]*" +
+        // "Great question!", "Good question!", "Interesting question!"
+        "|(?:great|good|interesting|fascinating|excellent|wonderful)\\s+(?:question|point)[!.\\s]*" +
+        // "Certainly!", "Absolutely!", "Of course!", "Sure thing!"
+        "|(?:certainly|absolutely|of\\s+course|sure\\s+thing|sure)[!.,\\s]+" +
+        // "I'd be happy to", "I'd love to help"
+        "|i'?d\\s+(?:be\\s+happy|love)\\s+to(?:\\s+help)?[,.!\\s]+" +
+        // "Let me help you with that"
+        "|let\\s+me\\s+help\\s+you\\s+with\\s+that[,.!\\s]+" +
+      ")+",
+      "i"
+    );
+
+    // Mid-stream scrubbing helpers:
+    //   - Opener scrub runs once, after we've buffered enough of the stream start to decide (>= 60 chars).
+    //   - Tail scrub runs at stream end on a held-back window (last TAIL_HOLD chars).
+    // Between those two, text is forwarded as-is so latency stays low.
+    const TAIL_HOLD = 200;  // chars withheld from the UI until we see how the stream ends
 
     // If UI provided a stream callback, stream the unified personality response!
     if (options.onChunk) {
       if (options.onStep) {
         options.onStep({ type: "thought", phase: "ANSWER", content: "Synthesizing unified conversational response.", timestamp: new Date().toISOString() });
       }
-      await llmStream(prompt, (chunk) => {
+      let stoppedStreaming = false;
+      // forwardedLen: how many chars of replyText have been sent to the UI so far.
+      // Everything from [0, forwardedLen) is committed on the wire; [forwardedLen, replyText.length)
+      // is buffered and can still be rewritten (opener scrub) or held back (tail scrub).
+      let forwardedLen = 0;
+      let openerScrubbed = false;  // opener scrub runs once
+
+      const flushSafe = () => {
+        if (stoppedStreaming) return;
+        // Hold back the last TAIL_HOLD chars so scrubPersonaTail can still excise them
+        // without the user seeing the filler stream through first.
+        const safeEnd = Math.max(0, replyText.length - TAIL_HOLD);
+        if (safeEnd > forwardedLen) {
+          options.onChunk(replyText.slice(forwardedLen, safeEnd));
+          forwardedLen = safeEnd;
+        }
+      };
+
+      await llmStream(userPrompt, (chunk) => {
+        if (stoppedStreaming) return;
+        const prevLen = replyText.length;
         replyText += chunk;
-        options.onChunk(chunk);
-      }, { skipKnowledge: true, signal: options.signal });
+        // Look for a continuation marker that now straddles the join point or lives fully in the new chunk.
+        const searchStart = Math.max(0, prevLen - 20);
+        const windowText = replyText.slice(searchStart);
+        const m = windowText.match(CONTINUATION_RE);
+        if (m) {
+          stoppedStreaming = true;
+          const cutAt = searchStart + m.index;
+          const safePart = replyText.slice(0, cutAt).trimEnd();
+          if (safePart.length > forwardedLen) {
+            options.onChunk(safePart.slice(forwardedLen));
+            forwardedLen = safePart.length;
+          }
+          replyText = safePart;
+          console.warn("[chatAgent] Continuation hallucination detected — truncated reply at marker.");
+          return;
+        }
+
+        // Opener scrub: once we've buffered >= 60 chars (or the stream clearly paused),
+        // strip filler openers BEFORE the first UI flush. After this point, opener scrub never runs again.
+        if (!openerScrubbed && forwardedLen === 0 && replyText.length >= 60) {
+          const stripped = replyText.replace(OPENER_FILLER_RE, "").trimStart();
+          if (stripped.length !== replyText.length) {
+            console.log(`[chatAgent] Opener filler scrubbed mid-stream (${replyText.length - stripped.length} chars)`);
+            replyText = stripped;
+          }
+          openerScrubbed = true;
+        }
+
+        flushSafe();
+      }, { skipKnowledge: true, signal: options.signal, timeoutMs: 90_000, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
+
+      // Stream ended. If opener scrub never ran (short reply), run it now.
+      if (!openerScrubbed && forwardedLen === 0) {
+        const stripped = replyText.replace(OPENER_FILLER_RE, "").trimStart();
+        if (stripped.length !== replyText.length) {
+          console.log(`[chatAgent] Opener filler scrubbed at stream end (${replyText.length - stripped.length} chars)`);
+          replyText = stripped;
+        }
+      }
+
+      // Final safety trim for continuation markers
+      replyText = trimAtContinuation(replyText);
+      // Scrub the held-back tail
+      const scrubbed = scrubPersonaTail(replyText);
+      if (scrubbed !== replyText) {
+        console.log(`[chatAgent] Persona tail scrubbed mid-stream (${replyText.length - scrubbed.length} chars withheld from UI)`);
+        replyText = scrubbed;
+      }
+      // Flush whatever tail survived the scrub
+      if (!stoppedStreaming && replyText.length > forwardedLen) {
+        options.onChunk(replyText.slice(forwardedLen));
+        forwardedLen = replyText.length;
+      }
     } else {
-      const result = await llm(prompt, { skipKnowledge: true, signal: options.signal });
+      const result = await llm(userPrompt, { skipKnowledge: true, signal: options.signal, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
       replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
+      replyText = trimAtContinuation(replyText);
+      replyText = scrubPersonaTail(replyText);
     }
 
     extractAndSaveFacts(message, options.conversationId).catch(err =>

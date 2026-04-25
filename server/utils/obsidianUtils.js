@@ -316,7 +316,11 @@ export async function resolveWikilinks(content, { createStubs = true, stubFolder
     links.add(match[1].trim());
   }
 
-  if (links.size === 0) return [];
+  console.log(`[obsidianUtils] resolveWikilinks: found ${links.size} wikilinks in draft, stubFolder="${stubFolder}"`);
+  if (links.size === 0) {
+    console.log(`[obsidianUtils] resolveWikilinks: no [[wikilinks]] found — LLM may not have generated them. Stubs skipped.`);
+    return [];
+  }
 
   const createdStubs = [];
 
@@ -330,7 +334,10 @@ export async function resolveWikilinks(content, { createStubs = true, stubFolder
     // (Obsidian resolves [[X]] by filename anywhere under the vault, so a stub
     // at Stubs/X.md would be redundant if a Notes/X.md or Journal/X.md exists).
     const resolvedElsewhere = await wikilinkResolvesInVault(linkTitle);
-    if (resolvedElsewhere) continue;
+    if (resolvedElsewhere) {
+      console.log(`[obsidianUtils] resolveWikilinks: skipping [[${linkTitle}]] — already exists in vault`);
+      continue;
+    }
 
     const relativePath = stubFolder ? `${stubFolder}/${linkTitle}.md` : `${linkTitle}.md`;
     const fullPath = safePath(relativePath);
@@ -338,6 +345,7 @@ export async function resolveWikilinks(content, { createStubs = true, stubFolder
     try {
       await fs.access(fullPath);
       // File exists — skip
+      console.log(`[obsidianUtils] resolveWikilinks: skipping [[${linkTitle}]] — stub already exists`);
     } catch {
       // File doesn't exist — create stub if requested
       if (createStubs) {
@@ -347,19 +355,25 @@ status: stub
 created: ${new Date().toISOString()}
 ---
 
-# ${link}
+# ${linkTitle}
 
 > [!stub] This note is a stub
-> Created automatically from a wikilink. Awaiting content.
+> Created automatically from a wikilink in a research document. Awaiting content.
 `;
-        const dir = path.dirname(fullPath);
-        await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(fullPath, stubContent, "utf8");
-        createdStubs.push(relativePath);
+        try {
+          const dir = path.dirname(fullPath);
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(fullPath, stubContent, "utf8");
+          createdStubs.push(relativePath);
+          console.log(`[obsidianUtils] resolveWikilinks: ✅ created stub "${relativePath}"`);
+        } catch (writeErr) {
+          console.error(`[obsidianUtils] resolveWikilinks: ❌ failed to write stub "${relativePath}": ${writeErr.message}`);
+        }
       }
     }
   }
 
+  console.log(`[obsidianUtils] resolveWikilinks: created ${createdStubs.length}/${links.size} stubs`);
   return createdStubs;
 }
 

@@ -82,6 +82,18 @@ async function resolveContact(nameOrRelation) {
     const { getAllProfiles } = await import("../utils/userProfiles.js");
     const profiles = await getAllProfiles();
 
+    // ── SELF-REFERENCE: "me" / "myself" / "עצמי" → owner's phone ──
+    // When a user says "send me a whatsapp saying hi", they mean themselves.
+    // Resolve to the owner profile since all UI/scheduler-originated requests
+    // come from the owner. (WhatsApp webhook callers should pre-rewrite "me"
+    // to the actual sender's phone before routing.)
+    if (/^(me|myself|עצמי|לעצמי)$/i.test(lower) || /\b(to\s+)?myself\b/i.test(lower)) {
+      for (const [phone, profile] of Object.entries(profiles)) {
+        if (phone.startsWith("_")) continue;
+        if (profile.role === "owner") return phone;
+      }
+    }
+
     for (const [phone, profile] of Object.entries(profiles)) {
       if (phone.startsWith("_")) continue; // Skip placeholders
       const checks = [
@@ -141,6 +153,28 @@ function isCompositionInstruction(text) {
  */
 async function detectWhatsAppIntent(text) {
   const lower = text.toLowerCase();
+
+  // ── SELF-SEND SHORT-CIRCUIT ──
+  // "send me a whatsapp saying hi" / "שלח לי הודעה אומרת היי"
+  // The contact-name regex won't match "me" (noise filter rejects short pronouns),
+  // so intercept here and resolve to the owner's phone.
+  const selfSendMatch = text.match(
+    /(?:send|שלח)\s+(?:me|myself|לי|לעצמי)\s+(?:a\s+)?(?:whatsapp\s+|ווטסאפ\s+|וואטסאפ\s+|message\s+|הודעה\s+)?(?:saying|that\s+says?|with\s+message|אומרת|עם)?\s*[:\-]?\s*(.*)/iu
+  );
+  if (selfSendMatch) {
+    const resolvedPhone = await resolveContact("me");
+    if (resolvedPhone) {
+      const msg = (selfSendMatch[1] || "").trim() || "Hi!";
+      return {
+        intent: "single_send",
+        to: resolvedPhone,
+        message: msg,
+        filename: null,
+        isComposeRequest: isCompositionInstruction(msg),
+        recipientName: "myself"
+      };
+    }
+  }
 
   // ── Bulk send: "send whatsapp to everyone in contacts.xlsx saying ..." ──
   const bulkMatch = text.match(
@@ -876,11 +910,17 @@ RULES:
 - Match the requested tone exactly.`;
 
 
-            // Pick a model that can handle the target language
+            // Pick a model that can handle the target language.
+            // Detect Hebrew/Arabic from the actual user message text, not just the contact label,
+            // so circuit-breaker fallback lands on aya-expanse:8b instead of the default model.
             let composeModel;
             try {
               const { pickModelForContent } = await import("./llm.js");
-              const langHint = recipientContext.includes("Hebrew") ? "שלום" : composePrompt;
+              const rawUserText = typeof request === "string" ? request : (request?.text || "");
+              const hebrewCharCount = (rawUserText.match(/[\u0590-\u05FF]/g) || []).length;
+              const arabicCharCount = (rawUserText.match(/[\u0600-\u06FF]/g) || []).length;
+              const isRtlContent = hebrewCharCount > 3 || arabicCharCount > 3 || recipientContext.includes("Hebrew") || recipientContext.includes("Arabic");
+              const langHint = isRtlContent ? "שלום" : composePrompt;
               composeModel = pickModelForContent(langHint);
             } catch { /* fallback to default */ }
 

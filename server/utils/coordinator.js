@@ -120,6 +120,74 @@ function getEmotionalAdaptation(frustration, sentiment) {
   return adaptations;
 }
 
+// ── Known tools the reflection mechanism is allowed to suggest ──────────────
+// Subset of stable, side-effect-safe tools. Excludes write/send/mutate tools
+// to avoid reflection accidentally firing dangerous operations.
+const REFLECTION_SAFE_TOOLS = new Set([
+  "file", "folderAccess", "search", "webBrowser", "webDownload",
+  "calculator", "weather", "news", "sports", "finance", "financeFundamentals",
+  "youtube", "github", "githubScanner", "githubTrending", "gitLocal",
+  "deepResearch", "codeRag", "codeReview", "nlp", "systemMonitor",
+  "projectGraph", "projectIndex", "projectSnapshot", "duplicateScanner",
+  "documentQA", "memoryTool", "selfImprovement", "obsidianWriter",
+  "spotifyController", "tasks", "calendar", "contacts"
+]);
+
+/**
+ * Parse a tool-failure reply for a suggested alternative tool name.
+ *
+ * Looks for patterns the LLM commonly uses when explaining the wrong tool was picked:
+ *   "The correct tool is `folderAccess`"
+ *   "should use `folderAccess` instead"
+ *   "Try using `folderAccess`"
+ *   "use the `folderAccess` tool"
+ *
+ * Returns the first safe, non-identical tool name found, or null.
+ *
+ * @param {string} reply         The finalized reply text from the failed step
+ * @param {string} currentTool   The tool that just failed (to avoid suggesting itself)
+ * @returns {string|null}
+ */
+function extractToolSuggestion(reply, currentTool) {
+  if (!reply || typeof reply !== "string") return null;
+
+  // Priority 1: explicit backtick-quoted tool names near suggestion keywords
+  const backtickPatterns = [
+    /(?:correct|proper|right|better|appropriate)\s+tool\s+(?:is|would\s+be|for\s+\w+\s+is)\s+[`'](\w+)[`']/i,
+    /(?:should|try|use|using|switch\s+to|instead\s+use)\s+(?:the\s+)?[`'](\w+)[`'](?:\s+tool)?/i,
+    /[`'](\w+)[`']\s+(?:tool\s+)?(?:is\s+(?:more\s+)?(?:appropriate|correct|suited)|would\s+work\s+better)/i,
+    /use\s+the\s+[`'](\w+)[`']\s+tool/i
+  ];
+
+  for (const pat of backtickPatterns) {
+    const m = reply.match(pat);
+    if (m?.[1]) {
+      const candidate = m[1].trim();
+      if (candidate !== currentTool && REFLECTION_SAFE_TOOLS.has(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  // Priority 2: unquoted tool name directly after strong signal words
+  const unquotedPatterns = [
+    /(?:correct|proper|right|appropriate)\s+tool\s+(?:is|would\s+be)\s+(\w+)/i,
+    /(?:should\s+use|try\s+using|use\s+the)\s+(\w+)\s+tool/i
+  ];
+
+  for (const pat of unquotedPatterns) {
+    const m = reply.match(pat);
+    if (m?.[1]) {
+      const candidate = m[1].trim();
+      if (candidate !== currentTool && REFLECTION_SAFE_TOOLS.has(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
@@ -405,7 +473,61 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
             break;
         } else if (!finalized.success) {
             console.log(`⚠️ Non-critical step ${stepNumber} (${step.tool}) failed, continuing to next step...`);
-            // We don't break here, so the loop continues to the next step (e.g., News)
+
+            // ── TOOL REFLECTION: one-shot self-correction ────────────────────
+            // If the failure analysis mentions a different tool, try it automatically.
+            // This catches wrong-tool routing (e.g. "file" used for a directory → "folderAccess").
+            const suggestedTool = extractToolSuggestion(finalized.reply, step.tool);
+            if (suggestedTool) {
+                console.log(`🔄 [reflection] "${step.tool}" failed — trying suggested tool "${suggestedTool}"...`);
+                if (onStep) onStep({ type: "thought", content: `🔄 Let me try **${suggestedTool}** instead — that's more appropriate for this request.` });
+                try {
+                    const reflectResult = await executeStep({
+                        tool: suggestedTool,
+                        message: stepMessage,
+                        conversationId,
+                        sentiment,
+                        entities,
+                        stateGraph,
+                        signal
+                    });
+                    const reflectFinalized = await finalizeStep({
+                        stepResult:    reflectResult,
+                        message:       stepMessage.text,
+                        conversationId,
+                        sentiment,
+                        entities,
+                        stateGraph,
+                        onChunk:       isLastStep ? onChunk : null,
+                        signal
+                    });
+
+                    // Replace the failed state-graph entry with the reflection result
+                    const prevEntry = stateGraph[stateGraph.length - 1];
+                    stateGraph[stateGraph.length - 1] = {
+                        ...prevEntry,
+                        tool:     suggestedTool,
+                        output:   reflectFinalized.reply,
+                        success:  reflectFinalized.success,
+                        final:    reflectFinalized.final,
+                        rawData:  reflectResult.output?.data || reflectResult.data || null,
+                        reflected: true,
+                        originalTool: step.tool
+                    };
+                    lastFinalized = reflectFinalized;
+
+                    const refPreview = typeof reflectFinalized.reply === "string"
+                        ? reflectFinalized.reply.slice(0, 120)
+                        : "(result)";
+                    emitThought("OBSERVATION",
+                        `[reflection] ${suggestedTool} ${reflectFinalized.success ? "succeeded" : "also failed"}. Preview: ${refPreview}`,
+                        { step: stepNumber, tool: suggestedTool, reflected: true, success: reflectFinalized.success }
+                    );
+                    console.log(`🔄 [reflection] "${suggestedTool}" ${reflectFinalized.success ? "✅ succeeded" : "❌ also failed"}`);
+                } catch (reflectErr) {
+                    console.warn(`🔄 [reflection] "${suggestedTool}" threw: ${reflectErr.message}`);
+                }
+            }
         }
     }
 

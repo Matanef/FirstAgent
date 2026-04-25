@@ -9,6 +9,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { getMemory, withMemoryLock, saveJSON, MEMORY_FILE } from "../memory.js";
 import { llm } from "../tools/llm.js";
+import { addDocument, search as vectorSearch, getCollectionStats } from "./vectorStore.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -136,29 +137,19 @@ Summary:`;
 
   if (!summaryText) return null;
 
-  // Store in memory
-  await withMemoryLock(async () => {
-    const mem = await getMemory();
-    mem.meta = mem.meta || {};
-    mem.meta.conversationSummaries = mem.meta.conversationSummaries || [];
-
-    // Add new summary
-    mem.meta.conversationSummaries.push({
+  // --- NEW: Store in Vector Database ---
+  try {
+    const topics = extractTopics(messages);
+    await addDocument(VEC_COLLECTION, summaryText, {
       conversationId,
-      summary: summaryText.slice(0, 500),
       messageCount: conversation.length,
       timestamp: new Date().toISOString(),
-      topics: extractTopics(messages)
+      topics: topics.join(", ")
     });
-
-    // Trim to max
-    if (mem.meta.conversationSummaries.length > MAX_CONVERSATION_SUMMARIES) {
-      mem.meta.conversationSummaries = mem.meta.conversationSummaries.slice(-MAX_CONVERSATION_SUMMARIES);
-    }
-
-    mem.meta.lastUpdated = new Date().toISOString();
-    await saveJSON(MEMORY_FILE, mem);
-  });
+    console.log(`[conversationMemory] Vectorized and stored summary for ${conversationId}`);
+  } catch (err) {
+    console.warn("[conversationMemory] Failed to vectorize summary:", err.message);
+  }
 
   return summaryText;
 }
@@ -167,33 +158,28 @@ Summary:`;
  * Retrieve relevant past conversation summaries for context.
  */
 export async function getRelevantContext(query, limit = 3) {
-  const memory = await getMemory();
-  const summaries = memory.meta?.conversationSummaries || [];
+  if (!query || query.length < 3) return [];
 
-  if (summaries.length === 0) return [];
+  try {
+    // Fetch slightly more hits, then filter by a confidence threshold
+    const results = await vectorSearch(VEC_COLLECTION, query, limit * 2);
 
-  // Simple keyword matching for relevance (vector search would be better but this is MVP)
-  const queryWords = new Set(
-    query.toLowerCase().split(/\s+/).filter(w => w.length > 3)
-  );
-
-  const scored = summaries.map(s => {
-    const summaryWords = s.summary.toLowerCase().split(/\s+/);
-    const topicWords = (s.topics || []).map(t => t.toLowerCase());
-    let score = 0;
-
-    for (const word of queryWords) {
-      if (summaryWords.some(sw => sw.includes(word))) score += 1;
-      if (topicWords.some(tw => tw.includes(word))) score += 2;
-    }
-
-    return { ...s, relevanceScore: score };
-  });
-
-  return scored
-    .filter(s => s.relevanceScore > 0)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, limit);
+    // Map vector results to the legacy format the agent expects
+    return results
+      .filter(r => r.score > 0.25) // Ignore weak semantic matches
+      .map(r => ({
+        conversationId: r.metadata?.conversationId,
+        summary: r.text,
+        relevanceScore: r.score,
+        timestamp: r.metadata?.timestamp,
+        topics: r.metadata?.topics ? r.metadata.topics.split(", ") : []
+      }))
+      .slice(0, limit);
+      
+  } catch (err) {
+    console.warn("[conversationMemory] Vector RAG search failed:", err.message);
+    return [];
+  }
 }
 
 /**
@@ -234,14 +220,26 @@ function extractTopics(messages) {
  */
 export async function getConversationStats() {
   const memory = await getMemory();
-  const summaries = memory.meta?.conversationSummaries || [];
   const conversations = memory.conversations || {};
 
+  let totalSummarized = 0;
+  let lastActive = null;
+  
+  try {
+    const stats = getCollectionStats(VEC_COLLECTION);
+    if (stats) {
+      totalSummarized = stats.documentCount || 0;
+      lastActive = stats.lastUpdated || null;
+    }
+  } catch (err) {
+    // Vector collection might not exist yet
+  }
+
   return {
-    totalSummarized: summaries.length,
+    totalSummarized,
     activeConversations: Object.keys(conversations).length,
-    lastActive: summaries.length > 0 ? summaries[summaries.length - 1].timestamp : null,
-    recentTopics: summaries.slice(-5).flatMap(s => s.topics || [])
+    lastActive,
+    recentTopics: [] // Skipped to avoid heavy disk reads on status checks
   };
 }
 
@@ -323,6 +321,23 @@ export async function pruneOldConversations() {
           { skipLanguageDetection: true, timeoutMs: 60000 }
         );
         summaryText = result?.data?.text || "";
+        
+        // --- NEW: Inject pruned summary into Vector RAG ---
+        if (summaryText) {
+          try {
+             await addDocument(VEC_COLLECTION, summaryText, {
+               conversationId: id,
+               messageCount: messages.length,
+               timestamp: new Date().toISOString(),
+               topics: "archived, pruned" // Generic tags for older docs
+             });
+             console.log(`[conversationMemory] Vectorized pruned summary for ${id}`);
+          } catch (vecErr) {
+             console.warn(`[conversationMemory] Failed to vectorize pruned summary for ${id}:`, vecErr.message);
+          }
+        }
+        // --------------------------------------------------
+
       } catch (err) {
         console.warn(`[conversationMemory] Summarization failed for ${id}:`, err.message);
         const userMsgs = messages.filter(m => m.role === "user").map(m => (m.content || "").slice(0, 50));
@@ -348,7 +363,7 @@ export async function pruneOldConversations() {
     }
 
     if (pruned > 0) {
-      await withMemoryLock(async () => {
+
         const mem = await getMemory();
         for (const [id, msgs] of Object.entries(conversations)) {
           if (msgs[0]?.role === "__summary__") {
@@ -356,7 +371,7 @@ export async function pruneOldConversations() {
           }
         }
         await saveJSON(MEMORY_FILE, mem);
-      });
+
       console.log(`🧹 [conversationMemory] Pruned ${pruned} old conversations (${archived} archived to JSONL)`);
     }
 

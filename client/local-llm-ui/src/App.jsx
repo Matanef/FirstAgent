@@ -1,7 +1,7 @@
 // client/local-llm-ui/src/App.jsx
 // Main application component — slimmed down with extracted components
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import DOMPurify from "dompurify";
 import SmartContent from "./components/SmartContent";
 import TrainOfThought from "./components/TrainOfThought";
@@ -11,6 +11,45 @@ import FolderPicker from "./components/FolderPicker";
 import DepthBar from "./components/DepthBar";
 import { API_URL, apiFetch } from "./api";
 import "./App.css";
+
+// Memoized transcript row — isolated so typing in the composer (which mutates App's
+// `input` state on every keystroke) does NOT re-render every prior message in the
+// transcript. Without this, a 200-message conversation paid 200× reconciliation
+// cost per keystroke, which is what caused the typing lag the user reported.
+const MessageEntry = memo(function MessageEntry({ m, conversationId }) {
+  return (
+    <div className={`message-entry ${m.role}`}>
+      <div className="message-meta">
+        <span className="message-role">
+          {m.role === "user" ? "You" : m.role === "error" ? "Error" : "Agent"}
+        </span>
+        <span className="message-time">
+          {new Date(m.timestamp).toLocaleTimeString()}
+        </span>
+        {m.confidence !== undefined && (
+          <span className="message-confidence">
+            {(m.confidence * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+      {m.role === "assistant" && m.thoughts && m.thoughts.length > 0 && (
+        <TrainOfThought
+          thoughts={m.thoughts}
+          isStreaming={m.loading === true}
+        />
+      )}
+      <div className="message-body">
+        <SmartContent message={m} conversationId={conversationId} />
+      </div>
+      {m.stateGraph && m.stateGraph.length > 1 && (
+        <details className="message-trace">
+          <summary>🔍 Execution trace ({m.stateGraph.length} steps)</summary>
+          <pre>{JSON.stringify(m.stateGraph, null, 2)}</pre>
+        </details>
+      )}
+    </div>
+  );
+});
 
 // MAIN APP COMPONENT
 function App() {
@@ -58,7 +97,7 @@ useEffect(() => {
   }, [conversations, activeId]);
 
   useEffect(() => {
-    const toneNames = ["concise", "mediumWarm", "warm", "professional"];
+    const toneNames = ["concise", "mediumWarm", "warm", "professional", "mean"];
     const toneName = toneNames[toneValue];
 
     apiFetch(`${API_URL}/profile`, {
@@ -447,7 +486,7 @@ function handleKeyDown(e) {
                       <input
                         type="range"
                         min="0"
-                        max="3"
+                        max="4"
                         value={toneValue}
                         onChange={(e) => setToneValue(Number(e.target.value))}
                         className="tone-slider"
@@ -457,6 +496,7 @@ function handleKeyDown(e) {
                         <span>Warm</span>
                         <span>Very Warm</span>
                         <span>Pro</span>
+                        <span>Mean</span>
                       </div>
                     </div>
                   </div>
@@ -491,36 +531,7 @@ function handleKeyDown(e) {
                 </div>
               ) : (
                 messages.map((m, i) => (
-                  <div key={i} className={`message-entry ${m.role}`}>
-                    <div className="message-meta">
-                      <span className="message-role">
-                        {m.role === "user" ? "You" : m.role === "error" ? "Error" : "Agent"}
-                      </span>
-                      <span className="message-time">
-                        {new Date(m.timestamp).toLocaleTimeString()}
-                      </span>
-                      {m.confidence !== undefined && (
-                        <span className="message-confidence">
-                          {(m.confidence * 100).toFixed(0)}%
-                        </span>
-                      )}
-                    </div>
-                    {m.role === "assistant" && m.thoughts && m.thoughts.length > 0 && (
-                      <TrainOfThought
-                        thoughts={m.thoughts}
-                        isStreaming={m.loading === true}
-                      />
-                    )}
-                    <div className="message-body">
-                      <SmartContent message={m} conversationId={activeId} />
-                    </div>
-                    {m.stateGraph && m.stateGraph.length > 1 && (
-                      <details className="message-trace">
-                        <summary>🔍 Execution trace ({m.stateGraph.length} steps)</summary>
-                        <pre>{JSON.stringify(m.stateGraph, null, 2)}</pre>
-                      </details>
-                    )}
-                  </div>
+                  <MessageEntry key={i} m={m} conversationId={activeId} />
                 ))
               )}
 

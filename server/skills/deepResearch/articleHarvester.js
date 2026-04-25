@@ -19,6 +19,53 @@ const log = createLogger("articleHarvester", { consoleLevel: "warn" });
 const CACHE_DIR = path.resolve(PROJECT_ROOT, "data", "research-cache");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+// ───────────────────────────── keyword extractor ─────────────────────────
+// Academic APIs (CORE, DOAJ, Semantic Scholar) expect KEYWORDS, not full
+// sentences/questions. promptPlanner emits human-readable research prompts
+// like "Expert opinions on how leaders can foster organizational resilience
+// through effective..." which collapse recall in keyword-based search engines
+// and even trip DOAJ's 400-char query limit.
+//
+// This function converts such a prompt into 3–6 content keywords by stripping
+// stopwords/question-words and capping length. The original prompt is still
+// shown to humans in the Obsidian notes; only the API query gets shortened.
+const SEARCH_STOPWORDS = new Set([
+  "a","an","the","and","or","but","of","in","on","at","to","for","with","by","from","as",
+  "is","are","was","were","be","been","being","am","do","does","did","have","has","had",
+  "what","which","who","whom","whose","when","where","why","how","whether",
+  "this","that","these","those","their","them","they","it","its","our","your","you","we","i",
+  "some","any","all","more","most","much","many","few","several","about","into","over","upon",
+  "can","could","should","would","may","might","must","shall","will",
+  "recent","latest","trends","expert","opinions","analysis","data-driven","data","driven",
+  "contribute","contributing","influence","influences","impact","impacts","effective",
+  "role","roles","developing","foster","quick","do","give","make","run"
+]);
+
+export function extractSearchKeywords(prompt, maxWords = 6) {
+  if (!prompt || typeof prompt !== "string") return "";
+  const cleaned = prompt
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = cleaned.split(" ")
+    .filter(t => t.length >= 3 && !SEARCH_STOPWORDS.has(t));
+  // Preserve original ordering but dedupe
+  const seen = new Set();
+  const picked = [];
+  for (const t of tokens) {
+    if (seen.has(t)) continue;
+    seen.add(t);
+    picked.push(t);
+    if (picked.length >= maxWords) break;
+  }
+  // Fallback: if stopword-stripping left us with nothing, take raw leading words
+  if (picked.length < 2) {
+    return cleaned.split(" ").slice(0, maxWords).join(" ");
+  }
+  return picked.join(" ");
+}
+
 const SOURCE_NAME_TO_FETCHER = {
   semanticscholar: fetchSemanticScholar,
   arxiv:           fetchArxiv,
@@ -26,18 +73,32 @@ const SOURCE_NAME_TO_FETCHER = {
   europepmc:       fetchEuropePMC,
   general:         fetchWikipedia,
   wikipedia:       fetchWikipedia,
-  web:             fetchSerpResults
+  web:             fetchSerpResults,
+  core:            fetchCore,    // CORE open-access repository (core.ac.uk)
+  doaj:            fetchDoaj,    // Directory of Open Access Journals (doaj.org)
+  googlescholar:   fetchGoogleScholar, // Google Scholar via SerpAPI (PDF links when available)
 };
 
-// Smart domain router — same heuristics as legacy code.
+// Smart domain router — baseline open-access providers + topic-triggered extras.
 function determineDomains(topic) {
   const lower = (topic || "").toLowerCase();
   const out = [];
+
+  // Topic-triggered specialty providers
   if (/\b(medicine|biology|health|disease|drug|clinical|vaccine|genetics|virus|cancer|therapy)\b/.test(lower)) out.push("medicine");
-  if (/\b(physics|math|computer science|algorithm|quantum|astronomy|machine learning|ai|neural network)\b/.test(lower)) out.push("arxiv");
+  // arXiv: broadened to include software/engineering/CS-adjacent topics. Previously
+  // "software architecture" topics missed all arXiv results because "software" wasn't
+  // a trigger word.
+  if (/\b(physics|math|computer\s+science|algorithm|quantum|astronomy|machine\s+learning|ai|neural\s+network|software|programming|engineering|robotics|cryptography|distributed\s+systems|compiler|dataset)\b/.test(lower)) out.push("arxiv");
   if (/\b(market|cybersecurity|pure-play|business|stock|industry|startup|valuation|trend|economy|finance|company)\b/.test(lower)) out.push("web");
+
+  // Baseline open-access academic providers — always try these
+  if (CONFIG.CORE_API_KEY) out.push("core");  // CORE covers all academic fields
+  out.push("doaj");                            // DOAJ — free, no key, no rate limit
+  out.push("semanticscholar");                 // S2 — has its own 429 circuit breaker
+  if (CONFIG.SERPAPI_KEY) out.push("googlescholar"); // Google Scholar via SerpAPI
+
   if (out.length === 0) { out.push("web"); out.push("general"); }
-  out.push("semanticscholar"); // baseline
   return [...new Set(out)];
 }
 
@@ -83,14 +144,25 @@ export async function harvest(prompt, opts = {}) {
   const skipSet   = new Set((skipDomains || []).map(s => s.toLowerCase()));
   const preferSet = new Set((preferDomains || []).map(s => s.toLowerCase()));
 
-  // Choose providers
+  // Choose providers — split priority_sources into named providers vs RSS feed URLs
   let providers;
+  let rssUrls = [];
+
   if (Array.isArray(prioritySources) && prioritySources.length > 0) {
-    providers = prioritySources
-      .map(s => String(s).toLowerCase())
-      .map(s => ({ name: s, fn: SOURCE_NAME_TO_FETCHER[s] }))
-      .filter(p => p.fn);
-    if (providers.length === 0) providers = determineDomains(topic).map(n => ({ name: n, fn: SOURCE_NAME_TO_FETCHER[n] })).filter(p => p.fn);
+    const named = [];
+    for (const s of prioritySources) {
+      if (/^https?:\/\//i.test(s)) {
+        rssUrls.push(s);
+      } else {
+        const fn = SOURCE_NAME_TO_FETCHER[String(s).toLowerCase()];
+        if (fn) named.push({ name: String(s).toLowerCase(), fn });
+      }
+    }
+    providers = named;
+    // If no named providers AND no RSS URLs, fall back to smart domain router
+    if (providers.length === 0 && rssUrls.length === 0) {
+      providers = determineDomains(topic).map(n => ({ name: n, fn: SOURCE_NAME_TO_FETCHER[n] })).filter(p => p.fn);
+    }
   } else {
     providers = determineDomains(topic).map(n => ({ name: n, fn: SOURCE_NAME_TO_FETCHER[n] })).filter(p => p.fn);
   }
@@ -100,6 +172,15 @@ export async function harvest(prompt, opts = {}) {
   const collected = [];
   for (const s of settled) {
     if (s.status === "fulfilled" && Array.isArray(s.value)) collected.push(...s.value);
+  }
+
+  // Fetch RSS feed URLs in parallel (from priority_sources that are actual URLs)
+  if (rssUrls.length > 0) {
+    log(`Fetching ${rssUrls.length} RSS feed(s) for topic "${topic}"`, "info");
+    const rssSettled = await Promise.allSettled(rssUrls.map(url => fetchRssUrl(url, perProvider)));
+    for (const r of rssSettled) {
+      if (r.status === "fulfilled" && Array.isArray(r.value)) collected.push(...r.value);
+    }
   }
 
   // De-dupe by URL AND normalized title (cross-prompt aware), drop skipDomains
@@ -200,19 +281,55 @@ export async function scanLocalLibrary(topic, opts = {}) {
 
 // ───────────────────────────── fetchers ─────────────────────────────
 
+// ── Semantic Scholar rate-limit circuit breaker ─────────────────────────
+// Unauthenticated S2 is limited to ~100 req per 5 min. When a 429 is seen we
+// skip further S2 calls for S2_COOLDOWN_MS. Prevents the harvester from
+// hammering S2 once rate-limited (every prompt was emitting a pointless 429).
+const S2_COOLDOWN_MS = 5 * 60 * 1000;
+let _s2CooldownUntil = 0;
+
 async function fetchSemanticScholar(query, limit) {
+  const kw = extractSearchKeywords(query);
+  const now = Date.now();
+  if (now < _s2CooldownUntil) {
+    const remainSec = Math.ceil((_s2CooldownUntil - now) / 1000);
+    console.log(`[articleHarvester] S2: cooldown (rate-limited, ${remainSec}s left) — skipping`);
+    return [];
+  }
+  console.log(`[articleHarvester] S2: querying "${kw}" (limit ${limit})`);
   try {
+    const headers = {};
+    if (CONFIG.SEMANTIC_SCHOLAR_KEY) headers["x-api-key"] = CONFIG.SEMANTIC_SCHOLAR_KEY;
     const r = await axios.get("https://api.semanticscholar.org/graph/v1/paper/search", {
-      params: { query, limit, fields: "title,abstract,url,year,authors" },
+      params: { query: kw, limit, fields: "title,abstract,url,year,authors,openAccessPdf,externalIds" },
+      headers,
       timeout: 12000
     });
-    return (r.data?.data || []).filter(x => x.abstract).map(x => ({
-      url: x.url || `https://semanticscholar.org/paper/${x.paperId}`,
-      title: x.title,
-      content: `Year: ${x.year || "Unknown"}\nAuthors: ${(x.authors || []).map(a => a.name).join(", ")}\nAbstract: ${x.abstract}`,
-      domain: "semanticscholar.org"
-    }));
-  } catch { return []; }
+    const mapped = (r.data?.data || []).filter(x => x.abstract).map(x => {
+      // Prefer open-access PDF URL so the scraper can fetch full text
+      const oaUrl = x.openAccessPdf?.url;
+      const doi = x.externalIds?.DOI;
+      const url = oaUrl || x.url || (doi ? `https://doi.org/${doi}` : `https://semanticscholar.org/paper/${x.paperId}`);
+      return {
+        url,
+        title: x.title,
+        content: `Year: ${x.year || "Unknown"}\nAuthors: ${(x.authors || []).map(a => a.name).join(", ")}\nAbstract: ${x.abstract}`,
+        domain: oaUrl ? safeHost(oaUrl) : "semanticscholar.org"
+      };
+    });
+    console.log(`[articleHarvester] S2: got ${mapped.length} results for "${kw}"`);
+    return mapped;
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 429) {
+      _s2CooldownUntil = Date.now() + S2_COOLDOWN_MS;
+      console.log(`[articleHarvester] S2 error: HTTP 429 — engaging ${Math.round(S2_COOLDOWN_MS / 60000)}min cooldown`);
+    } else {
+      console.log(`[articleHarvester] S2 error: ${status ? `HTTP ${status}` : err.message}`);
+    }
+    log(`Semantic Scholar error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
 }
 
 async function fetchArxiv(query, limit) {
@@ -266,6 +383,152 @@ async function fetchWikipedia(query, limit) {
   } catch { return []; }
 }
 
+/**
+ * CORE open-access repository — https://core.ac.uk
+ * Returns peer-reviewed papers with direct download URLs (open access only).
+ * Requires CORE_API_KEY in .env (free registration at https://core.ac.uk/services/api).
+ */
+async function fetchCore(query, limit) {
+  if (!CONFIG.CORE_API_KEY) {
+    console.log(`[articleHarvester] CORE: CORE_API_KEY not set — skipping`);
+    log("CORE_API_KEY not set — skipping CORE fetch", "warn");
+    return [];
+  }
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] CORE: querying "${kw}" (limit ${limit})`);
+  try {
+    const r = await axios.get("https://api.core.ac.uk/v3/search/works", {
+      params: { q: kw, limit },
+      headers: { "Authorization": `Bearer ${CONFIG.CORE_API_KEY}` },
+      timeout: 15000
+    });
+    const results = (r.data?.results || []).filter(x => x.abstract || x.downloadUrl || x.fullTextUrl);
+    console.log(`[articleHarvester] CORE: got ${results.length} results for "${kw}"`);
+    return results.map(x => {
+        // Prefer direct download link so the scraper gets full text
+        const url = x.downloadUrl || x.fullTextUrl || `https://core.ac.uk/works/${x.id}`;
+        const authorStr = (x.authors || [])
+          .map(a => (typeof a === "string" ? a : a?.name || ""))
+          .filter(Boolean).join(", ");
+        return {
+          url,
+          title: x.title || "(untitled)",
+          content: [
+            x.abstract ? `Abstract: ${x.abstract}` : "",
+            authorStr ? `Authors: ${authorStr}` : "",
+            x.doi ? `DOI: ${x.doi}` : "",
+            x.yearPublished ? `Year: ${x.yearPublished}` : ""
+          ].filter(Boolean).join("\n"),
+          domain: safeHost(url) || "core.ac.uk"
+        };
+      });
+  } catch (err) {
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] CORE error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`CORE API error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
+}
+
+/**
+ * Directory of Open Access Journals — https://doaj.org
+ * All returned articles are guaranteed open access. No API key required for reads.
+ * Rate limit: 2 req/s (5 queued). We stay well within this.
+ */
+async function fetchDoaj(query, limit) {
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] DOAJ: querying "${kw}" (limit ${limit})`);
+  try {
+    const encoded = encodeURIComponent(kw);
+    const r = await axios.get(`https://doaj.org/api/search/articles/${encoded}`, {
+      params: { pageSize: Math.min(limit, 10) },
+      timeout: 12000
+    });
+    const items = (r.data?.results || []).map(x => {
+      const bib = x.bibjson || {};
+      const links = bib.link || [];
+      // Prefer full-text link; fall back to any link
+      const fullText = links.find(l => l.type === "fulltext")?.url || links[0]?.url || "";
+      const doi = (bib.identifier || []).find(i => i.type === "doi")?.id;
+      const url = fullText || (doi ? `https://doi.org/${doi}` : "");
+      if (!url) return null;
+      const authorStr = (bib.author || []).map(a => a.name).filter(Boolean).join(", ");
+      return {
+        url,
+        title: bib.title || "(untitled)",
+        content: [
+          bib.abstract ? `Abstract: ${bib.abstract}` : "",
+          authorStr ? `Authors: ${authorStr}` : "",
+          doi ? `DOI: ${doi}` : ""
+        ].filter(Boolean).join("\n"),
+        domain: safeHost(url) || "doaj.org"
+      };
+    }).filter(Boolean);
+    console.log(`[articleHarvester] DOAJ: got ${items.length} results for "${kw}"`);
+    return items;
+  } catch (err) {
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] DOAJ error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`DOAJ API error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
+}
+
+/**
+ * Google Scholar via SerpAPI (engine=google_scholar).
+ * Google Scholar itself has no public API and aggressive anti-bot, but SerpAPI
+ * provides a reliable wrapper that exposes PDF links via the `resources` field.
+ *
+ * Returns up to `limit` results, prioritizing entries with a direct PDF link.
+ */
+async function fetchGoogleScholar(query, limit) {
+  if (!CONFIG.SERPAPI_KEY) {
+    console.log(`[articleHarvester] GScholar: SERPAPI_KEY not set — skipping`);
+    return [];
+  }
+  const kw = extractSearchKeywords(query);
+  console.log(`[articleHarvester] GScholar: querying "${kw}" (limit ${limit})`);
+  try {
+    const r = await axios.get("https://serpapi.com/search.json", {
+      params: {
+        q: kw,
+        api_key: CONFIG.SERPAPI_KEY,
+        engine: "google_scholar",
+        num: Math.min(limit, 10)
+      },
+      timeout: 15000
+    });
+    const organic = r.data?.organic_results || [];
+    const items = organic.map(x => {
+      // Prefer a direct PDF link surfaced in `resources` — Scholar often
+      // exposes free full-text PDFs hosted on university repositories.
+      const pdfResource = (x.resources || []).find(res => (res.file_format || "").toUpperCase() === "PDF");
+      const pdfUrl = pdfResource?.link;
+      const url = pdfUrl || x.link;
+      if (!url) return null;
+      const authors = (x.publication_info?.authors || []).map(a => a.name).filter(Boolean).join(", ");
+      const snippet = x.snippet || "";
+      return {
+        url,
+        title: x.title || "(untitled)",
+        content: [
+          snippet ? `Abstract: ${snippet}` : "",
+          authors ? `Authors: ${authors}` : "",
+          x.publication_info?.summary ? `Venue: ${x.publication_info.summary}` : ""
+        ].filter(Boolean).join("\n"),
+        domain: pdfUrl ? safeHost(pdfUrl) : "scholar.google.com"
+      };
+    }).filter(Boolean);
+    console.log(`[articleHarvester] GScholar: got ${items.length} results for "${kw}" (${items.filter(i => /\.pdf/i.test(i.url)).length} with direct PDF)`);
+    return items;
+  } catch (err) {
+    const status = err?.response?.status;
+    console.log(`[articleHarvester] GScholar error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
+    log(`Google Scholar (SerpAPI) error (query="${kw}"): ${err.message}`, "warn");
+    return [];
+  }
+}
+
 async function fetchSerpResults(query, limit) {
   if (!CONFIG.SERPAPI_KEY) return [];
   try {
@@ -288,6 +551,8 @@ async function fetchSerpResults(query, limit) {
  * Returns stripped text (up to 8000 chars) or "" on failure.
  */
 async function fetchPage(url) {
+  const isPdf = /\.pdf(\?|$)/i.test(url);
+  const short = url.length > 80 ? url.slice(0, 77) + "..." : url;
   try {
     return await withRetry(async () => {
       const r = await axios.get(url, {
@@ -297,15 +562,185 @@ async function fetchPage(url) {
           "User-Agent": "Mozilla/5.0 (compatible; LanouResearchBot/1.0; academic use)",
           "Accept": "text/html,application/xhtml+xml,*/*"
         },
-        maxContentLength: 600 * 1024
+        maxContentLength: 3 * 1024 * 1024  // 3MB — enough for large PDFs
       });
       const html = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
-      return stripHtmlToText(html).slice(0, 8000);
+      const rawBytes = Buffer.byteLength(html, "utf8");
+      const text = stripHtmlToText(html);
+      const sliced = smartSlice(text, url);
+      if (isPdf || rawBytes > 150 * 1024) {
+        console.log(`[articleHarvester] fetch ✓ ${(rawBytes / 1024).toFixed(0)}KB → text ${text.length}ch → slice ${sliced.length}ch: ${short}`);
+      }
+      return sliced;
     }, 2, 2500);
   } catch (err) {
+    console.log(`[articleHarvester] fetch ✗ ${err.message} (${short})`);
     log(`fetchPage failed (${url}): ${err.message}`, "warn");
     return "";
   }
+}
+
+/**
+ * Smart content slice for large academic documents.
+ *
+ * For short content (≤ 8000 chars): return as-is.
+ * For long content (PDFs, papers): extract abstract/intro + conclusion separately,
+ * avoiding the "first 8000 chars is mostly table-of-contents" problem.
+ *
+ * Strategy:
+ *  - Take the first 4500 chars (usually abstract + introduction)
+ *  - Scan the last 40% of the document for conclusion/discussion/results
+ *  - Combine, cap at 8500 chars total
+ *
+ * @param {string} text  Stripped plain text of the document
+ * @param {string} url   Source URL (used to detect PDF)
+ * @returns {string}
+ */
+function smartSlice(text, url = "") {
+  const MAX = 8500;
+  if (!text || text.length <= MAX) return text;
+
+  // For shorter documents that are slightly over, just trim
+  if (text.length <= MAX * 1.5) return text.slice(0, MAX);
+
+  const front = text.slice(0, 4500);
+
+  // Find a conclusion/discussion/results/findings section in the back half
+  const backSearchStart = Math.floor(text.length * 0.55);
+  const backText = text.slice(backSearchStart);
+  const conclusionMarkers = [
+    /\b(conclusion|conclusions|concluding\s+remarks)\b/i,
+    /\b(discussion|discussions)\b/i,
+    /\b(findings|results|implications)\b/i,
+    /\b(summary|final\s+remarks)\b/i
+  ];
+
+  let conclusionStart = -1;
+  for (const marker of conclusionMarkers) {
+    const m = backText.search(marker);
+    if (m !== -1 && (conclusionStart === -1 || m < conclusionStart)) {
+      conclusionStart = m;
+    }
+  }
+
+  let back = "";
+  if (conclusionStart !== -1) {
+    // Take up to 4000 chars starting from the conclusion heading
+    back = "\n\n--- [Conclusion/Discussion excerpt] ---\n\n" +
+           backText.slice(conclusionStart, conclusionStart + 4000);
+  } else {
+    // No conclusion heading found — take the last 3500 chars
+    back = "\n\n--- [Document end excerpt] ---\n\n" +
+           text.slice(text.length - 3500);
+  }
+
+  const combined = (front + back).slice(0, MAX + 500); // slight overage OK
+  log(`smartSlice: ${text.length} chars → ${combined.length} chars (conclusion at ${conclusionStart >= 0 ? backSearchStart + conclusionStart : "n/a"})`, "info");
+  return combined;
+}
+
+// ───────────────────────────── RSS fetcher ─────────────────────────
+
+/**
+ * Fetch and parse an RSS/Atom feed URL. Returns articles in the standard shape.
+ * Works with both RSS 2.0 (<item>) and Atom 1.0 (<entry>) formats.
+ * Uses only axios (no external XML parser needed — academic RSS feeds are simple).
+ *
+ * @param {string} url     Feed URL
+ * @param {number} limit   Max items to return
+ */
+async function fetchRssUrl(url, limit = 5) {
+  try {
+    const r = await axios.get(url, {
+      timeout: 12000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; LanouResearchBot/1.0; academic use)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
+      },
+      responseType: "text"
+    });
+    const xml = typeof r.data === "string" ? r.data : "";
+    if (!xml) return [];
+    return parseRssXml(xml, url, limit);
+  } catch (err) {
+    log(`RSS fetch failed for ${url}: ${err.message}`, "warn");
+    return [];
+  }
+}
+
+/**
+ * Minimal RSS/Atom parser using regex — sufficient for well-formed academic feeds.
+ * Handles CDATA, HTML-encoded titles, and both RSS <item> and Atom <entry>.
+ */
+function parseRssXml(xml, feedUrl, limit) {
+  const host = safeHost(feedUrl);
+  const results = [];
+
+  // Match <item> blocks (RSS) or <entry> blocks (Atom)
+  const blockRe = /<item[^>]*>([\s\S]*?)<\/item>|<entry[^>]*>([\s\S]*?)<\/entry>/gi;
+  let m;
+  while ((m = blockRe.exec(xml)) !== null && results.length < limit) {
+    const block = m[1] || m[2] || "";
+
+    const title = rssStripHtml(rssExtractTag(block, "title"));
+    // RSS: <link>url</link> or Atom: <link href="url"/>
+    const link =
+      rssExtractTag(block, "link") ||
+      rssExtractAttr(block, "link", "href") ||
+      feedUrl;
+    const description =
+      rssStripHtml(rssExtractTag(block, "description")) ||
+      rssStripHtml(rssExtractTag(block, "summary")) ||
+      rssStripHtml(rssExtractTag(block, "content")) ||
+      "";
+
+    // Skip items with neither a usable title nor content
+    if (!title && !description) continue;
+
+    // Only keep items that actually look like URLs (avoid picking up Atom <id> text)
+    const cleanUrl = /^https?:\/\//i.test(link.trim()) ? link.trim() : feedUrl;
+
+    results.push({
+      url: cleanUrl,
+      title: title || "(untitled)",
+      content: description.slice(0, 2000), // cap abstract length
+      domain: host,
+      source: "rss"
+    });
+  }
+  return results;
+}
+
+/** Extract the text content of the first matching XML tag, including CDATA sections. */
+function rssExtractTag(xml, tag) {
+  const re = new RegExp(
+    `<${tag}(?:\\s[^>]*)?><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>` +
+    `|<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`,
+    "i"
+  );
+  const m = xml.match(re);
+  return m ? (m[1] !== undefined ? m[1] : (m[2] || "")).trim() : "";
+}
+
+/** Extract an XML attribute value from a self-closing tag like <link href="..."/>. */
+function rssExtractAttr(xml, tag, attr) {
+  const re = new RegExp(`<${tag}[^>]*\\s${attr}="([^"]*)"`, "i");
+  const m = xml.match(re);
+  return m ? m[1].trim() : "";
+}
+
+/** Strip HTML tags and decode common entities from RSS content. */
+function rssStripHtml(s) {
+  return (s || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ───────────────────────────── helpers ─────────────────────────────
@@ -350,4 +785,4 @@ async function writeCache(url, payload) {
   } catch {}
 }
 
-export const _internals = { determineDomains, fetchSemanticScholar, fetchArxiv, fetchEuropePMC, fetchWikipedia, fetchSerpResults, fetchPage, withRetry };
+export const _internals = { determineDomains, fetchSemanticScholar, fetchArxiv, fetchEuropePMC, fetchWikipedia, fetchSerpResults, fetchPage, withRetry, fetchRssUrl, parseRssXml };

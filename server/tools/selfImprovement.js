@@ -8,6 +8,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { llm } from "./llm.js";
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -140,14 +141,83 @@ async function selfImprovement(request) {
         .map((imp) => `\u2022 ${imp.category}: ${imp.action}${imp.reason ? ` (${imp.reason})` : ''}`)
         .join('\n');
 
+      // Compute date range from sorted improvements
+      const sortedTs = improvements.filter(i => i.timestamp).map(i => new Date(i.timestamp));
+      const oldest = sortedTs.length ? sortedTs[sortedTs.length - 1].toLocaleDateString() : "—";
+      const newest = sortedTs.length ? sortedTs[0].toLocaleDateString() : "—";
+
+      // ── LLM SELF-REFLECTION ──
+      // Ask the LLM to reason about the changes in first-person.
+      // This is "on-demand understanding": the agent reasons about its own history
+      // right now, but this knowledge is NOT carried into other conversations.
+      let reflectionHtml = "";
+      let reflectionText = "";
+      try {
+        const changesSummary = improvements
+          .slice(0, 5)
+          .map((imp, i) => `${i + 1}. [${imp.category}] ${imp.action}${imp.reason ? ` — ${imp.reason}` : ""}`)
+          .join("\n");
+
+        const reflectionPrompt = `You are Lanou, an AI agent. Below is a log of recent changes made to your own code and behavior.
+Read each change and write a short first-person reflection (3–5 sentences) that:
+1. Summarizes what was improved in plain language
+2. Explains WHY these changes matter for how you work
+3. Is honest — if a change fixes a bug you had, say so
+
+Recent changes to my code:
+${changesSummary}
+
+Write your reflection in first person ("I improved...", "I fixed...", "I now handle...").
+Be specific and direct. No preamble like "Here is my reflection:".`;
+
+        const llmResult = await llm(reflectionPrompt, {
+          skipKnowledge: true,
+          timeoutMs: 20_000,
+          temperature: 0.4
+        });
+        const reflectionRaw = llmResult?.data?.text?.trim() || "";
+        const isLlmError = reflectionRaw.toLowerCase().startsWith("the language model encountered") ||
+          reflectionRaw.toLowerCase().includes("aborted or timed out") ||
+          reflectionRaw.toLowerCase().includes("llm error");
+        if (reflectionRaw.length > 20 && !isLlmError) {
+          reflectionText = reflectionRaw;
+          reflectionHtml = `
+            <div class="self-reflection" style="
+              background: var(--bg-secondary);
+              border-left: 3px solid var(--accent);
+              border-radius: 6px;
+              padding: 1rem 1.2rem;
+              margin-bottom: 1.2rem;
+              font-size: 0.92rem;
+              line-height: 1.6;
+              color: var(--text-primary);
+            ">
+              <div style="font-size:0.78rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">
+                🧠 My understanding of these changes
+              </div>
+              <div>${reflectionRaw.replace(/\n/g, "<br>")}</div>
+              <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.6rem;font-style:italic;">
+                Note: this reflection is reasoned on demand from the change log — it does not persist into other conversations.
+              </div>
+            </div>`;
+        }
+      } catch (e) {
+        // LLM reflection is best-effort — don't fail the whole response
+      }
+
       // Build HTML report
       const html = `
         <div class="improvements-report">
           <h2>🔧 Recent Self-Improvements</h2>
+          ${reflectionHtml}
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:1rem;">
+            Showing ${improvements.length} improvements from <strong>${oldest}</strong> to <strong>${newest}</strong>.
+            Sources: git commits, self-evolution cycles, and logged improvements.
+          </p>
           ${Object.entries(byCategory).map(([category, items]) => `
             <div class="improvement-category">
               <h3>${category.charAt(0).toUpperCase() + category.slice(1)}</h3>
-              <ul class="improvement-list">
+              <ul class="improvement-list" style="max-height:300px;overflow-y:auto;padding-right:6px;">
                 ${items.map((imp) => `
                   <li class="improvement-item">
                     <div class="improvement-action">${imp.action}</div>
@@ -174,7 +244,8 @@ async function selfImprovement(request) {
         final: true,
         data: {
           html,
-          text: `Recent improvements:\n\n${text}\n\n(Showing ${Math.min(10, improvements.length)} of ${improvements.length} total)`,
+          text: (reflectionText ? `My reflection on recent changes:\n\n${reflectionText}\n\n---\n\n` : "") +
+                `Recent improvements:\n\n${text}\n\n(Showing ${Math.min(10, improvements.length)} of ${improvements.length} total)`,
           improvements
         }
       };
@@ -187,18 +258,23 @@ async function selfImprovement(request) {
       const html = `
         <div class="accuracy-report">
           <h2>🎯 Routing Accuracy Report</h2>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:0.75rem;">
+            <strong>All-time</strong> — counts every routing decision since the telemetry log was created (no rolling window).
+            <br><strong>"Success"</strong> = the selected tool ran without a fatal error (<code>telemetry: tool ✅</code>).
+            This measures <em>routing execution success</em>, not whether the tool's output was correct.
+          </p>
           <div class="accuracy-stats">
             <div class="stat-box">
               <div class="stat-value">${report.successRate.toFixed(1)}%</div>
-              <div class="stat-label">Overall Success Rate</div>
+              <div class="stat-label">Execution Success Rate</div>
             </div>
             <div class="stat-box">
               <div class="stat-value">${report.totalDecisions}</div>
-              <div class="stat-label">Total Routing Decisions</div>
+              <div class="stat-label">Total Decisions (all-time)</div>
             </div>
             <div class="stat-box">
               <div class="stat-value">${report.lowConfidenceDecisions.length}</div>
-              <div class="stat-label">Low Confidence</div>
+              <div class="stat-label">Low Confidence Decisions</div>
             </div>
           </div>
           <h3>By Tool</h3>
@@ -249,6 +325,13 @@ async function selfImprovement(request) {
         };
       }
 
+      const PATTERN_EXPLANATIONS = {
+        excessive_steps: "The planner used ≥ 4 tool steps for a single request — a proxy for routing uncertainty where the planner tried multiple tools before converging. Fix: add a more specific certainty-branch rule for those request patterns.",
+        low_confidence: "A routing decision had confidence < 0.6, meaning the intent classifier was unsure. Fix: add explicit tool name patterns for these request types in intentClassifier.js.",
+        repeated_failure: "The same tool failed repeatedly across multiple requests — indicates a broken tool or a systematic mismatch between user intent and tool capability.",
+        tool_mismatch: "The selected tool ran but returned an empty or error result, suggesting the planner chose a plausible but wrong tool for this request type.",
+      };
+
       const html = `
         <div class="issues-report">
           <h2>⚠️ Detected Issues & Recommendations</h2>
@@ -258,6 +341,7 @@ async function selfImprovement(request) {
               ${patterns.map((p) => `
                 <li class="issue-item">
                   <div class="issue-type">${p.type.replace(/_/g, ' ').toUpperCase()}</div>
+                  ${PATTERN_EXPLANATIONS[p.type] ? `<div class="issue-explanation" style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:4px;">${PATTERN_EXPLANATIONS[p.type]}</div>` : ''}
                   <div class="issue-recommendation">${p.recommendation}</div>
                 </li>
               `).join('')}
@@ -328,12 +412,25 @@ async function selfImprovement(request) {
       };
     }
 
-    // Default: unknown query
+    // Default: unknown query.
+    // IMPORTANT: this is a help/menu response, NOT an error — returning success:false with
+    // a bulleted list in `error` made the UI render it as a chat-shaped failure bubble
+    // (observed regression: user asked a casual diagnostics-adjacent question, got
+    // what looked like a confused mid-conversation "here's what I can do" from the
+    // agent persona). Return success:true with preformatted text so it renders as a
+    // proper tool card and the executor doesn't treat it as a failure path.
+    const helpText = "**selfImprovement — available queries:**\n" +
+      "- \"what have you improved lately?\"\n" +
+      "- \"how accurate is your routing?\"\n" +
+      "- \"what issues have you detected?\"\n" +
+      "- \"review your own logic (planner/executor)\"\n" +
+      "- \"suggest improvements to make you smarter\"\n" +
+      "- \"generate weekly report\"";
     return {
       tool: "selfImprovement",
-      success: false,
+      success: true,
       final: true,
-      error: "I can help with:\n- 'what have you improved lately?'\n- 'how accurate is your routing?'\n- 'what issues have you detected?'\n- 'Review your own logic (planner/executor)'\n- 'suggest improvements to make you smarter'"
+      data: { text: helpText, preformatted: true, kind: "help" }
     };
 
   } catch (err) {

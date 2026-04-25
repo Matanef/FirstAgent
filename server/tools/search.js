@@ -1,11 +1,17 @@
 // server/tools/search.js (ENHANCED - Yandex + LLM synthesis)
+import fs from "fs";
+import path from "path";
 import { safeFetch } from "../utils/fetch.js";
-import { CONFIG } from "../utils/config.js";
+import { CONFIG, PROJECT_ROOT } from "../utils/config.js";
 import { loadJSON, saveJSON } from "../memory.js";
 import { llm } from "./llm.js";
 import { extractFromSearch } from "../knowledge.js";
 
-const CACHE_FILE = "./search_cache.json";
+// Consolidated cache location — previously stored in two places (./search_cache.json
+// at both PROJECT_ROOT and server/). Now everything lives under data/cache/.
+const CACHE_DIR = path.resolve(PROJECT_ROOT, "data", "cache");
+try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch { /* exists */ }
+const CACHE_FILE = path.join(CACHE_DIR, "search_cache.json");
 const CACHE_TTL = 3600000; // 1 hour
 
 function normalizeQuery(text) {

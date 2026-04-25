@@ -6,6 +6,7 @@ import fsSync from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,22 +63,61 @@ function decryptString(ciphertext) {
   }
 }
 
-// In-memory cache and simple mutex queue
+// In-memory cache and a RE-ENTRANT mutex queue.
+// Re-entrance (via AsyncLocalStorage) is critical because callers like
+// setPendingQuestion / setProfileField wrap their work in withMemoryLock,
+// and inside that wrapper they call saveJSON which ALSO acquires the lock.
+// Without re-entrance, that second acquire deadlocks forever, stalling the
+// entire turn (observed in Phase-4 ambiguity clarification flows).
 let _cache = null;
 let _cacheMtime = 0;
 let _locked = false;
 const _queue = [];
+const _lockStorage = new AsyncLocalStorage();
 
+/**
+ * Acquire the memory lock.
+ * Returns a token object you MUST pass back to _releaseLock(token).
+ * If the current async context already holds the lock (re-entrant call),
+ * we skip acquisition and return a sentinel so the nested _releaseLock is a no-op.
+ */
 async function _acquireLock() {
+  const store = _lockStorage.getStore();
+  if (store?.owned) {
+    // Already held by this async chain — re-entrant, proceed without waiting.
+    store.depth = (store.depth || 1) + 1;
+    return { reentrant: true, store };
+  }
   if (!_locked) {
     _locked = true;
-    return;
+  } else {
+    await new Promise((resolve) => _queue.push(resolve));
+    _locked = true;
   }
-  await new Promise((resolve) => _queue.push(resolve));
-  _locked = true;
+  // Mark this async context as the lock owner so nested calls can detect re-entrance.
+  const newStore = { owned: true, depth: 1 };
+  _lockStorage.enterWith(newStore);
+  return { reentrant: false, store: newStore };
 }
 
-function _releaseLock() {
+function _releaseLock(token) {
+  // Back-compat: callers that haven't been updated still invoke _releaseLock()
+  // with no token. Fall back to the current store.
+  const store = token?.store || _lockStorage.getStore();
+  if (!store) {
+    // Unknown caller — legacy behaviour: release outright.
+    _locked = false;
+    const next = _queue.shift();
+    if (next) next();
+    return;
+  }
+  if (token?.reentrant) {
+    store.depth = Math.max(0, (store.depth || 1) - 1);
+    return;
+  }
+  store.depth = Math.max(0, (store.depth || 1) - 1);
+  if (store.depth > 0) return;
+  store.owned = false;
   _locked = false;
   const next = _queue.shift();
   if (next) next();
@@ -268,7 +308,7 @@ export async function loadJSON(file = MEMORY_FILE, fallback = DEFAULT_MEMORY) {
 }
 
 export async function saveJSON(file = MEMORY_FILE, obj) {
-  await _acquireLock();
+  const _lockToken = await _acquireLock();
   try {
     ensureMemoryDirAndFileSync();
 
@@ -391,19 +431,19 @@ export async function saveJSON(file = MEMORY_FILE, obj) {
     console.error("🔴 [memory] saveJSON failed:", err);
     throw err;
   } finally {
-    _releaseLock();
+    _releaseLock(_lockToken);
   }
 }
 
 export async function reloadMemory() {
-  await _acquireLock();
+  const _lockToken = await _acquireLock();
   try {
     const data = await loadJSON(MEMORY_FILE, DEFAULT_MEMORY);
     _cache = data;
     _cacheMtime = Date.now();
     return _cache;
   } finally {
-    _releaseLock();
+    _releaseLock(_lockToken);
   }
 }
 
@@ -443,11 +483,11 @@ export async function getMemory() {
 }
 
 export async function withMemoryLock(fn) {
-  await _acquireLock();
+  const _lockToken = await _acquireLock();
   try {
     return await fn();
   } finally {
-    _releaseLock();
+    _releaseLock(_lockToken);
   }
 }
 
@@ -477,7 +517,36 @@ export async function getEnrichedProfile(conversationId) {
     }
 
     const recentTopics = convo.filter(m => m.role === "user").slice(-15).map(m => (m.content || "").substring(0, 100));
-    const durableMemories = (mem.durable || []).slice(-10);
+
+    // ── DURABLE-INJECTION FILTER ──
+    // Durables are injected verbatim into the chat LLM system prompt. Apply a
+    // lightweight allowlist so old/mean/PII-leaking durables don't become
+    // prompt-injection surfaces.
+    const MEAN_WORDS = /\b(stupid|idiot|shut\s*up|dumb|hate\s+you|ugly|worthless|pathetic)\b/i;
+    const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+    const PHONE_RE = /(?:\+?\d[\s\-().]*){7,}\d/;
+    const TOKEN_RE = /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|Bearer\s+[A-Za-z0-9_\-.=]{10,})\b/;
+
+    const rawDurables = Array.isArray(mem.durable) ? mem.durable : [];
+    const DURABLE_KEEP = 20; // was implicitly 10 via slice(-10); bump to 20 now that we filter
+    const candidates = rawDurables.slice(-DURABLE_KEEP * 2); // over-sample then filter
+    const dropReasons = { mean: 0, email: 0, phone: 0, token: 0, malformed: 0 };
+    const durableMemories = [];
+    for (const d of candidates) {
+      const fact = (d && typeof d === "object") ? d.fact : (typeof d === "string" ? d : null);
+      if (!fact || typeof fact !== "string") { dropReasons.malformed++; continue; }
+      if (MEAN_WORDS.test(fact)) { dropReasons.mean++; continue; }
+      if (EMAIL_RE.test(fact))   { dropReasons.email++; continue; }
+      if (PHONE_RE.test(fact))   { dropReasons.phone++; continue; }
+      if (TOKEN_RE.test(fact))   { dropReasons.token++; continue; }
+      durableMemories.push(d);
+      if (durableMemories.length >= DURABLE_KEEP) break;
+    }
+    const droppedTotal = Object.values(dropReasons).reduce((a, b) => a + b, 0);
+    if (droppedTotal > 0 || rawDurables.length > 0) {
+      const parts = Object.entries(dropReasons).filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(", ");
+      console.log(`[memory] durables filtered: ${durableMemories.length} kept / ${droppedTotal} dropped${parts ? ` (${parts})` : ""}`);
+    }
 
     return {
       ...profile,

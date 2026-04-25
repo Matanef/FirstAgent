@@ -317,6 +317,12 @@ body {
   border-left: 3px solid transparent;
   animation: fadeIn 0.3s ease;
   max-width: 100%;
+  /* Skip layout/paint for offscreen messages in long conversations.
+     content-visibility: auto lets the browser omit rendering work for
+     rows outside the viewport. contain-intrinsic-size reserves a
+     placeholder height so the scrollbar stays stable. */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 200px;
 }
 
 .message-entry.user {

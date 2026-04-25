@@ -1,9 +1,131 @@
 import fetch from "node-fetch";
 import { CONFIG } from "../utils/config.js";
 import { createLogger } from "../utils/logger.js";
+import { getLLMPriority } from "../utils/llmContext.js";
 
 // Silent logger: lifecycle info goes to logs/llm/ only, never to PM2 stdout
 const log = createLogger("llm", { silent: false, consoleLevel: "warn" });
+
+// ──────────────────────────────────────────────────────────
+// LLM CONCURRENCY SEMAPHORE (single-GPU Ollama gate)
+// ──────────────────────────────────────────────────────────
+// Ollama on a single GPU is effectively serial — running two generations at
+// once just queues them server-side behind each other, with no visibility.
+// This semaphore makes the queueing explicit, enforces concurrency=1, and
+// gives user-initiated calls priority over background work (scheduler,
+// selfEvolve, heartbeats). It does NOT reject on overflow — per-caller
+// `timeoutMs` provides the natural drain.
+//
+// Priority lanes:
+//   - "user"        : live user turn (orchestrator, chatAgent, synthesis)
+//   - "background"  : scheduler, selfEvolve, codeReview, heartbeats (default)
+// When the active holder releases, the user queue is drained before the
+// background queue. A user call that arrives during a background run still
+// waits for that run to finish (no hard preempt), but jumps ahead of any
+// queued background work.
+
+const _llmQueue = { user: [], background: [] };
+let _llmActive = null; // { priority, startedAt } when a call holds the gate
+
+function _llmPickNext() {
+  const next = _llmQueue.user.shift() || _llmQueue.background.shift();
+  if (next) {
+    _llmActive = { priority: next.priority, startedAt: Date.now() };
+    next.resolve();
+  } else {
+    _llmActive = null;
+  }
+}
+
+/**
+ * Acquire the single-GPU gate. Resolves when it's this caller's turn.
+ * If `externalSignal` aborts while waiting in the queue, the wait is
+ * cancelled and the returned promise rejects.
+ */
+function _llmAcquire({ priority = "background", externalSignal = null } = {}) {
+  if (!_llmActive) {
+    _llmActive = { priority, startedAt: Date.now() };
+    return Promise.resolve();
+  }
+
+  const userWaiting = _llmQueue.user.length;
+  const bgWaiting = _llmQueue.background.length;
+  const holderPriority = _llmActive.priority;
+  const holderAgeSec = Math.round((Date.now() - _llmActive.startedAt) / 1000);
+
+  if (priority === "user" && holderPriority === "background") {
+    log(`[gate] user call queued behind a background run (${holderAgeSec}s elapsed) — will jump ahead of ${bgWaiting} background waiter(s)`, "warn");
+  } else if (bgWaiting + userWaiting > 0) {
+    log(`[gate] ${priority} call queued (ahead: ${userWaiting} user + ${bgWaiting} bg, holder=${holderPriority} ${holderAgeSec}s)`, "info");
+  }
+
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, reject, priority };
+    _llmQueue[priority].push(waiter);
+
+    if (externalSignal) {
+      const onAbort = () => {
+        const lane = _llmQueue[priority];
+        const idx = lane.indexOf(waiter);
+        if (idx >= 0) {
+          lane.splice(idx, 1);
+          reject(new Error("LLM request aborted while waiting in queue"));
+        }
+      };
+      if (externalSignal.aborted) {
+        onAbort();
+      } else {
+        externalSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+  });
+}
+
+function _llmRelease() {
+  _llmPickNext();
+}
+
+/**
+ * Observability: current gate state (active holder + queue depths).
+ * Useful for debug endpoints or adaptive back-off in background callers.
+ */
+export function llmGateStatus() {
+  return {
+    active: _llmActive ? { ...(_llmActive), elapsedMs: Date.now() - _llmActive.startedAt } : null,
+    queued: { user: _llmQueue.user.length, background: _llmQueue.background.length }
+  };
+}
+
+/**
+ * Resolve the effective priority for a call: explicit > AsyncLocalStorage > default("background").
+ */
+function _resolvePriority(explicit) {
+  if (explicit === "user" || explicit === "background") return explicit;
+  const ctx = getLLMPriority();
+  if (ctx === "user" || ctx === "background") return ctx;
+  return "background";
+}
+
+// ── ACTIVE GENERATION TRACKER ──
+// Only one Ollama streaming generation should be active at a time.
+// When a new llmStream starts, it aborts any previous controller so Ollama
+// doesn't queue new requests behind a stale generation the user already cancelled.
+// This is safe for single-user local deployments; multi-user setups would need
+// a per-user tracker.
+let _activeStreamController = null;
+
+/**
+ * Abort any currently-running Ollama stream.
+ * Called automatically at the start of each new llmStream.
+ * Can also be called directly from chat.js when the user clicks Stop.
+ */
+export function abortActiveStream() {
+  if (_activeStreamController && !_activeStreamController.signal.aborted) {
+    log("Aborting previous Ollama generation before starting new one", "info");
+    _activeStreamController.abort();
+  }
+  _activeStreamController = null;
+}
 
 // ── GEMINI API BACKEND ──
 // Used for Hebrew/Arabic/multilingual prose where local models fail.
@@ -89,9 +211,18 @@ function tripGeminiBreaker(seconds) {
 export { callGemini };
 
 // Replace your existing fetchWithTimeout with this:
-async function fetchWithTimeout(url, body, timeoutMs = 1200_000, externalSignal = null) {
+async function fetchWithTimeout(url, body, timeoutMs = 180_000, externalSignal = null) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Watchdog: if the Ollama connection goes silent the user sees nothing for
+  // minutes. Emit a progress log every 30s so it's obvious the server is still
+  // stuck on the upstream, not crashed.
+  const startedAt = Date.now();
+  const watchdogId = setInterval(() => {
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    log(`still waiting for LLM response (${elapsedSec}s elapsed, timeout at ${Math.round(timeoutMs / 1000)}s)`, "warn");
+  }, 30_000);
 
   // If the user clicks stop, trigger our internal abort controller
   if (externalSignal) {
@@ -116,6 +247,7 @@ async function fetchWithTimeout(url, body, timeoutMs = 1200_000, externalSignal 
     throw err;
   } finally {
     clearTimeout(timeoutId);
+    clearInterval(watchdogId);
   }
 }
 
@@ -153,7 +285,8 @@ export function pickModelForContent(text) {
 export async function llm(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
   const externalSignal = configOptions.signal;
-  let { model, format, options = {}, skipLanguageDetection = false } = configOptions;
+  const priority = _resolvePriority(configOptions.priority);
+  let { model, format, options = {}, skipLanguageDetection = false, system } = configOptions;
 
   // Auto-detect Hebrew/Arabic ONLY if we aren't explicitly skipping it
   if (!model && !skipLanguageDetection) {
@@ -163,6 +296,24 @@ export async function llm(prompt, configOptions = {}) {
     model = CONFIG.LLM_MODEL;
   }
 
+  // ── Acquire the single-GPU gate before doing any work ──
+  // We acquire BEFORE building the prompt context so the expensive
+  // context-injection / token work doesn't happen while we're about to wait.
+  // Gemini route also goes through the gate: even though it hits a different
+  // backend, treating both routes as one queue keeps behavior predictable
+  // (and the Gemini fallback path lands on Ollama anyway).
+  try {
+    await _llmAcquire({ priority, externalSignal });
+  } catch (err) {
+    // Aborted while waiting in queue — propagate as a standard LLM failure.
+    return {
+      tool: "llm", success: false, final: true,
+      data: { text: `The language model encountered an error: ${err.message}` }
+    };
+  }
+
+  // Everything past this point holds the gate — guarantee release in finally.
+  try {
   // ── GEMINI ROUTE: If model is "gemini", use the Gemini API instead of Ollama ──
   if (model === "gemini") {
     const status = geminiStatus();
@@ -226,10 +377,11 @@ export async function llm(prompt, configOptions = {}) {
     const body = {
       model: ollamaModel,
       prompt: finalPrompt,
+      ...(system ? { system } : {}),
       stream: false,
       ...(format ? { format } : {}),
       options: {
-        num_ctx: 8192, // Hard cap to prevent VRAM overflow on 8GB cards
+        num_ctx: 4096, // Hard cap to prevent VRAM overflow on 8GB cards
         ...options
       }
     };
@@ -278,19 +430,54 @@ export async function llm(prompt, configOptions = {}) {
       data: { text: `The language model encountered an error: ${err.message}` }
     };
   }
+  } finally {
+    _llmRelease();
+  }
 }
 
 export async function llmStream(prompt, onChunk, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 300_000;
   const maxChunks = configOptions.maxChunks || 10000;
   const externalSignal = configOptions.signal;
-  
-  const { model = CONFIG.LLM_MODEL, options = {} } = configOptions;
+
+  // ── Language-aware model selection (parity with llm()) ──
+  // Previously llmStream defaulted straight to CONFIG.LLM_MODEL, which meant Hebrew/Arabic
+  // chat replies (the primary user-facing path) always used the English default model and
+  // returned broken prose. Now we run pickModelForContent like the non-streaming path does.
+  let { model, options = {}, skipLanguageDetection = false, system } = configOptions;
+  if (!model && !skipLanguageDetection) {
+    const detected = pickModelForContent(typeof prompt === "string" ? prompt : "");
+    // If Gemini is the recommendation, fall back to the local Hebrew model for streaming
+    // (Gemini is not wired into this Ollama streaming path).
+    if (detected === "gemini") model = LOCAL_HEBREW_MODEL;
+    else if (detected) model = detected;
+  }
+  if (!model) model = CONFIG.LLM_MODEL;
 
   const url = CONFIG.LLM_API_URL + "api/generate";
 
+  // Abort any previously active Ollama stream. This ensures that when the user
+  // clicks Stop and then sends a new message, the old generation is explicitly
+  // killed before the new fetch is issued — so Ollama doesn't queue the new
+  // request behind a stale one.
+  abortActiveStream();
+
+  // Streaming calls are always user-initiated chat — give them user priority
+  // unless the caller explicitly overrides. They jump ahead of any queued
+  // background work (scheduler, selfEvolve, heartbeats).
+  const streamPriority = _resolvePriority(configOptions.priority || "user");
+  try {
+    await _llmAcquire({ priority: streamPriority, externalSignal });
+  } catch (err) {
+    log(`Stream aborted while waiting in queue: ${err.message}`, "info");
+    return { success: false, error: err.message };
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Register this controller as the globally active one
+  _activeStreamController = controller;
 
   if (externalSignal) {
     if (externalSignal.aborted) controller.abort();
@@ -301,9 +488,10 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
     const body = {
       model,
       prompt,
+      ...(system ? { system } : {}),
       stream: true,
       options: {
-        num_ctx: 8192, // Keep normal chat streams fast!
+        num_ctx: 4096, // Keep normal chat streams fast!
         ...options
       }
     };
@@ -378,5 +566,11 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
     return { success: false, error: err.message };
   } finally {
     clearTimeout(timeoutId);
+    // Clear the global tracker if this is still the active controller
+    if (_activeStreamController === controller) {
+      _activeStreamController = null;
+    }
+    // Release the semaphore so the next waiter (user or background) can go.
+    _llmRelease();
   }
 }

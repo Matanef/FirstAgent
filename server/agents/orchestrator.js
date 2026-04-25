@@ -4,8 +4,19 @@
 import { handleChat } from "./chatAgent.js";
 import { getRecentTurns, addTurn } from "../utils/conversationMemory.js";
 import { getPendingQuestion, clearPendingQuestion, parsePendingAnswer } from "../utils/pendingQuestion.js";
+import { runWithLLMPriority } from "../utils/llmContext.js";
 
-export async function handleMessage({
+export async function handleMessage(params) {
+  // Every call from this entry point represents a live user turn. Wrap the
+  // whole handler in the LLM priority scope so any `llm()` / `llmStream()`
+  // call made anywhere inside (chatAgent, planner, synthesis, nested tools)
+  // inherits `priority: "user"` via AsyncLocalStorage. Background callers
+  // (scheduler, selfEvolve, heartbeats) run outside this scope and remain
+  // "background" — they'll queue behind user work on the single-GPU gate.
+  return runWithLLMPriority("user", () => _handleMessageInner(params));
+}
+
+async function _handleMessageInner({
   message,
   conversationId,
   clientIp,
@@ -14,6 +25,7 @@ export async function handleMessage({
   onStep,
   signal,
 }) {
+  const turnStart = Date.now();
   // 1. Load recent conversation turns
   const recentTurns = await getRecentTurns(conversationId, 5);
 
@@ -70,5 +82,9 @@ export async function handleMessage({
     timestamp: new Date().toISOString(),
   });
 
+  const totalMs = Date.now() - turnStart;
+  if (totalMs > 2000) {
+    console.log(`⏱️  [orchestrator] turn handled in ${totalMs}ms (tool=${result.tool || "chat"}, mode=${result.mode || "chat"})`);
+  }
   return result;
 }

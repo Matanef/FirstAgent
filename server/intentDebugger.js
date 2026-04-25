@@ -6,8 +6,25 @@ import { PROJECT_ROOT } from "./utils/config.js";
 import { appendLog, readLog } from "./utils/jsonlLogger.js";
 
 const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
-const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");
+const INTENT_LOG = path.join(LOGS_DIR, "intent-debug.jsonl");       // legacy (frozen Feb 2026)
+const TELEMETRY_LOG = path.join(LOGS_DIR, "telemetry.jsonl");       // live — written by chat.js
 const CORRECTIONS_LOG = path.join(LOGS_DIR, "routing-corrections.jsonl");
+
+/**
+ * Normalise a raw log entry to a common shape regardless of which file it came from.
+ * telemetry.jsonl → { tool, success, executionTime, conversationId }
+ * intent-debug.jsonl (legacy) → { detectedTool, reasoning, confidence, userMessage, success }
+ */
+function normaliseEntry(entry) {
+  return {
+    tool: entry.tool || entry.detectedTool || "unknown",
+    success: !!entry.success,
+    confidence: entry.confidence ?? null,
+    userMessage: entry.userMessage || null,
+    reasoning: entry.reasoning || null,
+    timestamp: entry.timestamp
+  };
+}
 
 /**
  * Log intent routing decision
@@ -34,7 +51,16 @@ export async function logIntentDecision(decision) {
  * @returns {Object} Accuracy statistics
  */
 export async function getIntentAccuracyReport() {
-  const entries = await readLog(INTENT_LOG, 500);
+  // Read from the live telemetry log (written by chat.js after every tool execution).
+  // Fall back to merging with the legacy intent-debug.jsonl if it has entries not in telemetry.
+  const [liveEntries, legacyEntries] = await Promise.all([
+    readLog(TELEMETRY_LOG, 2000),
+    readLog(INTENT_LOG, 500)
+  ]);
+
+  // Use live telemetry as primary source; legacy entries are pre-Feb-2026 history
+  const allRaw = [...liveEntries, ...legacyEntries];
+  const entries = allRaw.map(normaliseEntry);
 
   const report = {
     totalDecisions: entries.length,
@@ -47,14 +73,14 @@ export async function getIntentAccuracyReport() {
   let successCount = 0;
 
   for (const entry of entries) {
-    const tool = entry.detectedTool || "unknown";
+    const tool = entry.tool;
 
     if (!report.byTool[tool]) {
       report.byTool[tool] = {
         total: 0,
         successes: 0,
         failures: 0,
-        averageConfidence: 0,
+        averageConfidence: null,
         confidenceSum: 0,
         confidenceCount: 0
       };
@@ -69,7 +95,7 @@ export async function getIntentAccuracyReport() {
       report.byTool[tool].failures++;
       report.failedDecisions.push({
         message: entry.userMessage,
-        tool: entry.detectedTool,
+        tool: entry.tool,
         reasoning: entry.reasoning,
         timestamp: entry.timestamp
       });
@@ -83,7 +109,7 @@ export async function getIntentAccuracyReport() {
     if (entry.confidence !== null && entry.confidence < 0.5) {
       report.lowConfidenceDecisions.push({
         message: entry.userMessage,
-        tool: entry.detectedTool,
+        tool: entry.tool,
         confidence: entry.confidence,
         timestamp: entry.timestamp
       });
@@ -110,7 +136,8 @@ export async function getIntentAccuracyReport() {
  * @returns {Array} Detected patterns
  */
 export async function detectMisroutingPatterns() {
-  const entries = await readLog(INTENT_LOG, 500);
+  const rawEntries = await readLog(TELEMETRY_LOG, 500);
+  const entries = rawEntries.map(normaliseEntry);
   const patterns = [];
 
   // Pattern 1: Repeated failures for similar queries
@@ -269,24 +296,63 @@ export function detectCorrection(message) {
 }
 
 /**
- * Log a user correction about routing
+ * Extract the N words immediately before and after a trigger word in a message.
+ * Used to build context snapshots for learning from past corrections.
+ *
+ * @param {string} message - Full message text
+ * @param {string} triggerWord - Word to centre the window on (first occurrence)
+ * @param {number} n - Words on each side (default 3)
+ * @returns {{ before: string, after: string }}
+ */
+export function extractNgramContext(message, triggerWord, n = 3) {
+  if (!message || !triggerWord) return { before: "", after: "" };
+  const words = message.toLowerCase().split(/\s+/);
+  const target = triggerWord.toLowerCase();
+  const idx = words.findIndex(w => w.replace(/[^a-z0-9]/gi, "") === target.replace(/[^a-z0-9]/gi, ""));
+  if (idx === -1) return { before: "", after: "" };
+  return {
+    before: words.slice(Math.max(0, idx - n), idx).join(" "),
+    after:  words.slice(idx + 1, idx + 1 + n).join(" ")
+  };
+}
+
+/**
+ * Log a user correction about routing.
+ * Enriched version: captures confidence, routing reason, priority, and N-gram context
+ * around the word(s) that triggered the misroute so future scans can learn from it.
+ *
  * @param {Object} correction - Correction data from detectCorrection()
- * @param {Object} context - Previous message context
+ * @param {Object} context - Previous routing context
  * @returns {Object} The logged entry
  */
 export async function logCorrection(correction, context = {}) {
+  // Build N-gram context around the first "interesting" word of the previous message
+  // (the word that likely triggered the wrong tool choice).
+  let ngramContext = { before: "", after: "" };
+  const prevMsg = context.previousUserMessage || "";
+  const triggerWord = context.triggerWord || (context.previousToolUsed ? context.previousToolUsed : null);
+  if (prevMsg && triggerWord) {
+    ngramContext = extractNgramContext(prevMsg, triggerWord);
+  }
+
   const entry = {
     timestamp: new Date().toISOString(),
     type: correction.type,
     userMessage: correction.message,
     correctTool: correction.correctTool || null,
-    previousUserMessage: context.previousUserMessage || null,
+    previousUserMessage: prevMsg || null,
     previousToolUsed: context.previousToolUsed || null,
     previousReasoning: context.previousReasoning || null,
+    // ── Enriched fields ──
+    confidence: context.confidence ?? null,           // classifier confidence at time of routing
+    routingPriority: context.routingPriority ?? null, // priority of winning routing rule (if any)
+    triggerWord: triggerWord || null,                 // word that likely triggered the misroute
+    contextBefore: ngramContext.before,               // 3 words before trigger
+    contextAfter: ngramContext.after,                 // 3 words after trigger
   };
 
   await appendLog(CORRECTIONS_LOG, entry, LOGS_DIR);
-  console.log(`📝 Routing correction logged: ${entry.type}${entry.correctTool ? ` → ${entry.correctTool}` : ""} (was: ${entry.previousToolUsed || "unknown"})`);
+  console.log(`📝 Routing correction logged: ${entry.type}${entry.correctTool ? ` → ${entry.correctTool}` : ""} (was: ${entry.previousToolUsed || "unknown"}, confidence was: ${entry.confidence ?? "?"}, priority: ${entry.routingPriority ?? "?"})`);
   return entry;
 }
 
@@ -297,6 +363,56 @@ export async function logCorrection(correction, context = {}) {
  */
 export async function getRecentCorrections(limit = 20) {
   return await readLog(CORRECTIONS_LOG, limit);
+}
+
+/**
+ * Find past routing corrections similar to the current message.
+ * Uses Jaccard word-set overlap to score similarity between the new message
+ * and the previousUserMessage of each logged correction.
+ *
+ * Returns entries sorted by similarity score (highest first), filtered to ≥ minScore.
+ * Each result: { correctTool, previousToolUsed, userMessage, score, type }
+ *
+ * @param {string} message - Current user message
+ * @param {number} limit   - Max results to return (default 5)
+ * @param {number} minScore - Minimum Jaccard similarity (default 0.3)
+ * @returns {Promise<Array>}
+ */
+export async function findSimilarCorrections(message, limit = 5, minScore = 0.3) {
+  if (!message) return [];
+
+  const entries = await readLog(CORRECTIONS_LOG, 200);
+  if (entries.length === 0) return [];
+
+  // Only consider entries that have a correctTool (we know what it should have been)
+  const actionable = entries.filter(e => e.correctTool && e.previousUserMessage);
+  if (actionable.length === 0) return [];
+
+  const msgWords = new Set(
+    message.toLowerCase().split(/\W+/).filter(w => w.length > 2)
+  );
+
+  const scored = actionable.map(entry => {
+    const entryWords = new Set(
+      entry.previousUserMessage.toLowerCase().split(/\W+/).filter(w => w.length > 2)
+    );
+    // Jaccard similarity: |intersection| / |union|
+    const intersection = [...msgWords].filter(w => entryWords.has(w)).length;
+    const union = new Set([...msgWords, ...entryWords]).size;
+    const score = union > 0 ? intersection / union : 0;
+    return {
+      correctTool: entry.correctTool,
+      previousToolUsed: entry.previousToolUsed || null,
+      userMessage: entry.previousUserMessage,
+      score,
+      type: entry.type
+    };
+  });
+
+  return scored
+    .filter(e => e.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 /**

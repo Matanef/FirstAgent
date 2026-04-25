@@ -6,10 +6,10 @@ import { llm } from "../../tools/llm.js";
 
 // Tier → number of prompts (matches the plan).
 const TIER_COUNTS = {
-  article: 3,
-  indepth: 4,
-  research: 4,
-  thesis: 8
+  article: 7,
+  indepth: 10,
+  research: 13,
+  thesis: 17
 };
 
 const ANGLES = [

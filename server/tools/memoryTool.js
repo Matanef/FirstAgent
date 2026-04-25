@@ -67,6 +67,23 @@ export async function memorytool(request) {
   const contactUpdateMatch = lower.match(/(?:remember|save|update|set|store)?\s*(\w+?)[''\u2019]?s?\s+(phone|email|e-mail|address|number|whatsapp)\s+(?:is|number\s+is|to|as|=)\s+(.+)/i);
   if (contactUpdateMatch) {
     const [, contactName, field, value] = contactUpdateMatch;
+
+    // Guard: if the "contact name" is a self-referential pronoun, this is actually
+    // a profile field update (e.g., "my email is X" → save to profile, not a "My" contact).
+    if (["my", "i", "me", "myself"].includes(contactName.toLowerCase())) {
+      const fieldName = (field === "number" || field === "whatsapp") ? "phone" : (field === "e-mail" ? "email" : field.toLowerCase());
+      const cleanValue = value.trim().replace(/[.!]+$/, '');
+      const memory = await getMemory();
+      if (!memory.profile) memory.profile = {};
+      memory.profile[fieldName] = cleanValue;
+      await saveJSON(MEMORY_FILE, memory);
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `I've saved your ${fieldName} as "${cleanValue}".` }
+      };
+    }
     const memory = await getMemory();
     if (!memory.profile) memory.profile = {};
     if (!memory.profile.contacts) memory.profile.contacts = {};
@@ -164,12 +181,25 @@ export async function memorytool(request) {
       }
     }
 
+    // Return ONLY the explicitly formatted summary — NEVER the raw `profile` object.
+    // Returning raw profile leaks any future-added nested fields (e.g. private_notes,
+    // knownFacts, contacts PII) downstream. Scoped `summary` contains just what the
+    // message body already showed the user.
     return {
       tool: "memorytool",
       success: true,
       final: true,
       data: {
-        profile,
+        summary: {
+          name: name || null,
+          location: location || null,
+          email: email || null,
+          phone: phone || null,
+          whatsapp: (whatsapp && whatsapp !== phone) ? whatsapp : null,
+          address: address || null,
+          tone: tone || null,
+          contactCount: Object.keys(contacts).length
+        },
         message: summary
       }
     };
@@ -212,25 +242,173 @@ I can remember:
     };
   }
 
-  // --- CONTACT LOOKUP: "what's mom's phone?", "John's email?" ---
-  const contactLookupMatch = lower.match(/(?:what(?:'s| is))?\s*(\w+?)[''\u2019]?s?\s+(phone|email|address|number|contact)/i);
+  // --- CONTACT LOOKUP: "what's mom's phone?", "John's email?", "what is my mom's name?" ---
+  // Accepts either "mom's FIELD" or "my mom's FIELD". FIELD now includes "name".
+  // Matches either possessive form ("my mom's name") OR "the NAME of my mom" phrasing.
+  let contactLookupMatch = lower.match(
+    /(?:what(?:'s| is)|who(?:'s| is))?\s*(?:my\s+)?([\w\u0590-\u05FF]+?)[''\u2019]?s\s+(name|phone|email|address|number|contact|birthday)/i
+  );
+  if (!contactLookupMatch) {
+    const ofMatch = lower.match(
+      /what(?:'s| is)\s+the\s+(name|phone|email|address|number|birthday)\s+of\s+(?:my\s+)?([\w\u0590-\u05FF]+)/i
+    );
+    if (ofMatch) {
+      // Rebuild as [full, contactName, queryField] to match downstream destructure
+      contactLookupMatch = [ofMatch[0], ofMatch[2], ofMatch[1]];
+    }
+  }
   if (contactLookupMatch) {
     const [, contactName, queryField] = contactLookupMatch;
     const memory = await getMemory();
     const contacts = memory.profile?.contacts || {};
-    const contactKey = Object.keys(contacts).find(
-      k => k.toLowerCase() === contactName.toLowerCase() ||
-           contacts[k]?.name?.toLowerCase() === contactName.toLowerCase()
-    );
+    // Look up by contact key, name, OR relation ("mom" → contact with relation: "mother")
+    const relationAliases = {
+      mom: "mother", mum: "mother", mama: "mother", mother: "mother",
+      dad: "father", papa: "father", father: "father",
+      sis: "sister", sister: "sister",
+      bro: "brother", brother: "brother",
+      wife: "wife", husband: "husband"
+    };
+    const canonRelation = relationAliases[contactName.toLowerCase()];
+    const needle = contactName.toLowerCase();
+    const contactKey = Object.keys(contacts).find(k => {
+      const c = contacts[k];
+      const byKey = k.toLowerCase() === needle;
+      const byName = c?.name?.toLowerCase() === needle;
+      const byRelation = canonRelation && c?.relation?.toLowerCase() === canonRelation;
+      // Aliases: stored contacts often have aliases like ["mother", "mama"] on the
+      // "mom" contact. Match if the query term OR its canonical relation appears in aliases.
+      const aliasList = Array.isArray(c?.aliases) ? c.aliases.map(a => String(a).toLowerCase()) : [];
+      const byAlias = aliasList.includes(needle) || (canonRelation && aliasList.includes(canonRelation));
+      return byKey || byName || byRelation || byAlias;
+    });
     if (contactKey) {
       const contact = contacts[contactKey];
       const lookupField = (queryField === "number") ? "phone" : queryField;
-      const val = lookupField === "contact" ? JSON.stringify(contact) : (contact[lookupField] || "not saved");
+      // Name query that matched by relation/alias → "Your {relation} is {name}"
+      // instead of the echoey "{name}'s name: {name}".
+      if (lookupField === "name") {
+        const matchedByRelationOrAlias = canonRelation && (
+          contact?.relation?.toLowerCase() === canonRelation ||
+          (Array.isArray(contact?.aliases) && contact.aliases.map(a => String(a).toLowerCase()).includes(canonRelation))
+        );
+        if (matchedByRelationOrAlias) {
+          return {
+            tool: "memorytool",
+            success: true,
+            final: true,
+            data: { message: `Your ${canonRelation} is ${contact.name || contactKey}.` }
+          };
+        }
+        return {
+          tool: "memorytool",
+          success: true,
+          final: true,
+          data: { message: `Their name is ${contact.name || contactKey}.` }
+        };
+      }
+      const val = lookupField === "contact"
+        ? JSON.stringify(contact)
+        : (contact[lookupField] || contact[`${lookupField}He`] || "not saved");
       return {
         tool: "memorytool",
         success: true,
         final: true,
         data: { message: `${contact.name || contactKey}'s ${lookupField}: ${val}` }
+      };
+    }
+    // Contact not in memory.profile.contacts — try userProfiles registry (family/friends
+    // from data/user-profiles.json, keyed by phone number).
+    try {
+      const { getAllProfiles } = await import("../utils/userProfiles.js");
+      const profiles = await getAllProfiles();
+      const canon = canonRelation || contactName.toLowerCase();
+      for (const [phone, prof] of Object.entries(profiles)) {
+        if (phone.startsWith("_")) continue;
+        const relMatch = prof.relation?.toLowerCase() === canon;
+        const nameMatch = prof.name?.toLowerCase() === contactName.toLowerCase();
+        if (relMatch || nameMatch) {
+          const field = (queryField === "number") ? "phone" : queryField;
+          // For NAME queries that matched via relation, phrase as "Your {relation} is {name}"
+          // instead of the awkward "{name}'s name: {name}" echo.
+          if (field === "name") {
+            if (relMatch && !nameMatch) {
+              return {
+                tool: "memorytool",
+                success: true,
+                final: true,
+                data: { message: `Your ${canon} is ${prof.name}.` }
+              };
+            }
+            return {
+              tool: "memorytool",
+              success: true,
+              final: true,
+              data: { message: `Their name is ${prof.name}.` }
+            };
+          }
+          const val = field === "phone" ? phone : (prof[field] || "not saved");
+          return {
+            tool: "memorytool",
+            success: true,
+            final: true,
+            data: { message: `${prof.name || contactName}'s ${field}: ${val}` }
+          };
+        }
+      }
+    } catch { /* userProfiles not available */ }
+
+    // Last resort: scan profile.knownFacts[] (structured, higher quality) + durable[]
+    // (raw) for mentions of the keyword. knownFacts are scanned FIRST.
+    const keyword = contactName.toLowerCase();
+
+    // Helper: try to extract a name from "... named X", "X is <keyword>", etc.
+    // Returns a clean attribution string or null.
+    const extractNamedAnswer = (stmt) => {
+      if (queryField !== "name") return null;
+      // "The user has a dog named Lanou." → "Lanou"
+      const m1 = stmt.match(new RegExp(`${keyword}\\s+(?:named|called)\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)?)`, "i"));
+      if (m1) return `Your ${keyword}'s name is ${m1[1]}.`;
+      // "<Name>'s name is <Subject>" doesn't match here; covers "my dog, Lanou" style
+      const m2 = stmt.match(new RegExp(`${keyword}[,:]\\s+([A-Z][\\w'-]+)`, "i"));
+      if (m2) return `Your ${keyword}'s name is ${m2[1]}.`;
+      return null;
+    };
+
+    const structuredHits = [];
+    for (const f of (memory.profile?.knownFacts || [])) {
+      if (f?.status === "retired") continue; // skip superseded facts
+      const stmt = typeof f === "string" ? f : (f?.statement || f?.fact);
+      if (stmt && stmt.toLowerCase().includes(keyword)) structuredHits.push(stmt);
+    }
+
+    // Prefer a structured "named X" extraction from knownFacts first.
+    for (const stmt of structuredHits) {
+      const answer = extractNamedAnswer(stmt);
+      if (answer) {
+        return {
+          tool: "memorytool",
+          success: true,
+          final: true,
+          data: { message: answer }
+        };
+      }
+    }
+
+    const rawHits = [];
+    for (const d of (memory.durable || [])) {
+      const fact = typeof d === "string" ? d : d?.fact;
+      if (fact && fact.toLowerCase().includes(keyword)) rawHits.push(fact);
+    }
+
+    const combinedHits = [...structuredHits, ...rawHits];
+    if (combinedHits.length > 0) {
+      const top = combinedHits.slice(0, 3).map(h => `• ${h}`).join("\n");
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `I don't have "${contactName}" as a contact, but here's what I remember related to "${contactName}":\n${top}` }
       };
     }
     return {
@@ -239,6 +417,76 @@ I can remember:
       final: true,
       data: { message: `I don't have a contact named "${contactName}" saved.` }
     };
+  }
+
+  // --- SELF LOOKUP: "what is my name?", "what's my email?" ---
+  // Questions about the owner themselves. Profile stores these directly.
+  const selfLookupMatch = lower.match(
+    /(?:what(?:'s| is)|where(?:'s| is))\s+my\s+(name|email|e-mail|location|city|phone|number|tone|whatsapp|address|birthday)/i
+  );
+  if (selfLookupMatch) {
+    const field = selfLookupMatch[1].toLowerCase() === "e-mail" ? "email"
+      : selfLookupMatch[1].toLowerCase() === "city" ? "location"
+      : selfLookupMatch[1].toLowerCase() === "number" ? "phone"
+      : selfLookupMatch[1].toLowerCase();
+    const memory = await getMemory();
+    const profile = memory.profile || {};
+    const self = profile.self || {};
+    const val = profile[field] || self[field];
+    if (val) {
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `Your ${field} is: ${val}` }
+      };
+    }
+    return {
+      tool: "memorytool",
+      success: true,
+      final: true,
+      data: { message: `I don't have your ${field} saved yet. You can tell me by saying "remember my ${field} is <value>".` }
+    };
+  }
+
+// --- GENERIC "FORGET THAT ..." ---
+  // Deletes arbitrary facts from durable memory or structured known facts
+  const genericForget = lower.match(/(?:forget|remove|delete)\s+(?:that\s+)?(.{5,})$/i);
+  if (genericForget && !lower.includes("location")) {
+    const targetFact = genericForget[1].trim().replace(/[.!]+$/, '');
+    const memory = await getMemory();
+    let removed = false;
+
+    // 1. Try removing from durable memories
+    if (memory.durable && Array.isArray(memory.durable)) {
+      const initialLength = memory.durable.length;
+      memory.durable = memory.durable.filter(d => !d.fact.toLowerCase().includes(targetFact));
+      if (memory.durable.length < initialLength) removed = true;
+    }
+
+    // 2. Try removing from structured knownFacts
+    if (memory.profile?.knownFacts && Array.isArray(memory.profile.knownFacts)) {
+      const initialLength = memory.profile.knownFacts.length;
+      memory.profile.knownFacts = memory.profile.knownFacts.filter(f => !f.statement.toLowerCase().includes(targetFact));
+      if (memory.profile.knownFacts.length < initialLength) removed = true;
+    }
+
+    if (removed) {
+      await saveJSON(MEMORY_FILE, memory);
+      return {
+        tool: "memorytool",
+        success: true,
+        final: true,
+        data: { message: `I have successfully removed "${targetFact}" from my memory.` }
+      };
+    } else {
+       return {
+        tool: "memorytool",
+        success: false,
+        final: true,
+        error: `I couldn't find any memory matching "${targetFact}" to forget.`
+      };
+    }
   }
 
   // --- GENERIC "REMEMBER THAT ..." ---
@@ -259,6 +507,39 @@ I can remember:
       final: true,
       data: { message: `I'll remember: "${fact}"` }
     };
+  }
+
+  // --- FALLBACK: keyword scan over durable + knownFacts for natural-language
+  // "do you remember / what about / tell me about my <X>" queries.
+  const scanMatch = lower.match(
+    /(?:what(?:'s| is|\s+about)|who(?:'s| is)|do\s+you\s+(?:remember|know|recall)|tell\s+me\s+about)\s+(?:my\s+)?([\w\u0590-\u05FF][\w\u0590-\u05FF\s'’-]{1,40})/i
+  );
+  if (scanMatch) {
+    const keyword = scanMatch[1].trim().toLowerCase().replace(/[?.!]+$/, "");
+    // Strip trailing filler words to isolate the subject
+    const stopTail = /\b(name|phone|email|address|birthday|please|anyway)$/i;
+    const core = keyword.replace(stopTail, "").trim();
+    if (core.length >= 2) {
+      const memory = await getMemory();
+      const hits = [];
+      for (const d of (memory.durable || [])) {
+        const fact = typeof d === "string" ? d : d?.fact;
+        if (fact && fact.toLowerCase().includes(core)) hits.push(fact);
+      }
+      for (const f of (memory.profile?.knownFacts || [])) {
+        const stmt = typeof f === "string" ? f : (f?.statement || f?.fact);
+        if (stmt && stmt.toLowerCase().includes(core)) hits.push(stmt);
+      }
+      if (hits.length > 0) {
+        const top = hits.slice(0, 5).map(h => `• ${h}`).join("\n");
+        return {
+          tool: "memorytool",
+          success: true,
+          final: true,
+          data: { message: `Here's what I remember related to "${core}":\n${top}` }
+        };
+      }
+    }
   }
 
   return {

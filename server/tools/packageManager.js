@@ -27,7 +27,7 @@ async function runNpmCommand(command) {
   } catch (err) {
     return {
       success: false,
-      error: err.message,
+      error: `Failed to execute npm command: ${command}\nError: ${err.message}`,
       stdout: err.stdout?.trim() || "",
       stderr: err.stderr?.trim() || ""
     };
@@ -46,7 +46,7 @@ async function installPackage(packageName, flags = "") {
   if (!result.success) {
     return {
       success: false,
-      error: result.error,
+      error: `Failed to install ${packageName}: ${result.error}`,
       details: result.stderr
     };
   }
@@ -84,7 +84,7 @@ async function listPackages() {
   if (!result.success) {
     return {
       success: false,
-      error: result.error
+      error: `Failed to list installed packages: ${result.error}`
     };
   }
 
@@ -104,7 +104,7 @@ async function listPackages() {
   } catch (err) {
     return {
       success: false,
-      error: "Failed to parse package list"
+      error: `Failed to parse package list: ${err.message}`
     };
   }
 }
@@ -118,7 +118,7 @@ async function updatePackages(packageName = "") {
   console.log(`🔄 Updating ${target || "all packages"}...`);
   const result = await runNpmCommand(command);
   if (!result.success) {
-    return { success: false, error: result.error };
+    return { success: false, error: `Failed to update ${target || "packages"}: ${result.error}` };
   }
   return {
     success: true,
@@ -150,8 +150,8 @@ async function outdatedPackages() {
       count: packages.length,
       message: packages.length > 0 ? `${packages.length} outdated package(s)` : "All packages are up to date"
     };
-  } catch {
-    return { success: true, packages: [], count: 0, message: "All packages are up to date" };
+  } catch (err) {
+    return { success: false, packages: [], count: 0, message: `Failed to parse outdated packages: ${err.message}` };
   }
 }
 

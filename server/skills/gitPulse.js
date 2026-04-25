@@ -359,3 +359,16 @@ function buildReport(commits, diffs, analysis, mermaid, since) {
 
   return sections.join("\n");
 }
+
+// Self-registered routing rule — picked up by loadSkills() in executor.js
+export const ROUTING = {
+  tool: "gitPulse",
+  priority: 74,
+  match: (lower) =>
+    /\b(git\s*pulse|code\s+report|engineering\s+review)\b/i.test(lower) ||
+    (/\b(what\s+changed|what'?s\s+changed|what\s+happened)\b/i.test(lower) && /\b(code|repo|commit|git|today|this\s+week|yesterday|last\s+\d+\s+days?)\b/i.test(lower)),
+  guard: (lower) =>
+    /\b(git\s+(add|commit|push|pull|checkout|branch|merge|stash|rebase|reset|status|log|diff|clone|init|fetch|tag|remote))\b/i.test(lower) &&
+    !/\b(report|review|analysis|pulse|summary|overview)\b/i.test(lower),
+  description: "Git Pulse — commit analysis, impact reports, Mermaid diagrams"
+};
