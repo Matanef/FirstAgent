@@ -27,6 +27,9 @@ import * as subjectBootstrapper from "./subjectBootstrapper.js";
 import * as promptPlanner from "./promptPlanner.js";
 import * as articleHarvester from "./articleHarvester.js";
 import * as articleAnalyzer from "./articleAnalyzer.js";
+import * as datasetHarvester from "./datasetHarvester.js";
+import * as tableAnalyst from "./tableAnalyst.js";
+import * as chartComposer from "./chartComposer.js";
 import * as conclusionWriter from "./conclusionWriter.js";
 import * as promptRollup from "./promptRollup.js";
 import * as thesisSynthesizer from "./thesisSynthesizer.js";
@@ -295,8 +298,9 @@ export async function deepResearch(request) {
 
     // ── Step 6: per-prompt write-as-you-go pipeline ────────────────────────
     const constraints = await loadAgentConstraints();
-    const seenUrls   = new Set();
-    const seenTitles = new Set(); // cross-prompt normalized-title dedup
+    const seenUrls    = new Set();
+    const seenTitles  = new Set(); // cross-prompt normalized-title dedup
+    const seenDatasetIds = new Set(); // Phase 7: cross-prompt dataset dedup
     const promptResults = [];
     const maxPerPrompt = constraints.research.maxArticlesPerPrompt || 7;
     const tierLimits = { article: 3, indepth: 4, research: 6, thesis: 7 };
@@ -325,13 +329,13 @@ export async function deepResearch(request) {
         log(`initial prompt.md write failed: ${err.message}`, "warn");
       }
 
-      // Harvest
+      // Harvest — Phase 7: articles + datasets in parallel.
       emitProgress(`📡 Harvesting ${promptIndex}/${prompts.length}: "${promptSpec.query.slice(0, 60)}"`,
         { current: promptIndex, total: prompts.length });
       log(`step=harvest prompt=${promptIndex} query="${promptSpec.query.slice(0, 80)}"`, "info");
-      let articles = [];
-      try {
-        articles = await articleHarvester.harvest(promptSpec.query, {
+      const tierDatasetLimit = ({ article: 2, indepth: 3, research: 4, thesis: 5 })[effectiveTier] || 3;
+      const [articlesSettled, datasetsSettled] = await Promise.allSettled([
+        articleHarvester.harvest(promptSpec.query, {
           topic: rawTopic,
           tier: effectiveTier,
           limit: articlesPerPrompt,
@@ -341,11 +345,19 @@ export async function deepResearch(request) {
           preferDomains: constraints.research.preferDomains || [],
           seenUrls,
           seenTitles
-        });
-      } catch (err) {
-        log(`step=harvest prompt=${promptIndex} error="${err.message}"`, "warn");
-      }
-      log(`step=harvest prompt=${promptIndex} done articles=${articles.length}`, "info");
+        }),
+        datasetHarvester.harvest(promptSpec.query, {
+          topic: rawTopic,
+          limit: tierDatasetLimit,
+          perProvider: 3,
+          seenIds: seenDatasetIds
+        })
+      ]);
+      let articles = articlesSettled.status === "fulfilled" ? (articlesSettled.value || []) : [];
+      let datasets = datasetsSettled.status === "fulfilled" ? (datasetsSettled.value || []) : [];
+      if (articlesSettled.status === "rejected") log(`step=harvest prompt=${promptIndex} articles error="${articlesSettled.reason?.message}"`, "warn");
+      if (datasetsSettled.status === "rejected") log(`step=harvest prompt=${promptIndex} datasets error="${datasetsSettled.reason?.message}"`, "warn");
+      log(`step=harvest prompt=${promptIndex} done articles=${articles.length} datasets=${datasets.length}`, "info");
 
       // Local library scan for the first prompt only (cheap supplement).
       if (promptIndex === 1) {
@@ -420,6 +432,93 @@ export async function deepResearch(request) {
         }
       }
 
+      // ── Phase 7B/7C: table analysis + chart composition ─────────────────
+      // For each harvested dataset: download a usable file → schema-sniff →
+      // LLM assessment (suggests charts) → deterministic aggregation + SVG.
+      // Failures are non-fatal; the article path still produces a thesis.
+      const quantitativeFindings = [];
+      const datasetCitations = [];
+      if (datasets.length > 0) {
+        emitProgress(`📊 Analyzing ${datasets.length} dataset(s) for prompt ${promptIndex}/${prompts.length}`,
+          { current: promptIndex, total: prompts.length, datasets: datasets.length });
+        const chartsDir = `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/charts`;
+        // Vault-relative path needs to be absolute on disk — resolve via vault root.
+        const absChartsDir = path.join(vault, chartsDir);
+        for (let di = 0; di < datasets.length; di++) {
+          const ds = datasets[di];
+          datasetCitations.push(ds);            // always cite, even metadata-only
+          let parsed = null;
+          if (!ds.metadataOnly && ds.files?.length) {
+            const usable = ds.files.find(f => f.format === "csv" || f.format === "tsv" || f.format === "json")
+                          || ds.files.find(f => f.format === "xlsx" || f.format === "xls");
+            if (usable) {
+              try {
+                parsed = await datasetHarvester.downloadAndParse(usable);
+                if (parsed) log(`prompt ${promptIndex} dataset ${di + 1}/${datasets.length}: parsed ${parsed.rows.length} rows (${parsed.sampling}) from ${ds.repository}/${usable.name}`, "info");
+              } catch (err) {
+                log(`download fail ${ds.id}: ${err.message}`, "warn");
+              }
+            }
+          }
+          let assessment = null;
+          try {
+            assessment = await tableAnalyst.assess({ topic: rawTopic, dataset: ds, parsed });
+          } catch (err) {
+            log(`tableAnalyst fail ${ds.id}: ${err.message}`, "warn");
+          }
+          if (!assessment) continue;
+          if (assessment.metadataOnly) {
+            quantitativeFindings.push({
+              datasetId: ds.id,
+              datasetTitle: ds.title,
+              repository: ds.repository,
+              metadataOnly: true,
+              hypothesis: "",
+              limitations: assessment.limitations,
+              honestyLabels: assessment.honesty_labels,
+              charts: []
+            });
+            continue;
+          }
+          const charts = [];
+          for (let ci = 0; ci < (assessment.suggested_charts || []).length; ci++) {
+            const spec = assessment.suggested_charts[ci];
+            const fileBase = `${ds.id.replace(/[^a-z0-9]+/gi, "-")}-c${ci + 1}`;
+            try {
+              const result = await chartComposer.compose({
+                spec,
+                parsed,
+                dataset: ds,
+                honestyLabels: assessment.honesty_labels,
+                outDir: absChartsDir,
+                fileBase
+              });
+              if (result?.ok) {
+                charts.push(result);
+                log(`chart composed: ${result.chartPath}`, "info");
+              } else {
+                log(`chart skipped: ${result?.reason}`, "warn");
+              }
+            } catch (err) {
+              log(`chart compose fail ${ds.id} #${ci + 1}: ${err.message}`, "warn");
+            }
+          }
+          quantitativeFindings.push({
+            datasetId: ds.id,
+            datasetTitle: ds.title,
+            repository: ds.repository,
+            N: assessment.N,
+            sampling: assessment.sampling,
+            keyVariables: assessment.key_variables,
+            hypothesis: assessment.hypothesis_to_test,
+            limitations: assessment.limitations,
+            honestyLabels: assessment.honesty_labels,
+            charts
+          });
+        }
+        emitProgress(`📊 Prompt ${promptIndex}: ${quantitativeFindings.length} dataset finding(s), ${quantitativeFindings.reduce((s, q) => s + (q.charts?.length || 0), 0)} chart(s) generated`);
+      }
+
       // Conclusion + vector collection
       emitProgress(`📝 Writing conclusion for prompt ${promptIndex}/${prompts.length} (${dedupedAnalyses.length} sources)`,
         { current: promptIndex, total: prompts.length });
@@ -445,8 +544,61 @@ export async function deepResearch(request) {
         analyses: dedupedAnalyses,   // deduplicated list used by rollup + thesis
         conclusion: conclusionResult.conclusion,
         collectionName: conclusionResult.collectionName,
-        conclusionPath: conclusionResult.relativePath
+        conclusionPath: conclusionResult.relativePath,
+        // Phase 7: empirical-methodology outputs piped to the synthesizer.
+        quantitativeFindings,
+        datasetCitations
       });
+    }
+
+    // ── Phase 7F: write _data.md index for empirical-methodology outputs ──
+    const allQuant = promptResults.flatMap(p => p.quantitativeFindings || []);
+    const allDatasetCites = promptResults.flatMap(p => p.datasetCitations || []);
+    if (allDatasetCites.length > 0) {
+      try {
+        const dataLines = [
+          buildFrontmatter({
+            title: `"${cleanTitle} — Datasets & Quantitative Findings"`,
+            type: "research-data-index",
+            parent: `[[${activeSlug}]]`,
+            dataset_count: allDatasetCites.length,
+            chart_count: allQuant.reduce((s, q) => s + (q.charts?.length || 0), 0),
+            tags: ["research-data-index", activeSlug]
+          }),
+          `# Datasets & Quantitative Findings — ${cleanTitle}`,
+          ``,
+          `${allDatasetCites.length} dataset(s) harvested across ${promptResults.length} prompt(s). ${allQuant.filter(q => !q.metadataOnly).length} analyzed; ${allQuant.filter(q => q.metadataOnly).length} metadata-only.`,
+          ``
+        ];
+        for (const ds of allDatasetCites) {
+          dataLines.push(`## ${ds.title}`);
+          dataLines.push(`- Repository: **${ds.repository}**`);
+          if (ds.doi) dataLines.push(`- DOI: [${ds.doi}](https://doi.org/${ds.doi})`);
+          if (ds.url) dataLines.push(`- URL: <${ds.url}>`);
+          if (ds.year) dataLines.push(`- Year: ${ds.year}`);
+          if (ds.metadataOnly) dataLines.push(`- _Metadata-only — rows not retrieved (cited for methodological rigor)._`);
+          else if (ds.files?.length) dataLines.push(`- Files: ${ds.files.map(f => `\`${f.name}\` (${f.format}, ${(f.sizeBytes / 1024).toFixed(0)}KB)`).join(", ")}`);
+          const matchingQF = allQuant.find(q => q.datasetId === ds.id);
+          if (matchingQF && !matchingQF.metadataOnly) {
+            dataLines.push(`- N=${matchingQF.N}, sampling=${matchingQF.sampling}`);
+            if (matchingQF.honestyLabels?.length) dataLines.push(`- Honesty: ${matchingQF.honestyLabels.join("; ")}`);
+            if (matchingQF.hypothesis) dataLines.push(`- Hypothesis tested: ${matchingQF.hypothesis}`);
+            for (const c of matchingQF.charts || []) {
+              dataLines.push(``);
+              dataLines.push(`![[${c.chartPath}]]`);
+              dataLines.push(``);
+              dataLines.push(`*${c.caption}*`);
+              dataLines.push(``);
+              dataLines.push(c.interpretation);
+            }
+          }
+          dataLines.push(``);
+        }
+        await writeNote(`${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/_data.md`, dataLines.join("\n"));
+        log(`step=writeDataIndex done datasets=${allDatasetCites.length}`, "info");
+      } catch (err) {
+        log(`writeDataIndex error="${err.message}"`, "warn");
+      }
     }
 
     // ── Step 7: rewrite per-prompt prompt.md + master rollup ──────────────
@@ -591,11 +743,16 @@ export async function deepResearch(request) {
     emitProgress(`✅ Research saved (${thesisInfo?.wordCount || 0} words, ${totalSources} sources)`,
       { wordCount: thesisInfo?.wordCount || 0, sourceCount: totalSources });
     const finalPath = thesisInfo?.relativePath || masterInfo?.relativePath || `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/`;
+    const totalDatasets = allDatasetCites.length;
+    const totalCharts = allQuant.reduce((s, q) => s + (q.charts?.length || 0), 0);
     const reply = `✅ ${effectiveTier.charAt(0).toUpperCase() + effectiveTier.slice(1)} on **"${rawTopic}"** saved.\n\n` +
       `- Final write-up: \`${finalPath}\`\n` +
       `- Master rollup: \`${masterInfo?.relativePath || "(skipped)"}\`\n` +
       `- Prompts executed: ${promptResults.length}\n` +
       `- Sources harvested: ${totalSources}\n` +
+      (totalDatasets > 0
+        ? `- Datasets analyzed: ${totalDatasets} (${totalCharts} chart(s) generated, see \`_data.md\`)\n`
+        : "") +
       (thesisInfo?.lintReport?.warnings?.length
         ? `- ⚠️ Lint warnings: ${thesisInfo.lintReport.warnings.length} (see \`${masterInfo?.relativePath || "_master.md"}\`)\n`
         : "");

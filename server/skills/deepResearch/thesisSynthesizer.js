@@ -387,15 +387,15 @@ Return JSON only, in this exact shape:
 // Phase 5E — section-specific synthesis directives. Replaces generic "dense paragraphs"
 // with concrete cognitive demands appropriate to each section's role in an academic paper.
 const SECTION_SYNTHESIS_DIRECTIVES = {
-  abstract:    "State the paper's CLAIM, METHODS, KEY FINDINGS, and IMPLICATIONS in 3-4 sentences. No filler.",
-  introduction:"Frame the research QUESTION. Identify the GAP in current literature. Preview what this paper contributes. Do NOT summarize all findings here.",
+  abstract:    "State the paper's CLAIM, METHODS (including any datasets analyzed), KEY FINDINGS, and IMPLICATIONS in 3-4 sentences. No filler.",
+  introduction:"Frame the research QUESTION. Identify the GAP in current literature. Preview what this paper contributes — including any original quantitative analysis of datasets. Do NOT summarize all findings here.",
   litreview:   "GROUP sources by stance/finding. COMPARE methodologies across studies. IDENTIFY contradictions or replication failures. DO NOT just list studies sequentially. Use comparative language: 'In contrast to X, Y found...', 'Whereas Z used method A, B used method C and reached different conclusions because...'",
-  methodology: "Describe the ACTUAL pipeline used in this narrative literature review (NOT a systematic review). DO NOT claim PRISMA, inclusion/exclusion criteria, or data extraction tables — we don't do those. DO describe: number of providers queried, number of sub-questions probed, source dedup strategy, vector embedding for retrieval. Include a short LIMITATIONS sub-discussion: open-access bias, single-reviewer, no formal quality scoring.",
-  results:     "REPORT specific numbers, effect sizes, sample sizes from the cited sources. CONTRAST findings across studies. CALL OUT contradictions. AVOID: 'Several studies have shown X' (vague). PREFER: '(Author, Year) found a 47% reduction (n=240); (Author2, Year) reported a similar 40% reduction (n=180). However, (Author3, Year) found no effect in older adults (n=85), suggesting...'",
-  discussion: "INTERPRET findings: WHY do studies disagree? WHAT mechanism explains the strongest effects? WHAT do critics say? Do not just re-state the Results. Bring in cross-disciplinary perspectives where relevant.",
-  conclusion: "Synthesize ONE clear take-away. Identify 2-3 SPECIFIC open questions for future research. Do NOT restate the abstract.",
-  future_work:"List concrete future research directions, each with a justification of WHY it matters and what method would address it.",
-  ai_ack:     "Acknowledge that this paper was synthesized by an LLM agent. Be specific about which steps were AI-assisted and which were deterministic."
+  methodology: "Describe BOTH halves of the pipeline. (1) LITERATURE SEARCH: number of providers queried, number of sub-questions probed, source dedup strategy, semantic-chunk indexing for retrieval — narrative, NOT systematic. NEVER claim PRISMA, inclusion/exclusion criteria, or data extraction tables. (2) QUANTITATIVE ANALYSIS: list every dataset analyzed by repository + N + key variables, name the statistical methods used (descriptive stats, frequency analysis, group-mean comparisons), state that aggregation was deterministic JS over full or stratified-sampled rows, charts rendered programmatically. (3) INTEGRATION: one paragraph on how literature and dataset findings inform each other. (4) LIMITATIONS: open-access bias, single-reviewer, no inferential testing, plus the dataset-specific honesty labels.",
+  results:     "REPORT specific numbers, effect sizes, sample sizes. You MUST embed at least 2 quantitative findings from the QUANTITATIVE FINDINGS block (with figure references like ![[charts/X.svg]] and effect-size labels) BEFORE writing prose summary of the literature. AFTER the embedded findings, contrast literature findings across studies. CALL OUT contradictions. AVOID: 'Several studies have shown X' (vague). PREFER: '(Author, Year) found a 47% reduction (n=240); (Author2, Year) reported a similar 40% reduction (n=180). However, (Author3, Year) found no effect in older adults (n=85), suggesting...'",
+  discussion: "INTERPRET findings: for each quantitative finding from the dataset analysis, state whether it CONVERGES with or CONTRADICTS the cited literature, and discuss implications. WHY do results disagree? WHAT mechanism explains the strongest effects? WHAT do critics say? Do not just re-state the Results — this is your ORIGINAL ANALYSIS. Bring in cross-disciplinary perspectives where relevant.",
+  conclusion: "Synthesize ONE clear take-away (literature + datasets together). Identify 2-3 SPECIFIC open questions for future research. Do NOT restate the abstract.",
+  future_work:"List concrete future research directions, each with a justification of WHY it matters and what method (literature pull / dataset analysis / new study) would address it.",
+  ai_ack:     "Acknowledge that this paper was synthesized by an LLM agent. Be specific about which steps were AI-assisted (literature retrieval, schema interpretation, prose synthesis) and which were deterministic (statistical aggregation, chart rendering, citation formatting)."
 };
 
 function pickSynthesisDirective(section) {
@@ -441,7 +441,39 @@ const FORBIDDEN_OPENINGS = [
   "This section explores"
 ];
 
-async function writeSection({ topic, tier, section, prevSummaries, constraints, knownCitationUrls, citationsPrompt, citationIndex, conclusionsCollection }) {
+// ── Phase 7E: format quantitative findings for prompt injection ────────────
+// Returns a block describing every dataset finding + chart filename + honesty
+// labels, designed to be appended to the prompt for Methodology / Results /
+// Discussion sections.
+function buildQuantitativeBlock(quantFindings) {
+  if (!Array.isArray(quantFindings) || quantFindings.length === 0) return "";
+  const lines = [];
+  for (const qf of quantFindings) {
+    if (qf.metadataOnly) {
+      lines.push(`- METADATA-ONLY: "${qf.datasetTitle}" (${qf.repository}). Cite for methodological rigor; rows not analyzed.`);
+      continue;
+    }
+    lines.push(`- DATASET: "${qf.datasetTitle}" (${qf.repository}, N=${qf.N}, sampling=${qf.sampling})`);
+    if (qf.hypothesis) lines.push(`    Hypothesis: ${qf.hypothesis}`);
+    if (qf.honestyLabels?.length) lines.push(`    Honesty labels: [${qf.honestyLabels.join("; ")}]`);
+    for (const c of qf.charts || []) {
+      lines.push(`    CHART → ![[${c.chartPath}]]`);
+      lines.push(`      ${c.interpretation}`);
+    }
+  }
+  return `\n\n=== QUANTITATIVE FINDINGS YOU MUST USE (computed deterministically by the agent over the dataset rows) ===\nThese are not literature claims — these are the agent's own analyses. When the section directive says to embed quantitative findings, draw from this list. Use the EXACT figure-embed syntax shown (![[charts/...svg]]) so Obsidian renders the chart inline. NEVER fabricate numbers; only use values that appear in the interpretations below.\n${lines.join("\n")}`;
+}
+
+// Sections that should receive the quantitative block in their prompt.
+// (Other sections still see article-level facts but no chart pressure.)
+function shouldInjectQuantBlock(section) {
+  const id = String(section?.id || "").toLowerCase();
+  const heading = String(section?.heading || "").toLowerCase();
+  return /method|result|discuss|abstract|introduction|conclusion/.test(id) ||
+         /method|result|discuss|abstract|introduction|conclusion/.test(heading);
+}
+
+async function writeSection({ topic, tier, section, prevSummaries, constraints, knownCitationUrls, citationsPrompt, citationIndex, conclusionsCollection, quantFindings = [] }) {
   // RAG over conclusions
   let snippets = [];
   if (conclusionsCollection) {
@@ -519,7 +551,14 @@ ${synthesisDirective}
 - Bullet lists MUST be preceded by a blank line. End the prior sentence with a period + newline + newline + bullet. NOT "...result. - bullet" on the same line.
 - After every bullet block, leave a blank line before resuming prose.${citationsBlock}${openingGuardrail}`;
 
-  const finalPrompt = prompt + expansionDirectives;
+  // Phase 7E — inject the agent's own quantitative findings into Methodology /
+  // Results / Discussion / Abstract / Intro / Conclusion. Other sections see
+  // only article-derived facts.
+  const quantBlock = (quantFindings.length && shouldInjectQuantBlock(section))
+    ? buildQuantitativeBlock(quantFindings)
+    : "";
+
+  const finalPrompt = prompt + expansionDirectives + quantBlock;
 
   // Phase 5D + 6D — explicit num_predict so the model doesn't quit early.
   // qwen2.5:7b often produces 1.5-1.7 tokens/word; 1.8x was borderline tight.
@@ -834,6 +873,23 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
 
   // 3. Collect known citation URLs from harvested article frontmatter (deterministic guardrail).
   const articleNotes = promptResults.flatMap(p => (p.analyses || []).map(a => a.frontmatter || {}));
+
+  // Phase 7E — aggregate empirical-methodology outputs across all prompts.
+  const allQuantFindings = promptResults.flatMap(p => p.quantitativeFindings || []);
+  const allDatasetCites  = promptResults.flatMap(p => p.datasetCitations || []);
+  const datasetTotalN    = allQuantFindings.reduce((s, q) => s + (q.N || 0), 0);
+  console.log(`[thesisSynthesizer] empirical inputs: ${allQuantFindings.length} quantitative findings, ${allDatasetCites.length} dataset citations, total N=${datasetTotalN}`);
+
+  // Datasets are first-class citations: shape each into a note-like record so
+  // buildCitationIndex picks them up alongside article frontmatter. Only those
+  // with author + year + title pass the indexer's filter.
+  const datasetNotes = allDatasetCites.map(ds => ({
+    title: ds.title,
+    url: ds.url,
+    paper_url: ds.url,
+    cite: ds.cite
+  }));
+  const allNotesForCitations = [...articleNotes, ...datasetNotes];
   // Phase 3A — prefer upgraded paper URL; fall back to original article URL.
   // Both are registered as "known" so the lint pass doesn't strip them.
   const knownCitationUrls = [...new Set(
@@ -844,9 +900,9 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   // Each entry: { id, inText: "(Smith & Jones, 2023)", apa: "<full APA entry>", cite, ... }
   // The synthesizer uses this to ground in-text citations and emit a real
   // References section instead of a URL dump.
-  const citationIndex = buildCitationIndex(articleNotes);
+  const citationIndex = buildCitationIndex(allNotesForCitations);
   const citationsPrompt = renderCitationsForPrompt(citationIndex, 30);
-  console.log(`[thesisSynthesizer] citation index built: ${citationIndex.length} structured entries from ${articleNotes.length} sources`);
+  console.log(`[thesisSynthesizer] citation index built: ${citationIndex.length} structured entries from ${allNotesForCitations.length} sources (${articleNotes.length} articles + ${datasetNotes.length} datasets)`);
 
   // 4. Section-by-section synthesis.
   const writtenSections = [];
@@ -867,7 +923,8 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
       knownCitationUrls,
       citationsPrompt, // Phase 5A — structured APA citations to use in-text
       citationIndex,   // Phase 5A — for post-section lint of stray refs
-      conclusionsCollection
+      conclusionsCollection,
+      quantFindings: allQuantFindings   // Phase 7E — empirical analysis injected into prompt
     });
     // Phase 5F — strip duplicate leading heading. The LLM often adds
     // "### Literature Review" inside the Literature Review section, on top of
@@ -949,6 +1006,10 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
     parent: `[[${topicSlug}]]`,
     prompt_count: promptResults.length,
     article_count: articleNotes.length,
+    dataset_count: allDatasetCites.length,
+    chart_count: allQuantFindings.reduce((s, q) => s + (q.charts?.length || 0), 0),
+    quantitative: allQuantFindings.some(q => !q.metadataOnly && (q.charts?.length || 0) > 0),
+    total_observations: datasetTotalN,
     created: new Date().toISOString(),
     tags: ["research-thesis", topicSlug, tier]
   });
@@ -959,7 +1020,7 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   }
 
   // 6. Bibliography (deterministic).
-  draft += buildBibliography(articleNotes);
+  draft += buildBibliography(allNotesForCitations);
 
   // 7. AI usage footer for non-thesis tiers (thesis already gets its own section).
   if (TIER_BUDGETS[tier]?.aiAcknowledgment === "footer") {
