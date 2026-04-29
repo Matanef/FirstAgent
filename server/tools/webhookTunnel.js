@@ -118,7 +118,7 @@ export async function webhookTunnel(request) {
           const hasMessage = payload.body?.entry?.[0]?.changes?.[0]?.value?.messages?.length > 0;
           const isStatusOnly = payload.body?.entry?.[0]?.changes?.[0]?.value?.statuses && !hasMessage;
 
-          if (!isStatusOnly) {
+if (!isStatusOnly) {
             const currentData = await fs.readFile(logFile, "utf8").catch(() => "[]");
             const events = JSON.parse(currentData);
             events.push(payload);
@@ -126,14 +126,49 @@ export async function webhookTunnel(request) {
             console.log(`[Webhook] Received ${req.method} from ${req.headers['user-agent'] || 'Unknown'}`);
           }
 
+          // ── BEGIN DYNAMIC MODEL ROUTING ──
+          if (hasMessage) {
+            try {
+              const incomingPhoneNumber = payload.body.entry[0].changes[0].value.messages[0].from;
+              const { getUserByPhone } = await import("../utils/userProfiles.js");
+              const profile = await getUserByPhone(incomingPhoneNumber);
+
+              // Default to the standard, safe model for everyone (including your mother)
+              let targetModel = "llama3"; 
+
+              // Switch to the uncensored model ONLY if the sender is the owner
+              if (profile && profile.role === "owner") {
+                targetModel = "dolphin-llama3:latest"; 
+              }
+
+              // Inject the chosen model into the payload body
+              payload.body.targetModel = targetModel;
+              
+              // Re-serialize the body so the proxy forwards the injected variable
+              body = JSON.stringify(payload.body);
+              
+              console.log(`🧠 [Model Route] Assigned ${targetModel} to incoming message from ${incomingPhoneNumber}`);
+            } catch (err) {
+              console.warn(`⚠️ [Model Route] Failed to assign model: ${err.message}`);
+            }
+          }
+          // ── END DYNAMIC MODEL ROUTING ──
+
           // ── PROXY to main Express server's /webhook/whatsapp route ──
           // The actual agent pipeline (message parsing, tool routing, auto-reply)
           // lives in the main server at port 3000. Forward the webhook there.
           const mainPort = process.env.PORT || 3000;
+          
+          // Grab the security signature from Meta so the main server doesn't reject it
+          const proxyHeaders = { "Content-Type": "application/json" };
+          if (req.headers["x-hub-signature-256"]) {
+            proxyHeaders["x-hub-signature-256"] = req.headers["x-hub-signature-256"];
+          }
+
           try {
             const proxyRes = await fetch(`http://127.0.0.1:${mainPort}/webhook/whatsapp`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: proxyHeaders,
               body: body,
               signal: AbortSignal.timeout(30000)
             });

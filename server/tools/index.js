@@ -32,7 +32,6 @@ import { scheduler } from "./scheduler.js";
 import { contacts } from "./contacts.js";
 import { calendar } from "./calendar.js";
 import { documentQA } from "./documentQA.js";
-import { lotrJokes } from "./lotrJokes.js";
 import { workflow } from "./workflowTool.js";
 import { folderAccess } from "./folderAccess.js";
 import { codeReview } from "./codeReview.js";
@@ -62,7 +61,6 @@ export const TOOLS = {
   codeSandbox,
   codeRag,
   documentQA,
-  lotrJokes,
   workflow,
   weather,
   finance,

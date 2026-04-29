@@ -304,6 +304,128 @@ export function stripHtmlToText(html) {
  * @param {string} options.stubFolder - Folder for stubs (default: same folder context, or vault root)
  * @returns {string[]} List of created stub paths (relative to vault)
  */
+/**
+ * Post-write LLM pass that adds [[wikilinks]] to a note body.
+ *
+ * Why: many note-producing LLMs (the noteWriter, thesisSynthesizer, etc.) generate
+ * prose without wikilink syntax. Without wikilinks, resolveWikilinks() finds nothing
+ * to resolve and no stubs are ever created — the vault graph stays empty.
+ *
+ * This helper asks a small LLM to identify 3-8 distinct concrete concepts in the
+ * note body, then wraps the FIRST occurrence of each in [[...]]. Subsequent
+ * occurrences are left alone to keep the note readable. Idempotent: skips short
+ * notes, frontmatter, code fences, and phrases already wrapped in [[...]].
+ *
+ * Defensive: returns the original content unchanged on any LLM failure.
+ *
+ * @param {string} content    Note body (may include frontmatter)
+ * @param {object} [opts]
+ * @param {string} [opts.noteTitle]  Used to skip self-references
+ * @param {string} [opts.label]      For logging (e.g. "thesisSynthesizer")
+ * @returns {Promise<string>}        Enriched content (or original if skipped/failed)
+ */
+export async function enrichWithWikilinks(content, opts = {}) {
+  if (!content || typeof content !== "string") return content;
+  if (content.length < 200) return content; // too short to bother
+
+  const noteTitle = (opts.noteTitle || "").trim();
+  const label = opts.label || "obsidianUtils";
+
+  // Lazy import to avoid a circular dep with other skill modules.
+  const { llm } = await import("../tools/llm.js");
+
+  const prompt = `You will receive a markdown note. Identify 3-8 distinct noun phrases that represent concrete concepts, people, places, technologies, or topics worth linking to other notes in a personal knowledge vault.
+
+Return JSON only:
+{ "wikilinks": ["phrase1", "phrase2", ...] }
+
+Rules:
+- Each phrase: 1-4 words, the EXACT casing/spelling as it appears in the note (preserve original).
+- Concrete concepts only. Avoid generic words: "thing", "idea", "concept", "approach", "system", "method", "way", "stuff", "topic".
+- ${noteTitle ? `Do NOT include the note's own title: "${noteTitle}".` : "Do NOT include phrases that are simply the document title."}
+- Do NOT include phrases that are already wrapped in [[...]] in the source.
+- Prefer proper nouns and multi-word technical terms over single common words.
+- No duplicates.
+
+Note:
+"""
+${content.slice(0, 4000)}
+"""
+
+JSON:`;
+
+  let phrases = [];
+  try {
+    const res = await llm(prompt, {
+      timeoutMs: 15000,
+      format: "json",
+      skipKnowledge: true,
+      skipLanguageDetection: true,
+      options: { temperature: 0.2, num_ctx: 4096 }
+    });
+    const txt = res?.data?.text || res?.text || "";
+    let parsed;
+    try { parsed = JSON.parse(txt); }
+    catch {
+      const m = txt.match(/\{[\s\S]*\}/);
+      if (m) { try { parsed = JSON.parse(m[0]); } catch { parsed = null; } }
+    }
+    if (parsed && Array.isArray(parsed.wikilinks)) {
+      phrases = parsed.wikilinks
+        .filter(p => typeof p === "string")
+        .map(p => p.trim())
+        .filter(p => p.length >= 2 && p.length <= 60)
+        .filter(p => !noteTitle || p.toLowerCase() !== noteTitle.toLowerCase());
+    }
+  } catch (err) {
+    console.log(`[${label}] wikilink enrichment LLM failed (non-blocking): ${err.message}`);
+    return content;
+  }
+
+  if (phrases.length === 0) {
+    console.log(`[${label}] wikilink enrichment: no candidate phrases`);
+    return content;
+  }
+  phrases = phrases.slice(0, 8);
+
+  // Walk lines, skipping frontmatter + code fences. Replace FIRST occurrence of each phrase.
+  let inFrontmatter = false;
+  let inCodeFence = false;
+  const replaced = new Set();
+  const lines = content.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    // CRITICAL: re-read lines[i] each iteration. Previously we held `line` as
+    // a snapshot — when two phrases matched the same line, the second
+    // replacement clobbered the first because `line` was the pre-mutation copy.
+    if (i === 0 && lines[i].trim() === "---") { inFrontmatter = true; continue; }
+    if (inFrontmatter) { if (lines[i].trim() === "---") inFrontmatter = false; continue; }
+    if (/^\s*```/.test(lines[i])) { inCodeFence = !inCodeFence; continue; }
+    if (inCodeFence) continue;
+
+    for (const phrase of phrases) {
+      if (replaced.has(phrase)) continue;
+      const currentLine = lines[i]; // re-read each iteration so prior wikilinks survive
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`(^|[^\\w[])(${escaped})(?=[^\\w\\]]|$)`, "i");
+      const m = currentLine.match(re);
+      if (!m) continue;
+      const idx = m.index + m[1].length;
+      const before = currentLine.slice(Math.max(0, idx - 2), idx);
+      if (before === "[[") continue; // already inside a wikilink
+      lines[i] = currentLine.slice(0, idx) + `[[${m[2]}]]` + currentLine.slice(idx + m[2].length);
+      replaced.add(phrase);
+    }
+  }
+
+  if (replaced.size > 0) {
+    console.log(`[${label}] wikilink enrichment: linked ${replaced.size}/${phrases.length} phrases → [${[...replaced].join(", ")}]`);
+    return lines.join("\n");
+  }
+  console.log(`[${label}] wikilink enrichment: 0 phrases matched (had ${phrases.length} candidates)`);
+  return content;
+}
+
 export async function resolveWikilinks(content, { createStubs = true, stubFolder = VAULT_STUBS_ROOT } = {}) {
   const vault = getVaultPath();
   if (!vault || !content) return [];

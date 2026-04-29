@@ -374,6 +374,17 @@ export async function llm(prompt, configOptions = {}) {
       }
     }
 
+// LOUD DEBUGGING LOGS:
+    console.log(`\n🔥 [LLM TOOL DEBUG] -----------------------------------------`);
+    console.log(`🔥 MODEL BEING USED: ${ollamaModel}`);
+    console.log(`🔥 IS SYSTEM PROMPT INJECTED? ${!!system}`);
+    if (finalPrompt.includes("cynical, foul-mouthed veteran hacker")) {
+      console.log(`🔥 PERSONALITY CHECK: Hacker Persona DETECTED in prompt!`);
+    } else {
+      console.log(`🔥 PERSONALITY CHECK: Hacker Persona MISSING from prompt!`);
+    }
+    console.log(`------------------------------------------------------------\n`);
+
     const body = {
       model: ollamaModel,
       prompt: finalPrompt,
@@ -381,7 +392,7 @@ export async function llm(prompt, configOptions = {}) {
       stream: false,
       ...(format ? { format } : {}),
       options: {
-        num_ctx: 4096, // Hard cap to prevent VRAM overflow on 8GB cards
+        num_ctx: 8192, // Hard cap to prevent VRAM overflow on 8GB cards
         ...options
       }
     };
@@ -491,7 +502,7 @@ export async function llmStream(prompt, onChunk, configOptions = {}) {
       ...(system ? { system } : {}),
       stream: true,
       options: {
-        num_ctx: 4096, // Keep normal chat streams fast!
+        num_ctx: 8192, // Keep normal chat streams fast!
         ...options
       }
     };

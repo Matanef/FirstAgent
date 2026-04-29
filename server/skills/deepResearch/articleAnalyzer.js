@@ -5,6 +5,7 @@
 //   3. Return a structured analysis object for downstream synthesis
 
 import { llm } from "../../tools/llm.js";
+const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
 import { writeNote, buildFrontmatter, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
 import { upgradeArticle, chunkText } from "./paperUpgrader.js";
 import { createLogger } from "../../utils/logger.js";
@@ -104,6 +105,7 @@ Return JSON only:
       const res = await llm(analysisPrompt, {
         timeoutMs: 30000,
         format: "json",
+        model: SYNTH_MODEL,
         skipKnowledge: true,
         skipLanguageDetection: true,
         options: { temperature: 0.2, num_ctx: 4096 }
@@ -124,6 +126,7 @@ Return JSON only:
       const res = await llm(analysisPrompt, {
         timeoutMs: 25000,
         format: "json",
+        model: SYNTH_MODEL,
         skipKnowledge: true,
         skipLanguageDetection: true,
         options: { temperature: 0.15, num_ctx: 3072 }
@@ -217,6 +220,10 @@ Return JSON only:
     stance: analysis.stance,
     fetched: article.fetchedAt || new Date().toISOString(),
     tags: ["research-source", topicSlug, article.source || "unknown"].filter(Boolean),
+    // Phase 5A — persist the structured citation metadata so the synthesizer can
+    // emit proper APA in-text citations and a real References list. Without this,
+    // the LLM hallucinates "[5]", "Source 1", and fake "(Smith et al., 2019)".
+    ...(article.cite ? { cite: article.cite } : {}),
     ...(upgraded && activeArticle.upgradedPdfUrl ? {
       paper_url:    activeArticle.upgradedPdfUrl,
       paper_doi:    activeArticle.upgradedDoi || null,

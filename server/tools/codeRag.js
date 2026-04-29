@@ -407,10 +407,13 @@ async function loadIndex() {
  * Returns top-K results sorted by relevance.
  */
 async function searchCode(query, topK = TOP_K) {
-  const index = await loadIndex();
-  if (!index || !index.embeddings || index.embeddings.length === 0) {
-    return { results: [], error: "No index found. Run 'index the codebase' first." };
-  }
+const index = await loadIndex();
+if (!index || !index.embeddings || index.embeddings.length === 0) {
+  return { results: [], error: "No index found. Run 'index the codebase' first." };
+} else if (!Array.isArray(index.embeddings)) {
+  console.error("Invalid embeddings format in index file");
+  return { results: [], error: "Invalid embeddings format in index file" };
+}
 
   // Embed the query
   const queryVector = await getEmbedding(query);

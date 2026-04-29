@@ -36,59 +36,64 @@ function findSandboxRoot(request) {
 function resolveUserPath(request) {
   if (!request || typeof request !== "string") throw new Error("Invalid file request");
 
-  // PRIORITY: Extract explicit absolute path (e.g., D:/local-llm-ui/server/tools)
-  // This avoids NL word-stripping bugs like "in D:/..." or "me of E:/..."
-  const absolutePathMatch = request.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
-  if (absolutePathMatch) {
-    // We extract the path, trim trailing slashes, AND remove LLM-generated colons/quotes
-    let extracted = absolutePathMatch[1]
-      .replace(/[\\/]+$/, '')
-      .replace(/[:"']+$/, '')
-      .trim(); 
+  try {
+    // PRIORITY: Extract explicit absolute path (e.g., D:/local-llm-ui/server/tools)
+    // This avoids NL word-stripping bugs like "in D:/..." or "me of E:/..."
+    const absolutePathMatch = request.match(/([a-zA-Z]:[\\/][^\s,;!?"']+)/);
+    if (absolutePathMatch) {
+      // We extract the path, trim trailing slashes, AND remove LLM-generated colons/quotes
+      let extracted = absolutePathMatch[1]
+        .replace(/[\\/]+$/, '')
+        .replace(/[:"']+$/, '')
+        .trim(); 
       
+      const sandboxRoot = findSandboxRoot(request);
+      let resolved = path.resolve(extracted);
+      // ── SECURITY: Resolve symlinks to prevent sandbox escape ──
+      try { resolved = fsSync.realpathSync(resolved); } catch { /* path may not exist */ }
+
+      if (!isPathAllowed(resolved)) {
+        throw new Error("Access outside allowed directories denied");
+      }
+    
+      const cleaned = path.relative(sandboxRoot, resolved) || '.';
+      console.log(`[file] Path resolution (absolute): "${request}" → resolved="${resolved}"`);
+      return { cleaned, resolved, sandboxRoot };
+    }
+
+    // FALLBACK: Natural language cleanup for relative paths
+    let cleaned = request
+      .replace(/\b(scan|show|list|open|read|please|folder|directory|explore|look|into|the|a|an|at|in|of|me|my|from|to|for|subfolder|contents?|file|files|go\s+to|what'?s|what\s+is|in\s+(your|my|the)\s+project)\b/gi, "")
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Determine sandbox root
     const sandboxRoot = findSandboxRoot(request);
-    let resolved = path.resolve(extracted);
-    // ── SECURITY: Resolve symlinks to prevent sandbox escape ──
-    try { resolved = fsSync.realpathSync(resolved); } catch { /* path may not exist */ }
+    const rootName = path.basename(sandboxRoot);
+
+    if (cleaned === "" || cleaned === "/" || cleaned === ".") cleaned = ".";
+
+    // Handle "local-llm-ui/server" pattern intelligently
+    const rootPattern = new RegExp(`^${rootName}[\\/]`, 'i');
+    if (rootPattern.test(cleaned)) {
+      cleaned = cleaned.replace(rootPattern, '');
+      console.log(`[file] Detected project-relative path: "${cleaned}"`);
+    }
+
+    if (!cleaned || cleaned === rootName.toLowerCase()) cleaned = ".";
+
+    const resolved = path.resolve(sandboxRoot, cleaned);
 
     if (!isPathAllowed(resolved)) {
       throw new Error("Access outside allowed directories denied");
     }
-  
-    const cleaned = path.relative(sandboxRoot, resolved) || '.';
-    console.log(`[file] Path resolution (absolute): "${request}" → resolved="${resolved}"`);
+
+    console.log(`[file] Path resolution (relative): "${request}" → cleaned="${cleaned}" → resolved="${resolved}"`);
     return { cleaned, resolved, sandboxRoot };
+  } catch (err) {
+    console.error("[file] Error in resolveUserPath:", err);
+    throw err;
   }
-
-  // FALLBACK: Natural language cleanup for relative paths
-  let cleaned = request
-    .replace(/\b(scan|show|list|open|read|please|folder|directory|explore|look|into|the|a|an|at|in|of|me|my|from|to|for|subfolder|contents?|file|files|go\s+to|what'?s|what\s+is|in\s+(your|my|the)\s+project)\b/gi, "")
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  // Determine sandbox root
-  const sandboxRoot = findSandboxRoot(request);
-  const rootName = path.basename(sandboxRoot);
-
-  if (cleaned === "" || cleaned === "/" || cleaned === ".") cleaned = ".";
-
-  // Handle "local-llm-ui/server" pattern intelligently
-  const rootPattern = new RegExp(`^${rootName}[\\/]`, 'i');
-  if (rootPattern.test(cleaned)) {
-    cleaned = cleaned.replace(rootPattern, '');
-    console.log(`[file] Detected project-relative path: "${cleaned}"`);
-  }
-
-  if (!cleaned || cleaned === rootName.toLowerCase()) cleaned = ".";
-
-  const resolved = path.resolve(sandboxRoot, cleaned);
-
-  if (!isPathAllowed(resolved)) {
-    throw new Error("Access outside allowed directories denied");
-  }
-
-  console.log(`[file] Path resolution (relative): "${request}" → cleaned="${cleaned}" → resolved="${resolved}"`);
-  return { cleaned, resolved, sandboxRoot };
 }
 
 function formatFileSize(bytes) {
