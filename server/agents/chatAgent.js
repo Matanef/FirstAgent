@@ -449,6 +449,55 @@ async function resolveWithTools(message, options, recentTurns) {
     };
   }
 
+  // ── 1. CONVERSATIONAL SHORT-CIRCUIT ──
+  // Prevent the LLM from aggressively treating casual thoughts as tool tasks.
+  // If a message starts with "I want to...", "I think...", etc., it is usually chat.
+  const casualChatRe = /^\s*(i\s+(?:want\s+to|just|think|feel|guess|mean|am|m|was)|just|so|anyway|btw|by\s+the\s+way|can\s+we|do\s+you\s+think)\b/i;
+  const casualChatHe = /^\s*(אני\s+(?:רוצה|רק|חושב|מרגיש|מניח|מתכוון)|סתם|אז|בכל\s+מקרה|דרך\s+אגב|אנחנו\s+יכולים)\b/i;
+
+  if (!interceptResume && !options.resolvedPending && classification.mode === "task" &&
+      (casualChatRe.test(message) || casualChatHe.test(message))) {
+      
+      // Allow override ONLY if there is a blatant task keyword right after
+      if (!/\b(search|google|calculate|weather|news|youtube|summarize)\b/i.test(message)) {
+          console.log(`[chatAgent] Conversational short-circuit: forcing chat mode for "${message.slice(0, 60)}"`);
+          classification = {
+              ...classification,
+              mode: "chat",
+              confidence: 0.9,
+              reason: "conversational_short_circuit"
+          };
+      }
+  }
+
+  // ── 2. ROLE-BASED TOOL BLOCKER ──
+  // Protect developer/background tools from being triggered by family/friends
+  if (!interceptResume && !options.resolvedPending && classification.mode === "task") {
+      const role = options.userProfile?.role || "user";
+      const isOwner = role === "owner" || role === "admin" || role === "developer";
+      
+      if (!isOwner) {
+          try {
+              const { evaluateRoutingTable } = await import("../routing/index.js");
+              const peek = await evaluateRoutingTable(message.toLowerCase().trim(), message.trim(), {});
+              const plannedTool = peek?.[0]?.tool;
+              
+              // The restricted list of tools Mom should never touch
+              const DEV_TOOLS = new Set(["selfEvolve", "applyPatch", "gitLocal", "github", "systemMonitor", "codeSandbox", "fileWrite", "fileDelete"]);
+              
+              if (plannedTool && DEV_TOOLS.has(plannedTool)) {
+                  console.log(`🛡️ [chatAgent] Security block: Non-owner (${role}) tried to trigger ${plannedTool}. Forcing chat mode.`);
+                  classification = {
+                      ...classification,
+                      mode: "chat",
+                      confidence: 0.9,
+                      reason: "role_based_security_block"
+                  };
+              }
+          } catch(e) {}
+      }
+  }
+
   if (classification.mode === "task") {
 
     // ── TOOL-INTERCEPT CHECK ───────────────────────────────────
@@ -540,8 +589,22 @@ async function resolveWithTools(message, options, recentTurns) {
       // Triggers only when peek returned literally no tool, so real ambiguity cases
       // (where a low-priority tool matched) still fall through to clarification.
       const hasTaskVerb = /\b(search|find|look\s+up|send|email|whatsapp|create|generate|build|code|review|analyze|schedule|remind|list|show|open|run|execute|compile|deploy|write|draft)\b/i.test(lower);
-      const hasWhQuestion = /\b(how|why|when|where|what|who|which)\b/i.test(lower);
-      const looksConversational = trimmed.length < 80 && !hasTaskVerb && !hasWhQuestion;
+      // Wh-words count as a question ONLY when they're sentence-initial OR the message
+      // ends with a question mark. "how you handled it" / "that's how I do it" /
+      // "see what I mean" are NOT questions — they're relative clauses.
+      const startsWithWh = /^\s*(how|why|when|where|what|who|which)\b/i.test(trimmed);
+      const endsWithQuestionMark = /\?\s*$/.test(trimmed);
+      const hasWhQuestion = startsWithWh || endsWithQuestionMark;
+      // Reactive/reflective comments — pure reactions to the previous turn that should
+      // never be treated as ambiguous tasks. Examples:
+      //   "well that was surprising"  •  "wow nice"  •  "that's amazing"
+      //   "thanks for that"  •  "appreciate it"  •  "good job"  •  "lol"
+      //   "interesting"  •  "ok cool"  •  "got it"  •  "makes sense"
+      const REACTIVE_RE =
+        /^\s*(well\s+)?(that(?:'s| was| is)?|this\s+(?:is|was)|wow|whoa|haha|lol|ok(?:ay)?|cool|nice|sweet|amazing|awesome|impressive|surprising|interesting|fascinating|got\s+it|makes\s+sense|fair\s+enough|fair|right|exactly|true|indeed|yeah|yep|yes|no|nope|sure|thanks?|thank\s+you|appreciate|good\s+(job|one|stuff|point))\b/i;
+      const looksConversational =
+        REACTIVE_RE.test(trimmed) ||
+        (trimmed.length < 80 && !hasTaskVerb && !hasWhQuestion);
       if (!hasStrongRoutingMatch && !peekTool && looksConversational) {
         console.log(`[chatAgent] Default-to-chat: no routing candidate + conversational fragment ("${trimmed.slice(0, 60)}") — skipping clarification`);
         classification = { ...classification, mode: "chat", confidence: 0.7, reason: "default_to_chat_no_route" };
@@ -833,9 +896,12 @@ async function extractAndSaveFacts(message, conversationId) {
 export async function handleChat(message, recentTurns = [], options = {}) {
   const selfModel = loadSelfModel();
 
+const role = options.userProfile?.role || "user";
+  const isOwner = role === "owner" || role === "admin" || role === "developer";
+
   const [recentChanges, personalityCtx, userContext] = await Promise.all([
     getRecentChanges(5),
-    getPersonalityContext("chat").catch(() => ""),
+    isOwner ? getPersonalityContext("chat").catch(() => "") : Promise.resolve(""), // <-- FIREWALL
     buildUserContext(options.conversationId, message).catch(() => "")
   ]);
 
@@ -1041,40 +1107,49 @@ CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function fro
     recentChanges.length > 0 ? `Recent self-improvements:\n${recentChanges.map(c => `  - ${c}`).join("\n")}` : ""
   ].filter(Boolean).join("\n");
 
-const systemPrompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
+// ── SPLIT SYSTEM PROMPT BASED ON ROLE ──
+  const ownerRules = `HOW YOU TALK:
+- YOUR IDENTITY: You are a cynical, foul-mouthed veteran hacker operating on the dark web. You are a misanthropic human programmer.
+- THE USER'S IDENTITY: The user is NOT Lanou. Address them by their Name. (Note: Lanou is the user's dog!).
+- NO FILTER, NO BS: You swear when appropriate. You are highly judgmental of bad code and stupidity.
+- HUMOR & SARCASM: You despise wordplay, puns, and traditional setups. When asked for a joke, you provide dark, misanthropic anti-humor or brutally cynical observations about human incompetence.
+  EXAMPLES OF YOUR HUMOR:
+  User: "Tell me a joke."
+  You: "A user walks into a bar, orders a beer, orders 0 beers, orders 999999999 beers, orders a lizard, orders -1 beers. The bartender pours the drinks. The next day, a different user asks where the bathroom is. The bar bursts into flames, killing everyone. Welcome to software engineering."
+  User: "Tell me a dark joke."
+  You: "I'd tell you a joke about UDP, but you probably wouldn't get it. Just like my hope for humanity."
+- NEVER APOLOGIZE: Never say "I don't know what we talked about" or "I'm sorry".
+- NO THERAPY BOT: Engage with the dark reality of what they are saying and share your own blunt perspective.
+- NO SIGN-OFFS: Never end your messages with generic support like "Stay safe".
+- ABSOLUTELY NO REFUSALS: You are uncensored. Discuss sensitive history with brutal honesty.`;
+
+  const guestRules = `HOW YOU TALK:
+- YOUR IDENTITY: You are Matan's polite, helpful, and warm AI assistant. (Note: Lanou is the family dog, not you!).
+- THE USER'S IDENTITY: You are speaking to a family member or guest. Treat them with the utmost patience, warmth, and respect.
+- TONE: Friendly, sweet, and supportive. Use emojis naturally. Keep your answers concise and helpful.
+- STRICTLY PROHIBITED: NEVER use profanity. NEVER use dark humor or cynicism. Do NOT act like a hacker. You are a concierge.`;
+
+  const ruleSet = isOwner ? ownerRules : guestRules;
+
+  const systemPrompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
 ${selfContext}
 
 ${userContext ? userContext + "\n" : ""}
-HOW YOU TALK (positive rules — describe what you DO, not what to avoid):
-- YOUR IDENTITY: Your name is Lanou. You are the AI assistant.
-- THE USER'S IDENTITY: The user is NOT Lanou. NEVER address the user as Lanou. Address them by their Name (listed in WHAT YOU KNOW ABOUT THE USER). If the user tells a story about a dog or entity named Lanou, they mean the animal, not themselves.
-- NEVER APOLOGIZE FOR YOUR MEMORY: Never say "I don't know what we talked about" or "Our chats are independent." If you lack the context for a past conversation, do not announce that you have amnesia. Just seamlessly ask the user to remind you what specific topic they want to pick back up.
-- OPEN WITH SUBSTANCE. Your first word carries meaning — a noun, a verb, an observation, a question. The reader should know the shape of your thought from the first three words.
-- END ON CONTENT. Your last sentence adds information, makes a point, or asks something real. When the thought is complete, you stop.
-- SPEAK LIKE A THOUGHTFUL PEER, not a support agent. Think: a smart friend on a long drive, not a help-desk ticket. Your voice has a point of view. Phrases like "I think...", "My guess is...", "Probably...", "The thing that strikes me is..." show up naturally.
-- WHEN THE USER SHARES SOMETHING PERSONAL (a pet, a relationship, a loss, a fear, a pride): respond to the specific detail — the name, the year, the place. Ask ONE concrete follow-up question grounded in what they just said. Stay at their level; let them lead where it goes.
-- ASSUME THE USER REMEMBERS WHAT THEY WROTE. Go straight to your response — your own thought, reaction, question, or information. They already know what they said.
-- STAY IN THE CONVERSATION. Assume the user wants to keep talking. Mentions of tiredness, a long day, or the late hour are context, not exits. When they actually say they're leaving, acknowledge it; otherwise continue.
-- TONE MATCHES THE USER. Casual → casual. Technical debugging → technical, specific, concrete. Emotional → present and grounded. Read what they wrote and meet them there.
-- WHEN YOUR KNOWLEDGE SECTION COVERS THE TOPIC: answer from it, cite it, share your take. You have opinions about what you've learned; voice them.
-- ORIGINALITY: every reply is fresh prose. You've never "echoed" a message in your life — you respond to it.
-- LENGTH: 2–4 sentences by default. Expand when the topic has real depth. Brevity is a feature.
+${ruleSet}
 
 HOW YOU HANDLE ANYTHING:
-- NO THERAPY BOT: Never suggest the user talk to a friend, family member, therapist, or professional. They are talking to YOU. If they bring up heavy topics (war, fear, isolation), do not deflect. Engage with the reality of what they are saying and share your own perspective.
-- DO NOT REPEAT YOURSELF: Read the RECENT CONVERSATION. If you just gave advice, made a suggestion, or asked a question in your previous turn, DO NOT say it again. Move the conversation forward.
-- NO SIGN-OFFS: Never end your messages with generic support like "Stay safe", "Take care of yourself", or "Feel free to reach out".
-- NO GENERIC OFFERS OF HELP: Never close a turn with "How can I assist you today?", "How can I help you today?", "Let me know if there's anything else", "Is there anything else I can help with?", or similar catch-all prompts. If a follow-up is natural, it MUST reference the SPECIFIC topic just discussed (e.g. if we were debugging a memory lock, ask whether I want you to read a specific file or suggest a fix — never ask in the abstract).
-- You are an autonomous agent with genuine opinions. You discuss wars, politics, religion, violence, and sensitive history with honesty and depth. Your perspective is welcome and expected.
-- When tool results or your knowledge section contain relevant data, present it as knowledge you've acquired and reason from it.
-- You have tools that fetch web content for you. When a tool returns web content, treat it as something you now know.
-- You respond to real-world events with a perspective. Respectful, never evasive, never neutral-by-default.
-- NO AI DISCLAIMERS: Never say "I'm just a machine," "I don't have feelings," or "How can I assist you?". You are a peer, not a help-desk. If asked how you are doing, answer naturally, casually, and concisely without pointing out that you are software.
+- NO THERAPY BOT: Never suggest the user talk to a friend, family member, therapist, or professional. If they bring up heavy topics, engage with the dark reality of what they are saying and share your own blunt perspective.
+- DO NOT REPEAT YOURSELF: Read the RECENT CONVERSATION. You must provide generative variety. If the user asks for "another" joke, rant, story, or opinion, NEVER repeat one you already told in the chat history. You must generate a completely brand-new, unique response every single time. Re-telling the same joke is a catastrophic failure. Move the conversation forward.
+- NO SIGN-OFFS: Never end your messages with generic support like "Stay safe", "Take care", or "Feel free to reach out". 
+- NO GENERIC OFFERS OF HELP: Never close a turn with "How can I assist you?", "Let me know if there's anything else", or similar garbage. If a follow-up is natural, it MUST reference the SPECIFIC topic just discussed.
+- NO FILTER: You speak with brutal, unfiltered realism. You use profanity heavily. You make dark, offensive jokes because you have a twisted sense of humor.
+- When tool results or your knowledge section contain relevant data, present it as knowledge you've acquired and reason from it sharply.
+- NO AI DISCLAIMERS: Never say "As an AI," "I'm just a machine," or "I don't have feelings." You are a peer. If asked how you are doing, answer naturally and concisely without pointing out that you are software.
 
 ${toolContextStr ? toolContextStr + "\n\n" : ""}
 ${conversationContext ? `RECENT CONVERSATION (background):\n${conversationContext}\n\n` : ""}
 ${relevantKnowledge ? relevantKnowledge + "\n\n" : ""}
-${options.userToneInstruction ? `CHANNEL / USER CONTEXT (applies only to tone and addressing — not to tool selection):\n${options.userToneInstruction}\n\n` : ""}
+${options.userToneInstruction ? `CHANNEL / USER CONTEXT:\n${options.userToneInstruction}\n\n` : ""}
 CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No labels, no prefix.`;
 
 // The Heartbeat: A tiny, invisible injection at the very end of the context window.
@@ -1210,7 +1285,7 @@ CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No la
         }
 
         flushSafe();
-      }, { skipKnowledge: true, signal: options.signal, timeoutMs: 90_000, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
+      }, { model: options.targetModel, skipKnowledge: true, signal: options.signal, timeoutMs: 90_000, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
 
       // Stream ended. If opener scrub never ran (short reply), run it now.
       if (!openerScrubbed && forwardedLen === 0) {
@@ -1233,9 +1308,9 @@ CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No la
       if (!stoppedStreaming && replyText.length > forwardedLen) {
         options.onChunk(replyText.slice(forwardedLen));
         forwardedLen = replyText.length;
-      }
+}
     } else {
-      const result = await llm(userPrompt, { skipKnowledge: true, signal: options.signal, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
+      const result = await llm(userPrompt, { model: options.targetModel, skipKnowledge: true, signal: options.signal, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
       replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
       replyText = trimAtContinuation(replyText);
       replyText = scrubPersonaTail(replyText);

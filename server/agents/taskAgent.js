@@ -18,6 +18,7 @@ import { executeAgent } from "../utils/coordinator.js";
  * @param {Function} params.onStep - SSE step callback
  * @returns {Object} Execution result from coordinator
  */
+
 export async function handleTask({
   message,
   conversationId,
@@ -27,10 +28,22 @@ export async function handleTask({
   onStep,
   signal,
 }) {
-  console.log(`[taskAgent] Executing task: "${message.slice(0, 80)}..."`);
+  let taskMessage = message;
+
+  // ── PLANNER SMUGGLER HACK ──
+  // The Planner intercepts words like "analyze" and "sentiment" and splits the 
+  // task in half (fetching vs summarizing). We want x.js to handle it natively.
+  // We smuggle the intent past the planner by obfuscating the keywords.
+  if (/\b(twitter|x)\b/i.test(taskMessage) && /\b(analyze|sentiment)\b/i.test(taskMessage)) {
+    taskMessage = taskMessage
+      .replace(/\banalyze\b/gi, "x_analyze")
+      .replace(/\bsentiment\b/gi, "x_sentiment");
+  }
+
+  console.log(`[taskAgent] Executing task: "${taskMessage.slice(0, 80)}..."`);
 
   const result = await executeAgent({
-    message,
+    message: taskMessage,
     conversationId,
     clientIp,
     fileIds,
@@ -39,8 +52,6 @@ export async function handleTask({
     signal,
   });
 
-  // Attach mode marker
   result.mode = "task";
-
   return result;
 }

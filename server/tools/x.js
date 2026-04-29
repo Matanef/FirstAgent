@@ -110,7 +110,8 @@ function extractRegion(text, contextCountry) {
 function detectXIntent(text) {
   const lower = (text || "").toLowerCase();
   if (/\b(trends?|trending|popular|hot\s+topic|top\s+topic)\b/i.test(lower)) return "trends";
-  if (/\b(sentiment|analyze|analysis|opinion|mood)\b/i.test(lower)) return "analyze";
+  // Catch the smuggled words from taskAgent!
+  if (/\b(sentiment|analyze|analysis|opinion|mood|x_analyze|x_sentiment)\b/i.test(lower)) return "analyze";
   if (/\b(post|tweet|publish|send\s+tweet|compose)\b/i.test(lower) && !/\b(search|find|get|show)\b/i.test(lower)) return "post";
   if (/\b(complaint|pain\s*point|frustrat|looking\s+for\s+(a\s+)?better|hate|alternative|issue|problem)\b/i.test(lower)) return "leadgen";
   if (/\b(advanced\s+search|filter|exclude|no\s+retweet|-is:retweet)\b/i.test(lower)) return "leadgen";
@@ -119,7 +120,11 @@ function detectXIntent(text) {
 
 function extractSearchQuery(text) {
   let query = text
-    // Strip "Analyze N tweets sentiment about", "100 tweets sentiment about", etc.
+    // ── Strip explicit tool commands ──
+    .replace(/\b(use\s+(the\s+)?(x|twitter)\s+tool\s+to\s+)?(search|find|look\s+up|scan)(\s+(on\s+)?(twitter|x))?(\s+for)?\b/gi, "")
+    // Strip requested count amounts
+    .replace(/\b\d+\s+(tweets?|posts?)\b/gi, "")
+    .replace(/\b(about|tweets\s+about|some\s+tweets\s+about)\b/gi, "")
     .replace(/\banalyze\s+\d+\s+tweets?\s+(?:sentiment\s+)?(?:about|on|for|regarding)\s*/gi, "")
     .replace(/\b\d+\s+tweets?\s+(?:sentiment\s+)?(?:about|on|for|regarding)\s*/gi, "")
     .replace(/\bsentiment\s+(?:analysis\s+)?(?:of|about|for)\s+tweets?\s+(?:about|on|for|regarding)?\s*/gi, "")
@@ -130,16 +135,21 @@ function extractSearchQuery(text) {
     .replace(/\b(tweets?|posts?)\s+(about|on|for|regarding)\s*/gi, "")
     .replace(/\b(on\s+)?twitter\b/gi, "")
     .replace(/\b(on\s+)?x\b/gi, "")
-    // Strip trailing compound instructions that leak from multi-step prompts
-    // e.g., "Dune 3, using the llm summarize the sentiment" → "Dune 3"
-    // e.g., "AI news and then email me" → "AI news"
+    // ── Strip trailing compound instructions (NOW CATCHES SMUGGLED WORDS) ──
     .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai|gpt|model)\b.*$/gi, "")
-    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:summarize|analyze|send|email|forward|compile|create|generate|write|make)\b.*$/gi, "")
+    .replace(/[,;]\s*(?:and\s+)?(?:then\s+)?(?:summarize|analyze|x_analyze|send|email|forward|compile|create|generate|write|make)\b.*$/gi, "")
     .replace(/\band\s+(?:then\s+)?(?:using|use|with)\s+(?:the\s+)?(?:llm|ai)\b.*$/gi, "")
-    .replace(/\band\s+(?:then\s+)?(?:summarize|analyze|send|email|forward)\b.*$/gi, "")
+    .replace(/\band\s+(?:then\s+)?(?:summarize|analyze|x_analyze|send|email|forward)\b.*$/gi, "")
+    // Strip individual smuggled words (just in case they appear elsewhere)
+    .replace(/\bx_analyze\b/gi, "")
+    .replace(/\bx_sentiment\b/gi, "")
+    // Clean up any dangling prepositions/articles left at the very end
+    .replace(/\b(and|the|with|using|for)\s*$/gi, "")
     .replace(/,?\s*\b(?:read|get|show|fetch)\s+(?:the\s+)?(?:first|last|top|latest|recent)?\s*\d*\s*(?:tweets?|posts?|results?)?\s*$/gi, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/^\d+\s+/, ""); 
+    
   return query || text;
 }
 
@@ -178,31 +188,62 @@ async function getTrends(woeid = 1, locationName = "Worldwide") {
 }
 
 /**
- * Search tweets by query
+ * Search tweets by query (Pagination Loop)
  */
-async function searchTweets(query, count = 10) {
+async function searchTweets(query, count = 10, onStep = null) {
   try {
     const tc = await ensureClient();
-    const rawTweets = await tc.search(query, count, "Latest");
+    let allTweets = [];
+    let nextCursor = null;
+    let page = 1;
 
-    const tweets = rawTweets.map((t) => ({
-      id: t.id || null,
-      text: t.text || "",
-      author: t.user?.username || t.user?.id || "unknown",
-      author_name: t.user?.name || "",
-      created_at: t.createdAt || new Date(),
-      retweets: t.retweets || 0,
-      likes: t.likes || 0,
-      replies: t.replies || 0,
-      isRetweet: t.isRetweet || false,
-      url: t.id ? `https://x.com/${t.user?.username || "i"}/status/${t.id}` : null,
-    }));
+    // Loop until we have the requested amount of tweets
+    while (allTweets.length < count) {
+      // Twitter max per page is roughly 20
+      const fetchLimit = Math.min(20, count - allTweets.length);
+      
+      // Broadcast progress to the UI's Train of Thought!
+      if (page > 1 && onStep) {
+        onStep({
+          type: "thought",
+          phase: "ACTION",
+          content: `Fetching page ${page}... (Scanned ${allTweets.length} of ${count} requested)`,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const result = await tc.search(query, fetchLimit, "Latest", nextCursor);
+      const newTweets = result.tweets || [];
+      
+      if (newTweets.length === 0) break;
+
+      // Add only unique tweets (sometimes Twitter pagination overlaps)
+      for (const t of newTweets) {
+        if (!allTweets.find(a => a.id === t.id)) {
+          allTweets.push(t);
+        }
+      }
+
+      nextCursor = result.nextCursor;
+      
+      // Stop if there are literally no more tweets on Twitter for this topic
+      if (!nextCursor) break;
+
+      if (allTweets.length < count) {
+        // Wait 1.5 seconds to avoid getting rate-limited by Twitter
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        page++;
+      }
+    }
+
+    // Trim down to the exact requested amount just in case we overshot
+    allTweets = allTweets.slice(0, count);
 
     return {
       success: true,
-      tweets,
+      tweets: allTweets,
       query,
-      total: tweets.length,
+      total: allTweets.length,
     };
   } catch (err) {
     console.error("[x] searchTweets error:", err.message);
@@ -283,9 +324,19 @@ function formatTrendsHTML(trends, location) {
   </div>`;
 }
 
-function formatTweetsHTML(tweets, query) {
+function formatTweetsHTML(tweets, query, requestedCount = null) {
   if (!tweets || tweets.length === 0) {
     return `<div class="x-tweets"><p>No tweets found for "${query}".</p></div>`;
+  }
+
+  // Inject validation badge explaining API limits
+  let countLabel = "";
+  if (requestedCount) {
+    if (tweets.length < requestedCount) {
+      countLabel = ` <span style="font-size: 0.8em; color: gray;">(Scanned ${tweets.length} of ${requestedCount} requested — API pagination limit)</span>`;
+    } else {
+      countLabel = ` <span style="font-size: 0.8em; color: gray;">(Scanned ${tweets.length} tweets)</span>`;
+    }
   }
 
   const cards = tweets.map((t) => {
@@ -298,19 +349,27 @@ function formatTweetsHTML(tweets, query) {
   });
 
   return `<div class="x-tweets">
-    <h3>🐦 Tweets about "${query}"</h3>
+    <h3 style="margin-top: 0; display: flex; align-items: baseline; gap: 8px;">🐦 Tweets about "${query}"${countLabel}</h3>
     ${cards.join("\n")}
   </div>`;
 }
 
-function formatSentimentHTML(sentiment) {
+function formatSentimentHTML(sentiment, scannedCount, requestedCount) {
   const moodEmoji = { positive: "😊", negative: "😞", neutral: "😐", mixed: "🤔", unknown: "❓" };
   const emoji = moodEmoji[sentiment.overall_sentiment] || "❓";
   const themes = sentiment.themes.length > 0
     ? sentiment.themes.map((t) => `<span style="background: var(--accent); color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 4px;">${t}</span>`).join(" ")
     : "No themes detected";
 
-  return `<div class="x-sentiment" style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-top: 15px;">
+  let scanWarning = "";
+  if (requestedCount && scannedCount < requestedCount) {
+     scanWarning = `<div style="background: rgba(255, 165, 0, 0.15); border-left: 4px solid #ff9800; padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 0.9em;">
+        ⚠️ <strong>API Limit Reached:</strong> You requested ${requestedCount} tweets, but the Twitter API capped the single-request pagination at <strong>${scannedCount} tweets</strong>. Analysis is based on this maximum allowed sample.
+     </div>`;
+  }
+
+  return `<div class="x-sentiment" style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+    ${scanWarning}
     <h3 style="margin-top: 0;">${emoji} Sentiment Analysis</h3>
     <div style="margin-bottom: 8px;"><strong>Overall:</strong> <span style="text-transform: capitalize;">${sentiment.overall_sentiment}</span></div>
     <div style="margin-bottom: 8px;"><strong>Key Themes:</strong> ${themes}</div>
@@ -339,6 +398,14 @@ function formatTrendsPlain(trends, location) {
 export async function x(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
   const context = typeof request === "object" ? (request?.context || {}) : {};
+  const onStep = typeof request === "object" ? request.onStep : null;
+
+  // Detect requested tweet count (Default 10, Max 100 to avoid rate limits)
+  let fetchCount = 10;
+  const countMatch = text.match(/\b(\d+)\s+tweets?\b/i);
+  if (countMatch) {
+    fetchCount = Math.min(parseInt(countMatch[1], 10), 100);
+  }
 
   // Check if cookie file exists
   let hasCookies = false;
@@ -354,8 +421,14 @@ export async function x(request) {
     };
   }
 
-  const intent = context.action || detectXIntent(text);
-  console.log(`🐦 [x] Intent: ${intent} | Text: "${text.slice(0, 80)}"`);
+// Smart intent resolution: Always prefer our native "analyze" mode if requested,
+  // ignoring the planner's attempt to force a generic "search" step.
+  let intent = detectXIntent(text);
+  if (intent !== "analyze" && intent !== "trends" && context.action) {
+    intent = context.action;
+  }
+  
+  console.log(`🐦 [x] Intent: ${intent} | Fetching: ${fetchCount} tweets | Text: "${text.slice(0, 80)}"`);
 
   try {
     // ── TRENDS (with regional support) ──
@@ -376,23 +449,27 @@ export async function x(request) {
       };
     }
 
-    // ── ANALYZE (search + sentiment) ──
+// ── ANALYZE (search + sentiment) ──
     if (intent === "analyze") {
       const query = extractSearchQuery(text);
       console.log(`🐦 [x] Searching for: ${query} (Analyze Mode)`);
-      const searchResult = await searchTweets(query, 10);
+      const searchResult = await searchTweets(query, fetchCount, onStep);
 
+      // --- THE NEW, SAFE FAIL BLOCK ---
       if (!searchResult.success || searchResult.tweets.length === 0) {
         // Return a clear, structured failure — do NOT let downstream LLM hallucinate data
         const errorMsg = searchResult.error
           ? `❌ Search failed for "${query}": ${searchResult.error}`
           : `❌ No tweets found to analyze for "${query}". Try a different search term or check if the topic is currently being discussed.`;
         console.warn(`🐦 [x] Analyze mode failed — no tweets found for "${query}"`);
+        
         return {
-          tool: "x", success: false, final: true,
+          tool: "x", success: true, final: true,
           data: {
+            html: `<div class="x-tweets" style="padding: 15px; border-radius: 8px; background: var(--bg-tertiary); border-left: 4px solid #ef4444;"><p style="margin: 0;">${errorMsg}</p></div>`,
             text: errorMsg,
-            noHallucinate: true, // Signal to ToT/executor: do NOT generate synthetic results
+            plain: errorMsg,
+            raw: { error: errorMsg },
           },
         };
       }
@@ -403,7 +480,7 @@ export async function x(request) {
         return {
           tool: "x", success: true, final: true,
           data: {
-            text: formatTweetsHTML(searchResult.tweets, query) + `\n<p>⚠️ Only ${searchResult.tweets.length} tweet(s) found — not enough for reliable sentiment analysis. Showing raw tweets instead.</p>`,
+            text: formatTweetsHTML(searchResult.tweets, query, fetchCount) + `\n<p>⚠️ Only ${searchResult.tweets.length} tweet(s) found — not enough for reliable sentiment analysis. Showing raw tweets instead.</p>`,
             plain: `Tweets about "${query}": ${searchResult.tweets.length} results (too few for sentiment analysis)`,
             raw: { tweets: searchResult },
           },
@@ -419,14 +496,16 @@ export async function x(request) {
         .slice(0, 3)
         .map(t => t.url);
       const urlSection = tweetUrls.length > 0
-        ? `\n<div class="x-sources"><strong>📎 Sources:</strong> ${tweetUrls.map(u => `<a href="${u}" target="_blank">${u}</a>`).join(" | ")}</div>`
+        ? `\n<div class="x-sources" style="margin-top: 10px;"><strong>📎 Sources:</strong> ${tweetUrls.map(u => `<a href="${u}" target="_blank">${u}</a>`).join(" | ")}</div>`
         : "";
 
       return {
         tool: "x", success: true, final: true,
         data: {
-          text: formatTweetsHTML(searchResult.tweets, query) + "\n" + formatSentimentHTML(sentiment) + urlSection,
-          plain: `Tweets about "${query}": ${searchResult.tweets.length} results\n\nSentiment: ${sentiment.overall_sentiment}\nThemes: ${sentiment.themes.join(", ")}\n${sentiment.summary}${tweetUrls.length > 0 ? "\n\nSources:\n" + tweetUrls.join("\n") : ""}`,
+          // Put the Sentiment HTML FIRST, then the Tweets HTML, then the URLs
+          html: formatSentimentHTML(sentiment, searchResult.tweets.length, fetchCount) + "\n" + formatTweetsHTML(searchResult.tweets, query, fetchCount) + urlSection,
+          // Reorder the plain text version too
+          plain: `Sentiment: ${sentiment.overall_sentiment}\nThemes: ${sentiment.themes.join(", ")}\n${sentiment.summary}\n\nTweets about "${query}": ${searchResult.tweets.length} results${tweetUrls.length > 0 ? "\n\nSources:\n" + tweetUrls.join("\n") : ""}`,
           raw: { tweets: searchResult, sentiment },
           tweetUrls, // Available for chain context (e.g., WhatsApp forwarding)
         },
@@ -478,7 +557,7 @@ export async function x(request) {
       if (!query.includes("-is:retweet")) query += " -is:retweet";
       console.log(`🐦 [x] Lead Gen search: "${query}"`);
 
-      const result = await searchTweets(query, 20);
+      const result = await searchTweets(query, 20, onStep);
       if (!result.success) {
         return { tool: "x", success: false, final: true, data: { text: `❌ Lead gen search failed: ${result.error}` } };
       }
@@ -510,10 +589,10 @@ export async function x(request) {
       };
     }
 
-    // ── SEARCH (default) ──
+// ── SEARCH (default) ──
     const query = extractSearchQuery(text);
     console.log(`🐦 [x] Searching for: ${query}`);
-    const result = await searchTweets(query, 10);
+    const result = await searchTweets(query, fetchCount, onStep);
 
     if (!result.success) {
       return { tool: "x", success: false, final: true, data: { text: `❌ Failed to search X: ${result.error}` } };
@@ -522,7 +601,9 @@ export async function x(request) {
     return {
       tool: "x", success: true, final: true,
       data: {
-        text: formatTweetsHTML(result.tweets, query),
+        // ASSIGNED TO HTML SO THE SUMMARY GOES ON TOP
+        html: formatTweetsHTML(result.tweets, query, fetchCount), 
+        text: `Fetched ${result.tweets.length} tweets about "${query}".\n\n` + result.tweets.map((t) => `@${t.author}: ${t.text.substring(0, 100)}`).join("\n"),
         plain: result.tweets.map((t) => `@${t.author}: ${t.text.substring(0, 200)} (❤️${t.likes})${t.url ? ` 🔗 ${t.url}` : ""}`).join("\n\n"),
         raw: result,
       },

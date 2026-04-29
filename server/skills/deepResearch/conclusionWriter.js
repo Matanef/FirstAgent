@@ -5,6 +5,7 @@
 //   3. Write {VAULT_JOURNAL_ROOT}/Research/{topicSlug}/{N}/conclusion.md.
 
 import { llm } from "../../tools/llm.js";
+const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
 import { writeNote, buildFrontmatter, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
 import {
   createCollection,
@@ -175,8 +176,9 @@ Return JSON only:
 
   try {
     const res = await llm(prompt, {
-      timeoutMs: 45000,
+      timeoutMs: 90000,
       format: "json",
+      model: SYNTH_MODEL,
       skipKnowledge: true,
       skipLanguageDetection: true,
       options: { temperature: 0.3, num_ctx: 8192 }

@@ -9,6 +9,7 @@
     "attachmentDownloader.js",
     "obsidianWriter.js",
     "deepResearch.js",
+    "deepModeToggle.js",
     "gitPulse.js"
   ]
 }

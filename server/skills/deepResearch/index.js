@@ -147,7 +147,11 @@ function parseTopic(rawText) {
     // strip framing verbs / nouns
     .replace(/\b(deep\s+)?research\b/gi, "")
     .replace(/\b(write\s+(me\s+)?a?|generate|produce|build|create|make)\b/gi, "")
-    .replace(/\b(thesis|dissertation|article|summary|brief|overview|in[\s-]?depth|deep[\s-]?dive|detailed|guide|comprehensive|paper|report|analysis|study)\b/gi, "")
+    // Format / meta-nouns describing the deliverable, NOT the topic.
+    // "research a piece about X" → topic should be "X", not "piece X".
+    // Without this, "piece" leaks into every downstream query, vector collection,
+    // and article body.
+    .replace(/\b(thesis|dissertation|article|summary|brief|overview|in[\s-]?depth|deep[\s-]?dive|detailed|guide|comprehensive|paper|report|analysis|study|piece|post|essay|blog|write[\s-]?up|story|draft|review|memo|entry|item|content|topic|subject|note|text)\b/gi, "")
     .replace(/\b(about|on|regarding|of|for)\b/gi, "")
     .replace(/^\s*(a|an|the)\s+/i, "")
     .replace(/[^\p{L}\p{N}\s'\u0590-\u05FF-]/gu, " ")
@@ -307,6 +311,7 @@ export async function deepResearch(request) {
       try {
         articles = await articleHarvester.harvest(promptSpec.query, {
           topic: rawTopic,
+          tier: effectiveTier,
           limit: articlesPerPrompt,
           perProvider: Math.max(2, Math.ceil(articlesPerPrompt / 2)),
           prioritySources: subject?.priority_sources?.length ? subject.priority_sources : null,
@@ -460,6 +465,7 @@ export async function deepResearch(request) {
       try {
         const supplemental = await articleHarvester.harvest(rawTopic, {
           topic: rawTopic,
+          tier: effectiveTier,
           limit: Math.min(minRequired - totalAnalyses + 2, 5),
           perProvider: 3,
           prioritySources: ["core", "semanticscholar", "doaj"],

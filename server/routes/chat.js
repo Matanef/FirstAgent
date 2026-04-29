@@ -146,7 +146,7 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
 
     res.write(`data: ${JSON.stringify({ type: "start", conversationId: id })}\n\n`);
 
-    // Only set the heartbeat ONCE here!
+// Only set the heartbeat ONCE here!
     heartbeatInterval = setInterval(() => {
       try { 
         if (!res.writableEnded) res.write(`: heartbeat\n\n`); 
@@ -155,11 +155,23 @@ router.post("/chat", requireAuth, rateLimit, async (req, res) => {
       }
     }, 15_000);
 
+    // ── BEGIN DYNAMIC MODEL ROUTING (WEB UI) ──
+    // Extract model from the frontend request if it exists
+    let targetModel = req.body.model;
+
+    // If no model was explicitly requested by the UI, default to Dolphin
+    // (Assuming anyone using the local web dashboard is the owner/admin)
+    if (!targetModel) {
+        targetModel = "dolphin-llama3:latest";
+    }
+    // ── END DYNAMIC MODEL ROUTING ──
+
     const result = await orchestratorHandle({
       message,
       conversationId: id,
       clientIp: req.clientIp,
       fileIds: fileIds || [],
+      targetModel, // 👈 PASS THE BATON HERE
       signal: abortController.signal,
       onChunk: (chunk) => res.write(`data: ${JSON.stringify({ type: "chunk", chunk })}\n\n`),
       onStep: (stepInfo) => {

@@ -58,17 +58,34 @@ function saveCollection(name, docs) {
 // ============================================================
 
 /**
- * Get embedding from Ollama (nomic-embed-text or similar)
+ * Get embedding from Ollama (nomic-embed-text or similar).
+ *
+ * Phase 6B — wraps the fetch in an AbortController + watchdog to prevent the
+ * silent 10-minute hang. Previously this used bare fetch() with no timeout,
+ * which froze the entire deepResearch pipeline if Ollama stalled. On timeout
+ * or any failure, falls through to the TF-IDF fallback (returning null).
  */
 async function getOllamaEmbedding(text) {
   const model = process.env.EMBEDDING_MODEL || "nomic-embed-text";
   const url = `${CONFIG.LLM_API_URL}api/embed`;
+  const TIMEOUT_MS = 30_000;
+
+  const ctl = new AbortController();
+  const timeoutId = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+
+  // Watchdog — log every 10s so future hangs are visible in PM2 logs.
+  const startedAt = Date.now();
+  const watchdogId = setInterval(() => {
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    console.warn(`[vectorStore] still waiting on Ollama embedding (${elapsedSec}s elapsed, abort at ${TIMEOUT_MS / 1000}s)`);
+  }, 10_000);
 
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: text }),
+      signal: ctl.signal
     });
 
     if (!res.ok) {
@@ -86,8 +103,15 @@ async function getOllamaEmbedding(text) {
     }
     throw new Error("No embedding in response");
   } catch (err) {
-    console.warn(`[vectorStore] Ollama embedding failed: ${err.message}, falling back to TF-IDF`);
+    if (err.name === "AbortError") {
+      console.warn(`[vectorStore] Ollama embedding ABORTED after ${TIMEOUT_MS / 1000}s — falling back to TF-IDF`);
+    } else {
+      console.warn(`[vectorStore] Ollama embedding failed: ${err.message}, falling back to TF-IDF`);
+    }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
+    clearInterval(watchdogId);
   }
 }
 

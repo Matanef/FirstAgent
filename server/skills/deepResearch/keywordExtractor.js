@@ -5,6 +5,7 @@
 // Pure module (LLM call is optional and gracefully skipped on timeout/parse failure).
 
 import { llm } from "../../tools/llm.js";
+const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
 
 // Minimal stopword lists. Hardcoded to avoid pulling in `natural` (banned).
 const STOPWORDS_EN = new Set([
@@ -27,6 +28,38 @@ const STOPWORDS_HE = new Set([
 
 const HEBREW_RE = /[\u0590-\u05FF]/;
 const ARABIC_RE = /[\u0600-\u06FF]/;
+
+// Meta-words: describe the FORMAT of the request, not the topic.
+// "write a piece about X" → "piece" is meta, "X" is the topic.
+// Used both in the LLM prompt (as a reject list) and as a post-filter.
+const META_WORDS_EN = new Set([
+  "piece","article","post","essay","blog","write-up","writeup","writeups","summary",
+  "thing","things","note","notes","text","texts","content","topic","topics",
+  "subject","subjects","story","stories","draft","drafts","report","reports",
+  "review","reviews","overview","analysis","brief","memo","entry","item"
+]);
+const META_WORDS_HE = new Set([
+  "מאמר","מאמרים","פוסט","פוסטים","סיכום","טקסט","תוכן","נושא","נושאים","סיפור","סיפורים","דוח","סקירה"
+]);
+
+// True if a phrase is "just" a meta-word, possibly wrapped in trivial adjectives/articles.
+// Examples that return true: "piece", "a piece", "an interesting piece", "quick post".
+function isMetaPhrase(phrase, lang) {
+  if (!phrase || typeof phrase !== "string") return false;
+  const meta = lang === "he" ? META_WORDS_HE : META_WORDS_EN;
+  const lc = phrase.toLowerCase().trim();
+  if (meta.has(lc)) return true;
+  const tokens = lc.split(/\s+/);
+  if (tokens.length === 0) return false;
+  const last = tokens[tokens.length - 1];
+  if (!meta.has(last)) return false;
+  const TRIVIAL = new Set([
+    "a","an","the","this","that","my","your","our","some","any","one","another",
+    "good","great","quick","short","long","brief","interesting","nice","cool",
+    "small","big","new","old","detailed","simple","basic"
+  ]);
+  return tokens.slice(0, -1).every(t => TRIVIAL.has(t));
+}
 
 function detectLanguage(text) {
   if (!text) return "en";
@@ -63,7 +96,7 @@ function buildBigrams(tokens) {
  * Optional LLM call to extract 3–6 noun phrases from the topic.
  * Falls back to top-N bigrams on parse failure or timeout.
  */
-async function extractPhrasesViaLLM(text, fallbackBigrams) {
+async function extractPhrasesViaLLM(text, fallbackBigrams, lang = "en") {
   const prompt = `Extract 3–6 distinct noun phrases that capture the core subject of this research request. Return JSON only.
 
 Request: """${text}"""
@@ -75,12 +108,17 @@ Rules:
 - Each phrase: 1–4 words, no leading/trailing articles ("the", "a").
 - Preserve the original language of the request (do not translate).
 - No duplicates. No punctuation.
+- REJECT meta-words about the request itself (these describe the format, not the topic):
+  piece, article, post, essay, blog, write-up, summary, thing, note, text, content,
+  topic, subject, story, draft, report, review, overview, analysis, brief.
+  Example: for "write a piece about quantum computing" → return ["quantum computing"], NOT ["piece", "quantum computing"].
 
 JSON:`;
   try {
     const res = await llm(prompt, {
       timeoutMs: 15000,
       format: "json",
+      model: SYNTH_MODEL,
       skipKnowledge: true,
       skipLanguageDetection: true,
       options: { temperature: 0.2, num_ctx: 2048 }
@@ -91,13 +129,19 @@ JSON:`;
       const cleaned = parsed.phrases
         .filter(p => typeof p === "string")
         .map(p => p.trim())
-        .filter(p => p.length > 0 && p.length < 80);
-      if (cleaned.length > 0) return cleaned.slice(0, 6);
+        .filter(p => p.length > 0 && p.length < 80)
+        .filter(p => !isMetaPhrase(p, lang));
+      if (cleaned.length > 0) {
+        console.log(`[keywordExtractor] LLM phrases (${lang}): ${JSON.stringify(cleaned.slice(0, 6))}`);
+        return cleaned.slice(0, 6);
+      }
     }
   } catch {
     // fall through to bigram fallback
   }
-  return fallbackBigrams.slice(0, 4);
+  // Bigram fallback ALSO filters meta-phrases.
+  const filteredBigrams = fallbackBigrams.filter(b => !isMetaPhrase(b, lang));
+  return filteredBigrams.slice(0, 4);
 }
 
 function safeJsonParse(text) {
@@ -124,9 +168,11 @@ export async function extract(text, opts = {}) {
   const tokens = dropStopwords(allTokens, language);
   const bigrams = buildBigrams(tokens);
 
-  let phrases = bigrams.slice(0, 4);
+  // Always filter meta-phrases from the bigram fallback path too.
+  const filteredBigrams = bigrams.filter(b => !isMetaPhrase(b, language));
+  let phrases = filteredBigrams.slice(0, 4);
   if (usePhraseLLM && tokens.length >= 2) {
-    phrases = await extractPhrasesViaLLM(text, bigrams);
+    phrases = await extractPhrasesViaLLM(text, bigrams, language);
   }
 
   return { tokens, bigrams, phrases, language };

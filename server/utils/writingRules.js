@@ -61,15 +61,15 @@ export const TIER_BUDGETS = {
     aiAcknowledgment: "footer"
   },
   thesis: {
-    total: 5500,
+    total: 5750,
     sections: [
       { id: "abstract",    heading: "Abstract",            words: 400 },
       { id: "intro",       heading: "Introduction",        words: 550 },
       { id: "litreview",   heading: "Literature Review",   words: 900 },
-      { id: "methodology", heading: "Methodology",         words: 700 },
-      { id: "results",     heading: "Results",             words: 950 },
-      { id: "discussion",  heading: "Discussion",          words: 1100 },
-      { id: "conclusion",  heading: "Conclusion",          words: 650 },
+      { id: "methodology", heading: "Methodology",         words: 750 },
+      { id: "results",     heading: "Results",             words: 1050 },
+      { id: "discussion",  heading: "Discussion",          words: 1200 },
+      { id: "conclusion",  heading: "Conclusion",          words: 700 },
       { id: "ai_ack",      heading: "AI Usage Acknowledgment", words: 250 }
     ],
     aiAcknowledgment: "section"

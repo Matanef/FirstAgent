@@ -35,6 +35,8 @@ const CHAT_PATTERNS = [
   /\bhow (are|do|have) you\b/i,
   /\bwhat do you think\b/i,
   /\btell me about yourself\b/i,
+  // NEW: Pure conversational openers (No generation verbs)
+  /^\s*(i\s+(?:just|think|feel|guess|mean|am|m|was)|just|so|anyway|btw|by\s+the\s+way|can\s+we\s+just|do\s+you\s+think)\b/i,
   /\bdo you (remember|recall|know who)\b/i,
   /\bwhat(?:'?s|\s+is) your (opinion|view|take|thought|name|favorite)\b/i,
   /\byour (opinion|view|take|thoughts?)\s+(on|about|regarding)\b/i,
@@ -113,6 +115,8 @@ const TASK_PATTERNS = [
   // Kept it as a qualified form: "get <noun>" where the noun-ish phrase is clearly an action target.
   /\b(search|find|look\s+up|google|fetch|check|show|list|display|browse|run|call|execute|start|trigger|play)\b/i,
   /\bget\s+(me\s+)?(the\s+|a\s+|an\s+)?(weather|news|sports?|price|stock|time|date|forecast|report|info|information|update|list|link|file|email|messages?|result)/i,
+  // NEW: Generation and explicit action openers (Triggers planner/tools)
+  /^\s*(write|generate|create|explain|how\s+to|i\s+want\s+to)\b/i,
   // Fixed plural support for messages and emails
   /\b(send|compose|write|draft|reply)\s+(an?\s+)?(emails?|messages?|whatsapp|texts?|sms|dms?)\b/i,
   // Natural language "send [person/relation] a [adjective] message" — recipient between verb and noun
@@ -264,7 +268,7 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     }
   }
 
-  // Explicit tool name override (runs for ALL message lengths)
+// Explicit tool name override (runs for ALL message lengths)
   const EXPLICIT_TOOLS = ["pikud", "tracker", "spotify", "moltbook", "github", "sandbox", "alarm", "scheduler", "weather", "email", "news", "finance", "sports", "selfimprovement", "selfevolve", "deepresearch"];
   for (const tool of EXPLICIT_TOOLS) {
     if (lower.includes(tool)) {
@@ -273,7 +277,14 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     }
   }
 
-  // File attachments — if the user dragged files in, they want something DONE with them
+  // NEW: Explicit Action override (Treats generation verbs like high-priority tools)
+  const EXPLICIT_ACTIONS = /\b(write|generate|create|explain|how\s+to|tutorial|guide|breakdown|act\s+as\s+a)\b/i;
+  if (EXPLICIT_ACTIONS.test(lower)) {
+    taskScore += 5;
+    taskReasons.push(`explicit_action`);
+  }
+
+  // File attachments — if the user dragged files in...
   if (fileIds && fileIds.length > 0) {
     taskScore += 2;
     taskReasons.push(`attached_files:${fileIds.length}`);
@@ -300,8 +311,8 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
   // CONFLICT RESOLUTION: If task keywords are present alongside emotional/war keywords,
   // the user is asking for information ABOUT the topic, not venting.
   // e.g. "news about the war" = task (fetch news), NOT chat (emotional support about war)
-  if (taskScore > 0 && chatScore > 0 && taskReasons.some(r => r.includes("explicit_tool"))) {
-    chatScore = Math.max(0, chatScore - taskScore); // Suppress chat when explicit tools detected
+if (taskScore > 0 && chatScore > 0 && taskReasons.some(r => r.includes("explicit_tool") || r.includes("explicit_action"))) {
+    chatScore = Math.max(0, chatScore - taskScore); // Suppress chat when explicit tools or actions detected
   }
 
   // If in a chat conversation and no strong task signals, continue chatting

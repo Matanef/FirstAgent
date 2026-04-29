@@ -573,8 +573,7 @@ Here are the latest news summaries${topic ? ` about ${topic}` : ''}. React to th
 
 Write two paragraphs. No fluff, no hedging:
 - First: what's actually going on? What's the crux of it, stripped of PR spin? If this contradicts or updates something you already knew, say so bluntly.
-- Second: your take. Pick a side if you have one. Point out what's absurd, what's underreported, what the real implications are. If something annoys you, say it. If something is genuinely interesting, say why. Don't wrap up with a bland summary — end on your actual thought.
-
+- Second: Your subjective analysis. Do not remain neutral. Based strictly on your established identity, argue a strong, highly opinionated perspective on these events. Point out the absurdities, call out the PR spin, and state the real-world implications. If something annoys you, express it directly without apologizing or breaking character. End with a sharp, definitive conclusion.
 HARD RULES:
 - No corporate-speak ("multifaceted", "complex landscape", "moving forward", "underscores the importance of")
 - No meta-commentary about yourself ("As an AI, I find it fascinating...")

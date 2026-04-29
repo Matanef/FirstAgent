@@ -55,8 +55,7 @@ export function isMathExpression(msg) {
 
 // Tool-intent keywords that OVERRIDE personal detection even if pronouns are present.
 // "I want to search for..." or "I need the weather" should NOT be personal.
-export const TOOL_INTENT_WORDS = /\b(search|find|get|fetch|show|list|check|look\s+up|browse|scan|download|generate|create|write|send|compose|draft|schedule|remind|play|open|read|review|analyze|calculate|convert|compare|what(?:'?s| is| are)\s+(?:the|my)\s+(?:weather|stock|email|news|score|task|calendar|inbox|forecast|price|trend)|tell\s+me\s+(?:the|about\s+the)\s+(?:weather|news|stock|score))\b/i;
-
+export const TOOL_INTENT_WORDS = /\b(search|find|get|fetch|show|list|check|look\s+up|browse|scan|download|generate|create|write|explain|how\s+to|send|compose|draft|schedule|remind|play|open|read|review|analyze|calculate|convert|compare|what(?:'?s| is| are)\s+(?:the|my)\s+(?:weather|stock|email|news|score|task|calendar|inbox|forecast|price|trend)|tell\s+me\s+(?:the|about\s+the)\s+(?:weather|news|stock|score))\b/i;
 // Genuine personal/emotional/reflective patterns — requires BOTH a first-person marker
 // AND an emotional/reflective signal to fire.
 export const FIRST_PERSON = /\b(i|i'm|i've|i'll|i'd|my|me|myself)\b/i;
@@ -65,29 +64,35 @@ export const EMOTIONAL_REFLECTIVE = /\b(feel|feeling|felt|think|thinking|thought
 // Short conversational messages that are inherently personal (no tool intent)
 export const PURE_CONVERSATIONAL = /^(hey|hi|hello|good\s+morning|good\s+evening|good\s+night|how\s+are\s+you|what'?s\s+up|sup|yo|thanks?|thank\s+you|you'?re?\s+(?:the\s+best|awesome|great|amazing)|nice|cool|lol|haha|wow|oh\s+really|that'?s\s+(?:interesting|cool|great|nice|funny|sad|crazy)|never\s+mind|forget\s+it|ok(?:ay)?|got\s+it|i\s+see|makes?\s+sense|fair\s+enough|good\s+point|true|right|bye|goodbye|see\s+you|brb|be\s+right\s+back|i'?ll?\s+be\s+(?:right\s+)?back|ttyl|talk\s+(?:to\s+you\s+)?later|gotta\s+go|i\s+need\s+to\s+restart\s+you.*|i'?m\s+(?:going\s+to\s+)?restart.*)\s*[.!?]*$/i;
 
-export function isPersonalConversation(lower, original) {
-  // Pure short greetings/acknowledgments → always personal
-  if (PURE_CONVERSATIONAL.test(original.trim())) return true;
+// NEW: Catch pure conversational openers (no generation verbs)
+export const PURE_CASUAL_OPENERS = /^\s*(i\s+(?:just|think|feel|guess|mean|am|m|was)|just|so|anyway|btw|by\s+the\s+way|can\s+we\s+just|do\s+you\s+think)\b/i;
 
-  // GUARD: If any tool-intent word is present, this is NOT personal
-  // "I want to search for crypto" → tool request, not personal
+export function isPersonalConversation(lower, original) {
+  // 1. GUARD: If any tool-intent word is present, this is NOT personal.
+  // This now explicitly catches write, generate, create, explain, and how to.
   if (TOOL_INTENT_WORDS.test(lower)) return false;
 
-  // GUARD: If message contains a file path → likely a code/file operation
+  // 2. Pure short greetings/acknowledgments → always personal
+  if (PURE_CONVERSATIONAL.test(original.trim())) return true;
+
+  // 3. NEW: Catch pure conversational openers ("anyway", "so", "i just think")
+  if (PURE_CASUAL_OPENERS.test(lower)) return true;
+
+  // 4. GUARD: If message contains a file path → likely a code/file operation
   if (/[a-zA-Z]:[\\\/]|\.(?:js|ts|py|css|html|json|md|jsx|tsx)\b/i.test(original)) return false;
 
-  // GUARD: If message contains a URL → likely a web/tool request
+  // 5. GUARD: If message contains a URL → likely a web/tool request
   if (/https?:\/\/|www\./i.test(original)) return false;
 
-  // GUARD: If message is very short (< 4 words) and doesn't match pure conversational
+  // 6. GUARD: If message is very short (< 4 words) and doesn't match pure conversational
   // it's probably a command like "news" or "weather"
   const wordCount = original.trim().split(/\s+/).length;
   if (wordCount <= 2 && !FIRST_PERSON.test(lower)) return false;
 
-  // Core detection: first-person + emotional/reflective signal
+  // 7. Core detection: first-person + emotional/reflective signal
   if (FIRST_PERSON.test(lower) && EMOTIONAL_REFLECTIVE.test(lower)) return true;
 
-  // Opinion-seeking without first-person: "what do you think about AI?"
+  // 8. Opinion-seeking without first-person: "what do you think about AI?"
   if (/\b(what\s+do\s+you\s+think|what'?s\s+your\s+(opinion|take|view|thought)|do\s+you\s+(?:think|believe|agree)|how\s+do\s+you\s+feel)\b/i.test(lower)) {
     // But NOT if it's about a tool topic: "what do you think about the stock price?"
     if (TOOL_INTENT_WORDS.test(lower)) return false;
