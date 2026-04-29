@@ -22,10 +22,34 @@
  * Convert a name like "John Smith" or "Smith, John" or "J. Smith" to
  * canonical APA form: "Smith, J." (last name + initials, comma-separated).
  */
+// Phase 8E — reject authors whose surname is malformed metadata leakage.
+// OpenAlex sometimes returns garbage like "V., A. P." or "L., (. T." when the
+// upstream source is broken. These produce broken APA references; better to
+// drop the author entirely than print "V., .. A. P." in the bibliography.
+function isMalformedAuthor(s) {
+  if (!s) return true;
+  const t = s.trim();
+  if (t.length < 2) return true;
+  // Contains parentheses (never valid in a name)
+  if (/[()]/.test(t)) return true;
+  // Surname (before first comma) is just initials-with-dots or a single letter
+  const surname = t.split(",")[0].trim();
+  if (surname.length < 2) return true;                                   // "V"
+  if (/^[A-Z]\.?$/.test(surname)) return true;                           // "V."
+  if (/^[A-Z]\.\s*$/.test(surname)) return true;                         // "V. "
+  // Surname starts with a non-letter (e.g. "..A. P.")
+  if (!/^[\p{L}]/u.test(surname)) return true;
+  // Has obvious metadata-leak markers like ".." or ", ((..."
+  if (/\.\./.test(t) || /,\s*\(/.test(t)) return true;
+  return false;
+}
+
 export function canonicalizeAuthor(name) {
   if (!name || typeof name !== "string") return null;
   const cleaned = name.trim().replace(/\s+/g, " ");
   if (!cleaned) return null;
+  // Phase 8E — reject malformed metadata up-front.
+  if (isMalformedAuthor(cleaned)) return null;
 
   // Already in "Last, F." form? Pass through.
   if (/^[\p{L}'\-]+,\s*[\p{L}.\s'\-]+$/u.test(cleaned)) {
@@ -38,6 +62,8 @@ export function canonicalizeAuthor(name) {
   if (parts.length === 1) return parts[0]; // single name — pass through
 
   const surname = parts[parts.length - 1];
+  // Phase 8E — surname itself must look like a real surname (≥2 letters, starts with letter)
+  if (surname.length < 2 || !/^[\p{L}]/u.test(surname)) return null;
   const initials = parts.slice(0, -1)
     .map(p => p.charAt(0).toUpperCase() + ".")
     .join(" ");
@@ -175,7 +201,13 @@ export function buildCitationIndex(notes) {
     seen.add(dedupKey);
 
     const authorsCanon = cite.authors.map(canonicalizeAuthor).filter(Boolean);
-    const firstSurname = authorsCanon.length > 0 ? surnameOf(authorsCanon[0]) : "(unknown)";
+    // Phase 8E — drop the entry entirely if all authors got rejected as
+    // malformed metadata. Better no entry than a broken "V., .. A. P." entry.
+    if (authorsCanon.length === 0) {
+      console.log(`[citations] dropped entry — no valid authors after sanitization (raw="${(cite.authors || []).slice(0, 2).join(" / ")}", title="${String(cite.title).slice(0, 60)}")`);
+      continue;
+    }
+    const firstSurname = surnameOf(authorsCanon[0]);
     entries.push({
       id: `cite_${entries.length + 1}`,
       cite: { ...cite, authors: authorsCanon },
