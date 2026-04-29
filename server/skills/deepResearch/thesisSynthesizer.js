@@ -813,7 +813,9 @@ ${excerpt}
  * @param {object} args.constraints
  * @returns {Promise<{relativePath:string, wordCount:number, lintReport:object, vectorCollection:string}>}
  */
-export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptResults, constraints }) {
+export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptResults, constraints, onStep }) {
+  // Phase 6C — progress emitter (no-op when caller didn't supply onStep).
+  const emitProgress = typeof onStep === "function" ? onStep : () => {};
   // Final title precedence: caller-supplied cleanTitle (LLM-derived in orchestrator)
   // > outline's own title > raw topic. cleanTitle is what users see in the H1 + frontmatter.
   const finalTitle = (cleanTitle && cleanTitle.trim()) || topic;
@@ -826,6 +828,7 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
 
   // 2. Build outline.
   console.log(`[thesisSynthesizer] ⏳ building outline (LLM pass 1/N)...`);
+  emitProgress(`📐 Building outline…`);
   const outline = await buildOutline({ topic, tier, promptResults });
   console.log(`[thesisSynthesizer] ✓ outline built: ${outline.sections?.length || 0} sections`);
 
@@ -852,6 +855,8 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   for (let idx = 0; idx < outline.sections.length; idx++) {
     const section = outline.sections[idx];
     console.log(`[thesisSynthesizer] ⏳ composing section ${idx + 1}/${totalSections}: "${section.heading}" (budget=${section.word_budget}w)`);
+    emitProgress(`✍️ Composing ${section.heading} (${idx + 1}/${totalSections}, ~${section.word_budget}w)`,
+      { current: idx + 1, total: totalSections, heading: section.heading });
     log(`step=writeSection id="${section.id}" heading="${section.heading}" budget=${section.word_budget}`, "info");
     let text = await writeSection({
       topic,
@@ -965,6 +970,7 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
 
   // 8. Lint pass.
   console.log(`[thesisSynthesizer] ⏳ linting draft...`);
+  emitProgress(`✨ Polishing draft…`);
   let lintReport = lint(draft, { tier, knownUrls: knownCitationUrls });
 
   // 9. Targeted rewrite for first-person violations (one pass, capped).

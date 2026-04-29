@@ -340,6 +340,13 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         if (step.tool === "fileReview" && fileIds.length > 0) {
             enrichedContext.fileIds = fileIds;
         }
+
+        // Phase 6C — thread onStep through to dynamic skills (deepResearch, etc.)
+        // so long-running pipelines can stream phase events back to the client.
+        // Skills that don't read _onStep simply ignore it.
+        if (onStep) {
+            enrichedContext._onStep = onStep;
+        }
         if (stateGraph.length > 0) {
             for (const prev of stateGraph) {
                 if (prev.tool === 'review' && prev.success) {

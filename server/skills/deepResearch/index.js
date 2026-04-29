@@ -187,6 +187,23 @@ export async function deepResearch(request) {
     };
   }
 
+  // Phase 6C — progress emitter. Falls back to no-op when onStep is absent
+  // (e.g. CLI/test runs). Emits as a "thought" event with phase "PROGRESS"
+  // so the existing client-side thought renderer picks it up unchanged.
+  const onStep = typeof context._onStep === "function" ? context._onStep : null;
+  const emitProgress = (content, extra = {}) => {
+    if (!onStep) return;
+    try {
+      onStep({
+        type: "thought",
+        phase: "PROGRESS",
+        content,
+        data: extra,
+        timestamp: new Date().toISOString()
+      });
+    } catch {}
+  };
+
   // ── Step 2: tier detection (with pending-question pause) ─────────────────
   const tier = tierDetector.detect(text, context);
   if (!tier) {
@@ -223,6 +240,7 @@ export async function deepResearch(request) {
   try {
     // ── Step 3: keyword extraction ─────────────────────────────────────────
     log(`step=keywordExtract topic="${rawTopic}"`, "info");
+    emitProgress(`🔍 Extracting keywords for "${rawTopic.slice(0, 60)}"…`);
     const extracted = await keywordExtractor.extract(rawTopic);
     log(`step=keywordExtract done tokens=${extracted.tokens?.length} phrases=${extracted.phrases?.length} bigrams=${extracted.bigrams?.length}`, "info");
 
@@ -266,12 +284,14 @@ export async function deepResearch(request) {
     const subject = await sourceDirectory.getSubject(activeSlug);
 
     // ── Step 5: prompts ────────────────────────────────────────────────────
+    emitProgress(`🧭 Planning sub-questions (tier=${effectiveTier})…`);
     const prompts = await promptPlanner.build({
       topic: rawTopic,
       extracted,
       relatedMatches: matches,
       tier: effectiveTier
     });
+    emitProgress(`📋 Generated ${prompts.length} sub-questions`, { count: prompts.length });
 
     // ── Step 6: per-prompt write-as-you-go pipeline ────────────────────────
     const constraints = await loadAgentConstraints();
@@ -306,6 +326,8 @@ export async function deepResearch(request) {
       }
 
       // Harvest
+      emitProgress(`📡 Harvesting ${promptIndex}/${prompts.length}: "${promptSpec.query.slice(0, 60)}"`,
+        { current: promptIndex, total: prompts.length });
       log(`step=harvest prompt=${promptIndex} query="${promptSpec.query.slice(0, 80)}"`, "info");
       let articles = [];
       try {
@@ -336,6 +358,8 @@ export async function deepResearch(request) {
       }
 
       // Per-article LLM analysis (sequential to respect 7B model limits)
+      emitProgress(`🔬 Analyzing ${articles.length} articles for prompt ${promptIndex}/${prompts.length}`,
+        { current: promptIndex, total: prompts.length, articles: articles.length });
       const analyses = [];
       for (let i = 0; i < articles.length; i++) {
         const artUrl = articles[i]?.url || "(unknown)";
@@ -397,6 +421,8 @@ export async function deepResearch(request) {
       }
 
       // Conclusion + vector collection
+      emitProgress(`📝 Writing conclusion for prompt ${promptIndex}/${prompts.length} (${dedupedAnalyses.length} sources)`,
+        { current: promptIndex, total: prompts.length });
       log(`step=conclusionWriter prompt=${promptIndex} analyses=${dedupedAnalyses.length}`, "info");
       let conclusionResult = { conclusion: null, collectionName: conclusionWriter.articlesCollectionName(activeSlug, promptIndex), relativePath: null };
       try {
@@ -500,6 +526,7 @@ export async function deepResearch(request) {
 
     // ── Step 9: chunked thesis synthesis ───────────────────────────────────
     log(`step=thesisSynthesizer tier=${effectiveTier} sections=pending`, "info");
+    emitProgress(`🧵 Synthesizing thesis from ${promptResults.length} prompts…`);
     let thesisInfo = null;
     try {
       thesisInfo = await thesisSynthesizer.synthesize({
@@ -508,7 +535,8 @@ export async function deepResearch(request) {
         cleanTitle,
         tier: effectiveTier,
         promptResults,
-        constraints
+        constraints,
+        onStep: emitProgress
       });
       const stubCount = thesisInfo?.createdStubs?.length ?? 0;
       log(`step=thesisSynthesizer done words=${thesisInfo?.wordCount} stubs=${stubCount}`, "info");
@@ -560,6 +588,8 @@ export async function deepResearch(request) {
     }
 
     // ── Step 10: chat reply ────────────────────────────────────────────────
+    emitProgress(`✅ Research saved (${thesisInfo?.wordCount || 0} words, ${totalSources} sources)`,
+      { wordCount: thesisInfo?.wordCount || 0, sourceCount: totalSources });
     const finalPath = thesisInfo?.relativePath || masterInfo?.relativePath || `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/`;
     const reply = `✅ ${effectiveTier.charAt(0).toUpperCase() + effectiveTier.slice(1)} on **"${rawTopic}"** saved.\n\n` +
       `- Final write-up: \`${finalPath}\`\n` +
