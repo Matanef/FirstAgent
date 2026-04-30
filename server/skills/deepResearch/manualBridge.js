@@ -1,0 +1,307 @@
+// server/skills/deepResearch/manualBridge.js
+// Phase 9D — Manual PDF/CSV bridge for blocked sources.
+//
+// When article PDFs or dataset CSVs can't be auto-fetched (paywall, JS challenge,
+// 403, redirect loop, etc.), this module lets the deepResearch pipeline pause,
+// surface the URL list to the user with deterministic save-as filenames, then
+// resume after the user drops files into a per-research _pending/ folder.
+//
+// Usage from index.js (sketch):
+//
+//   const blocked = collectBlockedSources(promptResults);
+//   if (shouldOfferBridge(blocked, tier)) {
+//     await saveBridgeState(slug, { promptResults, ... });
+//     const text = renderBridgeMessage(blocked, slug);
+//     await setPendingQuestion(conversationId, { ... ttlMs: 60*60*1000 });
+//     return { awaitingUser: true, ... };
+//   }
+//
+// On resume, deepResearch detects the resolvedPending flag and calls:
+//   const { state, attached } = await scanAndAttach(slug);
+//   // attached has new content for the originally-blocked entries
+//
+// Files live in vault path:
+//   <Vault>/Journal/Research/<slug>/_pending/
+// Naming convention:
+//   p<promptIndex>-article-<articleIndex>.pdf
+//   p<promptIndex>-dataset-<datasetIndex>.<csv|json|tsv|xlsx>
+//
+// State persistence: <Vault>/Journal/Research/<slug>/.bridge-state.json
+// (dot-prefixed so Obsidian hides it).
+
+import fs from "fs/promises";
+import path from "path";
+import { getVaultPath, VAULT_JOURNAL_ROOT, extractPdfText, stripHtmlToText } from "../../utils/obsidianUtils.js";
+import { createLogger } from "../../utils/logger.js";
+
+const log = createLogger("manualBridge", { consoleLevel: "warn" });
+
+const BRIDGE_STATE_FILE  = ".bridge-state.json";
+const PENDING_DIR_NAME   = "_pending";
+const MIN_THIN_CONTENT   = 1500;     // chars — below this we suspect we got abstract-only
+const MIN_BLOCKED_TO_OFFER = 2;      // don't interrupt for one isolated 403
+const BRIDGE_ELIGIBLE_TIERS = new Set(["research", "thesis"]);
+
+// ── eligibility scoring ────────────────────────────────────────────────────
+/**
+ * Decide whether an article counts as "blocked" — i.e., we got the metadata
+ * but the actual full text never arrived. Heuristic:
+ *   - content < 1500 chars (probably just the abstract)
+ *   - relevance >= 0.6 (worth the user's effort)
+ *   - URL looks paper-like (PDF link or known publisher host)
+ */
+function isArticleBlocked(article, analysis) {
+  const content = String(article?.content || "");
+  if (content.length >= MIN_THIN_CONTENT) return false;
+  const relevance = analysis?.analysis?.relevance ?? 0;
+  if (relevance < 0.6) return false;
+  const url = String(article?.url || "");
+  if (!url) return false;
+  // Skip already-failed URLs we can't help with manually (libgen, scihub)
+  if (/libgen|sci-?hub|google\.com\/scholar/i.test(url)) return false;
+  return true;
+}
+
+/**
+ * A dataset is "blocked" if it has files we know about but every file failed
+ * to download/parse during the run. The harvester records this in the analysis
+ * record's `_bridge_eligible` flag (set by index.js when downloadAndParse
+ * returns null on every file of a real dataset).
+ */
+function isDatasetBlocked(dsRecord) {
+  if (!dsRecord) return false;
+  if (dsRecord.metadataOnly) return false;
+  if (!Array.isArray(dsRecord.files) || dsRecord.files.length === 0) return false;
+  return dsRecord._bridge_eligible === true;
+}
+
+// ── failure collection ─────────────────────────────────────────────────────
+/**
+ * Walk promptResults and produce a flat list of blocked sources with
+ * deterministic save-as filenames + suggested URLs.
+ *
+ * Returns: [{ kind, promptIndex, articleIndex|datasetId, title, url, savePath, expectedFormat }]
+ */
+export function collectBlockedSources(promptResults) {
+  const blocked = [];
+  for (const p of (promptResults || [])) {
+    const promptIndex = p.promptIndex;
+    // Articles
+    for (let i = 0; i < (p.analyses || []).length; i++) {
+      const a = p.analyses[i];
+      if (!a?.article) continue;
+      if (isArticleBlocked(a.article, a)) {
+        blocked.push({
+          kind: "article",
+          promptIndex,
+          articleIndex: i + 1,
+          title: a.frontmatter?.title || a.article?.title || "(untitled)",
+          url: a.article.url,
+          savePath: `${PENDING_DIR_NAME}/p${promptIndex}-article-${i + 1}.pdf`,
+          expectedFormat: "pdf"
+        });
+      }
+    }
+    // Datasets — index.js stamps `_bridge_eligible:true` on records where
+    // every file failed downloadAndParse.
+    for (let i = 0; i < (p.datasetCitations || []).length; i++) {
+      const ds = p.datasetCitations[i];
+      if (isDatasetBlocked(ds)) {
+        const file = ds.files[0];
+        const ext  = (file?.format || "csv").toLowerCase();
+        blocked.push({
+          kind: "dataset",
+          promptIndex,
+          datasetIndex: i + 1,
+          datasetId: ds.id,
+          title: ds.title,
+          url: file?.downloadUrl || ds.url,
+          savePath: `${PENDING_DIR_NAME}/p${promptIndex}-dataset-${i + 1}.${ext}`,
+          expectedFormat: ext
+        });
+      }
+    }
+  }
+  return blocked;
+}
+
+export function shouldOfferBridge(blocked, tier, override = null) {
+  if (override === true) return blocked.length > 0;
+  if (override === false) return false;
+  if (!BRIDGE_ELIGIBLE_TIERS.has(tier)) return false;
+  return blocked.length >= MIN_BLOCKED_TO_OFFER;
+}
+
+// ── presentation ───────────────────────────────────────────────────────────
+/**
+ * Render the user-facing message listing blocked sources with save-as paths.
+ * The message is shown in chat after the harvest phase completes.
+ */
+export function renderBridgeMessage(blocked, slug, vaultRelativePath) {
+  const groups = { article: [], dataset: [] };
+  for (const b of blocked) groups[b.kind].push(b);
+
+  const lines = [];
+  lines.push(`🔒 ${blocked.length} source(s) couldn't be auto-fetched. The thesis will benefit from these — please download them manually.\n`);
+  lines.push(`Drop files into: \`${vaultRelativePath}/${PENDING_DIR_NAME}/\``);
+  lines.push("");
+
+  if (groups.article.length) {
+    lines.push(`**Articles (${groups.article.length}):**`);
+    for (const b of groups.article) {
+      const titleShort = b.title.length > 80 ? b.title.slice(0, 77) + "…" : b.title;
+      lines.push(`- Prompt ${b.promptIndex}, Article ${b.articleIndex}: *${titleShort}*`);
+      lines.push(`  URL: <${b.url}>`);
+      lines.push(`  Save as: \`${b.savePath}\``);
+    }
+    lines.push("");
+  }
+
+  if (groups.dataset.length) {
+    lines.push(`**Datasets (${groups.dataset.length}):**`);
+    for (const b of groups.dataset) {
+      const titleShort = b.title.length > 80 ? b.title.slice(0, 77) + "…" : b.title;
+      lines.push(`- Prompt ${b.promptIndex}, Dataset ${b.datasetIndex}: *${titleShort}*`);
+      lines.push(`  URL: <${b.url}>`);
+      lines.push(`  Save as: \`${b.savePath}\` (format: ${b.expectedFormat})`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`Reply **"continue"** when ready (60-min window), or **"skip"** to proceed without these.`);
+  return lines.join("\n");
+}
+
+// ── state persistence ──────────────────────────────────────────────────────
+function bridgeStatePath(slug) {
+  const vault = getVaultPath();
+  if (!vault) throw new Error("manualBridge: vault path not configured");
+  return path.join(vault, VAULT_JOURNAL_ROOT, "Research", slug, BRIDGE_STATE_FILE);
+}
+
+function pendingDirPath(slug) {
+  const vault = getVaultPath();
+  if (!vault) throw new Error("manualBridge: vault path not configured");
+  return path.join(vault, VAULT_JOURNAL_ROOT, "Research", slug, PENDING_DIR_NAME);
+}
+
+export async function saveBridgeState(slug, state) {
+  const p = bridgeStatePath(slug);
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, JSON.stringify({ ...state, savedAt: new Date().toISOString() }, null, 2), "utf8");
+  // Also pre-create the _pending/ folder + a README so the user knows where to drop files.
+  const pendingDir = pendingDirPath(slug);
+  await fs.mkdir(pendingDir, { recursive: true });
+  const readmePath = path.join(pendingDir, "README.md");
+  const readme = `# Manual download drop folder
+
+The deepResearch run for "${slug}" couldn't fetch some sources automatically.
+Save the files here with the exact filenames listed in the chat message,
+then reply "continue" in the chat to resume.
+
+Files in this folder are matched by name, e.g.:
+- \`p1-article-5.pdf\` → re-analyzed for prompt 1, article slot 5
+- \`p3-dataset-2.csv\` → re-analyzed for prompt 3, dataset slot 2
+
+After resume, this folder is automatically cleaned up.
+`;
+  try { await fs.writeFile(readmePath, readme, "utf8"); } catch { /* best effort */ }
+  log(`saved bridge state for "${slug}"`, "info");
+  return p;
+}
+
+export async function loadBridgeState(slug) {
+  try {
+    const p = bridgeStatePath(slug);
+    const raw = await fs.readFile(p, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code !== "ENOENT") log(`loadBridgeState failed: ${err.message}`, "warn");
+    return null;
+  }
+}
+
+export async function clearBridgeState(slug) {
+  try {
+    await fs.unlink(bridgeStatePath(slug));
+  } catch { /* ignore */ }
+  // Also clean the _pending/ folder contents (keep folder + README)
+  try {
+    const dir = pendingDirPath(slug);
+    const files = await fs.readdir(dir);
+    for (const f of files) {
+      if (f === "README.md") continue;
+      try { await fs.unlink(path.join(dir, f)); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+// ── file attach (post-resume) ──────────────────────────────────────────────
+/**
+ * Scan the _pending/ folder. For each blocked entry whose savePath exists,
+ * read the file content and return it keyed by the entry. Caller is
+ * responsible for re-running articleAnalyzer / tableAnalyst on the new content.
+ *
+ * @returns Promise<Array<{ entry, attachedContent, attachedBuffer, attachedFormat, exists }>>
+ */
+export async function scanAndAttach(slug, blocked) {
+  const dir = pendingDirPath(slug);
+  let dirEntries = [];
+  try {
+    dirEntries = await fs.readdir(dir);
+  } catch (err) {
+    log(`scanAndAttach: _pending/ dir missing (${err.message})`, "warn");
+    return blocked.map(entry => ({ entry, exists: false }));
+  }
+  const dirSet = new Set(dirEntries.map(f => f.toLowerCase()));
+
+  const out = [];
+  for (const entry of blocked) {
+    const fileName = path.basename(entry.savePath);
+    if (!dirSet.has(fileName.toLowerCase())) {
+      out.push({ entry, exists: false });
+      continue;
+    }
+    const fullPath = path.join(dir, fileName);
+    try {
+      if (entry.expectedFormat === "pdf") {
+        // Use the existing PDF text extractor
+        const text = await extractPdfText(fullPath);
+        out.push({
+          entry,
+          exists: true,
+          attachedContent: text,
+          attachedBuffer: null,
+          attachedFormat: "pdf"
+        });
+      } else {
+        // CSV/TSV/JSON/XLSX — read as buffer, let datasetHarvester.parseByFormat handle it
+        const buffer = await fs.readFile(fullPath);
+        const text = (entry.expectedFormat === "xlsx" || entry.expectedFormat === "xls")
+          ? null
+          : buffer.toString("utf8");
+        out.push({
+          entry,
+          exists: true,
+          attachedContent: text,
+          attachedBuffer: buffer,
+          attachedFormat: entry.expectedFormat
+        });
+      }
+      log(`attached ${fileName} → prompt=${entry.promptIndex} ${entry.kind}=${entry.articleIndex || entry.datasetIndex}`, "info");
+    } catch (err) {
+      log(`scanAndAttach: ${fileName} read failed: ${err.message}`, "warn");
+      out.push({ entry, exists: false, error: err.message });
+    }
+  }
+  return out;
+}
+
+export const _internals = {
+  isArticleBlocked,
+  isDatasetBlocked,
+  MIN_THIN_CONTENT,
+  MIN_BLOCKED_TO_OFFER,
+  BRIDGE_ELIGIBLE_TIERS,
+  PENDING_DIR_NAME
+};

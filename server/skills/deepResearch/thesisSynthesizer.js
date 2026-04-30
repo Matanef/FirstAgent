@@ -17,6 +17,14 @@ import { createLogger } from "../../utils/logger.js";
 //
 // Override via env: SYNTHESIZER_MODEL=<model-name>
 const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
+// Phase 9E — optional heavyweight model used ONLY for section composition
+// (the prose-quality bottleneck). Falls back to SYNTH_MODEL if unset.
+// Suggested values for 8GB VRAM:
+//   qwen2.5:14b-instruct-q3_K_S  (~6.5GB, same family, best continuity)
+//   deepseek-r1:8b               (~5GB, reasoning-tuned, safer fit)
+//   phi-4:14b-q3_K_M             (~6.5GB, strong academic prose)
+const SYNTH_HEAVY_MODEL = process.env.SYNTH_HEAVY_MODEL || SYNTH_MODEL;
+const HEAVY_NUM_CTX = parseInt(process.env.SYNTH_HEAVY_NUM_CTX || "6144", 10);
 
 const log = createLogger("thesisSynthesizer", { consoleLevel: "warn" });
 import {
@@ -679,7 +687,86 @@ function shouldInjectQuantBlock(section) {
          /method|result|discuss|abstract|introduction|conclusion/.test(heading);
 }
 
-async function writeSection({ topic, tier, section, prevSummaries, constraints, knownCitationUrls, citationsPrompt, citationIndex, conclusionsCollection, quantFindings = [] }) {
+// ── Phase 9A — article-fact aggregation + injection ────────────────────────
+// The dominant fidelity bug: articleAnalyzer extracts precise facts ("82.4%
+// satisfaction", "t(53)=2.64, p=0.011") but the conclusionWriter aggregates
+// them into vague commonalities ("CBT is valuable") and the synthesizer reads
+// from the conclusion-vector store, never seeing the raw numbers. This pass
+// pipes the structured facts directly into the section prompt so the writer
+// is anchored to real numbers and can't paraphrase them away.
+
+/**
+ * Build a fact pool grouped by source article. Returns text suitable for
+ * direct prompt injection — one block per article with title + in-text cite +
+ * extracted facts as bullets.
+ */
+function buildFactsPool(promptResults, citationIndex) {
+  if (!Array.isArray(promptResults) || promptResults.length === 0) return "";
+  // Build a quick lookup: normalized title → in-text cite (e.g. "(Smith, 2023)")
+  // so each fact-block is tagged with the citation we'd use in-prose.
+  const titleToCite = new Map();
+  for (const ce of (citationIndex || [])) {
+    const t = String(ce?.cite?.title || "").toLowerCase().slice(0, 80);
+    if (t) titleToCite.set(t, ce.inText);
+  }
+
+  const blocks = [];
+  let totalFacts = 0;
+  for (const p of promptResults) {
+    for (const a of (p.analyses || [])) {
+      const facts = a?.analysis?.facts || [];
+      if (facts.length === 0) continue;
+      const title = String(a?.frontmatter?.title || "").trim();
+      if (!title) continue;
+      const titleKey = title.toLowerCase().slice(0, 80);
+      const inText = titleToCite.get(titleKey) || "";
+      const citeStr = inText ? ` ${inText}` : "";
+      const titleShort = title.length > 90 ? title.slice(0, 87) + "…" : title;
+      blocks.push(`[Source: "${titleShort}"${citeStr}]\n` +
+        facts.slice(0, 8).map(f => `  • ${f}`).join("\n"));
+      totalFacts += Math.min(facts.length, 8);
+    }
+  }
+  if (blocks.length === 0) return "";
+
+  console.log(`[thesisSynthesizer] facts pool: ${blocks.length} sources, ${totalFacts} total facts`);
+  return blocks.join("\n\n");
+}
+
+/**
+ * Wrap the fact pool with strict instructions for use in a section prompt.
+ * The instruction language is designed to force preservation of specific
+ * numbers — the C- failure mode was paraphrasing "82.4% satisfaction" into
+ * "reported as valuable".
+ */
+function buildFactsBlock(factsPool, sectionHeading) {
+  if (!factsPool) return "";
+  const sectionLower = String(sectionHeading || "").toLowerCase();
+  const isPrecisionSection = /method|result|discuss|literature|review/.test(sectionLower);
+  const minCitedFacts = isPrecisionSection ? 5 : 2;
+
+  return `\n\n=== SOURCE FACTS — PRESERVE EXACT NUMBERS, DO NOT PARAPHRASE ===
+The facts below were extracted from the cited papers. Each is a specific
+finding with a real number, sample size, statistical test, or effect size.
+
+CRITICAL RULES:
+1. When you reference a study, cite it WITH ITS SPECIFIC NUMBER.
+   GOOD: "Thomas et al. (2026) found 82.4% satisfaction with online CBT (n=54)"
+   BAD:  "Thomas et al. (2026) found patients valued online CBT"
+2. NEVER paraphrase a percentage, p-value, effect size, or sample size into
+   a vague qualitative claim. The whole point of citing a study is the number.
+3. In this section you MUST cite at least ${minCitedFacts} specific numbers
+   drawn from the pool below.
+4. Do not invent numbers that aren't in the pool. If a fact you want to make
+   doesn't have a supporting number here, state it as a general observation
+   WITHOUT a parenthetical citation rather than fabricating one.
+
+FACT POOL:
+
+${factsPool}`;
+}
+
+async function writeSection({ topic, tier, section, prevSummaries, constraints, knownCitationUrls, citationsPrompt, citationIndex, conclusionsCollection, quantFindings = [], factsPool = "" }) {
   // RAG over conclusions
   let snippets = [];
   if (conclusionsCollection) {
@@ -764,21 +851,32 @@ ${synthesisDirective}
     ? buildQuantitativeBlock(quantFindings)
     : "";
 
-  const finalPrompt = prompt + expansionDirectives + quantBlock;
+  // Phase 9A — inject the article-fact pool into every section that needs to
+  // cite specific numbers (basically every academic section). This is the
+  // dominant fidelity fix: anchors the writer to real extracted findings
+  // instead of paraphrased vector-store summaries.
+  const factsBlock = factsPool ? buildFactsBlock(factsPool, section.heading) : "";
+
+  const finalPrompt = prompt + expansionDirectives + factsBlock + quantBlock;
 
   // Phase 5D + 6D — explicit num_predict so the model doesn't quit early.
   // qwen2.5:7b often produces 1.5-1.7 tokens/word; 1.8x was borderline tight.
   // Bumped to 2.2x so even verbose sections have ample headroom.
   const numPredict = Math.ceil((section.word_budget || 600) * 2.2);
 
+  // Phase 9E — section composition uses the heavyweight model when configured.
+  // The heavy num_ctx is configurable (default 6144) since 14B-q3 quantized
+  // models on 8GB VRAM are tight on the 8192 default.
+  const sectionModel = SYNTH_HEAVY_MODEL;
+  const sectionNumCtx = sectionModel === SYNTH_MODEL ? 8192 : HEAVY_NUM_CTX;
   let text = "";
   try {
     const res = await llm(finalPrompt, {
       timeoutMs: 600000,
-      model: SYNTH_MODEL,
+      model: sectionModel,
       skipKnowledge: true,
       skipLanguageDetection: true,
-      options: { temperature: 0.35, num_ctx: 8192, num_predict: numPredict }
+      options: { temperature: 0.35, num_ctx: sectionNumCtx, num_predict: numPredict }
     });
     text = String(res?.data?.text || "").trim();
   } catch (err) {
@@ -806,10 +904,10 @@ Rewrite as a fuller, deeper section now:`;
     try {
       const retryRes = await llm(retryPrompt, {
         timeoutMs: 600000,
-        model: SYNTH_MODEL,
+        model: sectionModel,
         skipKnowledge: true,
         skipLanguageDetection: true,
-        options: { temperature: 0.4, num_ctx: 8192, num_predict: numPredict }
+        options: { temperature: 0.4, num_ctx: sectionNumCtx, num_predict: numPredict }
       });
       const retryText = String(retryRes?.data?.text || "").trim();
       if (wordCount(retryText) > initialWords) {
@@ -1066,6 +1164,11 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   const finalTitle = (cleanTitle && cleanTitle.trim()) || topic;
 
   console.log(`[thesisSynthesizer] ▶ starting synthesis: tier=${tier} prompts=${promptResults.length} topic="${String(topic).slice(0, 60)}"`);
+  if (SYNTH_HEAVY_MODEL !== SYNTH_MODEL) {
+    console.log(`[thesisSynthesizer] section composer model: ${SYNTH_HEAVY_MODEL} (num_ctx=${HEAVY_NUM_CTX}); other stages: ${SYNTH_MODEL}`);
+  } else {
+    console.log(`[thesisSynthesizer] all stages model: ${SYNTH_MODEL} (set SYNTH_HEAVY_MODEL env to use a heavyweight model for section composition only)`);
+  }
 
   // 1. Build conclusions vector collection.
   const conclusionsCollection = await indexConclusions(topicSlug, promptResults);
@@ -1110,6 +1213,9 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   const citationsPrompt = renderCitationsForPrompt(citationIndex, 30);
   console.log(`[thesisSynthesizer] citation index built: ${citationIndex.length} structured entries from ${allNotesForCitations.length} sources (${articleNotes.length} articles + ${datasetNotes.length} datasets)`);
 
+  // Phase 9A — build the article-fact pool ONCE; reused for every section.
+  const factsPool = buildFactsPool(promptResults, citationIndex);
+
   // 4. Section-by-section synthesis.
   const writtenSections = [];
   const prevSummaries = [];
@@ -1130,7 +1236,8 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
       citationsPrompt, // Phase 5A — structured APA citations to use in-text
       citationIndex,   // Phase 5A — for post-section lint of stray refs
       conclusionsCollection,
-      quantFindings: allQuantFindings   // Phase 7E — empirical analysis injected into prompt
+      quantFindings: allQuantFindings,  // Phase 7E — empirical analysis injected into prompt
+      factsPool                          // Phase 9A — article-extracted facts with exact numbers
     });
     // Phase 5F — strip duplicate leading heading. The LLM often adds
     // "### Literature Review" inside the Literature Review section, on top of

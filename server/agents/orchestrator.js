@@ -51,9 +51,18 @@ async function _handleMessageInner({
       const answer = parsePendingAnswer(message, pending.expects);
       if (answer !== null) {
         await clearPendingQuestion(conversationId);
+        // Phase 9D — propagate a small whitelist of context keys from the
+        // pending entry's originalRequest.context onto resolvedPending so
+        // the resuming skill can recover state (e.g. _bridgeSlug for the
+        // manual PDF/CSV bridge).
+        const origCtx = pending.originalRequest?.context || {};
+        const ctxPassthrough = {};
+        for (const k of ["_bridgeSlug", "_pendingResume"]) {
+          if (origCtx[k] !== undefined) ctxPassthrough[k] = origCtx[k];
+        }
         resumePayload = {
           originalText: pending.originalRequest?.text || pending.originalRequest?.message || message,
-          resolvedPending: { [pending.expects]: answer, _skill: pending.skill }
+          resolvedPending: { [pending.expects]: answer, _skill: pending.skill, ...ctxPassthrough }
         };
       }
     }

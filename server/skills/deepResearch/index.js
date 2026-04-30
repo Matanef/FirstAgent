@@ -30,6 +30,7 @@ import * as articleAnalyzer from "./articleAnalyzer.js";
 import * as datasetHarvester from "./datasetHarvester.js";
 import * as tableAnalyst from "./tableAnalyst.js";
 import * as chartComposer from "./chartComposer.js";
+import * as manualBridge from "./manualBridge.js";
 import * as conclusionWriter from "./conclusionWriter.js";
 import * as promptRollup from "./promptRollup.js";
 import * as thesisSynthesizer from "./thesisSynthesizer.js";
@@ -240,6 +241,14 @@ export async function deepResearch(request) {
   }
   const effectiveTier = tier || "article";
 
+  // Phase 9D — bridge resume detection. When the user replies "continue"/"skip"
+  // to a manual-bridge offer, the orchestrator passes the action through
+  // resolvedPending. The pipeline re-runs the harvest (cache makes this mostly
+  // free) and then skips the bridge-offer gate, going straight to file-attach
+  // and synthesis.
+  const isBridgeResume = context.resolvedPending?.manual_bridge_continue !== undefined;
+  if (isBridgeResume) log(`bridge resume detected — will skip bridge gate after harvest`, "info");
+
   try {
     // ── Step 3: keyword extraction ─────────────────────────────────────────
     log(`step=keywordExtract topic="${rawTopic}"`, "info");
@@ -385,8 +394,10 @@ export async function deepResearch(request) {
             articleIndex: i + 1,
             constraints
           });
-          analyses.push(r);
-          log(`step=analyze prompt=${promptIndex} article=${i + 1} done relevance=${r.analysis?.relevance?.toFixed(2)} facts=${r.analysis?.facts?.length}`, "info");
+          // Phase 9D — attach the original article so manualBridge can detect
+          // thin/blocked sources (content < 1500 chars on a relevant article).
+          analyses.push({ ...r, article: articles[i] });
+          log(`step=analyze prompt=${promptIndex} article=${i + 1} done relevance=${r.analysis?.relevance?.toFixed(2)} facts=${r.analysis?.facts?.length} contentLen=${(articles[i]?.content || "").length}`, "info");
         } catch (err) {
           log(`step=analyze prompt=${promptIndex} article=${i + 1} url="${artUrl}" error="${err.message}"`, "warn");
         }
@@ -420,7 +431,7 @@ export async function deepResearch(request) {
                 articleIndex: analyses.length + ri + 1,
                 constraints
               });
-              analyses.push(r);
+              analyses.push({ ...r, article: retryArticles[ri] });
             } catch (err) {
               log(`retry analyze failed ${retryArticles[ri]?.url}: ${err.message}`, "warn");
             }
@@ -459,6 +470,9 @@ export async function deepResearch(request) {
                 log(`download fail ${ds.id}: ${err.message}`, "warn");
               }
             }
+            // Phase 9D — if the dataset has files but parsing produced nothing,
+            // mark it as bridge-eligible so the user can drop the file manually.
+            if (!parsed) ds._bridge_eligible = true;
           }
           let assessment = null;
           try {
@@ -674,6 +688,130 @@ export async function deepResearch(request) {
       }
     } else {
       log(`step=infoCheck ok total=${totalAnalyses} min=${minRequired}`, "info");
+    }
+
+    // ── Phase 9D: manual PDF/CSV bridge ───────────────────────────────────
+    // For research/thesis tiers, if multiple high-relevance articles arrived
+    // thin (paywalls, JS challenges, redirect loops) OR datasets had files we
+    // couldn't parse, pause here and let the user download them manually.
+    // Skip the gate if this is already a resume from a prior bridge invocation.
+    if (!isBridgeResume) {
+      const blocked = manualBridge.collectBlockedSources(promptResults);
+      const bridgeOverride = process.env.MANUAL_BRIDGE === "always" ? true
+                          : process.env.MANUAL_BRIDGE === "never" ? false : null;
+      if (manualBridge.shouldOfferBridge(blocked, effectiveTier, bridgeOverride) && conversationId) {
+        const vaultRel = `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`;
+        try {
+          // Phase 9D — save lightweight bridge state. On resume the harvest
+          // re-runs (most fetches cached), so we don't need to persist the
+          // full promptResults graph — just the blocked list + slug + display
+          // metadata so renderBridgeMessage works again if asked.
+          await manualBridge.saveBridgeState(activeSlug, {
+            topic: rawTopic, slug: activeSlug, tier: effectiveTier,
+            cleanTitle, blocked
+          });
+          const bridgeText = manualBridge.renderBridgeMessage(blocked, activeSlug, vaultRel);
+          await setPendingQuestion(conversationId, {
+            skill: TOOL_NAME,
+            question: bridgeText,
+            expects: "manual_bridge_continue",
+            ttlMs: 60 * 60 * 1000,                    // 60 minutes
+            originalRequest: { text, context: { ...context, _bridgeSlug: activeSlug } }
+          });
+          emitProgress(`🔒 Paused: ${blocked.length} blocked source(s) — see chat for download instructions`);
+          log(`step=manualBridge offering ${blocked.length} blocked sources, awaiting user`, "info");
+          return {
+            tool: TOOL_NAME,
+            success: true,
+            final: false,
+            awaitingUser: true,
+            data: { text: bridgeText, preformatted: true }
+          };
+        } catch (err) {
+          log(`manualBridge save failed: ${err.message} — proceeding without bridge`, "warn");
+        }
+      } else if (blocked.length > 0) {
+        log(`step=manualBridge ${blocked.length} blocked source(s) — bridge not offered (tier=${effectiveTier}, override=${bridgeOverride})`, "info");
+      }
+    } else {
+      // Bridge resume — load state, scan _pending/, attach files, re-analyze
+      const bridgeAction = context.resolvedPending.manual_bridge_continue;
+      log(`step=manualBridge resume action="${bridgeAction}"`, "info");
+      emitProgress(`📥 Resuming from manual bridge (${bridgeAction})…`);
+      if (bridgeAction === "continue") {
+        try {
+          const attached = await manualBridge.scanAndAttach(activeSlug, manualBridge.collectBlockedSources(promptResults));
+          let attachedCount = 0;
+          for (const a of attached) {
+            if (!a.exists) continue;
+            const e = a.entry;
+            try {
+              if (e.kind === "article" && a.attachedContent) {
+                // Rebuild article record with new full-text content; re-run analyzer
+                const targetPrompt = promptResults.find(p => p.promptIndex === e.promptIndex);
+                if (!targetPrompt) continue;
+                const slot = targetPrompt.analyses[e.articleIndex - 1];
+                if (!slot) continue;
+                const newArticle = { ...slot.article, content: a.attachedContent };
+                const r = await articleAnalyzer.analyze({
+                  article: newArticle,
+                  topic: rawTopic,
+                  topicSlug: activeSlug,
+                  promptIndex: e.promptIndex,
+                  articleIndex: e.articleIndex,
+                  constraints
+                });
+                targetPrompt.analyses[e.articleIndex - 1] = { ...r, article: newArticle };
+                attachedCount++;
+                log(`bridge re-analyzed article p=${e.promptIndex} i=${e.articleIndex} content=${a.attachedContent.length}c facts=${r.analysis?.facts?.length}`, "info");
+              } else if (e.kind === "dataset" && (a.attachedContent || a.attachedBuffer)) {
+                // The user-dropped CSV/JSON content goes through tableAnalyst directly
+                const targetPrompt = promptResults.find(p => p.promptIndex === e.promptIndex);
+                if (!targetPrompt) continue;
+                const ds = targetPrompt.datasetCitations[e.datasetIndex - 1];
+                if (!ds) continue;
+                // Parse using datasetHarvester's format dispatcher (re-export indirect via parsing the file)
+                // For v1 we only support CSV/TSV/JSON manually-dropped (xlsx requires the lazy-load).
+                let parsed = null;
+                if (e.expectedFormat === "csv" || e.expectedFormat === "tsv") {
+                  parsed = datasetHarvester._internals?.parseCsv?.(a.attachedContent, e.expectedFormat === "tsv" ? "\t" : ",");
+                } else if (e.expectedFormat === "json") {
+                  parsed = datasetHarvester._internals?.parseJsonRows?.(a.attachedContent);
+                }
+                if (parsed) {
+                  parsed.sampling = "manual"; parsed.totalBytes = (a.attachedContent || a.attachedBuffer || "").length;
+                  const assessment = await tableAnalyst.assess({ topic: rawTopic, dataset: ds, parsed });
+                  if (assessment) {
+                    delete ds._bridge_eligible;
+                    // Append a synthetic quantitativeFinding entry so synthesis sees it
+                    targetPrompt.quantitativeFindings = targetPrompt.quantitativeFindings || [];
+                    targetPrompt.quantitativeFindings.push({
+                      datasetId: ds.id, datasetTitle: ds.title, repository: ds.repository,
+                      N: assessment.N, sampling: "manual",
+                      keyVariables: assessment.key_variables,
+                      hypothesis: assessment.hypothesis_to_test,
+                      limitations: assessment.limitations,
+                      honestyLabels: assessment.honesty_labels,
+                      charts: []   // chart composition skipped on manual bridge for v1
+                    });
+                    attachedCount++;
+                    log(`bridge re-analyzed dataset p=${e.promptIndex} i=${e.datasetIndex} N=${assessment.N}`, "info");
+                  }
+                }
+              }
+            } catch (err) {
+              log(`bridge attach error for ${e.kind} p=${e.promptIndex}: ${err.message}`, "warn");
+            }
+          }
+          await manualBridge.clearBridgeState(activeSlug);
+          emitProgress(`📥 Bridge resume: ${attachedCount} source(s) re-analyzed with manual downloads`);
+        } catch (err) {
+          log(`manualBridge resume error: ${err.message}`, "warn");
+        }
+      } else if (bridgeAction === "skip") {
+        await manualBridge.clearBridgeState(activeSlug);
+        emitProgress(`⏭️ Skipping manual bridge — proceeding to synthesis with original sources`);
+      }
     }
 
     // ── Step 9: chunked thesis synthesis ───────────────────────────────────

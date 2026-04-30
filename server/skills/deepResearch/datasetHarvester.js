@@ -160,20 +160,48 @@ async function fetchFigshare(query, limit) {
   return out;
 }
 
+// Phase 9C — catalog cruft that OpenAlex labels as type:dataset but isn't
+// actually a dataset (Faculty Opinions records, R package metadata, search
+// strategies, supplementary tables, etc.). Drop these — they pollute the
+// metadata-only list and crowd out real findings.
+const OPENALEX_CRUFT_TITLE_PATTERNS = [
+  /^Faculty Opinions recommendation/i,
+  /^Search Strategy/i,
+  /^Excluded Studies/i,
+  /^Qualitative synthesis of results/i,
+  /^Supplementary (Material|Table|Data|File)/i,
+  /^metadat:\s*Meta-Analysis/i,                       // R package
+  /^HSAUR:/i,                                          // R package
+  /\bcran\.package\b/i,                                // CRAN package metadata
+  /^Variations in Teachers'/i,                         // teacher-training records that hit on the keyword "behavioral" but are off-topic
+];
+function isOpenAlexCruft(title) {
+  const t = String(title || "").trim();
+  if (!t) return true;
+  for (const re of OPENALEX_CRUFT_TITLE_PATTERNS) if (re.test(t)) return true;
+  return false;
+}
+
 // ── PROVIDER: OpenAlex (datasets filter) ────────────────────────────────────
 async function fetchOpenAlexDatasets(query, limit) {
   const mailto = POLITE_EMAIL ? `&mailto=${encodeURIComponent(POLITE_EMAIL)}` : "";
-  const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&filter=type:dataset&per_page=${limit}${mailto}`;
-  console.log(`[datasetHarvester] openalex: querying "${query}" (limit ${limit})`);
+  // Phase 9C — pull more than `limit` so we have headroom to filter cruft.
+  const fetchSize = Math.min(limit * 3, 25);
+  const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&filter=type:dataset&per_page=${fetchSize}${mailto}`;
+  console.log(`[datasetHarvester] openalex: querying "${query}" (fetching ${fetchSize}, capping at ${limit})`);
   const res = await safeAxios(url);
   const items = res.data?.results || [];
   const out = [];
+  let crufted = 0;
   for (const w of items) {
+    if (out.length >= limit) break;
+    const title = w.display_name || w.title || "";
+    if (isOpenAlexCruft(title)) { crufted++; continue; }
     // OpenAlex doesn't surface file URLs directly — record as metadataOnly + DOI link.
     const doi = (w.doi || "").replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "");
     out.push(buildRecord({
       id: `openalex:${w.id?.split("/").pop()}`,
-      title: w.display_name || w.title || "(untitled)",
+      title,
       doi,
       repository: "openalex",
       authors: (w.authorships || []).map(a => a.author?.display_name).filter(Boolean).slice(0, 5),
@@ -184,7 +212,7 @@ async function fetchOpenAlexDatasets(query, limit) {
       metadataOnly: true
     }));
   }
-  console.log(`[datasetHarvester] openalex: got ${out.length} dataset records (metadata-only)`);
+  console.log(`[datasetHarvester] openalex: got ${out.length} dataset records (metadata-only)${crufted > 0 ? `, dropped ${crufted} catalog-cruft entries` : ""}`);
   return out;
 }
 function reconstructAbstract(inv) {
@@ -725,6 +753,14 @@ function pickProviders(topic, cap = 6) {
 }
 
 // ── public entry point ──────────────────────────────────────────────────────
+// Phase 9C — providers that benefit from a topic-root fallback query.
+// figshare / dryad / dataverse have less granular topical indexing than
+// OpenAlex, so a narrow prompt query like "CBT for eating disorders" often
+// returns 0 hits even when broader topic searches would find real datasets.
+// Strategy: if the narrow query returns 0 with downloadable files, retry
+// the same provider with the topic root.
+const TOPIC_ROOT_FALLBACK_PROVIDERS = new Set(["figshare", "dryad", "dataverse"]);
+
 /**
  * Harvest datasets relevant to a research prompt.
  *
@@ -761,7 +797,25 @@ export async function harvest(query, opts = {}) {
       const fn = PROVIDER_REGISTRY[c.name];
       if (!fn) return { name: c.name, rows: [], fromCache: false };
       try {
-        const rows = await withRetry(() => fn(query, perProvider));
+        let rows = await withRetry(() => fn(query, perProvider));
+        // Phase 9C — topic-root fallback for repositories with sparse topical
+        // indexing. If the narrow query returned 0 datasets-with-files, retry
+        // with the broader topic and keep whichever is bigger.
+        if (TOPIC_ROOT_FALLBACK_PROVIDERS.has(c.name) &&
+            rows.filter(r => !r.metadataOnly && (r.files || []).length > 0).length === 0 &&
+            topic && topic !== query) {
+          console.log(`[datasetHarvester] ${c.name}: 0 usable from "${query.slice(0, 40)}" — retrying with topic root "${topic.slice(0, 40)}"`);
+          try {
+            const fallback = await withRetry(() => fn(topic, perProvider));
+            const fallbackUsable = fallback.filter(r => !r.metadataOnly && (r.files || []).length > 0).length;
+            if (fallbackUsable > 0) {
+              console.log(`[datasetHarvester] ${c.name}: topic-root fallback got ${fallbackUsable} usable dataset(s)`);
+              rows = fallback;
+            }
+          } catch (err) {
+            log(`${c.name} topic-root fallback failed: ${err.message}`, "warn");
+          }
+        }
         await writeCache(c.key, rows);
         return { name: c.name, rows, fromCache: false };
       } catch (err) {
