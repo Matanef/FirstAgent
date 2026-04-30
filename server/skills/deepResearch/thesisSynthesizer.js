@@ -4,8 +4,10 @@
 // deterministic bibliography.
 
 import { llm } from "../../tools/llm.js";
-import { writeNote, buildFrontmatter, resolveWikilinks, enrichWithWikilinks, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
+import { writeNote, buildFrontmatter, resolveWikilinks, enrichWithWikilinks, getVaultPath, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
 import { createLogger } from "../../utils/logger.js";
+import path from "path";
+import fs from "fs/promises";
 
 // Phase 6F — pin synthesizer model. The chat agent's default LLM model can be
 // swapped (e.g. dolphin-llama3 for hacker-persona chat), but academic synthesis
@@ -511,6 +513,143 @@ function stripStockBulletSections(text, sectionHeading) {
   return out;
 }
 
+// ── Phase 10I — strip conversational preambles ─────────────────────────────
+// Patterns like "Okay, here is an expanded section based on..." are model
+// scaffolding that leaks when the LLM is told to "rewrite/expand". Strip
+// them along with any trailing horizontal rule before the real content.
+function stripConversationalPreamble(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  // Greedy match up to the first H2/H3 heading or first capitalized prose line
+  // after the preamble. Common openers:
+  const preamblePattern = /^[\s>]*(?:Okay,?|Sure,?|Certainly,?|Of course,?|Alright,?|Here is|Here's|Below is)\s[^.\n]{0,300}\.[\s\n]*(?:---[\s\n]*)?/i;
+  const m = out.match(preamblePattern);
+  if (m) {
+    out = out.slice(m[0].length).trimStart();
+    stripped++;
+  }
+  if (stripped) console.log(`[thesisSynthesizer] preamble: stripped LLM scaffolding`);
+  return out;
+}
+
+// ── Phase 10J — strip duplicate `## Heading` mid-body + leading `---` ─────
+// The assembler adds the section H2; if the LLM also emits one (with or
+// without preamble), we end up with two. Phase 5F's stripDuplicateLeadingHeading
+// only catches LEADING headings — this catches mid-body duplicates and stray
+// horizontal rules at the section start.
+function stripMidBodyDuplicateHeading(text, sectionHeading) {
+  if (!text || !sectionHeading) return text;
+  let out = String(text);
+  let stripped = 0;
+  // Strip leading `---` separator (often pairs with a stripped preamble)
+  out = out.replace(/^[\s\n]*---\s*\n+/, () => { stripped++; return ""; });
+  const expected = sectionHeading.toLowerCase().replace(/[^\w\s]/g, "").trim();
+  // Find any H2 whose normalized text equals the section heading (mid-body)
+  const headingRe = /^(#{1,3})\s+(.+?)\s*$/gm;
+  out = out.replace(headingRe, (match, _hashes, headingText) => {
+    const norm = headingText.toLowerCase().replace(/[^\w\s]/g, "").trim();
+    if (norm === expected || (norm.includes(expected) && expected.length > 6)) {
+      stripped++;
+      return "";   // drop the duplicate heading line
+    }
+    return match;
+  });
+  // Collapse the resulting blank-line storm
+  out = out.replace(/\n{3,}/g, "\n\n");
+  if (stripped) console.log(`[thesisSynthesizer] dupHeading: stripped ${stripped} duplicate heading/separator(s) from "${sectionHeading}"`);
+  return out;
+}
+
+// ── Phase 10K — lint malformed wikilinks ──────────────────────────────────
+// Catches LLM-emitted wikilinks containing parenthetical sentences or unclosed
+// brackets, e.g. `[[Document GraphRAG: ... (Evaluation demonstrates consistent...)]`
+// (note: only one `]` at the end). These render badly in Obsidian and create
+// junk stub files when resolveWikilinks runs.
+function lintMalformedWikilinks(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  // 1. Wikilinks with sentence-style parentheticals inside (nested-clause hint)
+  out = out.replace(/\[\[([^\]\n]{20,200}?\([A-Z][^\]\n]{30,}?\.\.?\)[^\]\n]{0,40})\]\]/g, (m, inner) => {
+    stripped++;
+    // Replace with a quoted plain-text reference (preserve the leading title)
+    const titleOnly = inner.split(/[:.(]/)[0].trim();
+    return titleOnly ? `"${titleOnly}"` : "";
+  });
+  // 2. Unclosed `[[X]` (single trailing bracket) — convert to italic plain text
+  out = out.replace(/\[\[([^\]\n]{5,200}?)\](?!\])/g, (m, inner) => {
+    stripped++;
+    const cleaned = inner.split(/[:.(]/)[0].trim();
+    return cleaned ? `*${cleaned}*` : "";
+  });
+  // 3. Wikilinks containing newlines (always malformed)
+  out = out.replace(/\[\[[^\]]*\n[^\]]*\]\]/g, () => { stripped++; return ""; });
+  if (stripped) console.log(`[thesisSynthesizer] malformedWikilinks: cleaned ${stripped}`);
+  return out;
+}
+
+// ── Phase 10L — strip deepseek-r1 thinking blocks ─────────────────────────
+// deepseek-r1 emits <think>...</think> reasoning that should never reach the
+// final document. The model is tuned to keep these private but occasionally
+// leaks them through.
+function stripThinkingBlocks(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  out = out.replace(/<think>[\s\S]*?<\/think>/gi, () => { stripped++; return ""; });
+  // Also catch unclosed <think> blocks (model truncated mid-think)
+  out = out.replace(/<think>[\s\S]*$/i, () => { stripped++; return ""; });
+  if (stripped) console.log(`[thesisSynthesizer] thinkingBlocks: stripped ${stripped}`);
+  return out;
+}
+
+// ── Phase 10D — fabricated-author lint (prose attribution patterns) ───────
+// Catches "Smith et al. (2020)", "Smith and Jones (2020)", "Smith (2020) found"
+// where the surname is NOT in the citation index. lintStrayCitations only
+// catches `(Smith, 2020)` parenthetical forms — prose attributions slip past.
+//
+// Strategy: build a whitelist of valid surnames from the citation index, then
+// scan for the prose patterns. If the lead surname isn't whitelisted, strip
+// the year-paren and any leading attribution clause.
+function lintFabricatedAuthorsInProse(draft, citationIndex) {
+  if (!draft || !Array.isArray(citationIndex) || citationIndex.length === 0) return draft;
+  // Build whitelist of surnames (first-author + first-two characters of surname-prefix
+  // checks for short surnames that might collide).
+  const validSurnames = new Set();
+  for (const ce of citationIndex) {
+    for (const a of (ce?.cite?.authors || [])) {
+      const surname = String(a || "").split(",")[0].split(/\s+/).pop().trim();
+      if (surname && surname.length >= 2) validSurnames.add(surname.toLowerCase());
+    }
+  }
+  if (validSurnames.size === 0) return draft;
+
+  let stripped = 0;
+  let out = String(draft);
+  // Pattern A: "Smith et al. (2020)" or "Smith et al. (2020) found that..."
+  out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+et\s+al\.?\s*\((\d{4}[a-z]?)\)/g, (match, surname, year) => {
+    if (validSurnames.has(surname.toLowerCase())) return match;
+    stripped++;
+    return surname + " et al.";
+  });
+  // Pattern B: "Smith and Jones (2020)"
+  out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})\s*\((\d{4}[a-z]?)\)/g, (match, s1, s2, year) => {
+    if (validSurnames.has(s1.toLowerCase()) || validSurnames.has(s2.toLowerCase())) return match;
+    stripped++;
+    return `${s1} and ${s2}`;
+  });
+  // Pattern C: "Smith (2020)" — only strip year-paren when surname isn't valid AND
+  // the construction looks like an attribution (preceded by "by", "to", or sentence-start).
+  out = out.replace(/(\b(?:by|to|in|from|of|per|via)\s+|^|\n|\.\s+)([A-Z][a-zA-Z'\-]{2,30})\s*\((\d{4}[a-z]?)\)/g, (match, prefix, surname, year) => {
+    if (validSurnames.has(surname.toLowerCase())) return match;
+    stripped++;
+    return prefix + surname;
+  });
+  if (stripped > 0) console.log(`[thesisSynthesizer] proseAuthorLint: stripped ${stripped} fabricated author attribution(s)`);
+  return out;
+}
+
 // ── Phase 8F — strip orphan close-quote artifacts ──────────────────────────
 // Pattern: `...sentence." lowercase prose continues` — the closing quote is
 // a leak from a prompt instruction template; strip it.
@@ -793,8 +932,8 @@ async function writeSection({ topic, tier, section, prevSummaries, constraints, 
   // Phase 5A: include the structured citation list and demand the LLM uses
   // EXACT (Author, Year) form from the list — never invent author names.
   const citationsBlock = citationsPrompt
-    ? `\n\nAVAILABLE CITATIONS (use ONLY these — never invent author names):\n${citationsPrompt}\n\nWhen you reference a study, use the EXACT in-text form shown in the list, e.g. "(Smith & Jones, 2023)". If you cannot attribute a claim to one of these citations, REPHRASE it as general knowledge with NO parenthetical citation. NEVER write "[5]", "Source 1", "(Author, Year)" placeholders, or made-up author names.`
-    : `\n\nNo structured citations available. Write claims as general knowledge — DO NOT invent (Author, Year) parentheticals.`;
+    ? `\n\nAVAILABLE CITATIONS (use ONLY these — never invent author names):\n${citationsPrompt}\n\nWhen you reference a study, use the EXACT in-text form shown in the list, e.g. "(Smith & Jones, 2023)". If you cannot attribute a claim to one of these citations, REPHRASE it as general knowledge with NO parenthetical citation. NEVER write "[5]", "Source 1", "(Author, Year)" placeholders, or made-up author names. NEVER use database/repository names as parenthetical citations — "(openalex)", "(figshare)", "(dryad)", "(osf)", "(zenodo)" are WRONG; databases are not authors.`
+    : `\n\nNo structured citations available. Write claims as general knowledge — DO NOT invent (Author, Year) parentheticals. NEVER cite databases or repositories like "(openalex)" or "(figshare)" — they are not authors.`;
 
   // Phase 5B: tell the model to avoid its filler openings + previously-used openings.
   const recentOpenings = (prevSummaries || []).map(p => p?.opening).filter(Boolean).slice(-5);
@@ -862,7 +1001,11 @@ ${synthesisDirective}
   // Phase 5D + 6D — explicit num_predict so the model doesn't quit early.
   // qwen2.5:7b often produces 1.5-1.7 tokens/word; 1.8x was borderline tight.
   // Bumped to 2.2x so even verbose sections have ample headroom.
-  const numPredict = Math.ceil((section.word_budget || 600) * 2.2);
+  // Phase 10M — Lit Review specifically tends to overflow (compares many
+  // studies, contradictions, mechanisms) — bump to 2.8x to avoid mid-section
+  // truncation seen in the GraphRAG run.
+  const isLitReview = /lit.?review|literature/i.test(section.id || section.heading || "");
+  const numPredict = Math.ceil((section.word_budget || 600) * (isLitReview ? 2.8 : 2.2));
 
   // Phase 9E — section composition uses the heavyweight model when configured.
   // The heavy num_ctx is configurable (default 6144) since 14B-q3 quantized
@@ -1315,11 +1458,23 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
       text = await ensureResearchQuestion(text, topic);
     }
 
+    // Phase 10L — strip deepseek-r1 <think>...</think> blocks
+    text = stripThinkingBlocks(text);
+
+    // Phase 10I — strip conversational preambles ("Okay, here is...")
+    text = stripConversationalPreamble(text);
+
+    // Phase 10J — strip mid-body duplicate `## Heading` + leading `---`
+    text = stripMidBodyDuplicateHeading(text, section.heading);
+
     // Phase 8D — strip "Key Findings:" / "Limitations:" stock bullet sections
     text = stripStockBulletSections(text, section.heading);
 
     // Phase 8F — remove orphan close-quote artifacts
     text = stripOrphanQuotes(text);
+
+    // Phase 10K — clean malformed wikilinks (run after stripDuplicate to keep order safe)
+    text = lintMalformedWikilinks(text);
 
     const finalWords = wordCount(text);
     console.log(`[thesisSynthesizer] ✓ section ${idx + 1}/${totalSections} done: ${finalWords}w (raw=${rawWords}, budget=${section.word_budget})`);
@@ -1456,6 +1611,10 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
       console.log(`[thesisSynthesizer] citation lint: stripped ${lintResult.issues.length} stray ref(s) — ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ")}`);
       draft = lintResult.cleanText;
     }
+    // Phase 10D — prose-style fabricated-author lint. lintStrayCitations
+    // catches `(Smith, 2020)` parentheticals; this catches the prose forms
+    // "Smith et al. (2020)" / "Smith and Jones (2020)" / "Smith (2020) found".
+    draft = lintFabricatedAuthorsInProse(draft, citationIndex);
     if (citationIndex.length > 0) {
       const refSection = renderReferencesSection(citationIndex);
       // Replace any existing "## References" / "## Bibliography" block, otherwise append.
@@ -1496,6 +1655,30 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   // 11a. Wikilink enrichment — the synthesizer LLM doesn't generate [[wikilinks]],
   //      so without this pass the article saves with 0 stubs created. Run a small
   //      LLM pass to wrap key concepts in [[...]], then save the enriched draft.
+  // Phase 10A — chart embed validator. The LLM occasionally hallucinates
+  // chart filenames like ![[charts/insomnia_dose_response.svg]] when no
+  // such chart was generated. Scan the draft against actual files in
+  // vault/<slug>/charts/ and strip any embed (plus its caption line) that
+  // doesn't resolve. Prevents Obsidian "could not be found" errors AND
+  // prevents resolveWikilinks from creating broken stubs for them.
+  try {
+    const chartsDirAbs = path.join(getVaultPath() || "", VAULT_JOURNAL_ROOT, "Research", topicSlug, "charts");
+    let realCharts = new Set();
+    try {
+      const files = await fs.readdir(chartsDirAbs);
+      realCharts = new Set(files.map(f => f.toLowerCase()));
+    } catch { /* charts dir doesn't exist — all embeds are hallucinated */ }
+    let strippedEmbeds = 0;
+    draft = draft.replace(/!\[\[charts\/([^\]\n]+)\]\][^\n]*\n(?:[^\n]*Figure[^\n]*\n)?/g, (match, fname) => {
+      if (realCharts.has(String(fname).toLowerCase())) return match;
+      strippedEmbeds++;
+      return "";
+    });
+    if (strippedEmbeds) console.log(`[thesisSynthesizer] chartValidator: stripped ${strippedEmbeds} hallucinated chart embed(s) (real charts on disk: ${realCharts.size})`);
+  } catch (err) {
+    log(`chartValidator non-fatal: ${err.message}`, "warn");
+  }
+
   console.log(`[thesisSynthesizer] ⏳ enriching draft with wikilinks...`);
   let enrichedDraft = draft;
   try {

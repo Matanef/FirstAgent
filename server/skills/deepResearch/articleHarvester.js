@@ -402,8 +402,15 @@ export async function harvest(prompt, opts = {}) {
           content = deepText;
           await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString(), deep: true });
           console.log(`[harvester] deep-read enrichment ✓ ${item.title?.slice(0, 50) || item.url.slice(0, 50)} → ${deepText.length}c (was ${item.content?.length || 0}c abstract)`);
+        } else {
+          // Phase 10E — deep-read returned nothing/thin; mark for the manual bridge.
+          item._fetch_failed = true;
         }
-      } catch { /* deep enrichment is best-effort; ignore failure */ }
+      } catch {
+        // Phase 10E — fetchPage threw. Article remains at abstract-level content.
+        // Flag so manualBridge.collectBlockedSources can offer it for manual download.
+        item._fetch_failed = true;
+      }
     }
     // ── PAYWALL FALLBACK CHAIN ──
     // Original URL produced thin/empty content. If we have a DOI, try in order:

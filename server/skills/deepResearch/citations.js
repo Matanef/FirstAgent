@@ -104,12 +104,34 @@ export function shortAPA(cite) {
  * for the JOURNAL name; the article title itself stays roman. Books reverse
  * this. We emit journal articles by default (most common case).
  */
+// Phase 10C — repositories that are NOT journals. When `cite.venue` is one of
+// these, render WITHOUT italic-venue formatting (the repository goes in the
+// URL line instead). This stops the LLM from emitting "(openalex)" as if it
+// were a parenthetical citation.
+const REPO_VENUES = new Set([
+  "openalex", "figshare", "dryad", "dryad digital repository",
+  "harvard dataverse", "dataverse",
+  "open science framework", "osf", "osf preprints",
+  "zenodo", "data.gov", "datagov",
+  "icpsr", "humanitarian data exchange", "hdx",
+  "world bank open data", "world bank", "oecd statistics", "oecd",
+  "fred", "fred — st. louis fed",
+  "who global health observatory", "who", "whogho",
+  "academagic"
+]);
+function isRepositoryVenue(v) {
+  return REPO_VENUES.has(String(v || "").trim().toLowerCase());
+}
+
 export function formatAPAEntry(cite) {
   if (!cite) return "";
   const authors = (cite.authors || []).map(canonicalizeAuthor).filter(Boolean);
   const year = cite.year ? `(${cite.year})` : "(n.d.)";
   const title = (cite.title || "").trim().replace(/\.$/, "");
-  const venue = (cite.venue || "").trim();
+  // Phase 10C — drop venue when it's just a repository name. Datasets cited
+  // as "*OpenAlex*" got the LLM writing "(openalex)" parentheticals downstream.
+  const rawVenue = (cite.venue || "").trim();
+  const venue = isRepositoryVenue(rawVenue) ? "" : rawVenue;
   const vol = cite.volume ? String(cite.volume) : "";
   const issue = cite.issue ? `(${cite.issue})` : "";
   const pages = (cite.pages || "").trim();

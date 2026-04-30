@@ -359,6 +359,10 @@ JSON:`;
     const res = await llm(prompt, {
       timeoutMs: 15000,
       format: "json",
+      // Phase 10H — pin to the deepResearch synthesizer model. The default
+      // chat-persona model (dolphin-llama3) was emitting unreliable JSON for
+      // wikilink phrases on the deepResearch hot path.
+      model: process.env.SYNTHESIZER_MODEL || "qwen2.5:7b",
       skipKnowledge: true,
       skipLanguageDetection: true,
       options: { temperature: 0.2, num_ctx: 4096 }

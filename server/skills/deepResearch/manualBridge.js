@@ -44,22 +44,28 @@ const BRIDGE_ELIGIBLE_TIERS = new Set(["research", "thesis"]);
 
 // ── eligibility scoring ────────────────────────────────────────────────────
 /**
- * Decide whether an article counts as "blocked" — i.e., we got the metadata
- * but the actual full text never arrived. Heuristic:
- *   - content < 1500 chars (probably just the abstract)
- *   - relevance >= 0.6 (worth the user's effort)
- *   - URL looks paper-like (PDF link or known publisher host)
+ * Decide whether an article counts as "blocked".
+ *
+ * Phase 10E — primary signal is now `_fetch_failed` (set by articleHarvester
+ * when fetchPage threw or returned thin). Length-heuristic kept as a backup
+ * for cases where the failure flag wasn't propagated.
+ *
+ * Eligibility (any path → eligible):
+ *   (a) `_fetch_failed: true` AND relevance >= 0.5
+ *   (b) content < 1500 chars AND relevance >= 0.6 AND URL paper-like
+ * Then the article must NOT be a libgen/scihub already-tried URL.
  */
 function isArticleBlocked(article, analysis) {
-  const content = String(article?.content || "");
-  if (content.length >= MIN_THIN_CONTENT) return false;
-  const relevance = analysis?.analysis?.relevance ?? 0;
-  if (relevance < 0.6) return false;
   const url = String(article?.url || "");
   if (!url) return false;
-  // Skip already-failed URLs we can't help with manually (libgen, scihub)
   if (/libgen|sci-?hub|google\.com\/scholar/i.test(url)) return false;
-  return true;
+  const relevance = analysis?.analysis?.relevance ?? 0;
+  // Path (a) — explicit fetch failure (preferred signal)
+  if (article?._fetch_failed === true && relevance >= 0.5) return true;
+  // Path (b) — fallback length heuristic
+  const content = String(article?.content || "");
+  if (content.length < MIN_THIN_CONTENT && relevance >= 0.6) return true;
+  return false;
 }
 
 /**

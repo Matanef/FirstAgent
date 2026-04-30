@@ -61,6 +61,10 @@ export const TIER_BUDGETS = {
     aiAcknowledgment: "footer"
   },
   thesis: {
+    // Phase 10B — removed standalone "AI Usage Acknowledgment" section. The
+    // section drifted off-topic (became a second mini-review of the topic),
+    // ran into token-budget exhaustion, and the professor-grade signal said
+    // it was unwanted. AI synthesis is now disclosed via frontmatter only.
     total: 5750,
     sections: [
       { id: "abstract",    heading: "Abstract",            words: 400 },
@@ -69,10 +73,9 @@ export const TIER_BUDGETS = {
       { id: "methodology", heading: "Methodology",         words: 750 },
       { id: "results",     heading: "Results",             words: 1050 },
       { id: "discussion",  heading: "Discussion",          words: 1200 },
-      { id: "conclusion",  heading: "Conclusion",          words: 700 },
-      { id: "ai_ack",      heading: "AI Usage Acknowledgment", words: 250 }
+      { id: "conclusion",  heading: "Conclusion",          words: 700 }
     ],
-    aiAcknowledgment: "section"
+    aiAcknowledgment: "frontmatter"
   }
 };
 

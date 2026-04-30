@@ -120,11 +120,25 @@ function safeAxios(url, opts = {}) {
 // item_type=3 filters to datasets only.
 async function fetchFigshare(query, limit) {
   const url = `https://api.figshare.com/v2/articles/search`;
-  const body = { search_for: query, page_size: limit, item_type: 3, order: "relevance" };
+  // Phase 10G — figshare returns 400 with `order: "relevance"` (their recent
+  // API change: `order` requires a paired `order_direction` and "relevance"
+  // is no longer accepted as a value). Drop the `order` field and let
+  // figshare default-sort. UA goes through "User-Agent" not the polite-pool
+  // mailto-marked one, since they reject malformed `mailto:` strings.
+  const body = { search_for: query, page_size: limit, item_type: 3 };
   console.log(`[datasetHarvester] figshare: querying "${query}" (limit ${limit})`);
   const res = await axios.post(url, body, {
-    timeout: 20000, headers: { "Content-Type": "application/json", "User-Agent": ZENODO_UA }
+    timeout: 20000,
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (compatible; deepResearch/1.0)"
+    },
+    validateStatus: s => s >= 200 && s < 500
   });
+  if (res.status >= 400) {
+    log(`figshare returned ${res.status} — body: ${JSON.stringify(res.data || "").slice(0, 200)}`, "warn");
+    return [];
+  }
   const items = Array.isArray(res.data) ? res.data : [];
   const out = [];
   for (const item of items.slice(0, limit)) {
@@ -361,7 +375,27 @@ async function fetchOsfData(query, limit) {
 async function fetchDataGov(query, limit) {
   const url = `https://catalog.data.gov/api/3/action/package_search?q=${encodeURIComponent(query)}&fq=res_format:CSV&rows=${limit}`;
   console.log(`[datasetHarvester] datagov: querying "${query}" (limit ${limit})`);
-  const res = await safeAxios(url);
+  // Phase 10G — data.gov 404s constantly without authentication.
+  // DATAGOV_API_KEY (from api.data.gov free tier) lifts the rate limit and
+  // unblocks the catalog endpoint. Sent via X-Api-Key header per data.gov docs.
+  const apiKey = CONFIG.DATAGOV_API_KEY || process.env.DATAGOV_API_KEY;
+  const headers = { ...BROWSER_HEADERS };
+  if (apiKey) headers["X-Api-Key"] = apiKey;
+  let res;
+  try {
+    res = await axios.get(url, {
+      timeout: 20000, headers, maxRedirects: 5,
+      validateStatus: s => s >= 200 && s < 500
+    });
+  } catch (err) {
+    log(`datagov network error: ${err.message}`, "warn");
+    return [];
+  }
+  if (res.status >= 400) {
+    // 404/403 → endpoint or rate-limit issue. Skip silently this round.
+    if (!apiKey) log(`datagov ${res.status} — set DATAGOV_API_KEY in server/.env to unlock (free at api.data.gov)`, "warn");
+    return [];
+  }
   const items = res.data?.result?.results || [];
   const out = [];
   for (const it of items.slice(0, limit)) {

@@ -142,10 +142,28 @@ async function fetchPdfContent(pdfUrl) {
  * No API key required; policy requires an email contact.
  * Returns PDF URL string or null.
  */
+// Phase 10G — DOI sanitizer. Upstream JSON-parse bugs occasionally produce
+// DOI strings like "10.1186/x},title:..." where extra serialization debris
+// got concatenated. Strip everything from the first whitespace, brace, comma,
+// or quote onward to keep Unpaywall queries valid.
+function sanitizeDoi(rawDoi) {
+  if (!rawDoi || typeof rawDoi !== "string") return "";
+  return rawDoi
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "")
+    .split(/[\s{}",'<>]/)[0]    // first whitespace/brace/comma/quote ends the DOI
+    .replace(/[.,:;]+$/, "")     // strip trailing punctuation
+    .trim();
+}
+
 async function unpaywallLookup(doi) {
+  const cleanDoi = sanitizeDoi(doi);
+  if (!cleanDoi) {
+    log(`Unpaywall lookup skipped: malformed DOI "${String(doi).slice(0, 60)}"`, "warn");
+    return null;
+  }
   const email = "research-lanou@local.agent";
   try {
-    const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(email)}`;
+    const url = `https://api.unpaywall.org/v2/${encodeURIComponent(cleanDoi)}?email=${encodeURIComponent(email)}`;
     const res = await axios.get(url, { timeout: 12000 });
     const data = res.data;
     // Best OA location has a direct PDF link?
@@ -158,7 +176,7 @@ async function unpaywallLookup(doi) {
     }
     return null;
   } catch (err) {
-    log(`Unpaywall lookup failed for ${doi}: ${err.message}`, "warn");
+    log(`Unpaywall lookup failed for ${cleanDoi}: ${err.message}`, "warn");
     return null;
   }
 }
