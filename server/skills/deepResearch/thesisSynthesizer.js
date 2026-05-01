@@ -513,23 +513,90 @@ function stripStockBulletSections(text, sectionHeading) {
   return out;
 }
 
-// ── Phase 10I — strip conversational preambles ─────────────────────────────
+// ── Phase 10I + 12D — strip conversational preambles ──────────────────────
 // Patterns like "Okay, here is an expanded section based on..." are model
-// scaffolding that leaks when the LLM is told to "rewrite/expand". Strip
-// them along with any trailing horizontal rule before the real content.
+// scaffolding that leaks when the LLM is told to "rewrite/expand". Phase 12D
+// extends the opener list (deepseek-r1 produces "It targets...", "Based on
+// the provided...", "Below is a synthesis...") and allows colon-terminators
+// (Lit Review preambles end with ":" not ".").
 function stripConversationalPreamble(text) {
   if (!text) return text;
   let out = String(text);
   let stripped = 0;
-  // Greedy match up to the first H2/H3 heading or first capitalized prose line
-  // after the preamble. Common openers:
-  const preamblePattern = /^[\s>]*(?:Okay,?|Sure,?|Certainly,?|Of course,?|Alright,?|Here is|Here's|Below is)\s[^.\n]{0,300}\.[\s\n]*(?:---[\s\n]*)?/i;
+  // Common preamble openers — case-insensitive match at section start.
+  const preamblePattern = /^[\s>]*(?:Okay,?|Sure,?|Certainly,?|Of\s+course,?|Alright,?|Here\s+is|Here's|Below\s+is|It\s+targets|It\s+aims|Aiming\s+for|This\s+synthesis|This\s+piece|This\s+section\s+(?:will|aims|presents|offers)|The\s+following|Based\s+on\s+the\s+provided|Drawing\s+(?:upon|from))\s[^.\n!?:]{0,400}[.!?:][\s\n]*(?:---[\s\n]*)?/i;
   const m = out.match(preamblePattern);
   if (m) {
     out = out.slice(m[0].length).trimStart();
     stripped++;
   }
   if (stripped) console.log(`[thesisSynthesizer] preamble: stripped LLM scaffolding`);
+  return out;
+}
+
+// ── Phase 12A — strip ```markdown / ```md fence wrappers ──────────────────
+// deepseek-r1 wraps section output as:
+//   ```markdown
+//   # Title
+//   ``` content content content
+//   ## subsection
+//   ```
+// Causing chaos in the saved doc. Strip:
+//   - leading ```markdown / ```md / ``` openers (any indent)
+//   - orphan ``` lines that aren't paired (no language hint, ALONE on a line)
+//   - inline ``` that appears immediately before regular prose (not closing a real code block)
+function stripMarkdownFences(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  // Strip ```markdown or ```md openers (alone on a line)
+  out = out.replace(/^[\s>]*```(?:markdown|md)[\s>]*$/gim, () => { stripped++; return ""; });
+  // Strip orphan ``` lines (alone on a line, no content, no language)
+  out = out.replace(/^[\s>]*```\s*$/gm, () => { stripped++; return ""; });
+  // Strip inline ``` that appears at the start of a line followed by prose
+  // (deepseek often emits "``` content..." mid-paragraph)
+  out = out.replace(/^[\s>]*```\s+(?=\S)/gm, () => { stripped++; return ""; });
+  // Collapse the resulting blank-line storm
+  out = out.replace(/\n{3,}/g, "\n\n");
+  if (stripped) console.log(`[thesisSynthesizer] markdownFences: stripped ${stripped} fence(s)`);
+  return out;
+}
+
+// ── Phase 12B — strip """ triple-quote heredoc markers ────────────────────
+// My prompt scaffolding uses `"""` to wrap section drafts. Some models echo
+// these markers into the output. Strip lines that are nothing but `"""`.
+function stripTripleQuotes(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  out = out.replace(/^[\s>]*"""[\s>]*$/gm, () => { stripped++; return ""; });
+  out = out.replace(/\n{3,}/g, "\n\n");
+  if (stripped) console.log(`[thesisSynthesizer] tripleQuotes: stripped ${stripped}`);
+  return out;
+}
+
+// ── Phase 12E — demote section-body H2 headings to H3 ─────────────────────
+// The assembler owns the section's `## Heading`. When the LLM emits its own
+// `## Subheading` mid-body, you get a structural mess (Abstract had 7 H2s
+// in the GraphRAG run). Demote any `^## ` inside the section body to `### `
+// so the assembler's hierarchy stays intact while preserving substructure.
+function demoteSectionH2sToH3(text, sectionHeading) {
+  if (!text) return text;
+  let out = String(text);
+  let demoted = 0;
+  // Only demote H2s that are NOT the section's own heading (those get
+  // separately stripped by stripDuplicateLeadingHeading + stripMidBodyDuplicateHeading).
+  const expected = String(sectionHeading || "").toLowerCase().replace(/[^\w\s]/g, "").trim();
+  out = out.replace(/^(##)\s+(.+?)\s*$/gm, (match, hashes, headingText) => {
+    const norm = headingText.toLowerCase().replace(/[^\w\s]/g, "").trim();
+    if (norm === expected || (expected.length > 6 && norm.includes(expected))) {
+      // Owned by the section — leave to dedicated heading-strip helpers
+      return match;
+    }
+    demoted++;
+    return `### ${headingText}`;
+  });
+  if (demoted) console.log(`[thesisSynthesizer] H2demote: demoted ${demoted} stray H2 → H3 in "${sectionHeading}"`);
   return out;
 }
 
@@ -570,6 +637,15 @@ function lintMalformedWikilinks(text) {
   if (!text) return text;
   let out = String(text);
   let stripped = 0;
+  // Phase 12C — `[![[X]]]` malformed wikilink-with-image-bang. The LLM mixes
+  // image-embed `![[...]]` with wikilink `[[...]]` syntax, producing things
+  // like `[![[Parental Involvement in CBT...]]]`. The leading `[!` is also
+  // an Obsidian callout marker, which adds to the confusion. Convert to
+  // plain `[[X]]`.
+  out = out.replace(/\[!\[\[([^\]\n]{5,300}?)\]\]\]/g, (m, inner) => {
+    stripped++;
+    return `[[${inner}]]`;
+  });
   // 1. Wikilinks with sentence-style parentheticals inside (nested-clause hint)
   out = out.replace(/\[\[([^\]\n]{20,200}?\([A-Z][^\]\n]{30,}?\.\.?\)[^\]\n]{0,40})\]\]/g, (m, inner) => {
     stripped++;
@@ -1001,11 +1077,13 @@ ${synthesisDirective}
   // Phase 5D + 6D — explicit num_predict so the model doesn't quit early.
   // qwen2.5:7b often produces 1.5-1.7 tokens/word; 1.8x was borderline tight.
   // Bumped to 2.2x so even verbose sections have ample headroom.
-  // Phase 10M — Lit Review specifically tends to overflow (compares many
-  // studies, contradictions, mechanisms) — bump to 2.8x to avoid mid-section
-  // truncation seen in the GraphRAG run.
-  const isLitReview = /lit.?review|literature/i.test(section.id || section.heading || "");
-  const numPredict = Math.ceil((section.word_budget || 600) * (isLitReview ? 2.8 : 2.2));
+  // Phase 10M + 12F — Lit Review and Discussion specifically overflow (long
+  // comparative analysis, multi-claim synthesis). Bump to 2.8x to avoid the
+  // mid-section truncation seen in both the GraphRAG and CBT runs.
+  const isLitReview  = /lit.?review|literature/i.test(section.id || section.heading || "");
+  const isDiscussion = /discussion/i.test(section.id || section.heading || "");
+  const isLong       = isLitReview || isDiscussion;
+  const numPredict = Math.ceil((section.word_budget || 600) * (isLong ? 2.8 : 2.2));
 
   // Phase 9E — section composition uses the heavyweight model when configured.
   // The heavy num_ctx is configurable (default 6144) since 14B-q3 quantized
@@ -1461,11 +1539,23 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
     // Phase 10L — strip deepseek-r1 <think>...</think> blocks
     text = stripThinkingBlocks(text);
 
-    // Phase 10I — strip conversational preambles ("Okay, here is...")
+    // Phase 12A — strip ```markdown / ```md fence wrappers (deepseek-r1
+    // wraps section output in fences, leaving orphan ``` lines mid-paragraph)
+    text = stripMarkdownFences(text);
+
+    // Phase 12B — strip """ triple-quote heredoc markers (prompt scaffolding leak)
+    text = stripTripleQuotes(text);
+
+    // Phase 10I (+ 12D extended patterns) — strip conversational preambles
     text = stripConversationalPreamble(text);
 
     // Phase 10J — strip mid-body duplicate `## Heading` + leading `---`
     text = stripMidBodyDuplicateHeading(text, section.heading);
+
+    // Phase 12E — demote stray `## Heading` inside section body to `### Heading`
+    // (the assembler owns the section's H2; LLMs sometimes emit additional H2
+    // sub-sections which break the document outline).
+    text = demoteSectionH2sToH3(text, section.heading);
 
     // Phase 8D — strip "Key Findings:" / "Limitations:" stock bullet sections
     text = stripStockBulletSections(text, section.heading);

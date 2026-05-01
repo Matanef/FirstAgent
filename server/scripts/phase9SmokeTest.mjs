@@ -31,8 +31,11 @@ check("not blocked: low relevance article",  !MB.isArticleBlocked(offTopicArticl
 const noUrlArticle = { url: "", content: "thin" };
 check("not blocked: no URL",                 !MB.isArticleBlocked(noUrlArticle, blockedAnalysis));
 
+// Phase 12G — libgen URLs are no longer auto-skipped. They're now blocked
+// when content is thin (likely an ad page) so the manual bridge can request
+// a real PDF. Updated assertion to match new policy.
 const libgenArticle = { url: "https://libgen.li/foo.pdf", content: "thin" };
-check("not blocked: libgen URL skipped",     !MB.isArticleBlocked(libgenArticle, blockedAnalysis));
+check("BLOCKED: libgen URL with thin content (Phase 12G)", MB.isArticleBlocked(libgenArticle, blockedAnalysis));
 
 console.log("\n=== 9D: dataset eligibility ===");
 const blockedDS = { metadataOnly: false, files: [{ format: "csv", downloadUrl: "x" }], _bridge_eligible: true };

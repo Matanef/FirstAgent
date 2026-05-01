@@ -445,10 +445,17 @@ export async function harvest(prompt, opts = {}) {
               item.url = pdfUrl;
               item.domain = safeHost(pdfUrl);
               item.source = `${item.source || "unknown"}+libgen`;
+              // Phase 12G — flag this as low-quality content. Libgen mirrors
+              // often serve ad pages (~3-4KB) instead of the actual paper, but
+              // they pass the >=500 char threshold. Mark these so the manual
+              // bridge can correctly identify them as "still needs the user".
+              item._used_libgen_fallback = true;
+              if (fallback.length < 4000) item._fetch_failed = true;
               await writeCache(pdfUrl, { url: pdfUrl, content, fetchedAt: new Date().toISOString(), via: "libgen" });
-              console.log(`[harvester] libgen-fallback content ✓ ${(fallback.length / 1024).toFixed(1)}KB for doi=${doi}`);
+              console.log(`[harvester] libgen-fallback content ✓ ${(fallback.length / 1024).toFixed(1)}KB for doi=${doi}${fallback.length < 4000 ? " (LOW QUALITY — likely ad page; bridge-eligible)" : ""}`);
             } else {
               console.log(`[harvester] libgen-fallback got URL but fetchPage returned thin content for doi=${doi}`);
+              // Don't unset _fetch_failed — we know the original fetch failed
             }
           }
         }

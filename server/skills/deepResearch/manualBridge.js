@@ -58,11 +58,21 @@ const BRIDGE_ELIGIBLE_TIERS = new Set(["research", "thesis"]);
 function isArticleBlocked(article, analysis) {
   const url = String(article?.url || "");
   if (!url) return false;
-  if (/libgen|sci-?hub|google\.com\/scholar/i.test(url)) return false;
+  // Phase 12G — DON'T early-skip libgen URLs anymore. The harvester now
+  // flags low-quality libgen content via `_used_libgen_fallback` + `_fetch_failed`.
+  // We want THOSE on the bridge offer (the user can provide a real PDF instead
+  // of the libgen ad-page).
+  if (/sci-?hub|google\.com\/scholar/i.test(url)) return false;
   const relevance = analysis?.analysis?.relevance ?? 0;
   // Path (a) — explicit fetch failure (preferred signal)
   if (article?._fetch_failed === true && relevance >= 0.5) return true;
-  // Path (b) — fallback length heuristic
+  // Path (b) — Phase 12G: low-quality libgen-fallback content. The libgen
+  // mirror returned <4KB (typically an ad page rather than the real paper).
+  if (article?._used_libgen_fallback === true && relevance >= 0.5) {
+    const content = String(article?.content || "");
+    if (content.length < 4000) return true;
+  }
+  // Path (c) — fallback length heuristic
   const content = String(article?.content || "");
   if (content.length < MIN_THIN_CONTENT && relevance >= 0.6) return true;
   return false;

@@ -215,6 +215,19 @@ export function buildCitationIndex(notes) {
   for (const note of notes || []) {
     const rawCite = note?.cite;
     if (!rawCite || !rawCite.authors || rawCite.authors.length === 0 || !rawCite.title) continue;
+    // Phase 12H — drop entries where the authors list is mostly single-token
+    // pseudo-names (CORE/OpenAlex sometimes emits author lists like
+    // "Beck, Bender, Brown, Emerson, ..." where every "author" is just a
+    // surname with no first-initial — these can't be canonicalized properly.
+    // Heuristic: if >60% of authors are single-word entries with no comma,
+    // the list is malformed; skip the citation.
+    const singleWordAuthors = (rawCite.authors || []).filter(a =>
+      typeof a === "string" && !a.includes(",") && !/\s/.test(a.trim()) && a.trim().length < 25
+    ).length;
+    if (rawCite.authors.length >= 5 && singleWordAuthors / rawCite.authors.length > 0.6) {
+      console.log(`[citations] dropped malformed-list entry — ${singleWordAuthors}/${rawCite.authors.length} single-token authors (title="${String(rawCite.title).slice(0, 60)}")`);
+      continue;
+    }
     const cite = cleanCite(rawCite); // strip HTML entities + provider branding
     // Dedup by DOI or by surname+year+title-prefix
     const dedupKey = (cite.doi || "").toLowerCase() ||
