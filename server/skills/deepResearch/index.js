@@ -243,13 +243,59 @@ export async function deepResearch(request) {
 
   // Phase 9D — bridge resume detection. When the user replies "continue"/"skip"
   // to a manual-bridge offer, the orchestrator passes the action through
-  // resolvedPending. The pipeline re-runs the harvest (cache makes this mostly
-  // free) and then skips the bridge-offer gate, going straight to file-attach
-  // and synthesis.
+  // resolvedPending.
   const isBridgeResume = context.resolvedPending?.manual_bridge_continue !== undefined;
-  if (isBridgeResume) log(`bridge resume detected — will skip bridge gate after harvest`, "info");
+
+  // Phase 11B — short-circuit harvest+analysis on resume. Load saved
+  // promptResults from the bridge state file and skip the entire 5-10min
+  // harvest+LLM-analyze pipeline. JSON round-trip is byte-for-byte lossless;
+  // an integrity check against the live disk state guards against vector-
+  // collection eviction or vault relocation.
+  let restoredFromState = null;
+  if (isBridgeResume && context.resolvedPending?._bridgeSlug) {
+    const bridgeSlug = context.resolvedPending._bridgeSlug;
+    log(`bridge resume detected — attempting state-restore short-circuit for slug="${bridgeSlug}"`, "info");
+    try {
+      const state = await manualBridge.loadBridgeState(bridgeSlug);
+      if (state?.promptResults?.length) {
+        const integrity = await manualBridge.verifyBridgeState(state);
+        if (integrity.ok) {
+          restoredFromState = state;
+          log(`bridge resume: state-restore OK (${state.promptResults.length} prompts, ${state.promptResults.reduce((s, p) => s + (p.analyses?.length || 0), 0)} analyses) — SKIPPING harvest`, "info");
+          if (integrity.missingCollections?.length) {
+            log(`bridge resume: ${integrity.missingCollections.length} vector collection(s) missing on disk; will rebuild on demand`, "warn");
+          }
+          emitProgress(`📥 State restored — skipping harvest (${state.promptResults.length} prompts cached)`);
+        } else {
+          log(`bridge resume: integrity check failed (${integrity.issues.join("; ")}) — falling through to full pipeline`, "warn");
+        }
+      } else {
+        log(`bridge resume: no saved state for slug="${bridgeSlug}" — running full pipeline`, "warn");
+      }
+    } catch (err) {
+      log(`bridge resume: state-restore error (${err.message}) — falling through`, "warn");
+    }
+  }
 
   try {
+    // Phase 11B — variables shared between full-pipeline and resume paths.
+    // On normal runs these are populated by steps 3-8. On bridge resume they
+    // come pre-populated from the saved state file.
+    let activeSlug, cleanTitle, subject, prompts, promptResults, masterInfo;
+    let constraints = null;
+
+    if (restoredFromState) {
+      // Skip harvest+analyze entirely — restore from bridge state.
+      activeSlug    = restoredFromState.slug;
+      cleanTitle    = restoredFromState.cleanTitle;
+      prompts       = restoredFromState.prompts || [];
+      promptResults = restoredFromState.promptResults || [];
+      masterInfo    = restoredFromState.masterInfo || null;
+      constraints   = restoredFromState.constraintsSnapshot || await loadAgentConstraints();
+      // subject not strictly needed past this point — leave undefined.
+      subject       = null;
+      log(`bridge resume: restored ${promptResults.length} prompts with ${promptResults.reduce((s, p) => s + (p.analyses?.length || 0), 0)} total analyses`, "info");
+    } else {
     // ── Step 3: keyword extraction ─────────────────────────────────────────
     log(`step=keywordExtract topic="${rawTopic}"`, "info");
     emitProgress(`🔍 Extracting keywords for "${rawTopic.slice(0, 60)}"…`);
@@ -273,10 +319,10 @@ export async function deepResearch(request) {
     // otherwise the bootstrapped slug, otherwise a freshly derived clean slug.
     // LLM-derived title + slug pair gives readable folder names AND clean thesis titles.
     const derived = await deriveTitleAndSlug(rawTopic, effectiveTier);
-    const activeSlug = bootstrap?.slug
+    activeSlug = bootstrap?.slug
       || (matches[0] && matches[0].score >= 4 ? matches[0].slug : null)
       || derived.slug;
-    const cleanTitle = derived.title;
+    cleanTitle = derived.title;
     log(`derived title="${cleanTitle}" slug="${activeSlug}" tier=${effectiveTier}`, "info");
 
     // Ensure subject entry exists (no-op merge if it does).
@@ -293,11 +339,11 @@ export async function deepResearch(request) {
       depth: effectiveTier,
       lastResearched: new Date().toISOString()
     });
-    const subject = await sourceDirectory.getSubject(activeSlug);
+    subject = await sourceDirectory.getSubject(activeSlug);
 
     // ── Step 5: prompts ────────────────────────────────────────────────────
     emitProgress(`🧭 Planning sub-questions (tier=${effectiveTier})…`);
-    const prompts = await promptPlanner.build({
+    prompts = await promptPlanner.build({
       topic: rawTopic,
       extracted,
       relatedMatches: matches,
@@ -306,11 +352,11 @@ export async function deepResearch(request) {
     emitProgress(`📋 Generated ${prompts.length} sub-questions`, { count: prompts.length });
 
     // ── Step 6: per-prompt write-as-you-go pipeline ────────────────────────
-    const constraints = await loadAgentConstraints();
+    constraints = await loadAgentConstraints();
     const seenUrls    = new Set();
     const seenTitles  = new Set(); // cross-prompt normalized-title dedup
     const seenDatasetIds = new Set(); // Phase 7: cross-prompt dataset dedup
-    const promptResults = [];
+    promptResults = [];
     const maxPerPrompt = constraints.research.maxArticlesPerPrompt || 7;
     const tierLimits = { article: 3, indepth: 4, research: 6, thesis: 7 };
     const articlesPerPrompt = Math.min(maxPerPrompt, tierLimits[effectiveTier] || 4);
@@ -566,25 +612,27 @@ export async function deepResearch(request) {
     }
 
     // ── Phase 7F: write _data.md index for empirical-methodology outputs ──
-    const allQuant = promptResults.flatMap(p => p.quantitativeFindings || []);
-    const allDatasetCites = promptResults.flatMap(p => p.datasetCitations || []);
-    if (allDatasetCites.length > 0) {
+    // Phase 11B — local-scoped names to avoid shadowing the outer
+    // declarations after the else-block closes.
+    const _localQuant = promptResults.flatMap(p => p.quantitativeFindings || []);
+    const _localDatasetCites = promptResults.flatMap(p => p.datasetCitations || []);
+    if (_localDatasetCites.length > 0) {
       try {
         const dataLines = [
           buildFrontmatter({
             title: `"${cleanTitle} — Datasets & Quantitative Findings"`,
             type: "research-data-index",
             parent: `[[${activeSlug}]]`,
-            dataset_count: allDatasetCites.length,
-            chart_count: allQuant.reduce((s, q) => s + (q.charts?.length || 0), 0),
+            dataset_count: _localDatasetCites.length,
+            chart_count: _localQuant.reduce((s, q) => s + (q.charts?.length || 0), 0),
             tags: ["research-data-index", activeSlug]
           }),
           `# Datasets & Quantitative Findings — ${cleanTitle}`,
           ``,
-          `${allDatasetCites.length} dataset(s) harvested across ${promptResults.length} prompt(s). ${allQuant.filter(q => !q.metadataOnly).length} analyzed; ${allQuant.filter(q => q.metadataOnly).length} metadata-only.`,
+          `${_localDatasetCites.length} dataset(s) harvested across ${promptResults.length} prompt(s). ${_localQuant.filter(q => !q.metadataOnly).length} analyzed; ${_localQuant.filter(q => q.metadataOnly).length} metadata-only.`,
           ``
         ];
-        for (const ds of allDatasetCites) {
+        for (const ds of _localDatasetCites) {
           dataLines.push(`## ${ds.title}`);
           dataLines.push(`- Repository: **${ds.repository}**`);
           if (ds.doi) dataLines.push(`- DOI: [${ds.doi}](https://doi.org/${ds.doi})`);
@@ -592,7 +640,7 @@ export async function deepResearch(request) {
           if (ds.year) dataLines.push(`- Year: ${ds.year}`);
           if (ds.metadataOnly) dataLines.push(`- _Metadata-only — rows not retrieved (cited for methodological rigor)._`);
           else if (ds.files?.length) dataLines.push(`- Files: ${ds.files.map(f => `\`${f.name}\` (${f.format}, ${(f.sizeBytes / 1024).toFixed(0)}KB)`).join(", ")}`);
-          const matchingQF = allQuant.find(q => q.datasetId === ds.id);
+          const matchingQF = _localQuant.find(q => q.datasetId === ds.id);
           if (matchingQF && !matchingQF.metadataOnly) {
             dataLines.push(`- N=${matchingQF.N}, sampling=${matchingQF.sampling}`);
             if (matchingQF.honestyLabels?.length) dataLines.push(`- Honesty: ${matchingQF.honestyLabels.join("; ")}`);
@@ -609,7 +657,7 @@ export async function deepResearch(request) {
           dataLines.push(``);
         }
         await writeNote(`${VAULT_JOURNAL_ROOT}/Research/${activeSlug}/_data.md`, dataLines.join("\n"));
-        log(`step=writeDataIndex done datasets=${allDatasetCites.length}`, "info");
+        log(`step=writeDataIndex done datasets=${_localDatasetCites.length}`, "info");
       } catch (err) {
         log(`writeDataIndex error="${err.message}"`, "warn");
       }
@@ -631,7 +679,7 @@ export async function deepResearch(request) {
       }
     }
     log(`step=writeMaster prompts=${promptResults.length}`, "info");
-    let masterInfo = null;
+    masterInfo = null;
     try {
       masterInfo = await promptRollup.writeMaster({
         topic: rawTopic,
@@ -689,6 +737,13 @@ export async function deepResearch(request) {
     } else {
       log(`step=infoCheck ok total=${totalAnalyses} min=${minRequired}`, "info");
     }
+    } // ─── end of full-pipeline else-block (Phase 11B); resume path skips here ──
+
+    // Phase 11B — recompute these for downstream code (synthesis + reply +
+    // bridge gate). The matching consts inside the else-block are block-scoped
+    // and not visible here. Cheap flatMaps.
+    const allDatasetCites = promptResults.flatMap(p => p.datasetCitations || []);
+    const allQuant        = promptResults.flatMap(p => p.quantitativeFindings || []);
 
     // ── Phase 9D: manual PDF/CSV bridge ───────────────────────────────────
     // For research/thesis tiers, if multiple high-relevance articles arrived
@@ -702,13 +757,18 @@ export async function deepResearch(request) {
       if (manualBridge.shouldOfferBridge(blocked, effectiveTier, bridgeOverride) && conversationId) {
         const vaultRel = `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`;
         try {
-          // Phase 9D — save lightweight bridge state. On resume the harvest
-          // re-runs (most fetches cached), so we don't need to persist the
-          // full promptResults graph — just the blocked list + slug + display
-          // metadata so renderBridgeMessage works again if asked.
+          // Phase 11B — save FULL promptResults so resume can short-circuit
+          // the entire harvest+analysis pipeline. saveBridgeState strips
+          // article.content blobs before serialization (those are already
+          // saved as note files). State file is ~30KB even for thesis tier.
           await manualBridge.saveBridgeState(activeSlug, {
             topic: rawTopic, slug: activeSlug, tier: effectiveTier,
-            cleanTitle, blocked
+            cleanTitle, blocked,
+            // Restore-critical state for short-circuit resume:
+            promptResults,                        // full graph (content stripped)
+            prompts,                              // promptSpec list
+            masterInfo,                           // _master.md path info
+            constraintsSnapshot: constraints      // writingRules + skip/prefer domains
           });
           const bridgeText = manualBridge.renderBridgeMessage(blocked, activeSlug, vaultRel);
           await setPendingQuestion(conversationId, {

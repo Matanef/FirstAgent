@@ -29,7 +29,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FILE_SIZE_LIMIT_FULL = 25 * 1024 * 1024;   // ≤25MB → read all rows
 const STRATIFIED_SLABS = 5;
 const STRATIFIED_ROWS_PER_SLAB = 2000;           // 5 × 2000 = 10K rows max for huge files
-const ALLOWED_FORMATS = new Set(["csv", "tsv", "json", "xlsx", "xls"]);
+const ALLOWED_FORMATS = new Set(["csv", "tsv", "json", "xlsx", "xls", "ckan_datastore"]);
 const SKIP_FORMATS = new Set(["dta", "sav", "por", "rds", "rdata", "parquet", "h5", "hdf5", "nc"]);
 
 const POLITE_EMAIL = CONFIG.UNPAYWALL_EMAIL || CONFIG.OPENALEX_MAILTO || process.env.UNPAYWALL_EMAIL || "";
@@ -52,6 +52,9 @@ const TOPIC_CLASSES = {
   gov:     /\b(census|policy|polic\w*|government|election\w*|voter\w*|crime|education|housing|welfare|tax\w*|regulation\w*|public\s*service)\b/i,
   engineering: /\b(engineer\w*|materials?|fatigue|structural|aerospace|robotic\w*|control\s*systems|fluid\s*dynamics|thermal|manufactur\w*|circuit\w*|signal\s*processing)\b/i,
   climate: /\b(climate|emission\w*|temperature\w*|warming|carbon|biodiversit\w*|ecosystem\w*|pollution|renewable|sustainab\w*)\b/i,
+  // Phase 11A — Hebrew detection (any character in the Hebrew Unicode range).
+  // Triggers data.gov.il provider preference; matched additively with other classes.
+  hebrew:  /[֐-׿]/,
 };
 
 function classifyTopic(topic) {
@@ -425,6 +428,55 @@ async function fetchDataGov(query, limit) {
 }
 
 // ── PROVIDER: Zenodo ────────────────────────────────────────────────────────
+// ── PROVIDER: data.gov.il (Israel CKAN — DataStore API bypasses bot wall) ───
+// Phase 11A — the public landing page is JS-armored (Akamai) but the CKAN API
+// is fully open. Direct file downloads (`/dataset/X/resource/Y/download/Z.csv`)
+// hit the JS challenge, so we use the DataStore API instead — `datastore_search`
+// returns rows + typed schema as JSON. Works for both Hebrew and English queries.
+async function fetchDataGovIL(query, limit) {
+  const url = `https://data.gov.il/api/3/action/package_search?q=${encodeURIComponent(query)}&rows=${limit * 2}`;
+  console.log(`[datasetHarvester] datagovIL: querying "${query}" (limit ${limit})`);
+  let res;
+  try {
+    res = await safeAxios(url);
+  } catch (err) {
+    log(`datagovIL fetch: ${err.message}`, "warn");
+    return [];
+  }
+  const items = res.data?.result?.results || [];
+  const out = [];
+  for (const it of items) {
+    if (out.length >= limit) break;
+    // Only resources with datastore_active are queryable via DataStore API.
+    // Skip the `download/` URL entirely — that path is JS-armored.
+    const activeResources = (it.resources || []).filter(r => r.datastore_active === true);
+    if (activeResources.length === 0) continue;
+    const files = activeResources.map(r => ({
+      name: r.name || r.id || "(unnamed)",
+      url: r.url,
+      // The downloadUrl points to datastore_search, NOT the file-download endpoint.
+      // limit=10000 covers the 99th-percentile Israeli dataset; pagination in a
+      // future phase if needed.
+      downloadUrl: `https://data.gov.il/api/3/action/datastore_search?resource_id=${r.id}&limit=10000`,
+      format: "ckan_datastore",
+      sizeBytes: 0
+    }));
+    out.push(buildRecord({
+      id: `datagovIL:${it.id}`,
+      title: it.title || "(untitled)",
+      doi: "",
+      repository: "datagovIL",
+      authors: [(it.organization || {}).title].filter(Boolean),
+      year: it.metadata_modified ? new Date(it.metadata_modified).getFullYear() : null,
+      description: (it.notes || "").slice(0, 600),
+      files,
+      url: `https://data.gov.il/dataset/${it.id}`
+    }));
+  }
+  console.log(`[datasetHarvester] datagovIL: got ${out.length} datasets with active DataStore resources`);
+  return out;
+}
+
 async function fetchZenodo(query, limit) {
   const url = `https://zenodo.org/api/records?q=${encodeURIComponent(query)}&size=${limit}&type=dataset`;
   console.log(`[datasetHarvester] zenodo: querying "${query}" (limit ${limit})`);
@@ -721,6 +773,7 @@ function prettyRepoName(repo) {
   return ({
     figshare: "Figshare", openalex: "OpenAlex", dryad: "Dryad Digital Repository",
     dataverse: "Harvard Dataverse", osf: "Open Science Framework", datagov: "Data.gov",
+    datagovIL: "data.gov.il (Israel Open Data)",
     zenodo: "Zenodo", icpsr: "ICPSR", hdx: "Humanitarian Data Exchange",
     worldbank: "World Bank Open Data", oecd: "OECD Statistics", fred: "FRED — St. Louis Fed",
     whoGho: "WHO Global Health Observatory"
@@ -735,6 +788,7 @@ const PROVIDER_REGISTRY = {
   dataverse: fetchDataverse,
   osf: fetchOsfData,
   datagov: fetchDataGov,
+  datagovIL: fetchDataGovIL,    // Phase 11A — Israeli gov data via CKAN DataStore
   zenodo: fetchZenodo,
   icpsr: fetchIcpsr,
   hdx: fetchHdx,
@@ -747,12 +801,15 @@ const PROVIDER_REGISTRY = {
 const ALWAYS_ON = ["figshare", "openalex", "dryad"];
 
 const TOPIC_PROVIDER_BIAS = {
-  finance:     ["fred", "worldbank", "oecd", "datagov", "dataverse", "zenodo"],
-  health:      ["whoGho", "datagov", "hdx", "dryad", "icpsr", "osf"],
+  finance:     ["fred", "worldbank", "oecd", "datagov", "datagovIL", "dataverse", "zenodo"],
+  health:      ["whoGho", "datagov", "datagovIL", "hdx", "dryad", "icpsr", "osf"],
   psych:       ["osf", "icpsr", "dataverse", "dryad", "zenodo"],
-  gov:         ["datagov", "dataverse", "icpsr", "worldbank"],
+  gov:         ["datagov", "datagovIL", "dataverse", "icpsr", "worldbank"],
   engineering: ["zenodo", "dataverse"],
-  climate:     ["zenodo", "worldbank", "hdx", "dataverse"]
+  climate:     ["zenodo", "worldbank", "hdx", "dataverse"],
+  // Phase 11A — Hebrew topic detection. Always lead with datagovIL since
+  // Israeli gov data is the primary Hebrew-language structured data source.
+  hebrew:      ["datagovIL"]
 };
 
 function pickProviders(topic, cap = 6) {
@@ -985,10 +1042,31 @@ async function parseByFormat(body, format) {
     if (format === "tsv") return parseCsv(body, "\t");
     if (format === "json") return parseJsonRows(body);
     if (format === "xlsx" || format === "xls") return await parseXlsx(body);
+    if (format === "ckan_datastore") return parseCkanDatastore(body);
   } catch (err) {
     log(`parse fail (${format}): ${err.message}`, "warn");
   }
   return null;
+}
+
+// Phase 11A — Parse CKAN DataStore API response. Shape:
+//   { success: true, result: { records: [...], fields: [{id, type}, ...], total: N } }
+// Returns headers preserving the field order from CKAN (rather than re-detecting
+// from records, which loses ordering on JSON object iteration in some engines).
+function parseCkanDatastore(body) {
+  const data = typeof body === "string" ? JSON.parse(body) : body;
+  if (!data?.success || !data?.result) return null;
+  const records = Array.isArray(data.result.records) ? data.result.records : [];
+  const fields  = Array.isArray(data.result.fields)  ? data.result.fields  : [];
+  if (records.length === 0) return null;
+  // Drop CKAN's internal _id column. Preserve schema-defined order.
+  const headers = fields.filter(f => f.id !== "_id").map(f => f.id);
+  const rows = records.map(r => {
+    const out = {};
+    for (const h of headers) out[h] = r[h];
+    return out;
+  });
+  return { headers, rows };
 }
 
 // Quote-aware CSV/TSV mini-parser. Handles "double ""quoted"" fields", embedded newlines.

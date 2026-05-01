@@ -191,10 +191,34 @@ function pendingDirPath(slug) {
   return path.join(vault, VAULT_JOURNAL_ROOT, "Research", slug, PENDING_DIR_NAME);
 }
 
+/**
+ * Phase 11B — Strip `article.content` from analyses before serialization.
+ * Article content is large (1-8KB per record), already saved as note files in
+ * vault, and not needed for resume — synthesis reads from analysis.facts +
+ * conclusions vector store. Round-trip lossless for the synthesizer.
+ */
+function stripContentForSerialization(promptResults) {
+  if (!Array.isArray(promptResults)) return [];
+  return promptResults.map(p => ({
+    ...p,
+    analyses: (p.analyses || []).map(a => {
+      if (!a) return a;
+      // Strip article.content but preserve url, _fetch_failed, etc.
+      const article = a.article ? { ...a.article } : null;
+      if (article) delete article.content;
+      return { ...a, article };
+    })
+  }));
+}
+
 export async function saveBridgeState(slug, state) {
   const p = bridgeStatePath(slug);
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify({ ...state, savedAt: new Date().toISOString() }, null, 2), "utf8");
+  // Phase 11B — slim promptResults if present (strip article.content blobs)
+  const slim = state.promptResults ? stripContentForSerialization(state.promptResults) : null;
+  const payload = { ...state, savedAt: new Date().toISOString() };
+  if (slim) payload.promptResults = slim;
+  await fs.writeFile(p, JSON.stringify(payload, null, 2), "utf8");
   // Also pre-create the _pending/ folder + a README so the user knows where to drop files.
   const pendingDir = pendingDirPath(slug);
   await fs.mkdir(pendingDir, { recursive: true });
@@ -214,6 +238,69 @@ After resume, this folder is automatically cleaned up.
   try { await fs.writeFile(readmePath, readme, "utf8"); } catch { /* best effort */ }
   log(`saved bridge state for "${slug}"`, "info");
   return p;
+}
+
+/**
+ * Phase 11B — Integrity check before short-circuiting harvest.
+ *
+ * The state file is a snapshot but the WORLD on disk may have changed:
+ *   - vector collections may have been cleared by a maintenance task
+ *   - vault folder may have been moved
+ *   - article note files may have been deleted manually
+ *
+ * Returns `{ ok: bool, issues: string[] }`. If any vector collection went
+ * missing, the caller can re-run conclusionWriter just for affected prompts
+ * (cheap — ~30s) instead of falling back to full pipeline re-run.
+ */
+export async function verifyBridgeState(state) {
+  const issues = [];
+  if (!state || !state.slug) {
+    return { ok: false, issues: ["state missing slug"] };
+  }
+  if (!Array.isArray(state.promptResults) || state.promptResults.length === 0) {
+    return { ok: false, issues: ["state missing promptResults"] };
+  }
+
+  // 1. Vault folder still exists at expected path
+  try {
+    const vault = getVaultPath();
+    if (!vault) issues.push("vault path not configured");
+    else {
+      const folder = path.join(vault, VAULT_JOURNAL_ROOT, "Research", state.slug);
+      const stat = await fs.stat(folder).catch(() => null);
+      if (!stat || !stat.isDirectory()) issues.push(`research folder missing: ${folder}`);
+    }
+  } catch (err) {
+    issues.push(`vault check: ${err.message}`);
+  }
+
+  // 2. Vector collections — ping each prompt's conclusionsCollection.
+  // Lazy-import vectorStore to avoid circular deps + because it's optional.
+  const missingCollections = [];
+  try {
+    const { vectorSearch } = await import("../../utils/vectorStore.js");
+    for (const p of state.promptResults) {
+      const cn = p.collectionName;
+      if (!cn) continue;
+      try {
+        const r = await vectorSearch(cn, "ping", 1);
+        if (!Array.isArray(r) || r.length === 0) missingCollections.push(cn);
+      } catch {
+        missingCollections.push(cn);
+      }
+    }
+  } catch (err) {
+    // vectorStore unavailable — non-fatal, mark for full pipeline if synthesis depends on RAG
+    issues.push(`vectorStore check skipped: ${err.message}`);
+  }
+
+  // Vector misses are RECOVERABLE (caller can rebuild) — flag separately
+  return {
+    ok: issues.length === 0,
+    issues,
+    missingCollections,
+    canRecoverFromCollectionLoss: missingCollections.length > 0 && issues.length === 0
+  };
 }
 
 export async function loadBridgeState(slug) {
