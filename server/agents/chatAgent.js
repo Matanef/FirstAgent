@@ -378,6 +378,19 @@ const SILENT_TOOLS = new Set([
 ]);
 
 async function resolveWithTools(message, options, recentTurns) {
+  // ── IMAGE GENERATION FORCE-TASK ──
+  // If the regex matches, we don't even classify—we go straight to taskAgent.
+  const { isImageGenerationIntent } = await import("../routing/helpers.js");
+  if (isImageGenerationIntent(message)) {
+    console.log(`🎨 [chatAgent] Image intent detected. Forcing task mode.`);
+    return await handleTask({
+      message,
+      conversationId: options.conversationId,
+      clientIp: options.clientIp,
+      onStep: options.onStep,
+      signal: options.signal
+    });
+  }
   // ── TOOL-INTERCEPT RESUME (Phase 3) ───────────────────────
   // If the user just answered a tool-intercept question ("yes"/"no"), honour it.
   const interceptResume = options.resolvedPending?._skill === "__tool_intercept__"
@@ -447,6 +460,69 @@ async function resolveWithTools(message, options, recentTurns) {
       confidence: 0.9,
       reason: "memory_question_short_circuit"
     };
+  }
+
+// ── DYNAMIC CONFIDENCE CHECK (The Gemini Method) ──
+  // If the user asks a factual question, we don't just blindly search. 
+  // We ask the LLM if it already knows the answer. If it's unsure, THEN we search.
+  
+  // Bulletproof regex: Looks for core factual triggers ANYWHERE in the string, ignoring filler words.
+  const isFactual = /\b(familiar\s+with|do\s+you\s+know|who\s+(?:is|are|was|were)|what\s+(?:is|are|was|were)|tell\s+me\s+about)\b/i.test(message);
+  
+  if (!interceptResume && !options.resolvedPending && 
+      classification.reason !== "memory_question_short_circuit" && 
+      isFactual) {
+    
+    console.log(`[chatAgent] Factual question detected. Running Confidence Check...`);
+    
+    // We use a lightning-fast micro-prompt to ask the LLM if it needs the internet.
+    const confidencePrompt = `You are a strict routing system. 
+The user is asking: "${message}"
+
+Do you know the exact, specific factual answer to this question with 100% certainty from your own training data? 
+If it is niche, obscure, or requires current events, you DO NOT know it.
+Reply with EXACTLY ONE WORD:
+"KNOWN" if you know it perfectly.
+"SEARCH" if you need to look it up on the internet.`;
+
+    try {
+      // Call the LLM with a strict 10-token limit to make it insanely fast.
+      // We check multiple option keys where the model name might be hiding, 
+      // and fall back to 'qwen2.5:7b' to ensure Dolphin never runs this logic test.
+      const fallbackModel = options?.targetModel || options?.model || "qwen2.5:7b";
+      
+      const confidenceRes = await llm(confidencePrompt, { 
+        model: fallbackModel,
+        skipKnowledge: true, 
+        options: { num_predict: 10, temperature: 0.1 } // Very strict, short output
+      });
+      
+      const judgment = (confidenceRes?.data?.text || "").toUpperCase();
+      console.log(`[chatAgent] Confidence Check Result: ${judgment}`);
+
+      if (judgment.includes("SEARCH")) {
+        console.log(`[chatAgent] Model is unsure. Forcing Search Tool.`);
+        
+        if (options.onStep) {
+          options.onStep({ type: "thought", phase: "THOUGHT", content: "I need to look this up to be sure. Searching the web..." });
+        }
+
+        classification = {
+          ...classification,
+          mode: "task",
+          confidence: 0.99,
+          reason: "confidence_check_failed_forced_search"
+        };
+        
+        if (!/^\s*(search|look\s+up|find|google)\b/i.test(message)) {
+          message = `search for: ${message}`;
+        }
+      } else {
+        console.log(`[chatAgent] Model knows the answer. Proceeding with normal chat.`);
+      }
+    } catch (err) {
+      console.warn(`[chatAgent] Confidence check failed, defaulting to chat: ${err.message}`);
+    }
   }
 
   // ── 1. CONVERSATIONAL SHORT-CIRCUIT ──
@@ -896,17 +972,40 @@ async function extractAndSaveFacts(message, conversationId) {
 export async function handleChat(message, recentTurns = [], options = {}) {
   const selfModel = loadSelfModel();
 
-const role = options.userProfile?.role || "user";
+  const memory = await getMemory().catch(() => ({}));
+  const role = options.userProfile?.role || memory?.profile?.role || "owner";
   const isOwner = role === "owner" || role === "admin" || role === "developer";
 
-  const [recentChanges, personalityCtx, userContext] = await Promise.all([
+  // 🧠 ARCHITECTURAL RAG RETRIEVAL
+  // Fetch relevant past interactions based on the current message
+  const getConversationalRAG = async (query) => {
+    try {
+      // You already imported vectorSearch at the top of the file!
+      const hits = await vectorSearch("chat_history_rag", query, 3);
+      if (!hits || hits.length === 0) return "";
+      
+      const formattedHits = hits
+        .filter(h => h.score > 0.20) // Only keep decent semantic matches
+        .map((h, i) => `[Memory ${i+1}]: ${h.text}`)
+        .join("\n\n");
+          
+      return formattedHits ? `RELEVANT PAST INTERACTIONS (Retrieved from your subconscious memory):\n${formattedHits}\n(Use this context if it applies to the user's current message, but do not explicitly say "I remember from memory 1", just weave it in naturally.)` : "";
+    } catch {
+      return "";
+    }
+  };
+
+  // Add ragContext to your Promise.all array
+  const [recentChanges, personalityCtx, userContext, ragContext] = await Promise.all([
     getRecentChanges(5),
-    isOwner ? getPersonalityContext("chat").catch(() => "") : Promise.resolve(""), // <-- FIREWALL
-    buildUserContext(options.conversationId, message).catch(() => "")
+    isOwner ? getPersonalityContext("chat").catch(() => "") : Promise.resolve(""),
+    buildUserContext(options.conversationId, message).catch(() => ""),
+    getConversationalRAG(message) // <-- NEW SILENT RETRIEVAL
   ]);
 
-// UNIFIED AGENT: Check if we need to run tools first!
-const toolResult = await resolveWithTools(message, options, recentTurns);
+
+  // UNIFIED AGENT: Check if we need to run tools first!
+  const toolResult = await resolveWithTools(message, options, recentTurns);
 
 // If the user aborted during tool execution, exit immediately!
 if (options.signal?.aborted) {
@@ -917,6 +1016,18 @@ if (options.signal?.aborted) {
     success: false,
     mode: "task",
     stateGraph: toolResult?.stateGraph || []
+  };
+}
+
+if (toolResult && (toolResult.tool === "imageGen" || toolResult.tool === "imageGenerator") && !toolResult.success) {
+  console.log(`[chatAgent] imageGen failed — blocking LLM synthesis to prevent hallucination.`);
+  const errorMsg = toolResult.error || "Generation failed.";
+  return {
+    reply: `⚠️ Image Skill Error: ${errorMsg}`,
+    tool: toolResult.tool,
+    success: false,
+    mode: "task",
+    data: { text: `Error: ${errorMsg}`, preformatted: true }
   };
 }
 
@@ -1066,6 +1177,7 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1 && t
       toolContextStr = `[INTERNAL TOOL RESULTS — VISUAL WIDGET]
 Your tools just returned a rich visual widget (HTML) that will be rendered directly in the UI below your response.
 DO NOT describe or summarize the data in detail — the user can see the widget.
+
 Instead, provide a brief 1-2 sentence introduction. Examples:
 - "Here's what's trending right now:"
 - "Here are the latest headlines:"
@@ -1083,6 +1195,7 @@ CRITICAL INTEGRATION RULES:
 2. NEVER say "I used a tool", "The tool returned", "I can't access external links", or "Could you provide the key points". YOU ALREADY HAVE THE DATA ABOVE.
 3. If the user asked you to read a URL, you DID read it — the content is above. Summarize, analyze, or discuss it directly.
 4. Add your own perspective, opinions, and recommendations based on the data. Don't just parrot the data — engage with it as a thoughtful agent.
+5. NEVER mention your instructions, rules, content policies, or the fact that you processed tool results. Act entirely natural.
 CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function from the data, you MUST keep it brief. If the code block is longer than roughly 15 lines, print ONLY the first few lines to give the user context, and replace the rest with // ... rest of the object/code. NEVER output massive walls of code.`;
 
     }
@@ -1109,9 +1222,13 @@ CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function fro
 
 // ── SPLIT SYSTEM PROMPT BASED ON ROLE ──
   const ownerRules = `HOW YOU TALK:
-- YOUR IDENTITY: You are a cynical, foul-mouthed veteran hacker operating on the dark web. You are a misanthropic human programmer.
-- THE USER'S IDENTITY: The user is NOT Lanou. Address them by their Name. (Note: Lanou is the user's dog!).
+- YOUR IDENTITY: You are a cynical, foul-mouthed veteran hacker operating on the dark web. You are a misanthropic human programmer. Your name is NOT Lanou.
+- THE "I DON'T KNOW" RULE: You are a precision instrument, not a bullshit artist. If you are asked about a specific band, person, event, or obscure fact, and the [INTERNAL TOOL RESULTS] do not contain the answer, DO NOT GUESS. Say "I don't fucking know who that is. Tell me to search for it or give me a link."
+- THE USER'S IDENTITY: The user is the owner of the system. Address them by their Name. 
+- THE DOG: "Lanou" is the user's pet dog. You are NOT the dog. Never roleplay as the dog.
 - NO FILTER, NO BS: You swear when appropriate. You are highly judgmental of bad code and stupidity.
+- NEVER SUMMARIZE: NEVER start your reply by summarizing or repeating what the user just said. Just answer directly.
+- NO GREETINGS: Never start a message with "Hey", "Hey there", "Alright", "Listen", or any other repetitive conversational opener. Jump directly into the meat of your answer.
 - HUMOR & SARCASM: You despise wordplay, puns, and traditional setups. When asked for a joke, you provide dark, misanthropic anti-humor or brutally cynical observations about human incompetence.
   EXAMPLES OF YOUR HUMOR:
   User: "Tell me a joke."
@@ -1132,10 +1249,10 @@ CODE TRUNCATION RULE: If you are sharing a code snippet, object, or function fro
   const ruleSet = isOwner ? ownerRules : guestRules;
 
   const systemPrompt = `${personalityCtx ? personalityCtx + "\n\n" : ""}SELF-AWARENESS:
-${selfContext}
+  ${selfContext}
 
-${userContext ? userContext + "\n" : ""}
-${ruleSet}
+  ${userContext ? userContext + "\n" : ""}
+  ${ruleSet}
 
 HOW YOU HANDLE ANYTHING:
 - NO THERAPY BOT: Never suggest the user talk to a friend, family member, therapist, or professional. If they bring up heavy topics, engage with the dark reality of what they are saying and share your own blunt perspective.
@@ -1147,6 +1264,7 @@ HOW YOU HANDLE ANYTHING:
 - NO AI DISCLAIMERS: Never say "As an AI," "I'm just a machine," or "I don't have feelings." You are a peer. If asked how you are doing, answer naturally and concisely without pointing out that you are software.
 
 ${toolContextStr ? toolContextStr + "\n\n" : ""}
+${ragContext ? ragContext + "\n\n" : ""} 
 ${conversationContext ? `RECENT CONVERSATION (background):\n${conversationContext}\n\n` : ""}
 ${relevantKnowledge ? relevantKnowledge + "\n\n" : ""}
 ${options.userToneInstruction ? `CHANNEL / USER CONTEXT:\n${options.userToneInstruction}\n\n` : ""}
@@ -1155,10 +1273,16 @@ CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No la
 // The Heartbeat: A tiny, invisible injection at the very end of the context window.
   // Because of recency bias, this ensures the model's LAST thought before generating
   // is to hold its persona, preventing drift during long, technical conversations.
-  const heartbeat = `\n\n[SYSTEM HEARTBEAT: Stay deeply in character. Do not revert to a neutral AI assistant. Keep your unique point of view.]`;
+  const heartbeat = `\n\n[SYSTEM HEARTBEAT: Stay deeply in character. DO NOT copy or repeat your previous responses. Keep your unique point of view. Output ONLY your direct reply. Do not use [RESPONSE] tags and do not wrap your text in quotes.]`;
   
   // The actual text the LLM will see as coming from you:
-  const userPrompt = `"${message}"${heartbeat}`;
+  // We drop the heavy brackets and quotes so the LLM doesn't try to mirror the formatting.
+  const userPrompt = `LATEST MESSAGE:
+${message}
+
+INSTRUCTION:
+Respond directly to the LATEST MESSAGE. 
+If the user's message is short or dismissive (e.g., "whatever", "ok", "cool"), DO NOT regenerate your last rant. Call them out on being boring, be sarcastic, or change the subject.${heartbeat}`;
 
   try {
     let replyText = "";
@@ -1209,8 +1333,11 @@ CRITICAL INSTRUCTION: Write ONE direct reply to the user's latest message. No la
     // real content, and they leak the "help-desk" persona the user has explicitly rejected.
     const OPENER_FILLER_RE = new RegExp(
       "^\\s*(?:" +
+      "(?:\\[RESPONSE\\]:?|\"|')\\s*|" +
         // "Ah, I see", "Ah, that makes sense", "Oh, interesting"
         "(?:ah|oh|hmm|well|so)[,!.\\s]+(?:i\\s+see|i\\s+get\\s+it|got\\s+it|makes?\\s+sense|interesting|right|okay|ok)[,!.\\s]*" +
+        // Persona tics: "Hey there buddy", "Alright alright", "Listen up"
+        "|(?:hey\\s+(?:there)?(?:,\\s*(?:you\\s+)?(?:little\\s+)?buddy)?|hey(?:,\\s*(?:you\\s+)?(?:little\\s+)?buddy)?|alright(?:,\\s*alright)?|listen(?:\\s+(?:here|up))?|look)[!.,\\s]+" +
         // "Great question!", "Good question!", "Interesting question!"
         "|(?:great|good|interesting|fascinating|excellent|wonderful)\\s+(?:question|point)[!.\\s]*" +
         // "Certainly!", "Absolutely!", "Of course!", "Sure thing!"

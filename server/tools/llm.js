@@ -355,7 +355,8 @@ export async function llm(prompt, configOptions = {}) {
 
   try {
     let finalPrompt = prompt;
-    if (!configOptions.skipKnowledge && !configOptions.format) {
+    // Only inject persona/knowledge for active user chats, NEVER for background admin tools (selfEvolve, etc.)
+    if (!configOptions.skipKnowledge && !configOptions.format && priority !== "background") {
       try {
         // LAZY LOAD: Only fetch these files when the LLM actually runs!
         const { getPersonalityContext } = await import("../personality.js");

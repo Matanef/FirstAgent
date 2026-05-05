@@ -17,10 +17,11 @@ const __dirname = path.dirname(__filename);
 // Archive file — append-only JSONL, never read at runtime. Safety net for recovery.
 const ARCHIVE_FILE = path.resolve(__dirname, "..", "..", "data", "conversation-archive.jsonl");
 
+const VEC_COLLECTION = "conversation_summaries";
 const MAX_CONVERSATION_SUMMARIES = 50;
 const MAX_MESSAGES_BEFORE_SUMMARY = 20;
 const SUMMARY_MAX_TOKENS = 200;
-const ROLLING_WINDOW_SIZE = 5;
+const ROLLING_WINDOW_SIZE = 3;
 
 // ============================================================
 // ROLLING WINDOW — Fast access to last N turns per conversation
