@@ -302,161 +302,126 @@ async function fetchWikipedia(query) {
   }
 }
 
-// DuckDuckGo via SerpAPI (primary) with free Instant Answer fallback
-async function fetchDuckDuckGo(query) {
-  // Try SerpAPI first
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (apiKey) {
-      const url = `https://serpapi.com/search.json?engine=duckduckgo&q=${encodeURIComponent(query)}&api_key=${apiKey}`;
-      const data = await safeFetch(url);
-      if (data?.organic_results?.length > 0) {
-        return data.organic_results.slice(0, 8).map(r => ({
-          title: r.title || query,
-          snippet: r.snippet || "",
-          url: r.link || "",
-          source: "DuckDuckGo"
-        }));
-      }
-    }
-  } catch (err) {
-    console.warn("DuckDuckGo/SerpAPI fetch failed:", err.message);
-  }
+// ─── WATERFALL SEARCH ARCHITECTURE ───
 
-  // Fallback: free DuckDuckGo Instant Answer API (no key needed)
+// Free DuckDuckGo Instant Answer API (No key needed)
+async function fetchFreeDDG(query) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1`;
-    const data = await safeFetch(url);
+    const data = await safeFetch(url); // Using your safeFetch wrapper here
     if (!data) return [];
+    
     const results = [];
     if (data.AbstractText) {
-      results.push({
-        title: data.Heading || query,
-        snippet: data.AbstractText,
-        url: data.AbstractURL || "",
-        source: "DuckDuckGo"
-      });
+      results.push({ title: data.Heading || query, snippet: data.AbstractText, url: data.AbstractURL || "", source: "DuckDuckGo" });
     }
     if (data.RelatedTopics) {
-      for (const topic of data.RelatedTopics.slice(0, 5)) {
+      for (const topic of data.RelatedTopics.slice(0, 3)) {
         if (topic.Text && topic.FirstURL) {
-          results.push({
-            title: topic.Text.substring(0, 80),
-            snippet: topic.Text,
-            url: topic.FirstURL,
-            source: "DuckDuckGo"
-          });
+          results.push({ title: topic.Text.substring(0, 80), snippet: topic.Text, url: topic.FirstURL, source: "DuckDuckGo" });
         }
       }
     }
     return results;
   } catch (err) {
-    console.warn("DuckDuckGo Instant Answer fallback failed:", err.message);
-    return [];
+    throw new Error(`DDG API failed: ${err.message}`);
   }
 }
 
-// Bing search via SerpAPI
-async function fetchBing(query) {
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured for Bing");
-      return [];
-    }
-
-    const url = `https://serpapi.com/search.json?engine=bing&q=${encodeURIComponent(query)}&api_key=${apiKey}`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.organic_results) return [];
-
-    return data.organic_results.slice(0, 8).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || r.description || "",
-      url: r.link || "",
-      source: "Bing"
-    }));
-  } catch (err) {
-    console.warn("Bing/SerpAPI fetch failed:", err.message);
-    return [];
-  }
+// Brave Search
+async function fetchBrave(query) {
+  const apiKey = process.env.BRAVE_API_KEY || CONFIG.BRAVE_API_KEY;
+  if (!apiKey) throw new Error("No Brave API Key configured");
+  
+  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
+    headers: { "Accept": "application/json", "X-Subscription-Token": apiKey }
+  });
+  
+  if (!res.ok) throw new Error(`Brave HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data?.web?.results) throw new Error("No results from Brave");
+  
+  return data.web.results.map(r => ({
+    title: r.title || query,
+    snippet: r.description || "",
+    url: r.url || "",
+    source: "Brave"
+  }));
 }
 
-// Yahoo search via SerpAPI
-async function fetchYahoo(query) {
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured for Yahoo");
-      return [];
-    }
-
-    const url = `https://serpapi.com/search.json?engine=yahoo&p=${encodeURIComponent(query)}&api_key=${apiKey}`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.organic_results) return [];
-
-    return data.organic_results.slice(0, 6).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || r.description || "",
-      url: r.link || "",
-      source: "Yahoo"
-    }));
-  } catch (err) {
-    console.warn("Yahoo/SerpAPI fetch failed:", err.message);
-    return [];
-  }
+// Tavily Search (AI-Native)
+async function fetchTavily(query) {
+  const apiKey = process.env.TAVILY_API_KEY || CONFIG.TAVILY_API_KEY;
+  if (!apiKey) throw new Error("No Tavily API Key configured");
+  
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey, query: query, search_depth: "basic", max_results: 5 })
+  });
+  
+  if (!res.ok) throw new Error(`Tavily HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data?.results) throw new Error("No results from Tavily");
+  
+  return data.results.map(r => ({
+    title: r.title || query,
+    snippet: r.content || "",
+    url: r.url || "",
+    source: "Tavily"
+  }));
 }
 
-// Google / SerpAPI search
-async function fetchGoogle(query) {
-  try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured");
-      return [];
-    }
+// SerpAPI (Google) - The Final Fallback
+async function fetchSerpApiGoogle(query) {
+  const apiKey = process.env.SERPAPI_KEY || CONFIG.SERPAPI_KEY;
+  if (!apiKey) throw new Error("No SerpAPI Key configured");
 
-    const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${apiKey}&num=10`;
-    const data = await safeFetch(url);
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${apiKey}&num=5`;
+  const data = await safeFetch(url);
 
-    if (!data || !data.organic_results) return [];
+  if (!data || !data.organic_results) throw new Error("No organic results returned");
 
-    return data.organic_results.slice(0, 10).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || "",
-      url: r.link || "",
-      source: "Google"
-    }));
-  } catch (err) {
-    console.warn("Google/SerpAPI fetch failed:", err.message);
-    return [];
-  }
+  return data.organic_results.slice(0, 5).map(r => ({
+    title: r.title || query,
+    snippet: r.snippet || "",
+    url: r.link || "",
+    source: "Google (SerpAPI)"
+  }));
 }
 
-// NEW: Yandex search via SerpAPI
-async function fetchYandex(query) {
+// The Strict Fallback Controller
+// Tries Tavily -> Brave -> Free DDG -> SerpAPI
+async function fetchWebFallback(query) {
   try {
-    const apiKey = CONFIG.SERPAPI_KEY;
-    if (!apiKey) {
-      console.warn("SerpAPI key not configured for Yandex");
-      return [];
-    }
-
-    const url = `https://serpapi.com/search.json?engine=yandex&text=${encodeURIComponent(query)}&api_key=${apiKey}`;
-    const data = await safeFetch(url);
-
-    if (!data || !data.organic_results) return [];
-
-    return data.organic_results.slice(0, 8).map(r => ({
-      title: r.title || query,
-      snippet: r.snippet || r.description || "",
-      url: r.link || "",
-      source: "Yandex"
-    }));
+    console.log("🌐 Trying Tavily...");
+    const tResults = await fetchTavily(query);
+    if (tResults.length > 0) return tResults;
   } catch (err) {
-    console.warn("Yandex/SerpAPI fetch failed:", err.message);
-    return [];
+    console.log(`⚠️ Tavily skipped/failed: ${err.message}. Falling back to Brave...`);
+  }
+
+  try {
+    const bResults = await fetchBrave(query);
+    if (bResults.length > 0) return bResults;
+  } catch (err) {
+    console.log(`⚠️ Brave skipped/failed: ${err.message}. Falling back to DuckDuckGo...`);
+  }
+
+  try {
+    console.log("🌐 Using free DuckDuckGo fallback...");
+    const dResults = await fetchFreeDDG(query);
+    if (dResults.length > 0) return dResults;
+  } catch (err) {
+    console.log(`⚠️ DuckDuckGo skipped/failed: ${err.message}. Falling back to SerpAPI...`);
+  }
+
+  try {
+    console.log("🌐 Using SerpAPI (Google) as final fallback...");
+    return await fetchSerpApiGoogle(query);
+  } catch (err) {
+    console.log(`❌ All web search fallbacks failed. Last error: ${err.message}`);
+    return []; // Return empty array so the agent knows the search completely failed
   }
 }
 
@@ -499,7 +464,7 @@ Summary:`;
   }
 }
 
-// Enhanced search with 6 sources + LLM synthesis
+// Enhanced search with Wikipedia + Web Fallback + LLM synthesis
 export async function search(query) {
   console.log("🔎 Search query (raw):", query);
 
@@ -525,22 +490,17 @@ export async function search(query) {
     };
   }
 
-  // Fetch from SIX sources in parallel (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo)
-  // Use cleaned query so sources get "prime minister of Israel" instead of "search for who is the current prime minister of Israel?"
-  console.log("🌐 Fetching from 6 sources (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo)...");
-  const [wiki, ddg, google, yandex, bing, yahoo] = await Promise.all([
+  // Fetch Wikipedia and our Web Fallback Engine in parallel
+  console.log("🌐 Fetching Wikipedia + Web Fallback sequence...");
+  const [wiki, web] = await Promise.all([
     fetchWikipedia(cleanedQuery),
-    fetchDuckDuckGo(cleanedQuery),
-    fetchGoogle(cleanedQuery),
-    fetchYandex(cleanedQuery),
-    fetchBing(cleanedQuery),
-    fetchYahoo(cleanedQuery)
+    fetchWebFallback(cleanedQuery)
   ]);
 
-  console.log(`📊 Results: Wikipedia(${wiki.length}), DDG(${ddg.length}), Google(${google.length}), Yandex(${yandex.length}), Bing(${bing.length}), Yahoo(${yahoo.length})`);
+  console.log(`📊 Results: Wikipedia(${wiki.length}), Web(${web.length})`);
 
   // Combine and deduplicate
-  let allResults = [...wiki, ...ddg, ...google, ...yandex, ...bing, ...yahoo];
+  let allResults = [...wiki, ...web];
   allResults = deduplicateResults(allResults);
 
   // Score and sort by relevance
@@ -577,9 +537,9 @@ export async function search(query) {
 
   const data = {
     results: topResults,
-    synthesis,  // LLM-generated coherent summary
+    synthesis,
     text: synthesis ? `${synthesis}\n\n---\n\n${summary}` : summary,
-    totalSources: [wiki, ddg, google, yandex, bing, yahoo].filter(arr => arr.length > 0).length,
+    totalSources: [wiki, web].filter(arr => arr.length > 0).length,
     query: cleanedQuery,
     normalizedQuery: normalizedQuery
   };
@@ -608,10 +568,11 @@ export async function search(query) {
     success: true,
     final: true,
     data: { ...data, learnedFacts },
-    reasoning: `Searched ${data.totalSources} sources (Wikipedia, DuckDuckGo, Google, Yandex, Bing, Yahoo), found ${topResults.length} relevant results`
+    reasoning: `Searched ${data.totalSources} sources via Web Fallback, found ${topResults.length} relevant results`
   };
 }
 
 export function extractTopic(text) {
   return normalizeQuery(text);
 }
+

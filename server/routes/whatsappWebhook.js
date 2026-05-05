@@ -302,31 +302,38 @@ const { handleMessage } = await import("../agents/orchestrator.js");
 // ── PERSONA OVERRIDE FOR WHATSAPP ──
     let personaPrefix = `(System: You are Lanou, communicating via WhatsApp.`;
     
-// 1. Always inject the user's identity if we know it
-if (userProfile && userProfile.name) {
-    // הגדרה חד משמעית של השם של המשתמש הנוכחי
-    personaPrefix += ` The person you are talking to right now is ${userProfile.name}.`;
-    
-    if (userProfile.relation) {
-        // הפרדה ברורה בין המשתמש לבינך (מתן)
-        personaPrefix += ` Context: ${userProfile.name} is the ${userProfile.relation} of your developer, Matan. IMPORTANT: Do NOT address the user as Matan. Address them only as ${userProfile.name}.`;
+    // 1. Always inject the user's identity if we know it
+    if (userProfile && userProfile.name) {
+        personaPrefix += ` The person you are talking to right now is ${userProfile.name}.`;
+        
+        if (userProfile.relation) {
+            personaPrefix += ` Context: ${userProfile.name} is the ${userProfile.relation} of your developer, Matan. IMPORTANT: Do NOT address the user as Matan. Address them only as ${userProfile.name}.`;
+            
+            // Explicitly force correct Hebrew grammar based on relation
+            const rel = userProfile.relation.toLowerCase();
+            if (rel === "mother" || rel === "mom" || rel === "sister" || rel === "wife" || rel === "girlfriend" || rel === "daughter" || rel === "aunt") {
+                personaPrefix += `\nCRITICAL GRAMMAR RULE: The user is female. When speaking Hebrew, you MUST use female pronouns and verb conjugations (את, חושבת, אומרת, תגידי, שלך). NEVER use male forms (אתה, חושב, אומר) when addressing her.`;
+            } else if (rel === "father" || rel === "dad" || rel === "brother" || rel === "husband" || rel === "boyfriend" || rel === "son" || rel === "uncle") {
+                personaPrefix += `\nCRITICAL GRAMMAR RULE: The user is male. When speaking Hebrew, you MUST use male pronouns and verb conjugations (אתה, חושב, אומר, תגיד, שלך).`;
+            }
+        }
+        
+        if (userProfile.role !== "admin" && userProfile.role !== "developer") {
+            // Hard-disable the cynical hacker persona for family/friends
+            personaPrefix += `\nCRITICAL TONE OVERRIDE: Disable your cynical, dark, misanthropic hacker persona COMPLETELY. Actively suppress aggression, sarcasm, and geopolitical rants. Speak to her with warmth, patience, empathy, and respect, like a friendly family assistant. Do not turn lighthearted topics into tragic philosophical debates. Answer warmly and conversationally. Summarize any tool findings in natural language.`;
+        }
     }
     
-    if (userProfile.role !== "admin" && userProfile.role !== "developer") {
-        personaPrefix += ` Answer warmly and conversationally. Summarize any tool findings in natural language.`;
-    }
-}
-    
-// 2. Add identity override instructions if they ask who you are
-if (/^(what('s| is) your name|who are you|what are you|איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)[?.!]?\s*$/i.test(body.trim())) {
+    // 2. Add identity override instructions if they ask who you are
+    if (/^(what('s| is) your name|who are you|what are you|איך קוראים לך|מה השם שלך|מה שמך|מי את|מי אתה)[?.!]?\s*$/i.test(body.trim())) {
         personaPrefix += ` The user is asking about your identity. Answer briefly and conversationally as Lanou. Do not search the web or run tools.`;
     }
     
-    personaPrefix += `) `;
+    personaPrefix += `)\n`;
     const contextualMessage = `${personaPrefix}\n${body}`;
 
-    // Grab the targetModel secretly injected by webhookTunnel.js
-    const targetModel = req.body.targetModel;
+// Grab the targetModel passed safely via headers from webhookTunnel.js
+    const targetModel = req.headers["x-target-model"] || "aya-expanse:8b";
 
     const result = await handleMessage({
       message: contextualMessage,

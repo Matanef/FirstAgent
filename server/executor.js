@@ -647,7 +647,7 @@ export async function finalizeStep({ stepResult, message, conversationId, sentim
     }
 
     // Tools that should NEVER have their errors hallucinated by LLM — return the error directly
-    const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals", "whatsapp"];
+    const noHallucinateOnError = ["finance", "financeFundamentals", "finance-fundamentals", "whatsapp", "imageGen", "imageGenerator"];
     if (noHallucinateOnError.includes(tool)) {
       console.warn(`[finalizer] ${tool} failed — returning error directly (no LLM summarization)`);
       const prefix = tool === "whatsapp"

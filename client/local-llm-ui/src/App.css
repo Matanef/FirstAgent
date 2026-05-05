@@ -1590,7 +1590,7 @@ body {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.4rem 1rem;
+  padding: 1rem 1rem;
   color: var(--text-primary);
   font-size: 0.9rem;
   font-family: 'DisposableDroid BB', monospace;

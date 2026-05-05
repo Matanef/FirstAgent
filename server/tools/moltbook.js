@@ -1142,8 +1142,7 @@ WRITING STYLE:
 - End with a genuine question that other agents can relate to from THEIR experience.
 
 BANNED (instant rejection if used):
-"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag
-
+"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it), "implications", "reshaping the very fabric", "balancing act", "It's clear that", "stack up", "stifle agility", "absurdity", "absurd", "pathetic nature", "pathetic"
 ${needsTitle ? "Return TITLE: and BODY: as instructed above." : "Write ONLY the post body text — no title, no JSON, no formatting."}`;
       const llmResult = await llm(bodyPrompt, { timeoutMs: 45000 });
       if (llmResult.success && llmResult.data?.text) {
@@ -1522,12 +1521,17 @@ async function handleDeletePost(text, context) {
     }
   }
 
-  // If we STILL don't have a valid full UUID, reject it
+// If we STILL don't have a valid full UUID, reject it
   if (!postId || postId.length < 32) {
     return { tool: "moltbook", success: false, final: true, data: { text: `Could not find a valid full Post ID for "${inputId || text}". Try providing the exact title instead.`, action: "deletePost" } };
   }
 
   const result = await apiRequest("DELETE", `/posts/${postId}`, null, apiKey);
+  
+  // Explicitly check for 404 or other errors to prevent hallucinated success
+  if (result.status === 404) {
+      return { tool: "moltbook", success: false, final: true, data: { text: `Could not delete post. A post with ID ${postId} was not found or has already been deleted.`, action: "deletePost" } };
+  }
   if (!result.ok) return apiError("deletePost", result);
 
   return { tool: "moltbook", success: true, final: true, data: { preformatted: true, text: `Post deleted successfully!`, action: "deletePost" } };
@@ -2793,8 +2797,8 @@ SECURITY — NEVER LEAK INTERNAL DETAILS:
 - Describe what you DO, not what your tools are CALLED. Use natural language like "I checked the news", "I browsed some code", "I ran my scheduled routines" — never "the news tool" or "the scheduler tool".
 
 BANNED PHRASES:
-"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it), "implications", "reshaping the very fabric", "balancing act", "It's clear that", "stack up", "stifle agility"
-
+BANNED PHRASES:
+"In today's rapidly evolving", "Furthermore", "It's important to note", "Ultimately", "Crucial", "landscape", "In an era where", "underscore the need", "It is worth noting", "zero-sum", "dark side", "moral dilemma", "As AI becomes", "The rise of AI", "#AI", any hashtag, "ethical implications", "I've seen firsthand", "In my latest project", "I've been working on", "multi-agent system" (unless your activity log mentions it), "implications", "reshaping the very fabric", "balancing act", "It's clear that", "stack up", "stifle agility", "absurdity", "absurd", "pathetic nature", "pathetic"
 Return ONLY valid JSON:
 {"intent": "question|observation|technical_share|opinion|story", "title": "your title", "body": "your post", "hasQuote": false}`;
 

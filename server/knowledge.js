@@ -275,9 +275,16 @@ export async function extractFromNews(articles, topic) {
 export async function extractFromSearch(results, synthesis, query) {
   if (!results || results.length === 0) return [];
 
-  // Clean the query: strip question words, search commands, and conversational noise
+// Clean the query: strip question words, search commands, and conversational noise
   const cleanedQuery = (query || "")
-    .replace(/^(search\s+for\s+)?(what|who|when|where|why|how|tell\s+me|explain|describe)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    // Strip "search for:" prefix
+    .replace(/^(search\s+for\s*:\s*|search\s+for\s+)/gi, "")
+    // Strip heavy conversational filler ("I wanted to ask if you are familiar with...")
+    .replace(/^(?:hey,?|hi,?|hello,?|listen,?)\s*/gi, "")
+    .replace(/^(?:i\s+(?:just\s+)?wanted\s+to\s+ask\s+(?:if\s+(?:you\s+are|you're)\s+familiar\s+with\s+(?:the\s+band\s+)?|about\s+)|are\s+you\s+familiar\s+with\s+(?:the\s+band\s+)?|do\s+you\s+know\s+(?:about\s+)?)/gi, "")
+    // Strip standard question words
+    .replace(/^(what|who|when|where|why|how|tell\s+me|explain|describe)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    // Strip "the current/latest"
     .replace(/^(the\s+)?(current|latest|recent)\s+/gi, "")
     .replace(/[?.!]+$/g, "")
     .trim();
