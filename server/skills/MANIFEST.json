@@ -2,14 +2,16 @@
   "_comment": "Only skills listed here will be loaded. Add new skill filenames to 'allowed' array.",
   "allowed": [
     "alarmTracker.js",
-    "hello.js",
-    "spotify.js",
-    "pikudTracker.js",
-    "trafficScanner.js",
     "attachmentDownloader.js",
-    "obsidianWriter.js",
     "deepResearch.js",
     "deepModeToggle.js",
-    "gitPulse.js"
+    "gitPulse.js",
+    "hello.js",
+    "imageGen.js",
+    "loreResearcher.js",
+    "obsidianWriter.js",
+    "pikudTracker.js",
+    "spotify.js",
+    "trafficScanner.js"    
   ]
 }
