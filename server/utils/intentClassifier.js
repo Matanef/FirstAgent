@@ -223,6 +223,12 @@ export function classifyIntent(message, recentHistory = [], fileIds = []) {
     return { mode: "task", confidence: 0.95, reason: "explicit_code_introspection_override" };
   }
 
+  // ── STRICT EXPLICIT TOOL OVERRIDE ────────────────────────────
+  // If the user explicitly demands a tool (e.g., "use the X tool to..."), force task mode.
+  if (/\b(use|run|execute|open)\s+(the\s+)?(\w+)\s+(tool|app|plugin)\b/i.test(lower)) {
+    return { mode: "task", confidence: 0.95, reason: "explicit_tool_invocation" };
+  }
+
   // ── STATE-AWARE ROUTING ──────────────────────────────────────
   // Check for pending conversational states BEFORE anything else.
   // "send it", "cancel", "confirm" etc. must route to task when a draft is pending.

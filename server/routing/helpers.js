@@ -131,6 +131,21 @@ export function isProseIntent(text) {
   return false;
 }
 
+
+// ── Image Generation detection ────────────────────────────────────────────────
+export function isImageGenerationIntent(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim(); // Added trim()
+  
+  // Catches "draw" ONLY if it is the first word, or other verbs anywhere
+  // This prevents "I want to draw" from mid-conversation chat triggers
+  if (/\b(^draw|generate|create|make|render|paint)\s+(a|an|some|me\s+a)?\s+(image|picture|photo|illustration|drawing|art|painting|portrait)\b/i.test(lower)) return true;
+  
+  if (/\bimagine\s+(a|an|some)\b/i.test(lower)) return true;
+
+  return false;
+}
+
 // ── File path detection ───────────────────────────────────────────────────────
 export function hasExplicitFilePath(text) {
   if (!text) return false;
