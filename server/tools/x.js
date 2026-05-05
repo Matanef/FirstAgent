@@ -197,7 +197,7 @@ async function searchTweets(query, count = 10, onStep = null) {
     let nextCursor = null;
     let page = 1;
 
-    // Loop until we have the requested amount of tweets
+// Loop until we have the requested amount of tweets
     while (allTweets.length < count) {
       // Twitter max per page is roughly 20
       const fetchLimit = Math.min(20, count - allTweets.length);
@@ -213,7 +213,11 @@ async function searchTweets(query, count = 10, onStep = null) {
       }
 
       const result = await tc.search(query, fetchLimit, "Latest", nextCursor);
-      const newTweets = result.tweets || [];
+      
+      // --- THE SAFETY NET ---
+      // If twitter-client returned an old-style array, use it. 
+      // If it returned the new object, use result.tweets.
+      const newTweets = Array.isArray(result) ? result : (result.tweets || []);
       
       if (newTweets.length === 0) break;
 
@@ -224,7 +228,8 @@ async function searchTweets(query, count = 10, onStep = null) {
         }
       }
 
-      nextCursor = result.nextCursor;
+      // If it's the old array format, nextCursor will safely become undefined
+      nextCursor = result.nextCursor || null;
       
       // Stop if there are literally no more tweets on Twitter for this topic
       if (!nextCursor) break;
@@ -256,17 +261,18 @@ async function searchTweets(query, count = 10, onStep = null) {
  */
 async function analyzeSentiment(tweets) {
   if (!tweets || tweets.length === 0) {
-    return { overall_sentiment: "unknown", themes: [], summary: "No tweets to analyze." };
+    return { overall_sentiment: "unknown", themes: [], summary: "No tweets to analyze.", categories: {} };
   }
 
   const tweetTexts = tweets
-    .map((t, i) => `${i + 1}. @${t.author}: "${t.text}"`)
+    .map((t, i) => `${i + 1}. @${t.author}: "${t.text.replace(/"/g, "'")}"`)
     .join("\n");
 
-  const prompt = `Analyze the sentiment of these tweets and return a JSON object with exactly these keys:
+  const prompt = `Analyze the sentiment of these tweets. Return ONLY a valid JSON object with EXACTLY these keys:
 - "overall_sentiment": one of "positive", "negative", "neutral", or "mixed"
 - "themes": an array of 3-5 key themes/topics mentioned
 - "summary": a 2-3 sentence summary of the overall mood and topics
+- "categories": an object containing three arrays ("positive", "negative", "neutral"). Place the number of each tweet into the appropriate array based on its individual sentiment.
 
 TWEETS:
 ${tweetTexts}
@@ -283,12 +289,14 @@ Return ONLY a valid JSON object:`;
           overall_sentiment: parsed.overall_sentiment || "unknown",
           themes: Array.isArray(parsed.themes) ? parsed.themes : [],
           summary: parsed.summary || "Analysis complete.",
+          categories: parsed.categories || { positive: [], negative: [], neutral: [] }
         };
       } catch {
         return {
           overall_sentiment: "mixed",
           themes: [],
           summary: response.data.text.slice(0, 300),
+          categories: { positive: [], negative: [], neutral: [] }
         };
       }
     }
@@ -296,7 +304,7 @@ Return ONLY a valid JSON object:`;
     console.error("[x] analyzeSentiment error:", err.message);
   }
 
-  return { overall_sentiment: "unknown", themes: [], summary: "Sentiment analysis failed." };
+  return { overall_sentiment: "unknown", themes: [], summary: "Sentiment analysis failed.", categories: {} };
 }
 
 // ============================================================
@@ -324,34 +332,85 @@ function formatTrendsHTML(trends, location) {
   </div>`;
 }
 
-function formatTweetsHTML(tweets, query, requestedCount = null) {
+function formatTweetsHTML(tweets, query, requestedCount = null, categories = null) {
   if (!tweets || tweets.length === 0) {
     return `<div class="x-tweets"><p>No tweets found for "${query}".</p></div>`;
   }
 
-  // Inject validation badge explaining API limits
   let countLabel = "";
   if (requestedCount) {
     if (tweets.length < requestedCount) {
-      countLabel = ` <span style="font-size: 0.8em; color: gray;">(Scanned ${tweets.length} of ${requestedCount} requested — API pagination limit)</span>`;
+      countLabel = ` <span style="font-size: 0.8em; color: gray;">(Scanned ${tweets.length} of ${requestedCount} requested)</span>`;
     } else {
       countLabel = ` <span style="font-size: 0.8em; color: gray;">(Scanned ${tweets.length} tweets)</span>`;
     }
   }
 
-  const cards = tweets.map((t) => {
+  const createCard = (t) => {
     const engagement = `❤️ ${t.likes} · 🔁 ${t.retweets} · 💬 ${t.replies}`;
     return `<div class="x-tweet-card" style="border: 1px solid var(--border); padding: 10px; margin-bottom: 10px; border-radius: 8px;">
       <div class="x-tweet-author"><strong>@${t.author}</strong>${t.author_name ? ` (${t.author_name})` : ""}</div>
       <div class="x-tweet-text" style="margin: 8px 0;">${t.text}</div>
       <div class="x-tweet-engagement" style="font-size: 0.8em; color: gray;">${engagement}</div>
     </div>`;
+  };
+
+  // If no categories are provided (e.g. basic search mode), render the normal flat list
+  if (!categories) {
+    return `<div class="x-tweets">
+      <h3 style="margin-top: 0; display: flex; align-items: baseline; gap: 8px;">🐦 Tweets about "${query}"${countLabel}</h3>
+      ${tweets.map(createCard).join("\n")}
+    </div>`;
+  }
+
+// Group tweets into their sentiment buckets
+  const grouped = { positive: [], negative: [], neutral: [], uncategorized: [] };
+  
+  // LLM Armor: Safely ensure the categories are actually arrays before using them
+  const posArray = Array.isArray(categories.positive) ? categories.positive : [];
+  const negArray = Array.isArray(categories.negative) ? categories.negative : [];
+  const neuArray = Array.isArray(categories.neutral) ? categories.neutral : [];
+
+  tweets.forEach((t, i) => {
+    const id = i + 1; // IDs are 1-indexed in our LLM prompt
+    
+    // Check for both the number and the string version of the ID
+    if (posArray.includes(id) || posArray.includes(String(id))) {
+      grouped.positive.push(t);
+    } else if (negArray.includes(id) || negArray.includes(String(id))) {
+      grouped.negative.push(t);
+    } else if (neuArray.includes(id) || neuArray.includes(String(id))) {
+      grouped.neutral.push(t);
+    } else {
+      // Catch-all for AI hallucinations, omissions, or if it gave us malformed data
+      grouped.uncategorized.push(t);
+    }
   });
 
-  return `<div class="x-tweets">
-    <h3 style="margin-top: 0; display: flex; align-items: baseline; gap: 8px;">🐦 Tweets about "${query}"${countLabel}</h3>
-    ${cards.join("\n")}
-  </div>`;
+  const createSection = (title, emoji, arr) => {
+    if (arr.length === 0) return "";
+    return `
+    <details style="margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg-tertiary);">
+      <summary style="padding: 12px; cursor: pointer; font-weight: bold; list-style: none; display: flex; align-items: center;">
+        <span style="margin-right: 8px;">${emoji}</span> 
+        <span>${title} (${arr.length})</span>
+      </summary>
+      <div style="padding: 15px; background: var(--bg-primary); border-top: 1px solid var(--border);">
+        ${arr.map(createCard).join("\n")}
+      </div>
+    </details>`;
+  };
+
+  let html = `<div class="x-tweets">
+    <h3 style="margin-top: 0; display: flex; align-items: baseline; gap: 8px;">🐦 Tweets about "${query}"${countLabel}</h3>`;
+  
+  html += createSection("Positive", "😊", grouped.positive);
+  html += createSection("Neutral", "😐", grouped.neutral);
+  html += createSection("Negative", "😞", grouped.negative);
+  html += createSection("Mixed / Uncategorized", "🤔", grouped.uncategorized);
+
+  html += `</div>`;
+  return html;
 }
 
 function formatSentimentHTML(sentiment, scannedCount, requestedCount) {
@@ -503,7 +562,7 @@ export async function x(request) {
         tool: "x", success: true, final: true,
         data: {
           // Put the Sentiment HTML FIRST, then the Tweets HTML, then the URLs
-          html: formatSentimentHTML(sentiment, searchResult.tweets.length, fetchCount) + "\n" + formatTweetsHTML(searchResult.tweets, query, fetchCount) + urlSection,
+          html: formatSentimentHTML(sentiment, searchResult.tweets.length, fetchCount) + "\n" + formatTweetsHTML(searchResult.tweets, query, fetchCount, sentiment.categories) + urlSection,
           // Reorder the plain text version too
           plain: `Sentiment: ${sentiment.overall_sentiment}\nThemes: ${sentiment.themes.join(", ")}\n${sentiment.summary}\n\nTweets about "${query}": ${searchResult.tweets.length} results${tweetUrls.length > 0 ? "\n\nSources:\n" + tweetUrls.join("\n") : ""}`,
           raw: { tweets: searchResult, sentiment },
