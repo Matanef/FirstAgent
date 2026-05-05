@@ -575,6 +575,145 @@ function stripTripleQuotes(text) {
   return out;
 }
 
+// ── Phase 13I — Abstract subsection guard ────────────────────────────────
+// The Abstract should be a single flowing paragraph (per the directive). When
+// the LLM emits subsections like "### 1. Effectiveness Across Conditions" it
+// usually means it treated the section like a whole document outline, which
+// causes truncation at end-of-budget (saw "Methodological Considerations" cut
+// in the latest run). Detect subsection structure and force a flat rewrite.
+async function flattenAbstractIfNeeded(text, topic) {
+  if (!text) return text;
+  const sectionH3Count = (text.match(/^###\s+/gm) || []).length;
+  const numberedListCount = (text.match(/^\s*[*-]\s+\*\*\d+\./gm) || []).length;
+  if (sectionH3Count < 2 && numberedListCount < 3) return text;
+  console.log(`[thesisSynthesizer] flattenAbstract: detected ${sectionH3Count} H3 + ${numberedListCount} numbered items — forcing flat rewrite`);
+
+  const prompt = `The text below is the Abstract of a research paper on "${topic}". An abstract MUST be a single flowing paragraph (150-250 words) — NO subsections, NO bullet lists, NO numbered headings. Rewrite it as ONE narrative paragraph that preserves all the substantive findings (specific numbers, conditions, mechanisms) but flows as continuous prose.
+
+Abstract (currently structured with subsections — flatten it):
+"""
+${text}
+"""
+
+Output the flattened abstract as a single paragraph. Do not output ANY heading lines, bullets, or section markers.`;
+  try {
+    const res = await llm(prompt, {
+      timeoutMs: 90000,
+      model: SYNTH_MODEL,
+      skipKnowledge: true,
+      skipLanguageDetection: true,
+      options: { temperature: 0.3, num_ctx: 4096, num_predict: 600 }
+    });
+    const out = String(res?.data?.text || "").trim();
+    // Sanity: should have NO ### markers and be reasonably long
+    if (out && (out.match(/^###\s+/gm) || []).length === 0 && out.length > 200) {
+      return out;
+    }
+    log(`flattenAbstract: rewrite still has structure — keeping original`, "warn");
+  } catch (err) {
+    log(`flattenAbstract: ${err.message} — keeping original`, "warn");
+  }
+  return text;
+}
+
+// ── Phase 13A — strip H1 (`# `) inside section bodies ────────────────────
+// The document-level H1 is owned by the assembler at draft start. When the
+// LLM emits its own `# Title` mid-section (treating the section as a whole
+// document), it breaks the outline. Strip H1 lines from section body
+// entirely (don't demote — they're usually duplicate document titles).
+function stripSectionH1s(text, sectionHeading) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  out = out.replace(/^#\s+(?!#)([^\n]+)$/gm, (match, headingText) => {
+    stripped++;
+    return "";   // delete the H1 line entirely
+  });
+  if (stripped) console.log(`[thesisSynthesizer] H1strip: removed ${stripped} stray H1 from "${sectionHeading}"`);
+  return out.replace(/\n{3,}/g, "\n\n");
+}
+
+// ── Phase 13B — strip fabricated bibliography blocks ──────────────────────
+// The LLM sometimes emits its own "References:" or "Bibliography:" block at
+// the end of a section (esp. Results, Discussion) with fabricated entries.
+// The real bibliography is appended later by the deterministic citation
+// emitter. Detect "References:\n- Author... (N entries)" inside section body
+// and strip the whole block.
+function stripFabricatedBibliography(text, sectionHeading) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  // Pattern: heading-like "References" / "Bibliography" line followed by
+  // 3+ list items (- or numbered). Either bold-wrapped or plain. Stops at
+  // section end or another heading.
+  const refBlockPatterns = [
+    // "References:" / "**References**" / "## References" line → 3+ list items
+    /\n+(?:#{0,3}\s*)?(?:\*\*)?References?(?:\s*Cited)?(?:\*\*)?\s*:?\s*\n+(?:[-*]\s+[A-Z][^\n]{20,500}\n+){3,}/gi,
+    /\n+(?:#{0,3}\s*)?(?:\*\*)?Bibliography(?:\*\*)?\s*:?\s*\n+(?:[-*]\s+[A-Z][^\n]{20,500}\n+){3,}/gi,
+  ];
+  for (const re of refBlockPatterns) {
+    out = out.replace(re, () => { stripped++; return "\n\n"; });
+  }
+  if (stripped) console.log(`[thesisSynthesizer] fabricatedBib: stripped ${stripped} fabricated bibliography block(s) from "${sectionHeading}"`);
+  return out;
+}
+
+// ── Phase 13C — strip orphan numeric citation markers `[N]`, `[N, M]` ────
+// When the LLM partially constructs a numeric-ref scheme but the matching
+// numeric reference list got stripped (or never existed), the in-text `[5]`
+// and `[5, 6]` markers are orphan trash. We use APA in-text style; numeric
+// markers should never appear in the final prose.
+function stripOrphanNumericRefs(text) {
+  if (!text) return text;
+  let out = String(text);
+  let stripped = 0;
+  // Match `[N]`, `[N, M]`, `[N-M]`, `[N, M, P]` between word-content (not at
+  // start of line — avoid stripping bullet markers).
+  out = out.replace(/(\w[^\n]{0,50}?)\[\d+(?:[,\s\-]+\d+)*\](?=[\s.,;:)])/g, (m, prefix) => {
+    stripped++;
+    return prefix;
+  });
+  if (stripped) console.log(`[thesisSynthesizer] orphanNumericRefs: stripped ${stripped} bracketed numeric ref(s)`);
+  return out;
+}
+
+// ── Phase 13E — deterministic acronym wrapper ─────────────────────────────
+// Known mental-health/research acronyms that should always be wikilinked.
+// Augments the LLM-driven enrichWithWikilinks (which is conservative on
+// short tokens). Applied as a post-pass.
+const ACRONYM_WIKILINK_LIST = [
+  // CBT family
+  "CBT", "CBT-I", "CBT-T", "CBT-E", "TF-CBT", "MBCT",
+  // Common diagnoses
+  "PTSD", "OCD", "GAD", "ADHD", "PGD", "C-PTSD",
+  // Therapy variants
+  "ACT", "DBT", "EMDR", "IPT", "MBSR",
+  // Other
+  "RCT", "PRISMA"
+];
+function wrapAcronymsAsWikilinks(text, alreadyLinked = new Set()) {
+  if (!text) return text;
+  let out = String(text);
+  let wrapped = 0;
+  // Build regex from acronym list. Match whole-word, not inside existing
+  // wikilinks (negative lookbehind/lookahead for `[[` / `]]`).
+  for (const acronym of ACRONYM_WIKILINK_LIST) {
+    if (alreadyLinked.has(acronym.toLowerCase())) continue;
+    // Escape hyphens. Use boundary `\b` for ASCII match (these are all ASCII).
+    const escaped = acronym.replace(/-/g, "\\-");
+    const re = new RegExp(`(?<!\\[\\[)(?<![\\w-])(${escaped})(?![\\w-])(?!\\]\\])`, "g");
+    let firstMatchUsed = false;
+    out = out.replace(re, (m, captured) => {
+      if (firstMatchUsed && process.env.WIKILINK_ALL_OCCURRENCES !== "true") return m;
+      firstMatchUsed = true;
+      wrapped++;
+      return `[[${captured}]]`;
+    });
+  }
+  if (wrapped) console.log(`[thesisSynthesizer] acronymWikilinks: wrapped ${wrapped} acronym occurrence(s)`);
+  return out;
+}
+
 // ── Phase 12E — demote section-body H2 headings to H3 ─────────────────────
 // The assembler owns the section's `## Heading`. When the LLM emits its own
 // `## Subheading` mid-body, you get a structural mess (Abstract had 7 H2s
@@ -1531,6 +1670,12 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
       text = enforceChartsInResults(text, allQuantFindings || []);
     }
 
+    // Phase 13I — Abstract subsection guard. Detects when the LLM emitted
+    // subsections inside the Abstract and forces a flat-paragraph rewrite.
+    if (/abstract/i.test(section.id || section.heading || "")) {
+      text = await flattenAbstractIfNeeded(text, topic);
+    }
+
     // Phase 8G — Introduction must have an explicit research-question sentence
     if (/intro/i.test(section.id || section.heading || "")) {
       text = await ensureResearchQuestion(text, topic);
@@ -1556,6 +1701,18 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
     // (the assembler owns the section's H2; LLMs sometimes emit additional H2
     // sub-sections which break the document outline).
     text = demoteSectionH2sToH3(text, section.heading);
+
+    // Phase 13A — strip stray `# Heading` inside section body (LLM treating
+    // section like a whole document)
+    text = stripSectionH1s(text, section.heading);
+
+    // Phase 13B — strip fabricated "References:\n- Author..." blocks emitted
+    // by the LLM at section end (the real bibliography is appended later)
+    text = stripFabricatedBibliography(text, section.heading);
+
+    // Phase 13C — strip orphan `[N]`, `[N, M]` numeric citation markers
+    // (we use APA in-text style; numeric markers are leftover scaffolding)
+    text = stripOrphanNumericRefs(text);
 
     // Phase 8D — strip "Key Findings:" / "Limitations:" stock bullet sections
     text = stripStockBulletSections(text, section.heading);
@@ -1776,6 +1933,13 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   } catch (err) {
     console.log(`[thesisSynthesizer] ⚠ wikilink enrichment failed (non-fatal): ${err.message}`);
   }
+
+  // Phase 13E — deterministic acronym wrapper. The LLM enrichment is
+  // conservative on short tokens; this guarantees common research acronyms
+  // (CBT, CBT-I, MBCT, ACT, PGD, OCD, PTSD, GAD, etc.) get wikilinked.
+  // Default: first occurrence per acronym. Set WIKILINK_ALL_OCCURRENCES=true
+  // in env to wrap every occurrence (heavier link density).
+  enrichedDraft = wrapAcronymsAsWikilinks(enrichedDraft);
 
   console.log(`[thesisSynthesizer] ⏳ writing final article to disk...`);
   const relativePath = `${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/${topicSlug}.md`;

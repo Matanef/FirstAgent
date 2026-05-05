@@ -388,7 +388,14 @@ export async function harvest(prompt, opts = {}) {
         fromCache = true;
       } else {
         content = await fetchPage(item.url, { topic, title: item.title, deepMode });
-        if (content) await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString() });
+        if (content) {
+          await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString() });
+        } else {
+          // Phase 13G — initial fetch returned nothing. Mark as bridge-eligible.
+          // This catches CORE 404s, biomedcentral redirect-loops, etc. that
+          // Phase 10E missed (10E only covered deep-read enrichment failures).
+          item._fetch_failed = true;
+        }
       }
     } else if (deepMode && content.length < 3000 && PAPER_LIKE_URL.test(item.url || "")) {
       // Phase 5G — Deep-mode enrichment.
@@ -461,7 +468,14 @@ export async function harvest(prompt, opts = {}) {
         }
       }
     }
-    if (!content || content.length < 100) continue;
+    // Phase 13G — KEEP articles with _fetch_failed flag even when content is
+    // thin, so the manual bridge can offer them. The analyzer downstream will
+    // produce a thin/failed analysis but the article record reaches the bridge.
+    if ((!content || content.length < 100) && !item._fetch_failed) continue;
+    if (!content || content.length < 100) {
+      // Empty placeholder content for downstream; analyzer will mark quality=failed.
+      content = item.title || "(content unavailable — see manual bridge offer)";
+    }
     out.push({
       url: item.url,
       title: item.title || "(untitled)",
@@ -473,7 +487,11 @@ export async function harvest(prompt, opts = {}) {
       // Phase 5A — propagate the structured citation metadata. Without this,
       // the synthesizer can't build a real citation index (was getting 0 entries
       // from 30 sources because cite was set by fetchers but stripped here).
-      ...(item.cite ? { cite: item.cite } : {})
+      ...(item.cite ? { cite: item.cite } : {}),
+      // Phase 13G — propagate fetch-failure / libgen-fallback flags so the
+      // manual bridge can correctly identify articles that need a manual PDF.
+      ...(item._fetch_failed ? { _fetch_failed: true } : {}),
+      ...(item._used_libgen_fallback ? { _used_libgen_fallback: true } : {})
     });
     if (out.length >= limit) break;
   }

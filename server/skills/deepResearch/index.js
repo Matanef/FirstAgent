@@ -754,7 +754,18 @@ export async function deepResearch(request) {
       const blocked = manualBridge.collectBlockedSources(promptResults);
       const bridgeOverride = process.env.MANUAL_BRIDGE === "always" ? true
                           : process.env.MANUAL_BRIDGE === "never" ? false : null;
-      if (manualBridge.shouldOfferBridge(blocked, effectiveTier, bridgeOverride) && conversationId) {
+      // Phase 13J — always log the gate evaluation so we can debug why bridge
+      // doesn't fire on runs with obvious fetch failures.
+      const willOffer = manualBridge.shouldOfferBridge(blocked, effectiveTier, bridgeOverride);
+      const bridgeReason = willOffer
+        ? `OFFER (blocked=${blocked.length}, tier=${effectiveTier}, override=${bridgeOverride})`
+        : `SKIP (blocked=${blocked.length}, threshold=2 for research/thesis, tier=${effectiveTier}, override=${bridgeOverride})`;
+      console.log(`[manualBridge] gate evaluated: ${bridgeReason}`);
+      if (blocked.length > 0 && !willOffer) {
+        // Diagnostic: show first blocked source so the user can see what was detected
+        console.log(`[manualBridge] would-block sample: kind=${blocked[0].kind}, url=${(blocked[0].url || "").slice(0, 80)}`);
+      }
+      if (willOffer && conversationId) {
         const vaultRel = `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`;
         try {
           // Phase 11B — save FULL promptResults so resume can short-circuit

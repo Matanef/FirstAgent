@@ -392,10 +392,14 @@ JSON:`;
   }
   phrases = phrases.slice(0, 8);
 
-  // Walk lines, skipping frontmatter + code fences. Replace FIRST occurrence of each phrase.
+  // Walk lines, skipping frontmatter + code fences. By default replace FIRST
+  // occurrence per phrase; if env WIKILINK_ALL_OCCURRENCES=true, replace EVERY
+  // occurrence (Phase 13D — heavier link density for research notes).
+  const linkAll = process.env.WIKILINK_ALL_OCCURRENCES === "true";
   let inFrontmatter = false;
   let inCodeFence = false;
-  const replaced = new Set();
+  const replaced = new Set();           // phrases that got at least one link
+  const totalReplacements = new Map();  // phrase → count
   const lines = content.split(/\r?\n/);
 
   for (let i = 0; i < lines.length; i++) {
@@ -408,22 +412,44 @@ JSON:`;
     if (inCodeFence) continue;
 
     for (const phrase of phrases) {
-      if (replaced.has(phrase)) continue;
+      if (!linkAll && replaced.has(phrase)) continue;
       const currentLine = lines[i]; // re-read each iteration so prior wikilinks survive
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(`(^|[^\\w[])(${escaped})(?=[^\\w\\]]|$)`, "i");
-      const m = currentLine.match(re);
-      if (!m) continue;
-      const idx = m.index + m[1].length;
-      const before = currentLine.slice(Math.max(0, idx - 2), idx);
-      if (before === "[[") continue; // already inside a wikilink
-      lines[i] = currentLine.slice(0, idx) + `[[${m[2]}]]` + currentLine.slice(idx + m[2].length);
-      replaced.add(phrase);
+      // For "all occurrences" mode, use a global regex and walk through replacements.
+      const re = new RegExp(`(^|[^\\w[])(${escaped})(?=[^\\w\\]]|$)`, linkAll ? "ig" : "i");
+      if (linkAll) {
+        let mutated = currentLine;
+        let mLocal;
+        // Reset regex's lastIndex on each pass (the string mutates between matches)
+        let safety = 0;
+        while ((mLocal = re.exec(mutated)) && safety < 50) {
+          safety++;
+          const idx = mLocal.index + mLocal[1].length;
+          const before = mutated.slice(Math.max(0, idx - 2), idx);
+          if (before === "[[") { re.lastIndex = idx + mLocal[2].length; continue; }
+          mutated = mutated.slice(0, idx) + `[[${mLocal[2]}]]` + mutated.slice(idx + mLocal[2].length);
+          re.lastIndex = idx + `[[${mLocal[2]}]]`.length;
+          totalReplacements.set(phrase, (totalReplacements.get(phrase) || 0) + 1);
+          replaced.add(phrase);
+        }
+        lines[i] = mutated;
+      } else {
+        const m = currentLine.match(re);
+        if (!m) continue;
+        const idx = m.index + m[1].length;
+        const before = currentLine.slice(Math.max(0, idx - 2), idx);
+        if (before === "[[") continue; // already inside a wikilink
+        lines[i] = currentLine.slice(0, idx) + `[[${m[2]}]]` + currentLine.slice(idx + m[2].length);
+        replaced.add(phrase);
+        totalReplacements.set(phrase, 1);
+      }
     }
   }
 
   if (replaced.size > 0) {
-    console.log(`[${label}] wikilink enrichment: linked ${replaced.size}/${phrases.length} phrases → [${[...replaced].join(", ")}]`);
+    const totalLinks = [...totalReplacements.values()].reduce((s, n) => s + n, 0);
+    const modeLabel = linkAll ? `all-occurrences (${totalLinks} total)` : "first-occurrence";
+    console.log(`[${label}] wikilink enrichment: linked ${replaced.size}/${phrases.length} phrases (${modeLabel}) → [${[...replaced].join(", ")}]`);
     return lines.join("\n");
   }
   console.log(`[${label}] wikilink enrichment: 0 phrases matched (had ${phrases.length} candidates)`);
@@ -434,12 +460,19 @@ export async function resolveWikilinks(content, { createStubs = true, stubFolder
   const vault = getVaultPath();
   if (!vault || !content) return [];
 
-  // Extract all [[wikilinks]] — handles [[link]] and [[link|alias]]
-  const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+  // Extract all [[wikilinks]] — handles [[link]] and [[link|alias]].
+  // Phase 13F — DON'T match `![[X]]` image embeds. The negative lookbehind
+  // `(?<!!)` excludes wikilinks immediately preceded by `!` (image syntax),
+  // so chart embeds like `![[charts/figshare-x.svg]]` no longer trigger
+  // stub-file creation in the Stubs/ folder.
+  const linkRegex = /(?<!!)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
   const links = new Set();
   let match;
   while ((match = linkRegex.exec(content)) !== null) {
-    links.add(match[1].trim());
+    const target = match[1].trim();
+    // Extra defense: even if regex misses, skip explicit chart paths
+    if (target.startsWith("charts/") || /\.(svg|png|jpg|jpeg|gif|webp)$/i.test(target)) continue;
+    links.add(target);
   }
 
   console.log(`[obsidianUtils] resolveWikilinks: found ${links.size} wikilinks in draft, stubFolder="${stubFolder}"`);

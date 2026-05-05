@@ -253,15 +253,24 @@ export async function upgradeArticle(article) {
     }
 
     // 2b. doi.org redirect → HTML landing page fallback
-    try {
-      const doiUrl = `https://doi.org/${rawDoi}`;
-      const html = await downloadText(doiUrl, 15000);
-      const stripped = stripBasicHtml(html);
-      if (stripped.length > 600) {
-        return { content: stripped, pdfUrl: doiUrl, doi: rawDoi, source: "html" };
+    // Phase 13H — sanitize DOI here too. The earlier `rawDoi` value has often
+    // accumulated serialization debris (e.g. ",title:..." from a malformed
+    // JSON parse upstream), and this code path was missing the sanitizer that
+    // 10G added inside unpaywallLookup.
+    const cleanForDoiOrg = sanitizeDoi(rawDoi);
+    if (cleanForDoiOrg) {
+      try {
+        const doiUrl = `https://doi.org/${cleanForDoiOrg}`;
+        const html = await downloadText(doiUrl, 15000);
+        const stripped = stripBasicHtml(html);
+        if (stripped.length > 600) {
+          return { content: stripped, pdfUrl: doiUrl, doi: cleanForDoiOrg, source: "html" };
+        }
+      } catch (err) {
+        log(`doi.org fallback failed for ${cleanForDoiOrg}: ${err.message}`, "warn");
       }
-    } catch (err) {
-      log(`doi.org fallback failed for ${rawDoi}: ${err.message}`, "warn");
+    } else {
+      log(`doi.org fallback skipped: malformed DOI "${String(rawDoi).slice(0, 60)}"`, "warn");
     }
   }
 
