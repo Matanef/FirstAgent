@@ -970,16 +970,22 @@ async function getDryadAccessToken() {
   // before Rails even sees the request. We also try multiple endpoint paths
   // and both body-params + HTTP Basic auth variants because Dryad has shipped
   // both shapes across versions.
+  // Dryad's official docs (api_accounts.md) use:
+  //   POST https://datadryad.org/oauth/token
+  //   Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+  //   body: client_id=...&client_secret=...&grant_type=client_credentials
+  // So the doc-canonical variant is tried FIRST. The other variants stay as
+  // fallbacks for any future Dryad endpoint changes.
   const headers = {
-    "Content-Type": "application/x-www-form-urlencoded",
+    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
     "Accept": "application/json",
     "User-Agent": "deepResearch/1.0 (compatible; curl/8.0)"
   };
   const attempts = [
-    { url: "https://datadryad.org/api/v2/oauth/token", mode: "body" },
-    { url: "https://datadryad.org/oauth/token",        mode: "body" },
+    { url: "https://datadryad.org/oauth/token",        mode: "body" },     // doc-canonical
+    { url: "https://datadryad.org/api/v2/oauth/token", mode: "body" },     // versioned alt
+    { url: "https://datadryad.org/oauth/token",        mode: "basic" },    // basic-auth variant
     { url: "https://datadryad.org/api/v2/oauth/token", mode: "basic" },
-    { url: "https://datadryad.org/oauth/token",        mode: "basic" },
   ];
   for (const a of attempts) {
     try {
