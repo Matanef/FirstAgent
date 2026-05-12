@@ -192,7 +192,7 @@ function extractToolSuggestion(reply, currentTool) {
  * Autonomous Coordinator
  * Manages the multi-step execution loop for the agent.
  */
-export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep, userProfile = null, userToneInstruction = "", signal }) {
+export async function executeAgent({ message, conversationId, clientIp, fileIds = [], onChunk, onStep, userProfile = null, userToneInstruction = "", signal, resolvedPending = null }) {
     const startTime = performance.now();
     const queryText = typeof message === "string" ? message : message?.text || "";
     console.log(`\n🚀 [PIPELINE START] Task: "${queryText.substring(0, 50)}..."`);
@@ -339,6 +339,21 @@ export async function executeAgent({ message, conversationId, clientIp, fileIds 
         // Pass fileIds to fileReview tool
         if (step.tool === "fileReview" && fileIds.length > 0) {
             enrichedContext.fileIds = fileIds;
+        }
+
+        // Phase 6C — thread onStep through to dynamic skills (deepResearch, etc.)
+        // so long-running pipelines can stream phase events back to the client.
+        // Skills that don't read _onStep simply ignore it.
+        if (onStep) {
+            enrichedContext._onStep = onStep;
+        }
+
+        // Phase 17D — thread resolvedPending so deepResearch's bridge-resume
+        // short-circuit (index.js:305 isBridgeResume check) actually fires when
+        // the user replies "continue" after a manualBridge offer. Without this
+        // the pipeline restarts from scratch instead of resuming.
+        if (resolvedPending) {
+            enrichedContext.resolvedPending = resolvedPending;
         }
         if (stateGraph.length > 0) {
             for (const prev of stateGraph) {

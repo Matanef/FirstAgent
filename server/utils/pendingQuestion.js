@@ -12,7 +12,7 @@ import { getMemory, saveJSON, MEMORY_FILE, withMemoryLock } from "../memory.js";
 // the lock internally. Prior to the re-entrance fix in memory.js, that nested
 // acquire deadlocked and stalled Phase-4 ambiguity clarification turns permanently.
 
-const TTL_MS = 10 * 60 * 1000; // 10 minutes
+const TTL_MS = 10 * 60 * 1000; // default 10 minutes — overridable per entry via `ttlMs`
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -20,7 +20,14 @@ function isExpired(entry) {
   if (!entry?.createdAt) return true;
   const created = Date.parse(entry.createdAt);
   if (isNaN(created)) return true;
-  return Date.now() - created > TTL_MS;
+  // Phase 21 — per-entry TTL override. `ttlMs: 0` or `ttlMs: -1` (or any
+  // non-positive number explicitly set) means "never expire". This is used
+  // by manual_bridge_continue, because downloading 30+ paywalled PDFs by
+  // hand can take hours and the user has been burned by the old 60-min
+  // window auto-canceling a long-running session.
+  if (entry.ttlMs === 0 || entry.ttlMs === -1) return false;
+  const ttl = (typeof entry.ttlMs === "number" && entry.ttlMs > 0) ? entry.ttlMs : TTL_MS;
+  return Date.now() - created > ttl;
 }
 
 /**
@@ -45,6 +52,7 @@ export async function setPendingQuestion(conversationId, pending) {
     question: pending.question,
     expects: pending.expects,
     originalRequest: pending.originalRequest || null,
+    ttlMs: typeof pending.ttlMs === "number" ? pending.ttlMs : null,
     createdAt: nowIso()
   };
 
@@ -148,6 +156,19 @@ export function parsePendingAnswer(message, expects) {
     return null; // unrecognised — leave pending entry intact
   }
 
+  // Phase 9D — manual PDF/CSV bridge resume
+  if (expects === "manual_bridge_continue") {
+    if (/^(continue|done|ready|go|proceed|resume|i'?m\s+(done|ready)|let'?s\s+go|ok(ay)?)[!?.\s]*$/i.test(m)) return "continue";
+    if (/^(skip|cancel|abort|just\s+(go|continue)|never\s+mind|move\s+on|forget\s+it|no\s+downloads?)[!?.\s]*$/i.test(m)) return "skip";
+    return null;   // unrecognised — leave entry intact (60min TTL gives plenty of room)
+  }
+
+  // Global Slot Interceptor (Missing Search Query)
+  if (expects === "missing_slot_search_query") {
+    // Whatever the user types here is the search query.
+    // e.g., if they reply "Friedrich Merz", we return the raw string.
+    return message.trim();
+  }
   // Default: echo back trimmed message — caller decides what to do with it
   return message.trim();
 }

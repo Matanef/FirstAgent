@@ -313,6 +313,9 @@ export class TwitterClient {
    * @param {Object} [fieldToggles] - Field toggles
    * @returns {Promise<Object>} Parsed JSON response
    */
+/**
+   * Make an authenticated GraphQL request.
+   */
   async graphql(operationName, variables, features, fieldToggles) {
     const hash = this.hashes[operationName];
     if (!hash) {
@@ -325,8 +328,6 @@ export class TwitterClient {
     const feats = features || DEFAULT_FEATURES;
     const endpoint = `${API_BASE}/graphql/${hash}/${operationName}`;
 
-    // Try GET first, fall back to POST if 404.
-    // Some operations (e.g., SearchTimeline) only work via POST now.
     const params = new URLSearchParams();
     params.set("variables", JSON.stringify(variables));
     params.set("features", JSON.stringify(feats));
@@ -334,15 +335,26 @@ export class TwitterClient {
       params.set("fieldToggles", JSON.stringify(fieldToggles));
     }
 
-    let res = await fetch(`${endpoint}?${params.toString()}`, {
-      headers: this._headers(),
-    });
+    // Twitter recently changed their API. Search requests MUST be POST now.
+    const strictlyRequiresPost = operationName === "SearchTimeline";
+    
+    let res;
 
-    // Fall back to POST if GET returns 404
-    if (res.status === 404) {
-      console.log(
-        `🐦 [twitter-client] ${operationName} GET→404, retrying as POST...`
-      );
+    if (!strictlyRequiresPost) {
+      // Try GET first for endpoints that still support it
+      res = await fetch(`${endpoint}?${params.toString()}`, {
+        headers: this._headers(),
+      });
+    }
+
+    // Use POST if we know it's required, OR if the GET request failed with a 404
+    if (strictlyRequiresPost || res?.status === 404) {
+      if (!strictlyRequiresPost) {
+        console.log(
+          `🐦 [twitter-client] ${operationName} GET→404, retrying as POST...`
+        );
+      }
+      
       const body = { variables, features: feats };
       if (fieldToggles) body.fieldToggles = fieldToggles;
 
@@ -390,28 +402,46 @@ export class TwitterClient {
    * @param {"Top"|"Latest"|"People"|"Photos"|"Videos"} [product="Latest"] - Search tab
    * @returns {Promise<Array<Object>>} Array of tweet objects
    */
-  async search(query, count = 20, product = "Latest") {
-    const data = await this.graphql("SearchTimeline", {
+/**
+   * Search tweets (Now with Cursor Pagination support)
+   */
+  async search(query, count = 20, product = "Latest", cursor = null) {
+    const variables = {
       rawQuery: query,
       count,
       querySource: "typed_query",
       product,
-    });
+    };
+    if (cursor) variables.cursor = cursor;
+
+    const data = await this.graphql("SearchTimeline", variables);
 
     const instructions =
       data?.data?.search_by_raw_query?.search_timeline?.timeline
         ?.instructions || [];
 
     const tweets = [];
+    let nextCursor = null;
+
     for (const inst of instructions) {
-      const entries = inst.entries || [];
+      const entries = inst.entries || (inst.entry ? [inst.entry] : []);
       for (const entry of entries) {
+        // Look for the pagination cursor
+        if (entry.entryId && (entry.entryId.includes("cursor-bottom") || entry.entryId.startsWith("sq-cursor-bottom"))) {
+          nextCursor = entry.content?.value || entry.content?.itemContent?.value || null;
+        }
+        
         const tweet = this._parseTweetEntry(entry);
         if (tweet) tweets.push(tweet);
       }
+      
+      // Sometimes Twitter sends the cursor as a replacement entry
+      if (inst.type === "TimelineReplaceEntry" && inst.entry?.entryId?.includes("cursor-bottom")) {
+        nextCursor = inst.entry.content?.value || inst.entry.content?.itemContent?.value || null;
+      }
     }
 
-    return tweets;
+    return { tweets, nextCursor };
   }
 
   /**
@@ -667,6 +697,9 @@ export class TwitterClient {
       const msg = err.message || "Unknown Twitter error";
       console.error(`[twitter-client] CreateTweet error ${code}: ${msg}`);
 
+      if (code === 344) {
+        throw new Error(`Twitter Anti-Bot Lock (344): Twitter detected automation and fake-limited the account. Log in manually via browser, clear the CAPTCHA, post a test tweet, and update your cookies.`);
+      }
       if (code === 226) {
         throw new Error(`Twitter anti-automation block (226): ${msg}. Try posting manually from the browser first to verify the account, then wait a few hours before retrying.`);
       }

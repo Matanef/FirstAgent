@@ -1,6 +1,6 @@
 // server/skills/deepResearch/tierDetector.js
 // Robust depth detection: English + Hebrew + intent.
-// Returns one of: "article" | "indepth" | "research" | "thesis" | null
+// Returns one of: "article" | "indepth" | "research" | "thesis" | "thesis-deep" | null
 //
 // Detection priority:
 //   1. context.resolvedPending.depth (orchestrator pending-question resume)
@@ -9,9 +9,17 @@
 //   4. Lexicon match (English + Hebrew) with unicode-aware word boundaries
 //   5. null → caller emits a pending question
 
-const VALID = new Set(["article", "indepth", "research", "thesis"]);
+// Phase 20N — "thesis-deep" super-tier: same as thesis, plus one
+// supplementary harvest pass driven by the top 4-5 open questions surfaced
+// across the prompt-level conclusions. Adds ~6-8 minutes for substantially
+// better Future Directions content.
+const VALID = new Set(["article", "indepth", "research", "thesis", "thesis-deep"]);
 
 const LEXICON = {
+  "thesis-deep": {
+    en: ["thesis-deep", "thesis deep", "deep thesis", "thesis+", "ultra thesis"],
+    he: ["תזה מורחבת", "תזה עמוקה"]
+  },
   thesis: {
     en: ["thesis", "dissertation", "comprehensive study", "comprehensive analysis"],
     he: ["תזה", "עבודת גמר", "דוקטורט"]
@@ -46,12 +54,23 @@ const TIER_REGEXES = Object.fromEntries(
   })
 );
 
-const INLINE_FLAG_RE = /\[depth:(article|indepth|in-depth|research|thesis)\]/i;
-const CLI_FLAG_RE   = /--depth=(article|indepth|in-depth|research|thesis)\b/i;
+const INLINE_FLAG_RE = /\[depth:(article|indepth|in-depth|research|thesis-deep|thesis)\]/i;
+const CLI_FLAG_RE   = /--depth=(article|indepth|in-depth|research|thesis-deep|thesis)\b/i;
+// Phase 15A — client-injected `[MODEL:xxx]` UI directive (App.jsx:182). Routes
+// imageGen between local/cloud engines. imageGen consumes it before stripping
+// (server/skills/imageGen/imageGen.js:16-23), but when the message routes to
+// any other skill the prefix bleeds into topic content and pollutes keyword
+// extraction. Stripping it here makes the cleanup global for all skills that
+// call stripDepthFlag (currently: deepResearch's parseTopic).
+const MODEL_DIRECTIVE_RE = /\[MODEL:[A-Za-z0-9_\-]+\]/gi;
 
 function normalizeTier(raw) {
   if (!raw) return null;
-  const t = String(raw).toLowerCase().trim().replace(/-/g, "");
+  let t = String(raw).toLowerCase().trim();
+  // Phase 20N — preserve the hyphen in "thesis-deep" so it doesn't collapse
+  // to "thesisdeep" → unknown tier. We only strip "in-depth" → "indepth".
+  if (t === "thesis-deep" || t === "thesis deep" || t === "thesisdeep") return "thesis-deep";
+  t = t.replace(/-/g, "");
   if (VALID.has(t)) return t;
   return null;
 }
@@ -78,8 +97,8 @@ export function detect(text, context = {}) {
   const cli = text.match(CLI_FLAG_RE);
   if (cli) return normalizeTier(cli[1]);
 
-  // 4. Lexicon match — check thesis first (most specific), then research, indepth, article
-  for (const tier of ["thesis", "research", "indepth", "article"]) {
+  // 4. Lexicon match — check thesis-deep first (most specific), then thesis, research, indepth, article
+  for (const tier of ["thesis-deep", "thesis", "research", "indepth", "article"]) {
     const { en, he } = TIER_REGEXES[tier];
     if (en.test(text) || he.test(text)) return tier;
   }
@@ -93,7 +112,12 @@ export function detect(text, context = {}) {
  */
 export function stripDepthFlag(text) {
   if (!text || typeof text !== "string") return text;
-  return text.replace(INLINE_FLAG_RE, "").replace(CLI_FLAG_RE, "").replace(/\s{2,}/g, " ").trim();
+  return text
+    .replace(INLINE_FLAG_RE, "")
+    .replace(CLI_FLAG_RE, "")
+    .replace(MODEL_DIRECTIVE_RE, "")  // Phase 15A
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
-export const TIERS = ["article", "indepth", "research", "thesis"];
+export const TIERS = ["article", "indepth", "research", "thesis", "thesis-deep"];

@@ -6,6 +6,8 @@
 //   2. shortAPA(cite)             → "(Smith & Jones, 2023)" or "(Smith et al., 2023)"
 //   3. buildCitationIndex(notes)  → unified [{ id, inText, apa, ... }] list, ordered alphabetically
 //   4. lintStrayCitations(text, index) → flags fake refs ([5], "Source 1", invented authors)
+
+import { rescueAuthors as _orcidRescueAuthors, isConfigured as _orcidConfigured } from "./orcidClient.js";
 //
 // Citation shape (input):
 //   {
@@ -22,10 +24,40 @@
  * Convert a name like "John Smith" or "Smith, John" or "J. Smith" to
  * canonical APA form: "Smith, J." (last name + initials, comma-separated).
  */
+// Phase 8E — reject authors whose surname is malformed metadata leakage.
+// OpenAlex sometimes returns garbage like "V., A. P." or "L., (. T." when the
+// upstream source is broken. These produce broken APA references; better to
+// drop the author entirely than print "V., .. A. P." in the bibliography.
+function isMalformedAuthor(s) {
+  if (!s) return true;
+  const t = s.trim();
+  if (t.length < 2) return true;
+  // Contains parentheses (never valid in a name)
+  if (/[()]/.test(t)) return true;
+  // Surname (before first comma) is just initials-with-dots or a single letter
+  const surname = t.split(",")[0].trim();
+  if (surname.length < 2) return true;                                   // "V"
+  if (/^[A-Z]\.?$/.test(surname)) return true;                           // "V."
+  if (/^[A-Z]\.\s*$/.test(surname)) return true;                         // "V. "
+  // Surname starts with a non-letter (e.g. "..A. P.")
+  if (!/^[\p{L}]/u.test(surname)) return true;
+  // Has obvious metadata-leak markers like ".." or ", ((..."
+  if (/\.\./.test(t) || /,\s*\(/.test(t)) return true;
+  return false;
+}
+
 export function canonicalizeAuthor(name) {
   if (!name || typeof name !== "string") return null;
-  const cleaned = name.trim().replace(/\s+/g, " ");
+  let cleaned = name.trim().replace(/\s+/g, " ");
   if (!cleaned) return null;
+  // Phase 14I — strip parenthetical figshare/orcid IDs (5+ consecutive digits in parens).
+  // Example: "Lubna Ghazal (21245345)" → "Lubna Ghazal". Without this strip, the
+  // malformedAuthor check rejects the whole entry because of the parens, and the
+  // parseYear path mis-reads the first 4 digits as a year (2124 → > 2100 → drop).
+  cleaned = cleaned.replace(/\s*\(\d{5,}\)/g, "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  // Phase 8E — reject malformed metadata up-front.
+  if (isMalformedAuthor(cleaned)) return null;
 
   // Already in "Last, F." form? Pass through.
   if (/^[\p{L}'\-]+,\s*[\p{L}.\s'\-]+$/u.test(cleaned)) {
@@ -38,6 +70,8 @@ export function canonicalizeAuthor(name) {
   if (parts.length === 1) return parts[0]; // single name — pass through
 
   const surname = parts[parts.length - 1];
+  // Phase 8E — surname itself must look like a real surname (≥2 letters, starts with letter)
+  if (surname.length < 2 || !/^[\p{L}]/u.test(surname)) return null;
   const initials = parts.slice(0, -1)
     .map(p => p.charAt(0).toUpperCase() + ".")
     .join(" ");
@@ -78,12 +112,34 @@ export function shortAPA(cite) {
  * for the JOURNAL name; the article title itself stays roman. Books reverse
  * this. We emit journal articles by default (most common case).
  */
+// Phase 10C — repositories that are NOT journals. When `cite.venue` is one of
+// these, render WITHOUT italic-venue formatting (the repository goes in the
+// URL line instead). This stops the LLM from emitting "(openalex)" as if it
+// were a parenthetical citation.
+const REPO_VENUES = new Set([
+  "openalex", "figshare", "dryad", "dryad digital repository",
+  "harvard dataverse", "dataverse",
+  "open science framework", "osf", "osf preprints",
+  "zenodo", "data.gov", "datagov",
+  "icpsr", "humanitarian data exchange", "hdx",
+  "world bank open data", "world bank", "oecd statistics", "oecd",
+  "fred", "fred — st. louis fed",
+  "who global health observatory", "who", "whogho",
+  "academagic"
+]);
+function isRepositoryVenue(v) {
+  return REPO_VENUES.has(String(v || "").trim().toLowerCase());
+}
+
 export function formatAPAEntry(cite) {
   if (!cite) return "";
   const authors = (cite.authors || []).map(canonicalizeAuthor).filter(Boolean);
   const year = cite.year ? `(${cite.year})` : "(n.d.)";
   const title = (cite.title || "").trim().replace(/\.$/, "");
-  const venue = (cite.venue || "").trim();
+  // Phase 10C — drop venue when it's just a repository name. Datasets cited
+  // as "*OpenAlex*" got the LLM writing "(openalex)" parentheticals downstream.
+  const rawVenue = (cite.venue || "").trim();
+  const venue = isRepositoryVenue(rawVenue) ? "" : rawVenue;
   const vol = cite.volume ? String(cite.volume) : "";
   const issue = cite.issue ? `(${cite.issue})` : "";
   const pages = (cite.pages || "").trim();
@@ -157,6 +213,54 @@ function cleanCite(cite) {
 }
 
 /**
+ * Phase 19A — async ORCID-rescue pre-pass for malformed author lists.
+ *
+ * Scans the notes for citations whose authors list looks broken (>60% of
+ * entries are single-token surnames — the Cochrane-review tokenization bug).
+ * For each such cite WITH a DOI, asks ORCID to return the canonical authors
+ * list. Mutates `note.cite.authors` in place when the rescue succeeds.
+ *
+ * Best-effort: failures (no DOI, ORCID unreachable, no match) leave the
+ * original authors list untouched. The downstream buildCitationIndex will
+ * still drop those as malformed, exactly like before — we only ever upgrade
+ * a broken entry, never downgrade a good one.
+ *
+ * No-ops entirely when ORCID isn't configured.
+ *
+ * Returns: { rescued: <count>, attempted: <count> }
+ */
+export async function rescueMalformedAuthors(notes) {
+  if (!_orcidConfigured()) return { rescued: 0, attempted: 0 };
+  let rescued = 0;
+  let attempted = 0;
+  for (const note of notes || []) {
+    const cite = note?.cite;
+    if (!cite || !Array.isArray(cite.authors) || cite.authors.length < 5) continue;
+    const singleWord = cite.authors.filter(a =>
+      typeof a === "string" && !a.includes(",") && !/\s/.test(a.trim()) && a.trim().length < 25
+    ).length;
+    if (singleWord / cite.authors.length <= 0.6) continue;   // not malformed
+    if (!cite.doi) continue;                                 // can't rescue without DOI
+    attempted++;
+    try {
+      const recovered = await _orcidRescueAuthors({
+        doi: cite.doi,
+        malformedAuthors: cite.authors,
+        title: cite.title
+      });
+      if (Array.isArray(recovered) && recovered.length > 0) {
+        cite.authors = recovered;
+        rescued++;
+      }
+    } catch { /* leave authors as-is */ }
+  }
+  if (attempted > 0) {
+    console.log(`[citations] ORCID rescue: ${rescued}/${attempted} malformed author lists recovered`);
+  }
+  return { rescued, attempted };
+}
+
+/**
  * Build the citation index from the list of harvested article frontmatters.
  * Input: notes (each may have a `cite` field)
  * Output: unified [{ id, inText, apa, surnameKey, year }] sorted by surname/year.
@@ -167,6 +271,19 @@ export function buildCitationIndex(notes) {
   for (const note of notes || []) {
     const rawCite = note?.cite;
     if (!rawCite || !rawCite.authors || rawCite.authors.length === 0 || !rawCite.title) continue;
+    // Phase 12H — drop entries where the authors list is mostly single-token
+    // pseudo-names (CORE/OpenAlex sometimes emits author lists like
+    // "Beck, Bender, Brown, Emerson, ..." where every "author" is just a
+    // surname with no first-initial — these can't be canonicalized properly.
+    // Heuristic: if >60% of authors are single-word entries with no comma,
+    // the list is malformed; skip the citation.
+    const singleWordAuthors = (rawCite.authors || []).filter(a =>
+      typeof a === "string" && !a.includes(",") && !/\s/.test(a.trim()) && a.trim().length < 25
+    ).length;
+    if (rawCite.authors.length >= 5 && singleWordAuthors / rawCite.authors.length > 0.6) {
+      console.log(`[citations] dropped malformed-list entry — ${singleWordAuthors}/${rawCite.authors.length} single-token authors (title="${String(rawCite.title).slice(0, 60)}")`);
+      continue;
+    }
     const cite = cleanCite(rawCite); // strip HTML entities + provider branding
     // Dedup by DOI or by surname+year+title-prefix
     const dedupKey = (cite.doi || "").toLowerCase() ||
@@ -175,7 +292,13 @@ export function buildCitationIndex(notes) {
     seen.add(dedupKey);
 
     const authorsCanon = cite.authors.map(canonicalizeAuthor).filter(Boolean);
-    const firstSurname = authorsCanon.length > 0 ? surnameOf(authorsCanon[0]) : "(unknown)";
+    // Phase 8E — drop the entry entirely if all authors got rejected as
+    // malformed metadata. Better no entry than a broken "V., .. A. P." entry.
+    if (authorsCanon.length === 0) {
+      console.log(`[citations] dropped entry — no valid authors after sanitization (raw="${(cite.authors || []).slice(0, 2).join(" / ")}", title="${String(cite.title).slice(0, 60)}")`);
+      continue;
+    }
+    const firstSurname = surnameOf(authorsCanon[0]);
     entries.push({
       id: `cite_${entries.length + 1}`,
       cite: { ...cite, authors: authorsCanon },
@@ -301,13 +424,17 @@ export function lintStrayCitations(text, index) {
 }
 
 /** Parse a Crossref-style year from various input formats. */
+// Phase 14I — cap the upper bound at currentYear+1 (was hard-coded 2100).
+// Stops fabricated future-year publications from polluting the bibliography.
+// The lower bound stays at 1700 (covers all actual academic publication history).
 export function parseYear(input) {
   if (!input) return null;
-  if (typeof input === "number") return input >= 1700 && input <= 2100 ? input : null;
+  const maxYear = new Date().getFullYear() + 1;
+  if (typeof input === "number") return input >= 1700 && input <= maxYear ? input : null;
   const m = String(input).match(/(\d{4})/);
   if (!m) return null;
   const y = parseInt(m[1], 10);
-  return y >= 1700 && y <= 2100 ? y : null;
+  return y >= 1700 && y <= maxYear ? y : null;
 }
 
 // Exposed for tests

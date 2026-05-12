@@ -359,6 +359,10 @@ JSON:`;
     const res = await llm(prompt, {
       timeoutMs: 15000,
       format: "json",
+      // Phase 10H — pin to the deepResearch synthesizer model. The default
+      // chat-persona model (dolphin-llama3) was emitting unreliable JSON for
+      // wikilink phrases on the deepResearch hot path.
+      model: process.env.SYNTHESIZER_MODEL || "qwen2.5:7b",
       skipKnowledge: true,
       skipLanguageDetection: true,
       options: { temperature: 0.2, num_ctx: 4096 }
@@ -375,6 +379,12 @@ JSON:`;
         .filter(p => typeof p === "string")
         .map(p => p.trim())
         .filter(p => p.length >= 2 && p.length <= 60)
+        // Phase 15G — cap word count to keep wikilinks as concept tokens, not
+        // descriptive phrases. The CBT thesis run produced stubs like
+        // `Stubs/Digital health tools for cancer care.md` and
+        // `Stubs/Artificial intelligence in CBT.md` — too long to be useful.
+        // Hyphenated tokens count as a single word (split on whitespace only).
+        .filter(p => p.split(/\s+/).length <= 3)
         .filter(p => !noteTitle || p.toLowerCase() !== noteTitle.toLowerCase());
     }
   } catch (err) {
@@ -388,10 +398,14 @@ JSON:`;
   }
   phrases = phrases.slice(0, 8);
 
-  // Walk lines, skipping frontmatter + code fences. Replace FIRST occurrence of each phrase.
+  // Walk lines, skipping frontmatter + code fences. By default replace FIRST
+  // occurrence per phrase; if env WIKILINK_ALL_OCCURRENCES=true, replace EVERY
+  // occurrence (Phase 13D — heavier link density for research notes).
+  const linkAll = process.env.WIKILINK_ALL_OCCURRENCES === "true";
   let inFrontmatter = false;
   let inCodeFence = false;
-  const replaced = new Set();
+  const replaced = new Set();           // phrases that got at least one link
+  const totalReplacements = new Map();  // phrase → count
   const lines = content.split(/\r?\n/);
 
   for (let i = 0; i < lines.length; i++) {
@@ -404,22 +418,44 @@ JSON:`;
     if (inCodeFence) continue;
 
     for (const phrase of phrases) {
-      if (replaced.has(phrase)) continue;
+      if (!linkAll && replaced.has(phrase)) continue;
       const currentLine = lines[i]; // re-read each iteration so prior wikilinks survive
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(`(^|[^\\w[])(${escaped})(?=[^\\w\\]]|$)`, "i");
-      const m = currentLine.match(re);
-      if (!m) continue;
-      const idx = m.index + m[1].length;
-      const before = currentLine.slice(Math.max(0, idx - 2), idx);
-      if (before === "[[") continue; // already inside a wikilink
-      lines[i] = currentLine.slice(0, idx) + `[[${m[2]}]]` + currentLine.slice(idx + m[2].length);
-      replaced.add(phrase);
+      // For "all occurrences" mode, use a global regex and walk through replacements.
+      const re = new RegExp(`(^|[^\\w[])(${escaped})(?=[^\\w\\]]|$)`, linkAll ? "ig" : "i");
+      if (linkAll) {
+        let mutated = currentLine;
+        let mLocal;
+        // Reset regex's lastIndex on each pass (the string mutates between matches)
+        let safety = 0;
+        while ((mLocal = re.exec(mutated)) && safety < 50) {
+          safety++;
+          const idx = mLocal.index + mLocal[1].length;
+          const before = mutated.slice(Math.max(0, idx - 2), idx);
+          if (before === "[[") { re.lastIndex = idx + mLocal[2].length; continue; }
+          mutated = mutated.slice(0, idx) + `[[${mLocal[2]}]]` + mutated.slice(idx + mLocal[2].length);
+          re.lastIndex = idx + `[[${mLocal[2]}]]`.length;
+          totalReplacements.set(phrase, (totalReplacements.get(phrase) || 0) + 1);
+          replaced.add(phrase);
+        }
+        lines[i] = mutated;
+      } else {
+        const m = currentLine.match(re);
+        if (!m) continue;
+        const idx = m.index + m[1].length;
+        const before = currentLine.slice(Math.max(0, idx - 2), idx);
+        if (before === "[[") continue; // already inside a wikilink
+        lines[i] = currentLine.slice(0, idx) + `[[${m[2]}]]` + currentLine.slice(idx + m[2].length);
+        replaced.add(phrase);
+        totalReplacements.set(phrase, 1);
+      }
     }
   }
 
   if (replaced.size > 0) {
-    console.log(`[${label}] wikilink enrichment: linked ${replaced.size}/${phrases.length} phrases → [${[...replaced].join(", ")}]`);
+    const totalLinks = [...totalReplacements.values()].reduce((s, n) => s + n, 0);
+    const modeLabel = linkAll ? `all-occurrences (${totalLinks} total)` : "first-occurrence";
+    console.log(`[${label}] wikilink enrichment: linked ${replaced.size}/${phrases.length} phrases (${modeLabel}) → [${[...replaced].join(", ")}]`);
     return lines.join("\n");
   }
   console.log(`[${label}] wikilink enrichment: 0 phrases matched (had ${phrases.length} candidates)`);
@@ -430,12 +466,35 @@ export async function resolveWikilinks(content, { createStubs = true, stubFolder
   const vault = getVaultPath();
   if (!vault || !content) return [];
 
-  // Extract all [[wikilinks]] — handles [[link]] and [[link|alias]]
-  const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+  // Extract all [[wikilinks]] — handles [[link]] and [[link|alias]].
+  // Phase 13F — DON'T match `![[X]]` image embeds. The negative lookbehind
+  // `(?<!!)` excludes wikilinks immediately preceded by `!` (image syntax),
+  // so chart embeds like `![[charts/figshare-x.svg]]` no longer trigger
+  // stub-file creation in the Stubs/ folder.
+  const linkRegex = /(?<!!)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
   const links = new Set();
   let match;
   while ((match = linkRegex.exec(content)) !== null) {
-    links.add(match[1].trim());
+    const target = match[1].trim();
+    // Extra defense: even if regex misses, skip explicit chart paths
+    if (target.startsWith("charts/") || /\.(svg|png|jpg|jpeg|gif|webp)$/i.test(target)) continue;
+    // Phase 20K — skip malformed wikilinks containing inner `[[` (nested
+    // wikilinks the LLM emits like `[[Online [[CBT-I]] Intervention]]`).
+    // The outer wikilink's inner text is captured up to the FIRST `]` so
+    // we'd otherwise create a stub named `Online [[CBT-I` with broken syntax.
+    // Reject these; the inner `[[CBT-I]]` will be captured separately by
+    // the regex and handled correctly on its own.
+    if (target.includes("[[") || target.includes("]]")) {
+      console.log(`[obsidianUtils] resolveWikilinks: skipping malformed nested wikilink "${target.slice(0, 60)}"`);
+      continue;
+    }
+    // Phase 20K — defense against filenames that would be invalid on disk.
+    // Strip/reject filesystem-illegal chars (Windows: \ / : * ? " < > |).
+    if (/[\\/:*?"<>|]/.test(target)) {
+      console.log(`[obsidianUtils] resolveWikilinks: skipping wikilink with FS-illegal chars "${target.slice(0, 60)}"`);
+      continue;
+    }
+    links.add(target);
   }
 
   console.log(`[obsidianUtils] resolveWikilinks: found ${links.size} wikilinks in draft, stubFolder="${stubFolder}"`);
@@ -691,40 +750,81 @@ export async function extractPdfText(filePath) {
     const buffer = await fs.readFile(filePath);
     const text = [];
 
-    // Find all stream...endstream blocks and extract text
-    const content = buffer.toString("latin1");
-    const streamRegex = /stream\r?\n([\s\S]*?)endstream/g;
-    let streamMatch;
+    // Phase 20-fix — locate stream blocks by byte offset on the BUFFER
+    // (not on a latin1-decoded string copy) so we can decompress
+    // FlateDecode-compressed streams via zlib. Most modern academic PDFs
+    // use FlateDecode, and the old regex-on-latin1-string approach saw
+    // only zero-byte garbage from the compressed payload — that's why
+    // every uploaded PDF in the thesis-deep run came back at exactly 63
+    // chars (the empty-extraction placeholder). The fix: per-stream,
+    // peek at the preceding object dictionary for `/Filter /FlateDecode`,
+    // and if present, inflate the bytes before running text-op regex.
+    const { default: zlib } = await import("node:zlib");
+    const fullStr = buffer.toString("latin1");
 
-    while ((streamMatch = streamRegex.exec(content)) !== null) {
-      const streamData = streamMatch[1];
+    // Walk stream...endstream pairs
+    const sentinel = "stream";
+    let cursor = 0;
+    while (true) {
+      const streamIdx = fullStr.indexOf(sentinel, cursor);
+      if (streamIdx === -1) break;
+      // Skip "stream" keyword + EOL (could be \n or \r\n)
+      let payloadStart = streamIdx + sentinel.length;
+      if (fullStr[payloadStart] === "\r") payloadStart++;
+      if (fullStr[payloadStart] === "\n") payloadStart++;
+      const endIdx = fullStr.indexOf("endstream", payloadStart);
+      if (endIdx === -1) break;
+      // Trim trailing newline before "endstream"
+      let payloadEnd = endIdx;
+      if (fullStr[payloadEnd - 1] === "\n") payloadEnd--;
+      if (fullStr[payloadEnd - 1] === "\r") payloadEnd--;
+
+      // Look at the object dictionary preceding the stream keyword to
+      // determine whether the payload is FlateDecode-compressed.
+      const dictStart = Math.max(0, streamIdx - 800);
+      const dict = fullStr.slice(dictStart, streamIdx);
+      const isFlate = /\/Filter\s*(?:\/FlateDecode\b|\[\s*\/FlateDecode\b)/.test(dict);
+
+      let streamData = null;
+      if (isFlate) {
+        try {
+          const compressed = buffer.subarray(payloadStart, payloadEnd);
+          const inflated = zlib.inflateSync(compressed);
+          streamData = inflated.toString("latin1");
+        } catch {
+          // Inflation failed; fall back to raw bytes (best-effort)
+          streamData = fullStr.slice(payloadStart, payloadEnd);
+        }
+      } else {
+        streamData = fullStr.slice(payloadStart, payloadEnd);
+      }
 
       // Extract text from BT...ET (text object) blocks
       const textBlocks = streamData.match(/BT[\s\S]*?ET/g);
-      if (!textBlocks) continue;
-
-      for (const block of textBlocks) {
-        // Match text-showing operators: Tj, TJ, ', "
-        // Tj: (text) Tj
-        const tjMatches = block.match(/\(([^)]*)\)\s*Tj/g);
-        if (tjMatches) {
-          for (const tj of tjMatches) {
-            const m = tj.match(/\(([^)]*)\)/);
-            if (m) text.push(decodePdfString(m[1]));
+      if (textBlocks) {
+        for (const block of textBlocks) {
+          // Tj: (text) Tj
+          const tjMatches = block.match(/\(((?:\\.|[^)\\])*)\)\s*Tj/g);
+          if (tjMatches) {
+            for (const tj of tjMatches) {
+              const m = tj.match(/\(((?:\\.|[^)\\])*)\)/);
+              if (m) text.push(decodePdfString(m[1]));
+            }
           }
-        }
-
-        // TJ: [(text) num (text) ...] TJ
-        const tjArrayMatches = block.match(/\[([^\]]*)\]\s*TJ/g);
-        if (tjArrayMatches) {
-          for (const tja of tjArrayMatches) {
-            const parts = tja.match(/\(([^)]*)\)/g);
-            if (parts) {
-              text.push(parts.map(p => decodePdfString(p.slice(1, -1))).join(""));
+          // TJ: [(text) num (text) ...] TJ
+          const tjArrayMatches = block.match(/\[([\s\S]*?)\]\s*TJ/g);
+          if (tjArrayMatches) {
+            for (const tja of tjArrayMatches) {
+              const parts = tja.match(/\(((?:\\.|[^)\\])*)\)/g);
+              if (parts) {
+                text.push(parts.map(p => decodePdfString(p.slice(1, -1))).join(""));
+              }
             }
           }
         }
       }
+
+      cursor = endIdx + "endstream".length;
     }
 
     const result = text.join(" ").replace(/\s+/g, " ").trim();

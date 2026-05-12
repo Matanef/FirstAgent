@@ -6,6 +6,17 @@
 
 import { llm } from "../../tools/llm.js";
 const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
+// Phase 17B — env-tunable analyzer timeouts. Default 60s/45s is realistic for
+// qwen2.5:7b on 8GB VRAM after Phase 17A's KV-cap brings it back into VRAM-only
+// inference. Previous 30s/25s defaults were calibrated for an environment that
+// never actually existed on the user's hardware (CPU spillage made every chunk
+// take 40-60s, hitting the 30s timeout 100% of the time).
+const ANALYZER_TIMEOUT_MS    = parseInt(process.env.ANALYZER_TIMEOUT_MS    || "60000", 10);
+const ANALYZER_RETRY_TIMEOUT = parseInt(process.env.ANALYZER_RETRY_TIMEOUT || "45000", 10);
+// Phase 20M — raw-excerpt char cap. Bumped 1500 → 3000 so the note shows enough
+// context for the user to verify the analyzer worked on real content (1500 was
+// often cut mid-paragraph after the title page). Env-override available.
+const RAW_EXCERPT_CHARS = parseInt(process.env.RAW_EXCERPT_CHARS || "3000", 10);
 import { writeNote, buildFrontmatter, VAULT_JOURNAL_ROOT } from "../../utils/obsidianUtils.js";
 import { upgradeArticle, chunkText } from "./paperUpgrader.js";
 import { createLogger } from "../../utils/logger.js";
@@ -100,10 +111,15 @@ Return JSON only:
   "stance": "supportive | critical | neutral | mixed"
 }`;
 
-    // Phase 2F — first attempt
+    // Phase 2F — first attempt.
+    // Phase 17B — maxRetries:0 disables the inner llm()-level retry from Phase 16D.
+    // articleAnalyzer already has its OWN retry path below (with reduced num_ctx),
+    // so the inner retry is redundant and just doubles wasted time on hard
+    // failures. Per-chunk worst case becomes 60+45=105s instead of 4×60=240s.
     try {
       const res = await llm(analysisPrompt, {
-        timeoutMs: 30000,
+        timeoutMs: ANALYZER_TIMEOUT_MS,
+        maxRetries: 0,
         format: "json",
         model: SYNTH_MODEL,
         skipKnowledge: true,
@@ -121,10 +137,12 @@ Return JSON only:
         return null; // non-transient — don't retry
       }
     }
-    // Phase 2F — one retry with reduced context and lower temperature
+    // Phase 2F — one retry with reduced context and lower temperature.
+    // Phase 17B — same maxRetries:0 + env-tunable timeout treatment.
     try {
       const res = await llm(analysisPrompt, {
-        timeoutMs: 25000,
+        timeoutMs: ANALYZER_RETRY_TIMEOUT,
+        maxRetries: 0,
         format: "json",
         model: SYNTH_MODEL,
         skipKnowledge: true,
@@ -266,9 +284,9 @@ ${factsBlock}
 ## Named entities
 ${entitiesBlock}
 
-## Raw excerpt (first 1500 chars)
+## Raw excerpt (first ${RAW_EXCERPT_CHARS} chars)
 \`\`\`
-${(activeArticle.content || article.content || "").slice(0, 1500).replace(/```/g, "ʼʼʼ")}
+${(activeArticle.content || article.content || "").slice(0, RAW_EXCERPT_CHARS).replace(/```/g, "ʼʼʼ")}
 \`\`\`
 `;
 

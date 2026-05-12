@@ -275,20 +275,33 @@ export async function extractFromNews(articles, topic) {
 export async function extractFromSearch(results, synthesis, query) {
   if (!results || results.length === 0) return [];
 
-  // Clean the query: strip question words, search commands, and conversational noise
+// Clean the query: strip question words, search commands, and conversational noise
   const cleanedQuery = (query || "")
-    .replace(/^(search\s+for\s+)?(what|who|when|where|why|how|tell\s+me|explain|describe)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    // Strip "search for:" prefix
+    .replace(/^(search\s+for\s*:\s*|search\s+for\s+)/gi, "")
+    // Strip heavy conversational filler ("I wanted to ask if you are familiar with...")
+    .replace(/^(?:hey,?|hi,?|hello,?|listen,?)\s*/gi, "")
+    .replace(/^(?:i\s+(?:just\s+)?wanted\s+to\s+ask\s+(?:if\s+(?:you\s+are|you're)\s+familiar\s+with\s+(?:the\s+band\s+)?|about\s+)|are\s+you\s+familiar\s+with\s+(?:the\s+band\s+)?|do\s+you\s+know\s+(?:about\s+)?)/gi, "")
+    // Strip standard question words
+    .replace(/^(what|who|when|where|why|how|tell\s+me|explain|describe)\s+(is|are|was|were|did|does|do|about|happened\s+in?)?\s*/gi, "")
+    // Strip "the current/latest"
     .replace(/^(the\s+)?(current|latest|recent)\s+/gi, "")
     .replace(/[?.!]+$/g, "")
     .trim();
 
-  // Determine a good topic: prefer cleaned query if substantive, else use top result title
+// Determine a good topic: prefer canonical title from the top search result
   const topTitle = results[0]?.title || "";
-  const isGarbageQuery = !cleanedQuery || cleanedQuery.length < 4 ||
-    /^(the|a|an|some|this|that|it|there)\b$/i.test(cleanedQuery);
-  const topic = isGarbageQuery
-    ? topTitle.substring(0, 60).replace(/[:.!?]+$/, "").trim()
-    : cleanedQuery.substring(0, 60);
+  
+  // Strip common web suffixes like " - Wikipedia" or " | Reuters" to get the pure entity name
+  let topic = topTitle ? topTitle.split(/\s+[-|]\s+/)[0].substring(0, 60).trim() : "";
+
+  // If title extraction failed or is too short, fallback to the cleaned user query
+  if (!topic || topic.length < 3) {
+    const isGarbageQuery = !cleanedQuery || cleanedQuery.length < 4 ||
+      /^(the|a|an|some|this|that|it|there)\b$/i.test(cleanedQuery);
+    
+    topic = isGarbageQuery ? "Web Search" : cleanedQuery.substring(0, 60).trim();
+  }
 
   if (!topic || topic.length < 3) return [];
 

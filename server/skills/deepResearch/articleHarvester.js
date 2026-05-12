@@ -13,6 +13,8 @@ import crypto from "crypto";
 import { CONFIG, PROJECT_ROOT } from "../../utils/config.js";
 import { stripHtmlToText, extractPdfText } from "../../utils/obsidianUtils.js";
 import { createLogger } from "../../utils/logger.js";
+import { scrapeLandingPage, isLandingPageHost } from "./landingPageScraper.js";
+import { findAltSource, resetAltSourceState } from "./altSourceFinder.js";
 
 const log = createLogger("articleHarvester", { consoleLevel: "warn" });
 
@@ -106,6 +108,26 @@ const KNOWN_HARDBLOCK_HOSTS = new Set([
   // Add hosts here if Referer isn't enough. Empty for now — we always try once.
 ]);
 
+// Phase 17F — per-run dead-domain set. Once a domain reliably ECONNABORTED-fails
+// in a single run (e.g. sofrim.org times out at 18s every single time the user's
+// CBT thesis run hit it), we skip every subsequent URL on that domain. Saves
+// ~36s × N URLs across 8 prompts. Reset between runs via resetDeadDomains().
+const _deadDomainsThisRun = new Set();
+function isDeadDomain(url) {
+  try { return _deadDomainsThisRun.has(new URL(url).hostname.toLowerCase()); }
+  catch { return false; }
+}
+function markDeadDomain(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (!_deadDomainsThisRun.has(host)) {
+      _deadDomainsThisRun.add(host);
+      console.log(`[articleHarvester] domain marked dead this run: ${host}`);
+    }
+  } catch {}
+}
+export function resetDeadDomains() { _deadDomainsThisRun.clear(); }
+
 // Phase 5G — URL patterns that look like academic papers. Used to decide whether
 // to fire deep-read enrichment (full PDF fetch + section extraction) on top of
 // inline abstracts. Covers most major publishers and preprint servers.
@@ -149,7 +171,8 @@ const SOURCE_NAME_TO_FETCHER = {
   web:             fetchSerpResults,
   core:            fetchCore,    // CORE open-access repository (core.ac.uk)
   doaj:            fetchDoaj,    // Directory of Open Access Journals (doaj.org)
-  googlescholar:   fetchGoogleScholar, // Google Scholar via SerpAPI (PDF links when available)
+  // Phase 14H — Google Scholar (via SerpAPI) removed: SERPAPI_KEY/account doesn't grant
+  // access; every prompt returned HTTP 429. Was just adding latency for zero results.
   openalex:        fetchOpenAlex,      // OpenAlex — multidisciplinary, ~250M works (no auth, polite-pool via mailto)
   osf:             fetchOsfPreprints,  // OSF Preprints — PsyArXiv, SocArXiv, etc. (no auth)
   academagic:      fetchAcademagic,    // Academagic — Hebrew + English academic PDFs (academagic.co.il, scrape-friendly)
@@ -169,7 +192,8 @@ const SOURCE_NAME_TO_FETCHER = {
   // Academagic — Hebrew + English academic PDFs, no auth, topic/language-triggered.
   enabled.push("academagic");
   if (CONFIG.CORE_API_KEY) enabled.push("core"); else console.log("[harvester] CORE DISABLED — set CORE_API_KEY in server/.env");
-  if (CONFIG.SERPAPI_KEY) enabled.push("googlescholar", "web"); else console.log("[harvester] Google Scholar + SerpAPI web DISABLED — set SERPAPI_KEY in server/.env");
+  // Phase 14H — Google Scholar provider removed (SerpAPI key on this account doesn't grant access; 429 every call).
+  if (CONFIG.SERPAPI_KEY) enabled.push("web"); else console.log("[harvester] SerpAPI web DISABLED — set SERPAPI_KEY in server/.env");
   // LibGen fallback is opt-in via env (paywall-bypass; user reads research/scihub-feasibility.md before enabling)
   const libgenOn = String(CONFIG.ENABLE_LIBGEN_FALLBACK || process.env.ENABLE_LIBGEN_FALLBACK || "").toLowerCase() === "true";
   if (libgenOn) enabled.push("libgen-fallback"); else console.log("[harvester] LibGen fallback DISABLED — set ENABLE_LIBGEN_FALLBACK=true in server/.env to enable");
@@ -233,7 +257,7 @@ function determineDomains(topic) {
   if (CONFIG.CORE_API_KEY) out.push("core");   // CORE covers all academic fields
   out.push("doaj");                            // DOAJ — free, no key, no rate limit
   out.push("semanticscholar");                 // S2 — has its own 429 circuit breaker
-  if (CONFIG.SERPAPI_KEY) out.push("googlescholar"); // Google Scholar via SerpAPI
+  // Phase 14H — Google Scholar removed (no working SerpAPI access).
 
   if (out.length === 0) { out.push("web"); out.push("general"); }
   return [...new Set(out)];
@@ -388,9 +412,61 @@ export async function harvest(prompt, opts = {}) {
         fromCache = true;
       } else {
         content = await fetchPage(item.url, { topic, title: item.title, deepMode });
-        if (content) await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString() });
+        if (content) {
+          await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString() });
+        } else {
+          // Phase 13G — initial fetch returned nothing. Mark as bridge-eligible.
+          // This catches CORE 404s, biomedcentral redirect-loops, etc. that
+          // Phase 10E missed (10E only covered deep-read enrichment failures).
+          item._fetch_failed = true;
+          item._fetch_error = getLastFetchError();   // Phase 18H
+        }
       }
-    } else if (deepMode && content.length < 3000 && PAPER_LIKE_URL.test(item.url || "")) {
+    }
+
+    // Phase 20D — landing-page HTML scrape fallback. Many publishers (PMC,
+    // BMC, Frontiers, PLoS, MDPI, doi.org redirects) serve the full article
+    // body as HTML on the landing page, even when the canonical PDF is gated.
+    // When we got nothing (or only thin abstract-level content) from the PDF
+    // path AND the URL is a known landing host, try the HTML scrape. If it
+    // returns full-text quality (methods/results/discussion present), we treat
+    // it as success and CLEAR the _fetch_failed flag so the manual-bridge
+    // offer no longer asks the user to download what we already have.
+    if (
+      (!content || content.length < 1500) &&
+      isLandingPageHost(item.url || "") &&
+      !item._landing_html_tried
+    ) {
+      item._landing_html_tried = true;
+      try {
+        const scraped = await scrapeLandingPage(item.url, { topic, title: item.title });
+        if (scraped.ok && scraped.text && scraped.length >= 1500) {
+          console.log(`[harvester] landing-html ✓ ${scraped.quality} ${scraped.length}c via ${scraped.landingUrl}`);
+          content = scraped.text;
+          item._content_provenance = `landing-html:${scraped.quality}`;
+          await writeCache(item.url, {
+            url: item.url, content, fetchedAt: new Date().toISOString(),
+            via: "landing-html", quality: scraped.quality
+          });
+          if (scraped.fullText) {
+            // Clear bridge-failure flags — we have the full article from HTML.
+            delete item._fetch_failed;
+            delete item._fetch_error;
+          } else {
+            // Abstract-only: keep _fetch_failed so the bridge still offers
+            // this for manual PDF upload, but downgrade the error category.
+            item._fetch_error = "abstract-only-via-landing-html (full PDF would be richer)";
+          }
+        } else if (scraped.ok) {
+          // Got HTML but it was thin or non-content — leave bridge flags alone.
+          log(`landing-html thin (${scraped.length || 0}c, ${scraped.quality}) for ${item.url}`, "info");
+        }
+      } catch (err) {
+        log(`landing-html scrape threw: ${err.message}`, "warn");
+      }
+    }
+
+    if (deepMode && content && content.length < 3000 && PAPER_LIKE_URL.test(item.url || "")) {
       // Phase 5G — Deep-mode enrichment.
       // Old trigger: only fired when deepText.length > content.length (rarely true since
       // abstracts are dense and full PDFs get sliced to 8K chars after extraction).
@@ -402,8 +478,17 @@ export async function harvest(prompt, opts = {}) {
           content = deepText;
           await writeCache(item.url, { url: item.url, content, fetchedAt: new Date().toISOString(), deep: true });
           console.log(`[harvester] deep-read enrichment ✓ ${item.title?.slice(0, 50) || item.url.slice(0, 50)} → ${deepText.length}c (was ${item.content?.length || 0}c abstract)`);
+        } else {
+          // Phase 10E — deep-read returned nothing/thin; mark for the manual bridge.
+          item._fetch_failed = true;
+          item._fetch_error = getLastFetchError() || "thin content (deep-read enrichment failed)";   // Phase 18H
         }
-      } catch { /* deep enrichment is best-effort; ignore failure */ }
+      } catch (err) {
+        // Phase 10E — fetchPage threw. Article remains at abstract-level content.
+        // Flag so manualBridge.collectBlockedSources can offer it for manual download.
+        item._fetch_failed = true;
+        item._fetch_error = err?.message || "fetch threw";   // Phase 18H
+      }
     }
     // ── PAYWALL FALLBACK CHAIN ──
     // Original URL produced thin/empty content. If we have a DOI, try in order:
@@ -438,16 +523,66 @@ export async function harvest(prompt, opts = {}) {
               item.url = pdfUrl;
               item.domain = safeHost(pdfUrl);
               item.source = `${item.source || "unknown"}+libgen`;
+              // Phase 12G — flag this as low-quality content. Libgen mirrors
+              // often serve ad pages (~3-4KB) instead of the actual paper, but
+              // they pass the >=500 char threshold. Mark these so the manual
+              // bridge can correctly identify them as "still needs the user".
+              item._used_libgen_fallback = true;
+              if (fallback.length < 4000) item._fetch_failed = true;
               await writeCache(pdfUrl, { url: pdfUrl, content, fetchedAt: new Date().toISOString(), via: "libgen" });
-              console.log(`[harvester] libgen-fallback content ✓ ${(fallback.length / 1024).toFixed(1)}KB for doi=${doi}`);
+              console.log(`[harvester] libgen-fallback content ✓ ${(fallback.length / 1024).toFixed(1)}KB for doi=${doi}${fallback.length < 4000 ? " (LOW QUALITY — likely ad page; bridge-eligible)" : ""}`);
             } else {
               console.log(`[harvester] libgen-fallback got URL but fetchPage returned thin content for doi=${doi}`);
+              // Don't unset _fetch_failed — we know the original fetch failed
             }
           }
         }
       }
     }
-    if (!content || content.length < 100) continue;
+    // Phase 20F — alt-source pre-bridge fallback. Last network step before
+    // we declare an article blocked. If primary + landing-html + Unpaywall +
+    // LibGen all failed AND the article has a title we can search by, try
+    // ResearchGate / academia.edu / PLOS / Crossref-OA mirrors. This catches
+    // articles the user often finds manually on those platforms.
+    if (
+      (!content || content.length < 1500) &&
+      item._fetch_failed &&
+      item.title && item.title.length >= 10 &&
+      !item._alt_source_tried
+    ) {
+      item._alt_source_tried = true;
+      try {
+        const alt = await findAltSource({
+          title: item.title,
+          doi: extractDoi(item.url, item.content),
+          originalUrl: item.url,
+          topic
+        });
+        if (alt?.ok) {
+          console.log(`[harvester] alt-source ✓ ${alt.sourceLabel} ${alt.length}c (quality=${alt.quality}): ${alt.sourceUrl}`);
+          content = alt.text;
+          item._content_provenance = `alt-source:${alt.sourceLabel}:${alt.quality}`;
+          if (alt.fullText) {
+            // Full text recovered — clear bridge-failure flags.
+            delete item._fetch_failed;
+            delete item._fetch_error;
+          } else {
+            item._fetch_error = `abstract-only via ${alt.sourceLabel} (full PDF may be richer)`;
+          }
+        }
+      } catch (err) {
+        log(`alt-source threw for "${item.title?.slice(0, 50)}": ${err.message}`, "warn");
+      }
+    }
+
+    // Phase 13G — KEEP articles with _fetch_failed flag even when content is
+    // thin, so the manual bridge can offer them. The analyzer downstream will
+    // produce a thin/failed analysis but the article record reaches the bridge.
+    if ((!content || content.length < 100) && !item._fetch_failed) continue;
+    if (!content || content.length < 100) {
+      // Empty placeholder content for downstream; analyzer will mark quality=failed.
+      content = item.title || "(content unavailable — see manual bridge offer)";
+    }
     out.push({
       url: item.url,
       title: item.title || "(untitled)",
@@ -459,7 +594,11 @@ export async function harvest(prompt, opts = {}) {
       // Phase 5A — propagate the structured citation metadata. Without this,
       // the synthesizer can't build a real citation index (was getting 0 entries
       // from 30 sources because cite was set by fetchers but stripped here).
-      ...(item.cite ? { cite: item.cite } : {})
+      ...(item.cite ? { cite: item.cite } : {}),
+      // Phase 13G — propagate fetch-failure / libgen-fallback flags so the
+      // manual bridge can correctly identify articles that need a manual PDF.
+      ...(item._fetch_failed ? { _fetch_failed: true } : {}),
+      ...(item._used_libgen_fallback ? { _used_libgen_fallback: true } : {})
     });
     if (out.length >= limit) break;
   }
@@ -515,8 +654,14 @@ export async function scanLocalLibrary(topic, opts = {}) {
 // Unauthenticated S2 is limited to ~100 req per 5 min. When a 429 is seen we
 // skip further S2 calls for S2_COOLDOWN_MS. Prevents the harvester from
 // hammering S2 once rate-limited (every prompt was emitting a pointless 429).
-const S2_COOLDOWN_MS = 5 * 60 * 1000;
+// Phase 17G — extended cooldown for the duration of a single deepResearch
+// run (which can take 30-120 minutes on slow hardware). The previous 5-minute
+// window expired mid-run, causing every subsequent prompt to re-hit S2's 429
+// rate limit, log another cooldown, and so on — 8 prompts × 8 cooldowns. A
+// 30-minute window covers a typical thesis run end-to-end.
+const S2_COOLDOWN_MS = 30 * 60 * 1000;       // was 5 * 60 * 1000
 let _s2CooldownUntil = 0;
+export function resetS2Cooldown() { _s2CooldownUntil = 0; }
 
 async function fetchSemanticScholar(query, limit) {
   const kw = extractSearchKeywords(query);
@@ -610,22 +755,50 @@ async function fetchEuropePMC(query, limit) {
       timeout: 12000
     });
     const rows = r.data?.resultList?.result || [];
-    return rows.filter(x => x.abstractText).map(x => ({
-      url: `https://europepmc.org/article/MED/${x.pmid}`,
-      title: x.title,
-      content: `Journal: ${x.journalTitle || ""}\nAbstract: ${(x.abstractText || "").replace(/<[^>]+>/g, "")}`,
-      domain: "europepmc.org",
-      cite: {
-        authors: (x.authorList?.author || []).map(a => `${a.lastName || ""}, ${(a.initials || a.firstName || "").charAt(0)}.`).filter(s => s.length > 3),
-        year: x.pubYear ? parseInt(x.pubYear, 10) : null,
-        title: x.title || "",
-        venue: x.journalTitle || "",
-        volume: x.journalVolume || null,
-        issue: x.issue || null,
-        pages: x.pageInfo || null,
-        doi: x.doi || null
+    return rows.filter(x => x.abstractText).map(x => {
+      // Phase 21 — prefer the PMC full-text PDF URL when one exists. The
+      // EuropePMC search endpoint returns a `pmcid` for open-access articles
+      // and `fullTextUrlList.fullTextUrl[]` with explicit PDF entries. Using
+      // the bare `/article/MED/<pmid>` URL fetches only the landing page,
+      // which means the harvester ends up with abstract-only content and
+      // every europepmc article gets flagged "thin content — bridge needed".
+      //
+      // Priority order:
+      //   1. fullTextUrlList entry where documentStyle="pdf" + availability="Open access"
+      //   2. PMC pdf endpoint built from pmcid:  https://europepmc.org/articles/PMC<id>?pdf=render
+      //   3. landing page (fallback)
+      let chosenUrl = `https://europepmc.org/article/MED/${x.pmid}`;
+      let chosenDomain = "europepmc.org";
+      const ftu = x.fullTextUrlList?.fullTextUrl || [];
+      const pdfEntry = ftu.find(u =>
+        (u.documentStyle || "").toLowerCase() === "pdf" &&
+        /open/i.test(u.availability || "")
+      ) || ftu.find(u => (u.documentStyle || "").toLowerCase() === "pdf");
+      if (pdfEntry?.url) {
+        chosenUrl = pdfEntry.url;
+        try { chosenDomain = new URL(pdfEntry.url).hostname; } catch {}
+      } else if (x.pmcid) {
+        // Render-pdf endpoint serves the actual PDF stream when the article is OA.
+        chosenUrl = `https://europepmc.org/articles/${x.pmcid}?pdf=render`;
       }
-    }));
+      return {
+        url: chosenUrl,
+        title: x.title,
+        content: `Journal: ${x.journalTitle || ""}\nAbstract: ${(x.abstractText || "").replace(/<[^>]+>/g, "")}`,
+        domain: chosenDomain,
+        cite: {
+          authors: (x.authorList?.author || []).map(a => `${a.lastName || ""}, ${(a.initials || a.firstName || "").charAt(0)}.`).filter(s => s.length > 3),
+          year: x.pubYear ? parseInt(x.pubYear, 10) : null,
+          title: x.title || "",
+          venue: x.journalTitle || "",
+          volume: x.journalVolume || null,
+          issue: x.issue || null,
+          pages: x.pageInfo || null,
+          doi: x.doi || null,
+          pmcid: x.pmcid || null
+        }
+      };
+    });
   } catch (err) {
     if (rethrowIfTransient(err, "europepmc", query) === null) return [];
   }
@@ -1155,67 +1328,9 @@ async function fetchViaUnpaywall(doi) {
   }
 }
 
-/**
- * Google Scholar via SerpAPI (engine=google_scholar).
- * Google Scholar itself has no public API and aggressive anti-bot, but SerpAPI
- * provides a reliable wrapper that exposes PDF links via the `resources` field.
- *
- * Returns up to `limit` results, prioritizing entries with a direct PDF link.
- */
-async function fetchGoogleScholar(query, limit) {
-  if (!CONFIG.SERPAPI_KEY) {
-    console.log(`[articleHarvester] GScholar: SERPAPI_KEY not set — skipping`);
-    return [];
-  }
-  const kw = extractSearchKeywords(query);
-  console.log(`[articleHarvester] GScholar: querying "${kw}" (limit ${limit})`);
-  try {
-    const r = await axios.get("https://serpapi.com/search.json", {
-      params: {
-        q: kw,
-        api_key: CONFIG.SERPAPI_KEY,
-        engine: "google_scholar",
-        num: Math.min(limit, 10)
-      },
-      timeout: 15000
-    });
-    const organic = r.data?.organic_results || [];
-    const items = organic.map(x => {
-      // Prefer a direct PDF link surfaced in `resources` — Scholar often
-      // exposes free full-text PDFs hosted on university repositories.
-      const pdfResource = (x.resources || []).find(res => (res.file_format || "").toUpperCase() === "PDF");
-      const pdfUrl = pdfResource?.link;
-      const url = pdfUrl || x.link;
-      if (!url) return null;
-      const authors = (x.publication_info?.authors || []).map(a => a.name).filter(Boolean).join(", ");
-      const snippet = x.snippet || "";
-      return {
-        url,
-        title: x.title || "(untitled)",
-        content: [
-          snippet ? `Abstract: ${snippet}` : "",
-          authors ? `Authors: ${authors}` : "",
-          x.publication_info?.summary ? `Venue: ${x.publication_info.summary}` : ""
-        ].filter(Boolean).join("\n"),
-        domain: pdfUrl ? safeHost(pdfUrl) : "scholar.google.com"
-      };
-    }).filter(Boolean);
-    console.log(`[articleHarvester] GScholar: got ${items.length} results for "${kw}" (${items.filter(i => /\.pdf/i.test(i.url)).length} with direct PDF)`);
-    if (items.length === 0) {
-      // Diagnostic: zero results may indicate query phrasing issue, SerpAPI quota,
-      // or Scholar blocking. Surface enough context to debug "Scholar missing" reports.
-      const rawCount = (r.data?.organic_results || []).length;
-      const errMsg = r.data?.error;
-      console.log(`[harvester] GScholar 0 results — raw organic_results=${rawCount}${errMsg ? ` SerpAPI error: ${errMsg}` : ""}`);
-    }
-    return items;
-  } catch (err) {
-    const status = err?.response?.status;
-    console.log(`[articleHarvester] GScholar error: ${status ? `HTTP ${status}` : err.message} (query="${kw}")`);
-    log(`Google Scholar (SerpAPI) error (query="${kw}"): ${err.message}`, "warn");
-    if (rethrowIfTransient(err, "GScholar", kw) === null) return [];
-  }
-}
+// Phase 14H — fetchGoogleScholar() removed. SerpAPI Google Scholar engine returned
+// HTTP 429 on every call for this account/key. Was wired to the 'googlescholar'
+// provider key (also removed from SOURCE_NAME_TO_FETCHER and determineDomains).
 
 async function fetchSerpResults(query, limit) {
   if (!CONFIG.SERPAPI_KEY) return [];
@@ -1248,6 +1363,15 @@ async function fetchPage(url, opts = {}) {
   const host = safeHost(url).toLowerCase();
   if (KNOWN_HARDBLOCK_HOSTS.has(host)) {
     console.log(`[articleHarvester] fetch skipped (hardblock host: ${host}) — defer to Unpaywall/LibGen: ${short}`);
+    return "";
+  }
+
+  // Phase 17F — short-circuit domains that timed-out earlier in this run.
+  // We don't know whether the previous failure was transient or systemic, but
+  // for harvest purposes one ECONNABORTED hit is enough evidence to skip. The
+  // alternative is 18s timeout × 3 retries × N URLs on the same dead domain.
+  if (isDeadDomain(url)) {
+    console.log(`[articleHarvester] fetch skipped (domain dead this run: ${host}): ${short}`);
     return "";
   }
 
@@ -1291,7 +1415,12 @@ async function fetchPage(url, opts = {}) {
         r = await axios.get(url, {
           timeout: 18000,
           signal: abortCtl.signal,
-          maxRedirects: 4,
+          // Phase 20E — bumped 4 → 20 to match browser behavior. The May CBT
+          // thesis run had bmcpsychiatry.biomedcentral.com PDFs failing with
+          // "Maximum number of redirects exceeded" — those URLs ARE reachable
+          // in a browser. BMC's CDN chains a /track → /counter → /epdf →
+          // /pdf chain that exceeds 4 hops. 20 covers everything we've seen.
+          maxRedirects: 20,
           headers: {
             ...BROWSER_HEADERS,
             "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
@@ -1304,6 +1433,15 @@ async function fetchPage(url, opts = {}) {
       } catch (err) {
         if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED" || /aborted/i.test(err?.message || "")) {
           console.log(`[articleHarvester] fetchPage aborted: ${abortReason} (${short})`);
+        }
+        // Phase 17F — mark domain dead on transport-level timeout/abort. This
+        // covers axios `timeout: 18000` firing AND our adaptive abort firing.
+        // Subsequent URLs on the same host will short-circuit at the top of
+        // fetchPage instead of paying another 18s timeout + retry exp-backoff.
+        if (err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT" ||
+            err?.name === "CanceledError" || err?.code === "ERR_CANCELED" ||
+            /timeout|aborted/i.test(err?.message || "")) {
+          markDeadDomain(url);
         }
         throw err;
       } finally {
@@ -1341,8 +1479,23 @@ async function fetchPage(url, opts = {}) {
   } catch (err) {
     console.log(`[articleHarvester] fetch ✗ ${err.message} (${short})`);
     log(`fetchPage failed (${url}): ${err.message}`, "warn");
+    // Phase 18H — record the last failure reason on a module-scoped slot so
+    // the caller can attach the category to the article record. Cleaner than
+    // changing fetchPage's signature (called from many sites); the slot is
+    // overwritten by every fetchPage call so callers must read immediately
+    // after their own fetchPage await.
+    _lastFetchError = err.message || "unknown";
     return "";
   }
+}
+
+// Phase 18H — module-scoped slot for the most recent fetchPage failure.
+// Read immediately after a fetchPage that returned "" to get the reason.
+let _lastFetchError = null;
+export function getLastFetchError() {
+  const e = _lastFetchError;
+  _lastFetchError = null;
+  return e;
 }
 
 /**

@@ -97,6 +97,16 @@ app.listen(PORT, async () => {
   console.log("🤖 AI AGENT SERVER");
   console.log(`📡 http://localhost:${PORT}`);
   console.log(`📂 Project root: ${PROJECT_ROOT}`);
+  // Phase 20L — surface Ollama-related env knobs at boot so the user can
+  // verify their .env settings are actually loaded (no more guessing
+  // whether OLLAMA_NUM_GPU=30 took effect after a restart).
+  const ollamaEnv = {
+    OLLAMA_NUM_GPU: process.env.OLLAMA_NUM_GPU || "(default 999 — all GPU)",
+    SYNTHESIZER_MODEL: process.env.SYNTHESIZER_MODEL || "(default qwen2.5:7b)",
+    SYNTH_HEAVY_MODEL: process.env.SYNTH_HEAVY_MODEL || "(default = SYNTHESIZER_MODEL)",
+    ANALYZER_TIMEOUT_MS: process.env.ANALYZER_TIMEOUT_MS || "(default 60000)",
+  };
+  console.log(`🦙 Ollama env: ${Object.entries(ollamaEnv).map(([k, v]) => `${k}=${v}`).join(" | ")}`);
   console.log("=".repeat(70) + "\n");
 
   console.time("[boot] loadSkills");
@@ -141,6 +151,12 @@ app.listen(PORT, async () => {
 });
 
 process.on("SIGINT", () => {
-  console.log("\n👋 Shutting down gracefully...");
+  console.log("\n👋 Shutting down gracefully (SIGINT)...");
+  process.exit(0);
+});
+
+// PM2 sends SIGTERM on stop/restart/delete — handle it so pm2 stop doesn't hang.
+process.on("SIGTERM", () => {
+  console.log("\n👋 Shutting down gracefully (SIGTERM)...");
   process.exit(0);
 });

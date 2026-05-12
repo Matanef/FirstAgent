@@ -152,7 +152,8 @@ function isCompositionInstruction(text) {
  * Returns: { intent, to, message, filename, isComposeRequest, recipientName }
  */
 async function detectWhatsAppIntent(text) {
-  const lower = text.toLowerCase();
+  try {
+    const lower = text.toLowerCase();
 
   // ── SELF-SEND SHORT-CIRCUIT ──
   // "send me a whatsapp saying hi" / "שלח לי הודעה אומרת היי"
@@ -351,7 +352,11 @@ async function detectWhatsAppIntent(text) {
     };
   }
 
-  return { intent: "unknown", to: null, message: null, filename: null };
+return { intent: "unknown", to: null, message: null, filename: null };
+  } catch (error) {
+    console.error("❌ [WhatsApp] Error in detectWhatsAppIntent:", error.message);
+    return { intent: "error", to: null, message: null, filename: null, error: error.message };
+  }
 }
 
 // ============================================================

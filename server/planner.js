@@ -964,6 +964,20 @@ if (
     }];
   }
 
+// ──────────────────────────────────────────────────────────
+  // EXPLICIT TOOL OVERRIDE (GOD MODE)
+  // ──────────────────────────────────────────────────────────
+  // Updated Regex: Makes the word "tool" optional, so "use imageGen" works just as well as "use the imageGen tool"
+  const explicitToolMatch = lower.match(/\buse\s+(?:the\s+)?([a-z0-9_]+)(?:\s+tool)?\b/i);
+  
+  if (explicitToolMatch) {
+    const requestedTool = resolveToolName(explicitToolMatch[1], listAvailableTools());
+    if (requestedTool) {
+      console.log(`[planner] ⚡ God Mode override: forcing "${requestedTool}"`);
+      return [{ tool: requestedTool, input: trimmed, context: {}, reasoning: "explicit_god_mode_override" }];
+    }
+  }
+
   // ──────────────────────────────────────────────────────────
   // DECLARATIVE ROUTING TABLE (evaluated first — priority-based)
   // See ROUTING_TABLE definition above for all rules and priorities.

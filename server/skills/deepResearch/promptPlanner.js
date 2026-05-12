@@ -6,11 +6,15 @@ import { llm } from "../../tools/llm.js";
 const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
 
 // Tier → number of prompts (matches the plan).
+// Phase 20N — `thesis-deep` matches `thesis` here (8 main-pipeline prompts).
+// The "deep" part comes from the supplementary open-questions harvest that
+// runs AFTER the main 8 prompts complete, not from more primary prompts.
 const TIER_COUNTS = {
   article: 4,
   indepth: 5,
   research: 5,
-  thesis: 8
+  thesis: 8,
+  "thesis-deep": 8
 };
 
 const ANGLES = [
@@ -41,7 +45,7 @@ function safeJsonParse(text) {
  * @param {string} args.topic
  * @param {object} args.extracted          keywordExtractor.extract() result
  * @param {Array<{slug,subject}>} args.relatedMatches  subjectMatcher.rank() top-N
- * @param {"article"|"indepth"|"research"|"thesis"} args.tier
+ * @param {"article"|"indepth"|"research"|"thesis"|"thesis-deep"} args.tier
  * @returns {Promise<Array<{id:string, query:string, angle:string}>>}
  */
 export async function build({ topic, extracted, relatedMatches = [], tier = "article" }) {

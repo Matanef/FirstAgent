@@ -216,8 +216,8 @@ Provide:
 
 Be practical and specific. Focus on improvements that make the agent smarter, more reliable, or more capable.`;
 
-  try {
-    const response = await llm(promptConfig);
+try {
+    const response = await llm(promptConfig, { model: "qwen2.5:7b", skipPersona: true, skipKnowledge: true });
     return response?.data?.text || "Analysis failed.";
   } catch (err) {
     return `Analysis error: ${err.message}`;
@@ -322,7 +322,7 @@ Format your response clearly with:
 2. INTEGRATION PLAN
 3. PRIORITY`;
 
-        const response = await llm(prompt);
+        const response = await llm(prompt, { model: "qwen2.5:7b", skipPersona: true, skipKnowledge: true });
         const analysis = response?.data?.text || "Analysis complete.";
         
         const html = generateScannerHTML(`Intelligence: ${repoObj.name}`, `<h4 style="margin-top: 0; color: #1d9bf0;">Repository Analysis</h4>\n${analysis}`, [repoObj]);

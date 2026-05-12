@@ -11,8 +11,73 @@ import { PROJECT_ROOT } from "../utils/config.js";
 // Global state to keep the processes alive across tool executions
 let activeServer = null;
 let activeTunnelUrl = null;
-let ngrokProcess = null; 
+let ngrokProcess = null;
 const PORT = 3000; // Port 5055 avoids common Windows UDP/TCP collisions
+
+// Phase 18G — orphan ngrok cleanup at boot. If a previous Lanou instance
+// crashed or was killed without running its exit handlers (Windows kill,
+// hard reboot, PM2 god-process desync), an `ngrok.exe` may still be running
+// and holding port 4040 (its API) or other resources. On the *next* boot we
+// scan for orphan ngrok processes and kill them BEFORE webhookTunnel tries
+// to start its own ngrok — preventing the stuck-PM2-restart cycle the user
+// hit repeatedly in Phase 17.
+function killOrphanNgrokAtBoot() {
+  if (process.platform !== "win32") {
+    // Best-effort POSIX cleanup: pkill is harmless if no match
+    try { execSync("pkill -f ngrok 2>/dev/null", { stdio: "ignore" }); } catch {}
+    return;
+  }
+  try {
+    const out = execSync(
+      `tasklist /FI "IMAGENAME eq ngrok.exe" /FO CSV /NH`,
+      { encoding: "utf8" }
+    );
+    if (!out || /INFO: No tasks/i.test(out)) return;
+    const pids = [...out.matchAll(/"ngrok\.exe","(\d+)"/g)].map(m => m[1]);
+    if (pids.length === 0) return;
+    console.warn(`[webhookTunnel] orphan check: found ${pids.length} stray ngrok process(es) from a prior run — cleaning up`);
+    for (const pid of pids) {
+      try {
+        execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+      } catch { /* already dead or access denied — skip */ }
+    }
+    console.warn(`[webhookTunnel] orphan check: cleanup complete`);
+  } catch {
+    // tasklist not available or failed — silently skip; we'll still try to
+    // bind, and the EADDRINUSE retry path covers the worst case.
+  }
+}
+// Run immediately at module load — the first thing Lanou does for tunnels.
+killOrphanNgrokAtBoot();
+
+// Windows: kill the *entire* ngrok process tree on parent exit. With
+// `shell: true` + `detached: true`, .kill() only terminates the cmd.exe wrapper —
+// ngrok.exe itself survives as an orphan, holds stdio handles, and causes PM2
+// to mark the (dead) parent as "errored" while it's actually still listed as
+// PID-alive. taskkill /F /T walks the whole tree.
+function killNgrokTree() {
+  if (!ngrokProcess || !ngrokProcess.pid) return;
+  try {
+    if (process.platform === "win32") {
+      execSync(`taskkill /F /T /PID ${ngrokProcess.pid}`, { stdio: "ignore" });
+    } else {
+      process.kill(-ngrokProcess.pid);  // negative = process group
+    }
+  } catch { /* already dead */ }
+  ngrokProcess = null;
+}
+
+// Register exit hooks once at module load so PM2 stop/restart cleans up.
+let _exitHooksRegistered = false;
+function registerExitHooks() {
+  if (_exitHooksRegistered) return;
+  _exitHooksRegistered = true;
+  const cleanup = () => { try { killNgrokTree(); } catch {} };
+  process.on("exit", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+}
+registerExitHooks();
 
 export async function webhookTunnel(request) {
   const text = typeof request === "string" ? request : (request?.text || request?.input || "");
@@ -23,10 +88,7 @@ export async function webhookTunnel(request) {
     if (lowerText.match(/(stop|close|kill|shutdown)/)) {
       console.log("🛑 Shutting down webhook tunnel and server...");
       
-      if (ngrokProcess) {
-        ngrokProcess.kill();
-        ngrokProcess = null;
-      }
+      killNgrokTree();
       
       if (activeServer) {
         activeServer.close();
@@ -126,27 +188,18 @@ if (!isStatusOnly) {
             console.log(`[Webhook] Received ${req.method} from ${req.headers['user-agent'] || 'Unknown'}`);
           }
 
-          // ── BEGIN DYNAMIC MODEL ROUTING ──
+// ── BEGIN DYNAMIC MODEL ROUTING ──
+          let targetModel = "aya-expanse:8b"; // Safe, multilingual default for family (fixes broken Hebrew)
           if (hasMessage) {
             try {
               const incomingPhoneNumber = payload.body.entry[0].changes[0].value.messages[0].from;
               const { getUserByPhone } = await import("../utils/userProfiles.js");
               const profile = await getUserByPhone(incomingPhoneNumber);
 
-              // Default to the standard, safe model for everyone (including your mother)
-              let targetModel = "llama3"; 
-
               // Switch to the uncensored model ONLY if the sender is the owner
               if (profile && profile.role === "owner") {
                 targetModel = "dolphin-llama3:latest"; 
               }
-
-              // Inject the chosen model into the payload body
-              payload.body.targetModel = targetModel;
-              
-              // Re-serialize the body so the proxy forwards the injected variable
-              body = JSON.stringify(payload.body);
-              
               console.log(`🧠 [Model Route] Assigned ${targetModel} to incoming message from ${incomingPhoneNumber}`);
             } catch (err) {
               console.warn(`⚠️ [Model Route] Failed to assign model: ${err.message}`);
@@ -155,12 +208,13 @@ if (!isStatusOnly) {
           // ── END DYNAMIC MODEL ROUTING ──
 
           // ── PROXY to main Express server's /webhook/whatsapp route ──
-          // The actual agent pipeline (message parsing, tool routing, auto-reply)
-          // lives in the main server at port 3000. Forward the webhook there.
           const mainPort = process.env.PORT || 3000;
           
-          // Grab the security signature from Meta so the main server doesn't reject it
-          const proxyHeaders = { "Content-Type": "application/json" };
+          const proxyHeaders = { 
+            "Content-Type": "application/json",
+            "x-target-model": targetModel // Inject the model via header!
+          };
+          
           if (req.headers["x-hub-signature-256"]) {
             proxyHeaders["x-hub-signature-256"] = req.headers["x-hub-signature-256"];
           }
@@ -169,7 +223,7 @@ if (!isStatusOnly) {
             const proxyRes = await fetch(`http://127.0.0.1:${mainPort}/webhook/whatsapp`, {
               method: "POST",
               headers: proxyHeaders,
-              body: body,
+              body: body, // Send the unmodified original body
               signal: AbortSignal.timeout(30000)
             });
             if (!proxyRes.ok) {
@@ -187,7 +241,38 @@ if (!isStatusOnly) {
     });
 
     activeServer.on('error', (e) => console.error("🚨 [webhookTunnel] Server Error:", e.message));
-    activeServer.listen(PORT);
+
+    // Phase 17I — listen() with one EADDRINUSE retry. After pm2 restart the
+    // previous process's socket may sit in TIME_WAIT for a few seconds, or a
+    // leftover process may still hold the port. A single 1s retry resolves
+    // both cases without crashing the agent. If the second attempt also
+    // fails, log and continue without the tunnel — agent stays usable.
+    await new Promise((resolve) => {
+      let retried = false;
+      const attemptListen = () => {
+        const onListenError = (e) => {
+          if (e?.code === "EADDRINUSE" && !retried) {
+            retried = true;
+            console.warn(`[webhookTunnel] port ${PORT} in use, retrying once in 1s…`);
+            activeServer.removeListener("error", onListenError);
+            setTimeout(attemptListen, 1000);
+          } else if (e?.code === "EADDRINUSE") {
+            console.error(`[webhookTunnel] port ${PORT} still in use after retry — skipping tunnel startup`);
+            activeServer.removeListener("error", onListenError);
+            resolve();   // graceful skip, agent stays alive
+          } else {
+            // Non-EADDRINUSE error — let the existing on('error') handler log it
+            resolve();
+          }
+        };
+        activeServer.once("error", onListenError);
+        activeServer.listen(PORT, () => {
+          activeServer.removeListener("error", onListenError);
+          resolve();
+        });
+      };
+      attemptListen();
+    });
 
     // 6. OS-Level Sweep: Kill any existing ngrok processes to prevent 'tunnel already exists'
     try {
@@ -209,8 +294,17 @@ if (!isStatusOnly) {
     // Set the token
     execSync(`${npxCmd} ngrok config add-authtoken ${token}`, { stdio: 'ignore' });
 
-    // Spawn the tunnel process with { shell: true } for Windows compatibility
-    ngrokProcess = spawn(npxCmd, ['ngrok', 'http', PORT.toString()], { shell: true });
+    // Spawn the tunnel process with { shell: true } for Windows compatibility.
+    // detached + unref: ngrok runs in its own process group so stdio pipes don't
+    // tether the parent — fixes PM2 desync on Windows where shell-spawned children
+    // outlive the parent and keep PM2 thinking the parent is "errored, uptime 0"
+    // while the actual node process is still serving (orphan-child desync bug).
+    ngrokProcess = spawn(npxCmd, ['ngrok', 'http', PORT.toString()], {
+      shell: true,
+      detached: true,
+      stdio: 'ignore',
+    });
+    ngrokProcess.unref();
 
     // 8. Polling Logic: Retrieve the Public URL from the Ngrok local API
     let urlFound = false;
@@ -297,7 +391,7 @@ if (!isStatusOnly) {
   } catch (error) {
     // Cleanup on failure
     if (activeServer) { activeServer.close(); activeServer = null; }
-    if (ngrokProcess) { ngrokProcess.kill(); ngrokProcess = null; }
+    killNgrokTree();
     
     console.error("🚨 [webhookTunnel] RAW ERROR:", error.message);
     return {
