@@ -72,6 +72,12 @@ function App() {
   const [toneExpanded, setToneExpanded] = useState(false);
   const [toneValue, setToneValue] = useState(1);
 
+  // Phase 16A — default to "auto" (no injection). The previous "local" default
+  // forced [MODEL:local] onto every message — including thesis runs and chat
+  // — which polluted the topic and caused the keyword extractor to treat
+  // "MODEL local" as research content. With "auto" the prefix is only added
+  // when the user explicitly picks a non-auto engine.
+  const [imageModelPref, setImageModelPref] = useState("auto");
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
   
@@ -176,8 +182,14 @@ async function sendMessage() {
     setError(null);
 
     try {
+      // Phase 16A — only inject [MODEL:xxx] when the user explicitly picked
+      // local or cloud. Default "auto" means no injection so the message
+      // reaches the server unchanged (no topic pollution for non-imageGen tools).
+      const messageWithDirective = (imageModelPref && imageModelPref !== "auto")
+        ? `[MODEL:${imageModelPref}] ` + userMsg.content
+        : userMsg.content;
       const payload = {
-        message: userMsg.content,
+        message: messageWithDirective,
         conversationId: activeId
       };
       if (fileIds.length > 0) payload.fileIds = fileIds;
@@ -459,7 +471,7 @@ function handleKeyDown(e) {
       <div className="chat-container">
         <div className="chat-header">
           <h1>🤖 AI Agent</h1>
-          <div className="header-controls">
+<div className="header-controls">
             {metadata && (
               <div className="metadata">
                 <span>⏱️ {metadata.executionTime ?? 0}ms</span>
@@ -467,6 +479,30 @@ function handleKeyDown(e) {
                 <span>📊 {metadata.steps ?? 0} steps</span>
               </div>
             )}
+
+            {/* ADD THIS NEW DROPDOWN BLOCK */}
+            <div className="model-control-wrapper">
+              <select 
+                value={imageModelPref} 
+                onChange={(e) => setImageModelPref(e.target.value)}
+                style={{ 
+                  marginRight: '10px', 
+                  padding: '6px 12px', 
+                  borderRadius: '20px', 
+                  background: '#2a2a36', 
+                  color: '#fff', 
+                  border: '1px solid #444',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+                title="Select Image Generation Engine (Auto = no preference, no prefix injected)"
+              >
+                <option value="auto">🌀 Auto (no preference)</option>
+                <option value="local">🖥️ Local GPU (ComfyUI)</option>
+                <option value="cloud">☁️ Cloud (Pollinations)</option>
+              </select>
+            </div>
+            {/* END OF NEW DROPDOWN BLOCK */}
 
             {/* Tone Control */}
             <div className="tone-control-wrapper">

@@ -12,7 +12,7 @@
 //   if (shouldOfferBridge(blocked, tier)) {
 //     await saveBridgeState(slug, { promptResults, ... });
 //     const text = renderBridgeMessage(blocked, slug);
-//     await setPendingQuestion(conversationId, { ... ttlMs: 60*60*1000 });
+//     await setPendingQuestion(conversationId, { ... ttlMs: 0 });   // 0 = never expire
 //     return { awaitingUser: true, ... };
 //   }
 //
@@ -40,7 +40,7 @@ const BRIDGE_STATE_FILE  = ".bridge-state.json";
 const PENDING_DIR_NAME   = "_pending";
 const MIN_THIN_CONTENT   = 1500;     // chars — below this we suspect we got abstract-only
 const MIN_BLOCKED_TO_OFFER = 2;      // don't interrupt for one isolated 403
-const BRIDGE_ELIGIBLE_TIERS = new Set(["research", "thesis"]);
+const BRIDGE_ELIGIBLE_TIERS = new Set(["research", "thesis", "thesis-deep"]);
 
 // ── eligibility scoring ────────────────────────────────────────────────────
 /**
@@ -114,7 +114,10 @@ export function collectBlockedSources(promptResults) {
           title: a.frontmatter?.title || a.article?.title || "(untitled)",
           url: a.article.url,
           savePath: `${PENDING_DIR_NAME}/p${promptIndex}-article-${i + 1}.pdf`,
-          expectedFormat: "pdf"
+          expectedFormat: "pdf",
+          // Phase 18H — propagate failure reason for diagnostic UX
+          fetchError: a.article?._fetch_error || null,
+          usedLibgen: a.article?._used_libgen_fallback === true,
         });
       }
     }
@@ -148,6 +151,24 @@ export function shouldOfferBridge(blocked, tier, override = null) {
   return blocked.length >= MIN_BLOCKED_TO_OFFER;
 }
 
+// Phase 18H — map a raw fetchPage error message to a human-friendly category
+// + actionable hint, so the bridge offer tells the user what to expect when
+// they try to grab the file manually.
+function categorizeFetchError(rawError, usedLibgen) {
+  if (!rawError && usedLibgen) return { label: "libgen ad-page (real PDF needed)", hint: "free-PDF mirror returned a tracker page" };
+  if (!rawError) return { label: "thin content", hint: "fetched but content too short to use" };
+  const e = String(rawError).toLowerCase();
+  if (/status code 403|http 403|forbidden/.test(e)) return { label: "HTTP 403 paywall", hint: "publisher login likely required" };
+  if (/status code 401/.test(e)) return { label: "HTTP 401 auth required", hint: "credentialed access needed" };
+  if (/status code 404|http 404|not found/.test(e)) return { label: "HTTP 404 not found", hint: "URL has moved or been removed" };
+  if (/status code 429/.test(e)) return { label: "HTTP 429 rate-limited", hint: "try again later from a different IP" };
+  if (/maximum number of redirects/.test(e)) return { label: "redirect loop", hint: "publisher anti-scraping; open in browser instead" };
+  if (/timeout|econnaborted|etimedout/.test(e)) return { label: "timeout", hint: "host unresponsive; try a mirror or alternative URL" };
+  if (/econnreset|enotfound|econnrefused/.test(e)) return { label: "network unreachable", hint: "host down or DNS failure" };
+  if (/status code 5\d\d|http 5\d\d/.test(e)) return { label: "server error", hint: "publisher-side issue; retry later" };
+  return { label: rawError.slice(0, 60), hint: "" };
+}
+
 // ── presentation ───────────────────────────────────────────────────────────
 /**
  * Render the user-facing message listing blocked sources with save-as paths.
@@ -167,6 +188,11 @@ export function renderBridgeMessage(blocked, slug, vaultRelativePath) {
     for (const b of groups.article) {
       const titleShort = b.title.length > 80 ? b.title.slice(0, 77) + "…" : b.title;
       lines.push(`- Prompt ${b.promptIndex}, Article ${b.articleIndex}: *${titleShort}*`);
+      // Phase 18H — show the diagnosed failure reason so the user knows what
+      // happened on the auto-fetch attempt and whether manual download is
+      // likely to succeed (e.g., a 403 paywall needs login; a 404 is dead).
+      const cat = categorizeFetchError(b.fetchError, b.usedLibgen);
+      lines.push(`  Why blocked: ${cat.label}${cat.hint ? ` — ${cat.hint}` : ""}`);
       lines.push(`  URL: <${b.url}>`);
       lines.push(`  Save as: \`${b.savePath}\``);
     }
@@ -184,7 +210,9 @@ export function renderBridgeMessage(blocked, slug, vaultRelativePath) {
     lines.push("");
   }
 
-  lines.push(`Reply **"continue"** when ready (60-min window), or **"skip"** to proceed without these.`);
+  lines.push(`Reply **"continue"** when ready (no time limit — take as long as you need), or **"skip"** to proceed without these.`);
+  lines.push(``);
+  lines.push(`💡 You can rename the PDFs however you like — when you reply "continue", I'll match files to slots by content (title in the PDF), not by filename.`);
   return lines.join("\n");
 }
 
@@ -358,38 +386,45 @@ export async function scanAndAttach(slug, blocked) {
   }
   const dirSet = new Set(dirEntries.map(f => f.toLowerCase()));
 
+  // Phase 21 — content-based matching for renamed PDFs.
+  // The user may have renamed/reorganised the downloaded files (especially
+  // common when 30+ paywalled PDFs are downloaded across multiple sessions).
+  // Build a single content fingerprint per file in _pending/ so we can match
+  // by what's INSIDE the PDF rather than its filename.
+  //
+  // Strategy:
+  //   pass 1: try exact-filename match (cheap, no PDF parsing)
+  //   pass 2: for unmatched expected entries, fuzzy-match the entry title
+  //           against the first ~3000 chars of each unclaimed PDF
+  const claimedFiles = new Set();   // lowercase filenames that have been bound
   const out = [];
+  const needsContentMatch = [];     // entries that fell through pass 1
+
+  // ── Pass 1: exact filename match (preserves existing behaviour) ───────────
   for (const entry of blocked) {
     const fileName = path.basename(entry.savePath);
-    if (!dirSet.has(fileName.toLowerCase())) {
-      out.push({ entry, exists: false });
+    const fkey = fileName.toLowerCase();
+    if (!dirSet.has(fkey)) {
+      // PDF entries are eligible for content-match in pass 2.
+      // CSV/XLSX datasets stay strict — column structure matters more than title.
+      if (entry.expectedFormat === "pdf") {
+        needsContentMatch.push(entry);
+      } else {
+        out.push({ entry, exists: false });
+      }
       continue;
     }
+    claimedFiles.add(fkey);
     const fullPath = path.join(dir, fileName);
     try {
       if (entry.expectedFormat === "pdf") {
-        // Use the existing PDF text extractor
         const text = await extractPdfText(fullPath);
-        out.push({
-          entry,
-          exists: true,
-          attachedContent: text,
-          attachedBuffer: null,
-          attachedFormat: "pdf"
-        });
+        out.push({ entry, exists: true, attachedContent: text, attachedBuffer: null, attachedFormat: "pdf" });
       } else {
-        // CSV/TSV/JSON/XLSX — read as buffer, let datasetHarvester.parseByFormat handle it
         const buffer = await fs.readFile(fullPath);
         const text = (entry.expectedFormat === "xlsx" || entry.expectedFormat === "xls")
-          ? null
-          : buffer.toString("utf8");
-        out.push({
-          entry,
-          exists: true,
-          attachedContent: text,
-          attachedBuffer: buffer,
-          attachedFormat: entry.expectedFormat
-        });
+          ? null : buffer.toString("utf8");
+        out.push({ entry, exists: true, attachedContent: text, attachedBuffer: buffer, attachedFormat: entry.expectedFormat });
       }
       log(`attached ${fileName} → prompt=${entry.promptIndex} ${entry.kind}=${entry.articleIndex || entry.datasetIndex}`, "info");
     } catch (err) {
@@ -397,12 +432,106 @@ export async function scanAndAttach(slug, blocked) {
       out.push({ entry, exists: false, error: err.message });
     }
   }
+
+  // ── Pass 2: content-based match for unclaimed PDFs ────────────────────────
+  if (needsContentMatch.length > 0) {
+    const unclaimedPdfs = dirEntries.filter(f => {
+      if (claimedFiles.has(f.toLowerCase())) return false;
+      return /\.pdf$/i.test(f);
+    });
+    if (unclaimedPdfs.length === 0) {
+      log(`scanAndAttach: ${needsContentMatch.length} entries need content-match but no unclaimed PDFs in _pending/`, "info");
+      for (const entry of needsContentMatch) out.push({ entry, exists: false });
+    } else {
+      log(`scanAndAttach: pass-2 content-match — ${needsContentMatch.length} unmatched entries vs ${unclaimedPdfs.length} unclaimed PDFs`, "info");
+      // Extract content once per file
+      const fileFingerprints = [];
+      for (const f of unclaimedPdfs) {
+        const fp = path.join(dir, f);
+        try {
+          const text = await extractPdfText(fp);
+          fileFingerprints.push({ file: f, fullPath: fp, text: text || "", head: (text || "").slice(0, 3000) });
+        } catch (err) {
+          log(`scanAndAttach: extract failed for ${f} (${err.message})`, "warn");
+          fileFingerprints.push({ file: f, fullPath: fp, text: "", head: "" });
+        }
+      }
+      // Score every (entry × file) pair, then greedy-pick best matches
+      const scored = [];
+      for (const entry of needsContentMatch) {
+        for (const fp of fileFingerprints) {
+          if (!fp.head || fp.head.length < 200) continue;   // empty/scanned PDFs ineligible
+          const score = titleMatchScore(entry.title, fp.head);
+          if (score >= 0.45) scored.push({ entry, fp, score });
+        }
+      }
+      scored.sort((a, b) => b.score - a.score);
+      const matchedEntries = new Set();
+      const matchedFiles = new Set();
+      for (const pair of scored) {
+        if (matchedEntries.has(pair.entry)) continue;
+        if (matchedFiles.has(pair.fp.file)) continue;
+        matchedEntries.add(pair.entry);
+        matchedFiles.add(pair.fp.file);
+        log(`content-match ✓ "${pair.entry.title.slice(0, 50)}…" → ${pair.fp.file} (score=${pair.score.toFixed(2)})`, "info");
+        out.push({
+          entry: pair.entry,
+          exists: true,
+          attachedContent: pair.fp.text,
+          attachedBuffer: null,
+          attachedFormat: "pdf",
+          _matchedByContent: true,
+          _matchedFile: pair.fp.file
+        });
+      }
+      // Any entry that never matched anything
+      for (const entry of needsContentMatch) {
+        if (!matchedEntries.has(entry)) out.push({ entry, exists: false });
+      }
+    }
+  }
   return out;
+}
+
+/**
+ * Score how strongly a target title appears in extracted PDF text.
+ * Returns 0..1. Tokenises both sides on word boundaries, lowercases,
+ * filters trivial stopwords, and computes recall (fraction of title
+ * tokens present in the PDF head). Phrase bonus for adjacent token
+ * pairs that appear consecutively in the PDF.
+ */
+function titleMatchScore(title, pdfHead) {
+  if (!title || !pdfHead) return 0;
+  const STOPWORDS = new Set([
+    "the","a","an","of","in","on","for","to","and","or","with","by","from",
+    "is","are","be","as","at","this","that","its","using","study","analysis",
+    "vs","via","into","between","among","over","under","among"
+  ]);
+  const normalise = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const titleNorm = normalise(title);
+  const headNorm = normalise(pdfHead);
+  const titleTokens = titleNorm.split(" ").filter(t => t.length >= 3 && !STOPWORDS.has(t));
+  if (titleTokens.length < 2) return 0;
+  const headTokens = new Set(headNorm.split(" "));
+  let hits = 0;
+  for (const t of titleTokens) if (headTokens.has(t)) hits++;
+  const recall = hits / titleTokens.length;
+  // Bonus: if 3+ consecutive title tokens appear in the head verbatim, big lift.
+  let phraseBonus = 0;
+  for (let n = Math.min(6, titleTokens.length); n >= 3; n--) {
+    for (let i = 0; i <= titleTokens.length - n; i++) {
+      const phrase = titleTokens.slice(i, i + n).join(" ");
+      if (headNorm.includes(phrase)) { phraseBonus = 0.25; break; }
+    }
+    if (phraseBonus) break;
+  }
+  return Math.min(1, recall + phraseBonus);
 }
 
 export const _internals = {
   isArticleBlocked,
   isDatasetBlocked,
+  titleMatchScore,
   MIN_THIN_CONTENT,
   MIN_BLOCKED_TO_OFFER,
   BRIDGE_ELIGIBLE_TIERS,

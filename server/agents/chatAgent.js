@@ -388,7 +388,8 @@ async function resolveWithTools(message, options, recentTurns) {
       conversationId: options.conversationId,
       clientIp: options.clientIp,
       onStep: options.onStep,
-      signal: options.signal
+      signal: options.signal,
+      resolvedPending: options.resolvedPending || null,    // Phase 17D
     });
   }
   // ── TOOL-INTERCEPT RESUME (Phase 3) ───────────────────────
@@ -404,38 +405,125 @@ async function resolveWithTools(message, options, recentTurns) {
   }
   // interceptResume?.yes_no === "yes" → fall through normally (skip intercept check below)
 
-  // ── AMBIGUITY CLARIFICATION RESUME (Phase 4) ──────────────
-  // If the user just answered a clarification question, act on their choice.
-  if (options.resolvedPending?._skill === "__ambiguity_clarification__") {
-    const choice = options.resolvedPending.clarification_choice;
-    console.log(`[chatAgent] Ambiguity clarification resumed: choice="${choice}"`);
 
-    // Log as a clarification_resolved correction so routing learns from it
-    try {
-      await logCorrection(
-        { type: "clarification_resolved", correctTool: choice === "search" ? "search" : (choice === "tool" ? "llm" : null), message },
-        { previousToolUsed: null, previousUserMessage: options.resolvedPending._originalRequest }
-      );
-    } catch { /* non-critical */ }
+// ── SLOT-FILLING RESUME (Global Clarification) ──────────────
+  let bypassInterceptor = false; // Flag to skip re-evaluating the stitched query
+  
+  const isSlotInterceptor = options.resolvedPending?._skill === "__slot_interceptor__" || options.resolvedPending?.skill === "__slot_interceptor__";
+  if (isSlotInterceptor) {
+    const req = options.resolvedPending._originalRequest || options.resolvedPending.originalRequest || {};
+    const plannedTool = req.plannedTool || "search";
+    
+    // Look for the user's answer
+    const query = options.resolvedPending.answer || options.resolvedPending.text || options.resolvedPending.missing_slot_search_query || "";
 
-    if (choice === "chat") {
-      // User wants to chat — skip tools entirely
-      return null;
+    if (query) {
+      // Extract the topic directly from the root of the pending state, fallback to req
+      const savedTopic = options.resolvedPending.coreTopic || req.coreTopic || "";
+      const baseSubject = savedTopic ? `${savedTopic} ` : "";
+      const finalQuery = `${baseSubject}${query}`.trim();
+      
+      console.log(`[chatAgent] Slot filled! Resuming ${plannedTool} with query: "${finalQuery}"`);
+      // Rewrite the message so it seamlessly passes through the pipeline
+      message = `${plannedTool} for ${finalQuery}`;
+      
+      options.resolvedPending = null; 
+      bypassInterceptor = true; // 👈 CRITICAL: Tell the system to skip the interceptor this turn!
+    } else {
+      console.log(`[chatAgent] CRITICAL: Slot interceptor failed to find the query.`);
     }
-    if (choice === "search") {
-      // Prepend "search for:" so the routing table's search rule fires cleanly,
-      // but ONLY if the original message doesn't already lead with a search verb —
-      // otherwise we double up ("search for: search for information").
-      if (!/^\s*(search|look\s+up|find|lookup|google)\b/i.test(message)) {
-        message = `search for: ${message}`;
-      }
-    }
-    // choice === "tool" → fall through, let LLM decomposer figure it out
   }
 
   console.log(`[chatAgent:probe] entering classifyIntentWithRoutingOverride`);
   let classification = await classifyIntentWithRoutingOverride(message, recentTurns, options.fileIds);
   console.log(`[chatAgent] Intent classification: mode=${classification.mode}, confidence=${classification.confidence.toFixed(2)}, reason=${classification.reason}`);
+  
+  // 🚀 NEW: THE SILENT ROUTER (Moved UP to catch active chat overrides)
+  if (!interceptResume && !options.resolvedPending && classification.confidence < 0.6) {
+    const trimmed = message.trim();
+    const lower = trimmed.toLowerCase();
+    
+    // Check if the routing table is highly confident despite the classifier
+    let hasStrongRoutingMatch = false;
+    try {
+      const { evaluateRoutingTable } = await import("../routing/index.js");
+      const peek = await evaluateRoutingTable(lower, trimmed, {});
+      if (peek?.[0]?.priority >= 55) hasStrongRoutingMatch = true;
+    } catch (err) {}
+
+    const hasTaskVerb = /\b(search|find|look\s+up|send|email|whatsapp|create|generate|build|code|review|analyze|schedule|remind|list|show|open|run|execute|compile|deploy|write|draft)\b/i.test(lower);
+    const hasWhQuestion = /^\s*(how|why|when|where|what|who|which)\b/i.test(trimmed) || /\?\s*$/.test(trimmed);
+    const REACTIVE_RE = /^\s*(well\s+)?(that(?:'s| was| is)?|this\s+(?:is|was)|wow|whoa|haha|lol|ok(?:ay)?|cool|nice|sweet|amazing|awesome|impressive|surprising|interesting|fascinating|got\s+it|makes\s+sense|fair\s+enough|fair|right|exactly|true|indeed|yeah|yep|yes|no|nope|sure|thanks?|thank\s+you|appreciate|good\s+(job|one|stuff|point))\b/i;
+    const looksConversational = REACTIVE_RE.test(trimmed) || (trimmed.length < 80 && !hasTaskVerb && !hasWhQuestion);
+
+    if (!hasStrongRoutingMatch && !looksConversational) {
+      console.log(`[chatAgent] Ambiguous intent detected. Pinging Gemma 3 Silent Router...`);
+
+      const routerPrompt = `You are a high-speed routing AI. 
+The user's message is ambiguous, short, or missing a clear command verb. 
+Read the message and decide which tool is the BEST fit.
+
+AVAILABLE TOOLS:
+- FINANCE: For stock prices, markets, tickers, company financials (e.g., AAPL, MSFT, P/E ratio).
+- SHOPPING: For buying products, finding deals, or comparing prices of consumer goods.
+- WEATHER: For forecasts, temperature, rain.
+- CALENDAR: For scheduling, meetings, availability.
+- SPORTS: For game scores, match schedules, sports teams.
+- YOUTUBE: For playing videos or watching tutorials.
+- SEARCH: For general knowledge, trivia, news, or looking up facts.
+- CHAT: If it's just casual conversation, an opinion, or a question about YOU.
+
+Message: "what's AAPL price?"
+Tool: FINANCE
+
+Message: "how much is a new iphone?"
+Tool: SHOPPING
+
+Message: "is it raining?"
+Tool: WEATHER
+
+Message: "who is the president?"
+Tool: SEARCH
+
+Message: "that's crazy lol"
+Tool: CHAT
+
+Message: "${trimmed}"
+Tool:`;
+
+      try {
+        const routerRes = await llm(routerPrompt, { 
+          model: "gemma3:4b", 
+          skipKnowledge: true, 
+          options: { num_predict: 10, temperature: 0.0 } 
+        });
+        
+        const decision = (routerRes?.data?.text || "").trim().toUpperCase();
+        console.log(`[chatAgent] Silent Router chose: ${decision}`);
+
+        if (decision.includes("CHAT")) {
+          classification = { ...classification, mode: "chat", confidence: 0.9, reason: "silent_router_chat" };
+        } else {
+          if (decision.includes("FINANCE")) message = `check ticker market ${trimmed}`;
+          else if (decision.includes("SHOPPING")) message = `buy product ${trimmed}`;
+          else if (decision.includes("WEATHER")) message = `weather for ${trimmed}`;
+          else if (decision.includes("CALENDAR")) message = `calendar ${trimmed}`;
+          else if (decision.includes("SPORTS")) message = `sports score ${trimmed}`;
+          else if (decision.includes("YOUTUBE")) message = `youtube video ${trimmed}`;
+          else message = `search for: ${trimmed}`;
+
+          // Force the system to treat this as a high-confidence task
+          classification = { ...classification, mode: "task", confidence: 0.95, reason: `silent_router_forced_${decision}` };
+
+          if (options.onStep) {
+            options.onStep({ type: "thought", phase: "THOUGHT", content: `Clarified ambiguous request in the background. Executing as ${decision}.`, timestamp: new Date().toISOString() });
+          }
+        }
+      } catch (err) {
+         console.warn(`[chatAgent] Silent Router failed: ${err.message}.`);
+      }
+    }
+  }
 
   // ── MEMORY-QUESTION SHORT-CIRCUIT (runs BEFORE mode branching) ──
   // Questions about the user themselves ("what is my name?", "who is my mother?",
@@ -633,112 +721,140 @@ Reply with EXACTLY ONE WORD:
     }
     // ── END TOOL-INTERCEPT CHECK ───────────────────────────────
 
-    // ── AMBIGUITY CLARIFICATION CHECK (Phase 4) ───────────────
-    // When confidence is very low AND no routing rule was confident enough AND we're not
-    // already in a pending-question flow, ask the user what they meant.
-    if (
-      !interceptResume &&
-      !options.resolvedPending &&
-      classification.reason !== "memory_question_short_circuit" &&
-      classification.confidence < 0.6 &&
-      classification.reason === "ambiguous_default_task" &&
-      options.conversationId
-    ) {
-      // Peek routing table — if any rule fires at priority ≥ 55, skip the clarification
-      // (the routing table is confident enough on its own)
-      const lower = message.toLowerCase().trim();
-      const trimmed = message.trim();
-      let hasStrongRoutingMatch = false;
-      let peekTool = null;
-      console.log(`[chatAgent:probe] ambiguity-peek entering evaluateRoutingTable`);
+
+
+// 🔥 THE FALL-THROUGH FIX:
+    // If the Ambiguity Check above decided this should actually be "chat" mode,
+    // we MUST abort resolveWithTools so handleChat can take over!
+    if (classification.mode === "chat") {
+      return null;
+    }
+
+// ── GLOBAL SLOT-FILLING INTERCEPTOR ───────────────────────
+    // Checks if the planned tool is missing required parameters before execution.
+    if (!bypassInterceptor && !interceptResume && !options.resolvedPending && classification.mode === "task") {
       try {
+        const { evaluateRoutingTable } = await import("../routing/index.js");
+        const lower = message.toLowerCase().trim();
+        const trimmed = message.trim();
+        
+        // Peek at what the routing table wants to do
         const peek = await evaluateRoutingTable(lower, trimmed, {});
-        peekTool = peek?.[0]?.tool || null;
-        console.log(`[chatAgent:probe] ambiguity-peek returned tool=${peekTool || "none"} priority=${peek?.[0]?.priority || "n/a"}`);
-        if (peek?.[0]?.priority >= 55) hasStrongRoutingMatch = true;
-      } catch (err) { console.log(`[chatAgent:probe] ambiguity-peek threw: ${err.message}`); }
+        const plannedTool = peek?.[0]?.tool;
+        
+        // If the table picked search, or the classifier explicitly locked onto search
+        const isSearchTool = plannedTool === "search" || (classification.reason && classification.reason.includes("explicit_tool:search"));
 
-      // ── DEFAULT-TO-CHAT FALLBACK ──
-      // If the routing table found NO candidate tool AND the message looks like a
-      // short conversational fragment (greeting, reaction, chit-chat, insult),
-      // don't pester the user with a clarification question — just treat it as chat.
-      // Triggers only when peek returned literally no tool, so real ambiguity cases
-      // (where a low-priority tool matched) still fall through to clarification.
-      const hasTaskVerb = /\b(search|find|look\s+up|send|email|whatsapp|create|generate|build|code|review|analyze|schedule|remind|list|show|open|run|execute|compile|deploy|write|draft)\b/i.test(lower);
-      // Wh-words count as a question ONLY when they're sentence-initial OR the message
-      // ends with a question mark. "how you handled it" / "that's how I do it" /
-      // "see what I mean" are NOT questions — they're relative clauses.
-      const startsWithWh = /^\s*(how|why|when|where|what|who|which)\b/i.test(trimmed);
-      const endsWithQuestionMark = /\?\s*$/.test(trimmed);
-      const hasWhQuestion = startsWithWh || endsWithQuestionMark;
-      // Reactive/reflective comments — pure reactions to the previous turn that should
-      // never be treated as ambiguous tasks. Examples:
-      //   "well that was surprising"  •  "wow nice"  •  "that's amazing"
-      //   "thanks for that"  •  "appreciate it"  •  "good job"  •  "lol"
-      //   "interesting"  •  "ok cool"  •  "got it"  •  "makes sense"
-      const REACTIVE_RE =
-        /^\s*(well\s+)?(that(?:'s| was| is)?|this\s+(?:is|was)|wow|whoa|haha|lol|ok(?:ay)?|cool|nice|sweet|amazing|awesome|impressive|surprising|interesting|fascinating|got\s+it|makes\s+sense|fair\s+enough|fair|right|exactly|true|indeed|yeah|yep|yes|no|nope|sure|thanks?|thank\s+you|appreciate|good\s+(job|one|stuff|point))\b/i;
-      const looksConversational =
-        REACTIVE_RE.test(trimmed) ||
-        (trimmed.length < 80 && !hasTaskVerb && !hasWhQuestion);
-      if (!hasStrongRoutingMatch && !peekTool && looksConversational) {
-        console.log(`[chatAgent] Default-to-chat: no routing candidate + conversational fragment ("${trimmed.slice(0, 60)}") — skipping clarification`);
-        classification = { ...classification, mode: "chat", confidence: 0.7, reason: "default_to_chat_no_route" };
-        // Fall through past the clarification block — handleChat will run below.
-      } else if (!hasStrongRoutingMatch) {
-        // Make sure we don't have an active pending question already
-        console.log(`[chatAgent:probe] getPendingQuestion entering (conv=${options.conversationId})`);
-        let _pqTimer;
-        const existing = await Promise.race([
-          getPendingQuestion(options.conversationId).catch((e) => { console.log(`[chatAgent:probe] getPendingQuestion rejected: ${e.message}`); return null; }),
-          new Promise((resolve) => { _pqTimer = setTimeout(() => { console.log(`[chatAgent:probe] getPendingQuestion TIMED OUT after 5s — treating as no pending`); resolve(null); }, 5000); })
-        ]);
-        if (_pqTimer) clearTimeout(_pqTimer);
-        console.log(`[chatAgent:probe] getPendingQuestion returned ${existing ? "EXISTING entry" : "null"}`);
-        if (!existing) {
-          const snippet = trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
-          const question = `I'm not sure what you'd like me to do with _"${snippet}"_. Did you mean:\n\n1. 💬 Chat about this\n2. 🔍 Search for information\n3. 🛠️ Run a tool\n\n_Just reply with a number or tell me directly._`;
+        // Slot Check: SEARCH TOOL
+        if (isSearchTool) {
+          // Strip action verbs to see if an actual topic remains
+          const coreTopic = lower.replace(/\b(can|you|please|search|find|for|google|look\s+up|online|web|the|some|info|information|about|on|internet)\b/gi, '').trim();
 
-          console.log(`[chatAgent:probe] setPendingQuestion entering`);
+          // --- 1. MISSING SLOT CHECK ---
+          // If they just said "search the web", coreTopic will be empty!
+          if (!coreTopic || coreTopic.length <= 1) {
+            const question = `What would you like me to search for?`;
+
+            await setPendingQuestion(options.conversationId, {
+              skill: "__slot_interceptor__",
+              question,
+              expects: "answer", 
+              originalRequest: { text: message, plannedTool: "search" }
+            });
+
+            console.log(`[chatAgent] Slot Interceptor: missing query for 'search'. Pausing.`);
+
+            if (options.onStep) {
+              options.onStep({ type: "thought", phase: "THOUGHT",
+                content: `Missing required parameter for "search". Asking user to clarify.`,
+                timestamp: new Date().toISOString() });
+            }
+
+            return {
+              tool: "chatAgent",
+              success: true,
+              final: true,
+              mode: "chat",
+              reply: question,
+              data: { text: question, mode: "clarification", missingSlot: true }
+            };
+          }
+
+// --- 2. ENTITY DISAMBIGUATION CHECK ---
+          const ambiguityPrompt = `You are a routing assistant. Read the user's message and the target search topic.
+Does the user's message provide enough context to know EXACTLY what they mean by the topic, or is the topic too vague and has multiple popular meanings?
+
+Message: "search for apple"
+Topic: "apple"
+Evaluation: Vague. Could be the fruit or the company. -> YES
+
+Message: "search for apple stock"
+Topic: "apple stock"
+Evaluation: Clear. "stock" context clarifies the company. -> NO
+
+Message: "what is amazon?"
+Topic: "amazon"
+Evaluation: Vague. Could be the river or the tech company. -> YES
+
+Message: "who is the singer of franz ferdinand"
+Topic: "franz ferdinand"
+Evaluation: Clear. "singer" context clarifies the band. -> NO
+
+Message: "${trimmed}"
+Topic: "${coreTopic}"
+Evaluation:`;
+
           try {
-            let _spqTimer;
-            await Promise.race([
-              setPendingQuestion(options.conversationId, {
-                skill: "__ambiguity_clarification__",
+            // Fast pre-flight check using Gemma 3
+            const ambiguityRes = await llm(ambiguityPrompt, { 
+              model: "gemma3:4b", 
+              skipKnowledge: true, 
+              options: { num_predict: 15, temperature: 0.0 } 
+            });
+            
+            const rawResponse = ambiguityRes?.data?.text || "";
+            // Look for the final YES/NO decision
+            const isAmbiguous = rawResponse.toUpperCase().includes("YES");
+
+            console.log(`[chatAgent] Disambiguation LLM evaluated '${coreTopic}': ${rawResponse.trim()}`);
+
+            if (isAmbiguous) {
+              const question = `There are a few different things "${coreTopic}" could refer to. Which one are you looking for?`;
+
+              await setPendingQuestion(options.conversationId, {
+                skill: "__slot_interceptor__",
                 question,
-                expects: "clarification_choice",
-                // orchestrator.js reads originalRequest.text|message — pass an object,
-                // not a bare string, or the resume path silently falls back to the
-                // user's ANSWER and loses the original topic.
-                originalRequest: { text: trimmed, message: trimmed }
-              }),
-              new Promise((_, reject) => { _spqTimer = setTimeout(() => reject(new Error("setPendingQuestion timeout 5s")), 5000); })
-            ]).finally(() => { if (_spqTimer) clearTimeout(_spqTimer); });
-            console.log(`[chatAgent:probe] setPendingQuestion returned`);
-          } catch (e) {
-            console.warn(`[chatAgent:probe] setPendingQuestion failed: ${e.message} — proceeding without pending entry`);
+                expects: "answer", 
+                coreTopic: coreTopic,
+                originalRequest: { text: message, plannedTool: "search" }
+              });
+
+              console.log(`[chatAgent] Disambiguation Interceptor: '${coreTopic}' is ambiguous. Pausing.`);
+
+              if (options.onStep) {
+                options.onStep({ type: "thought", phase: "THOUGHT",
+                  content: `Detected ambiguous search entity. Asking to clarify.`,
+                  timestamp: new Date().toISOString() });
+              }
+
+              return {
+                tool: "chatAgent",
+                success: true,
+                final: true,
+                mode: "chat",
+                reply: question,
+                data: { text: question, mode: "clarification", disambiguation: true }
+              };
+            }
+          } catch (err) {
+             console.warn(`[chatAgent] Disambiguation check failed: ${err.message}`);
           }
-
-          console.log(`[chatAgent] Ambiguity clarification: asking user what to do with "${snippet}" (confidence ${classification.confidence.toFixed(2)})`);
-
-          if (options.onStep) {
-            options.onStep({ type: "thought", phase: "THOUGHT",
-              content: `Ambiguous request (confidence ${classification.confidence.toFixed(2)}, no routing match ≥ 55) — asking user to clarify intent.`,
-              timestamp: new Date().toISOString() });
-          }
-
-          return {
-            tool: "chatAgent",
-            success: true,
-            final: true,
-            mode: "chat",
-            reply: question,
-            data: { text: question, mode: "clarification", ambiguous: true }
-          };
         }
+        
+      } catch (err) {
+        console.warn(`[chatAgent] Slot interceptor failed: ${err.message}`);
       }
     }
-    // ── END AMBIGUITY CLARIFICATION CHECK ─────────────────────
 
     if (options.onStep) {
       options.onStep({
@@ -758,7 +874,8 @@ Reply with EXACTLY ONE WORD:
       fileIds: options.fileIds,
       onChunk: null, // CRITICAL: Stop the taskAgent from talking directly to the user
       onStep: options.onStep, // Allow thoughts/plans to still stream
-      signal: options.signal
+      signal: options.signal,
+      resolvedPending: options.resolvedPending || null,    // Phase 17D
     });
 
     return taskResult;
@@ -1090,8 +1207,20 @@ if (toolResult && toolResult.stateGraph && toolResult.stateGraph.length > 1 && t
 // =========================================================================
 // 🚀 FIX: BYPASS LLM SYNTHESIS FOR PREFORMATTED TOOL OUTPUTS
 // =========================================================================
-// Only bypass if the tool SUCCEEDED. If it failed, let the LLM handle the error!
-  if (toolResult && toolResult.success && toolResult.tool !== "weather" && (toolResult.final || toolResult.data?.preformatted)) {
+// Phase 17J — bypass for both success AND failure when the skill explicitly
+// flagged data.preformatted=true. Without this, a terminal failure with a
+// crafted error message (e.g. deepResearch's pre-flight probe abort which
+// includes actionable hints about OLLAMA_NUM_GPU and `ollama ps`) gets
+// silently rewritten by the synthesis LLM (often the chat persona model)
+// into a generic plausible-sounding answer that hides the real failure.
+// `preformatted: true` is the skill author's explicit "use verbatim" signal —
+// honour it whether or not the call succeeded. Successful tools without the
+// flag still take the bypass via toolResult.final (legacy behavior).
+  const isPreformattedFailure = toolResult && !toolResult.success && toolResult.data?.preformatted === true;
+  if (toolResult && toolResult.tool !== "weather" && (
+        (toolResult.success && (toolResult.final || toolResult.data?.preformatted)) ||
+        isPreformattedFailure
+      )) {
   console.log(`[chatAgent] Bypassing LLM synthesis for preformatted tool output (${toolResult.tool}).`);
 
   if (options.onStep) {
@@ -1412,7 +1541,7 @@ If the user's message is short or dismissive (e.g., "whatever", "ok", "cool"), D
         }
 
         flushSafe();
-      }, { model: options.targetModel, skipKnowledge: true, signal: options.signal, timeoutMs: 90_000, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
+      }, { model: options.targetModel, skipKnowledge: true, signal: options.signal, timeoutMs: 90_000, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9, num_predict: 1024 } });
 
       // Stream ended. If opener scrub never ran (short reply), run it now.
       if (!openerScrubbed && forwardedLen === 0) {
@@ -1437,7 +1566,7 @@ If the user's message is short or dismissive (e.g., "whatever", "ok", "cool"), D
         forwardedLen = replyText.length;
 }
     } else {
-      const result = await llm(userPrompt, { model: options.targetModel, skipKnowledge: true, signal: options.signal, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9 } });
+      const result = await llm(userPrompt, { model: options.targetModel, skipKnowledge: true, signal: options.signal, system: systemPrompt, options: { temperature: 0.85, top_p: 0.9, num_predict: 1024 } });
       replyText = result?.data?.text || "I appreciate the conversation! Is there something specific I can help you with?";
       replyText = trimAtContinuation(replyText);
       replyText = scrubPersonaTail(replyText);

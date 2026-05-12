@@ -23,8 +23,11 @@ const SYNTH_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
 // (the prose-quality bottleneck). Falls back to SYNTH_MODEL if unset.
 // Suggested values for 8GB VRAM:
 //   qwen2.5:14b-instruct-q3_K_S  (~6.5GB, same family, best continuity)
-//   deepseek-r1:8b               (~5GB, reasoning-tuned, safer fit)
 //   phi-4:14b-q3_K_M             (~6.5GB, strong academic prose)
+// Phase 18A — AVOID reasoning models (deepseek-r1:8b, qwq) for section
+// composition. Their <think>...</think> traces eat the num_predict budget,
+// causing sections to come back short or mid-sentence-truncated even after
+// length-push retries. Use them only for planner/decomposer stages, not prose.
 const SYNTH_HEAVY_MODEL = process.env.SYNTH_HEAVY_MODEL || SYNTH_MODEL;
 const HEAVY_NUM_CTX = parseInt(process.env.SYNTH_HEAVY_NUM_CTX || "6144", 10);
 
@@ -48,7 +51,8 @@ import {
   buildCitationIndex,
   renderReferencesSection,
   renderCitationsForPrompt,
-  lintStrayCitations
+  lintStrayCitations,
+  rescueMalformedAuthors
 } from "./citations.js";
 import {
   jaccardSimilarity,
@@ -169,6 +173,18 @@ function sanitizeOutputMarkdown(text) {
   //    Pattern: "...item one. - item two" → "...item one.\n- item two"
   out = out.replace(/(- [^\n]+)\s+- /g, (_, b) => { bulletsFixed++; return `${b}\n- `; });
 
+  // 5b. Phase 18D — fix numbered-list blank-line splitting. The CBT thesis
+  // run had Abstract list items rendered as:
+  //   `1.\n\n**Eating Disorders:** ...`
+  //   `2.\n\n**Trauma:** ...`
+  // — the LLM emitted the marker on its own line, then a blank line, then
+  // the bold content on a new paragraph, breaking ordered-list rendering.
+  // Join `^N.<eol><blank-line>**Bold**` → `N. **Bold**` so it renders as
+  // a single list item.
+  out = out.replace(/^(\d+)\.\s*\n\s*\n(\*\*)/gm, (_, n, b) => { bulletsFixed++; return `${n}. ${b}`; });
+  // Same fix when the next line is a non-bold capitalized word.
+  out = out.replace(/^(\d+)\.\s*\n\s*\n([A-Z][a-z])/gm, (_, n, w) => { bulletsFixed++; return `${n}. ${w}`; });
+
   // 6. Collapse runs of blank lines (3+ → 2)
   out = out.replace(/\n{3,}/g, "\n\n");
 
@@ -207,9 +223,73 @@ function snapshotDraft(stage, draft) {
  *  5. Collapse runs of 3+ blank lines to 2
  *  6. Ensure file ends with single trailing newline
  */
+// ── Phase 19H — renumber broken ordered lists ─────────────────────────────
+// LLMs occasionally skip an index (`1.`, `3.`, `4.`) or restart counting
+// mid-block. Walk the document and sequentially renumber any contiguous run
+// of `^\d+\.\s` lines. A "run" continues across blank lines and through
+// indented continuation paragraphs; it breaks on a non-blank, non-list,
+// non-indented-continuation line.
+function renumberOrderedLists(draft) {
+  if (!draft) return draft;
+  const lines = String(draft).split("\n");
+  const out = [];
+  let runActive = false;
+  let runIndex = 0;
+  let totalRenumbered = 0;
+  let firstNumberSeen = null;
+  // Track recent list-item indices so we can detect "is this still the same list?"
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^(\s*)(\d+)\.(\s+\S[\s\S]*)$/);
+    if (m) {
+      const [, indent, , rest] = m;
+      // Top-level list items only (no nesting renumber)
+      if (indent.length === 0) {
+        if (!runActive) {
+          runActive = true;
+          runIndex = 1;
+          firstNumberSeen = parseInt(m[2], 10);
+        } else {
+          runIndex++;
+        }
+        const expected = String(runIndex);
+        if (m[2] !== expected) totalRenumbered++;
+        out.push(`${expected}.${rest}`);
+        continue;
+      }
+    }
+    // Blank line or indented continuation — keep the run alive
+    if (/^\s*$/.test(line) || /^\s{2,}\S/.test(line)) {
+      out.push(line);
+      continue;
+    }
+    // Any other line ends the run
+    if (runActive) {
+      runActive = false;
+      runIndex = 0;
+      firstNumberSeen = null;
+    }
+    out.push(line);
+  }
+  if (totalRenumbered > 0) {
+    console.log(`[thesisSynthesizer] renumberOrderedLists: corrected ${totalRenumbered} list index(es)`);
+  }
+  return out.join("\n");
+}
+
 function reflowParagraphs(draft) {
   if (!draft) return draft;
   let out = String(draft);
+
+  // Phase 14C — REJOIN numbered/bulleted list markers separated from their bold
+  // content. Pattern: `1.\n\n**Title:** body` → `1. **Title:** body`. Without
+  // this, Obsidian renders "1." alone on its own line and "**Title:** body" as
+  // a separate paragraph (orphan-number artifact in the user's screenshot).
+  // Run BEFORE the heading-injection rule because the heading rule's `\n\n`
+  // insertion can create the very pattern we're trying to fix.
+  // Allow trailing whitespace after the marker (e.g. `- \n\n**X**`).
+  out = out.replace(/^(\s*\d+\.)[ \t]*\n{1,}[ \t]*(\*\*)/gm, "$1 $2");
+  out = out.replace(/^(\s*[-*])[ \t]*\n{1,}[ \t]*(\*\*)/gm, "$1 $2");
 
   // 1. Most critical: any heading marker (# through ######) MUST start its own
   //    line and have a blank line before it. Catches the "# Title ## Abstract"
@@ -437,6 +517,21 @@ function honestifyMethodology(text) {
   out = out.replace(/\bquality\s+(?:assessment|scoring)\s+(?:protocol|tool|instrument)?\b/gi, "informal relevance scoring");
   // 2. Drop sentences that reference PRISMA flow / cohen's kappa / inter-rater
   out = out.replace(/[^.]*\b(PRISMA|Cochrane|Cohen'?s\s+kappa|inter-rater\s+reliability)\b[^.]*\./gi, "");
+  // Phase 14E — drop sentences that name fabricated databases the pipeline
+  // never actually used. Real harvest providers: OpenAlex, CORE, DOAJ, S2,
+  // OSF Preprints, Academagic, Figshare, Dryad. LLMs commonly invent these:
+  let fabStripped = 0;
+  out = out.replace(
+    /[^.]*\b(PubMed|PsycINFO|PsycInfo|MEDLINE|Web\s+of\s+Science|Embase|Scopus|Cochrane\s+Library|EBSCO(?:host)?|ProQuest)\b[^.]*\./gi,
+    () => { fabStripped++; return ""; }
+  );
+  if (fabStripped > 0) {
+    // Prepend a single honest provenance sentence to the section so the
+    // methodology still reads coherently after sentence-level removal.
+    const honest = "The literature was harvested via OpenAlex, CORE, DOAJ, Semantic Scholar, OSF Preprints, and Academagic across multiple sub-questions, with deep-PDF reads on accessible open-access articles. ";
+    out = honest + out.trimStart();
+    console.log(`[thesisSynthesizer] honestifyMethodology: stripped ${fabStripped} fabricated-database sentence(s); prepended honest provenance line`);
+  }
   // 3. Tidy up double spaces and orphan punctuation
   out = out.replace(/\s+,/g, ",").replace(/\s{2,}/g, " ").replace(/\(\s*\)/g, "");
   return out.trim();
@@ -492,7 +587,8 @@ function stripStockBulletSections(text, sectionHeading) {
   if (!text) return text;
   const isConclusion = /conclusion|summary|future/i.test(sectionHeading || "");
   if (isConclusion) return text;
-  let out = String(text);
+  const original = String(text);
+  let out = original;
   let stripped = 0;
   // Pattern: **Key Findings:** (or "Key Takeaways", "Limitations", etc.) followed
   // by a bullet list, optionally separated by blank lines. Stops at the next
@@ -507,7 +603,16 @@ function stripStockBulletSections(text, sectionHeading) {
     /\n+(?:Key\s+(?:Findings?|Takeaways?|Points?)|Limitations?)\s*:\s*\n+(?:[-*]\s+[^\n]+\n)+/gi
   ];
   for (const re of PATTERNS) {
-    out = out.replace(re, () => { stripped++; return "\n\n"; });
+    out = out.replace(re, (match) => {
+      // Phase 14A — 60% cap guard (defense in depth). If a single stock-bullet
+      // strip would consume more than 60% of the section, abort the strip.
+      if (match.length > original.length * 0.6) {
+        console.warn(`[thesisSynthesizer] stockBullets: ABORT strip on "${sectionHeading}" — match is ${match.length}c of ${original.length}c (>60%); preserving content`);
+        return match;
+      }
+      stripped++;
+      return "\n\n";
+    });
   }
   if (stripped) console.log(`[thesisSynthesizer] stockBullets: stripped ${stripped} Key-Findings/Limitations bullet block(s) from "${sectionHeading}"`);
   return out;
@@ -551,11 +656,41 @@ function stripMarkdownFences(text) {
   let stripped = 0;
   // Strip ```markdown or ```md openers (alone on a line)
   out = out.replace(/^[\s>]*```(?:markdown|md)[\s>]*$/gim, () => { stripped++; return ""; });
+  // Phase 18C — strip MyST / Jupyter-Book directives that look like code fences
+  // but are actually unrendered markup (```{figure}, ```{bibliography},
+  // ```{math}, ```{admonition}, etc.). The LLM emits these for academic
+  // formatting it has seen in training data, but we don't render MyST and the
+  // unclosed opener swallows everything until the next fence — in the CBT
+  // run, the Discussion → Conclusion → References sections were all eaten by
+  // an unclosed ```{figure} opener at the start of Discussion. Strategy:
+  // strip the entire directive block (opening ```{...} line to its matching
+  // ``` close, OR to end-of-section if unclosed). Conservative: only target
+  // known MyST directive names, leave real fenced code blocks alone.
+  out = out.replace(
+    /^[\s>]*```\{(?:figure|bibliography|math|admonition|note|warning|tip|important|caution|toctree|csv-table|list-table|tabbed|panels|grid)\}[^\n]*\n[\s\S]*?(?:^[\s>]*```\s*$|(?=^##\s)|(?=^---\s*$)|$)/gm,
+    () => { stripped++; return ""; }
+  );
   // Strip orphan ``` lines (alone on a line, no content, no language)
   out = out.replace(/^[\s>]*```\s*$/gm, () => { stripped++; return ""; });
   // Strip inline ``` that appears at the start of a line followed by prose
   // (deepseek often emits "``` content..." mid-paragraph)
   out = out.replace(/^[\s>]*```\s+(?=\S)/gm, () => { stripped++; return ""; });
+  // Phase 18C — final safety net: if we still have an odd number of ``` markers
+  // (an unclosed opener that survived all earlier passes), strip the LAST
+  // unmatched opener so it doesn't swallow content downstream.
+  const fenceCount = (out.match(/^```/gm) || []).length;
+  if (fenceCount % 2 === 1) {
+    // Find and remove the last `^```` line (the unmatched opener at the end).
+    const lines = out.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^```/.test(lines[i])) {
+        lines.splice(i, 1);
+        stripped++;
+        break;
+      }
+    }
+    out = lines.join("\n");
+  }
   // Collapse the resulting blank-line storm
   out = out.replace(/\n{3,}/g, "\n\n");
   if (stripped) console.log(`[thesisSynthesizer] markdownFences: stripped ${stripped} fence(s)`);
@@ -641,18 +776,46 @@ function stripSectionH1s(text, sectionHeading) {
 // and strip the whole block.
 function stripFabricatedBibliography(text, sectionHeading) {
   if (!text) return text;
-  let out = String(text);
+  const original = String(text);
+  let out = original;
   let stripped = 0;
-  // Pattern: heading-like "References" / "Bibliography" line followed by
-  // 3+ list items (- or numbered). Either bold-wrapped or plain. Stops at
-  // section end or another heading.
+  // Phase 14A — TIGHTENED patterns:
+  //   1. Bullet line must contain a real author signature: surname-comma-initial
+  //      (`Smith, J.`) or surname-amp-or-and (`Smith & Jones` / `Smith and Jones`).
+  //      The old `[A-Z][^\n]{20,500}` matched any prose bullet starting with a
+  //      capital, which over-ate study-summary bullets in the Lit Review.
+  //   2. Anchor: the "References:" / "Bibliography:" line must NOT be followed
+  //      by a paragraph of prose before the bullets — `\n+` allows blank lines
+  //      only, not text. (No textual change required; `\n+` already enforces
+  //      whitespace-only.)
+  //   3. The whole match is capped: if it would consume >60% of the section,
+  //      we abort the strip (preserve content over cleanliness) and warn.
+  const AUTHOR_BULLET = "[-*]\\s+[A-Z][\\p{L}'\\-]+,\\s*[A-Z]\\.[^\\n]{0,500}";
+  const AUTHOR_BULLET_AMP = "[-*]\\s+[A-Z][\\p{L}'\\-]+\\s+(?:&|and)\\s+[A-Z][\\p{L}'\\-]+[^\\n]{0,500}";
+  // Header alt allows colon both INSIDE the bold (`**References:**`) and OUTSIDE
+  // (`**References**:`), plus plain `References:` and `## References`.
+  const REF_HEADER = "(?:#{0,3}\\s*)?(?:\\*\\*)?References?:?(?:\\s*Cited)?:?(?:\\*\\*)?\\s*:?\\s*";
+  const BIB_HEADER = "(?:#{0,3}\\s*)?(?:\\*\\*)?Bibliography:?(?:\\*\\*)?\\s*:?\\s*";
   const refBlockPatterns = [
-    // "References:" / "**References**" / "## References" line → 3+ list items
-    /\n+(?:#{0,3}\s*)?(?:\*\*)?References?(?:\s*Cited)?(?:\*\*)?\s*:?\s*\n+(?:[-*]\s+[A-Z][^\n]{20,500}\n+){3,}/gi,
-    /\n+(?:#{0,3}\s*)?(?:\*\*)?Bibliography(?:\*\*)?\s*:?\s*\n+(?:[-*]\s+[A-Z][^\n]{20,500}\n+){3,}/gi,
+    new RegExp(
+      `\\n+${REF_HEADER}\\n+(?:(?:${AUTHOR_BULLET}|${AUTHOR_BULLET_AMP})\\n+){3,}`,
+      "giu"
+    ),
+    new RegExp(
+      `\\n+${BIB_HEADER}\\n+(?:(?:${AUTHOR_BULLET}|${AUTHOR_BULLET_AMP})\\n+){3,}`,
+      "giu"
+    ),
   ];
   for (const re of refBlockPatterns) {
-    out = out.replace(re, () => { stripped++; return "\n\n"; });
+    out = out.replace(re, (match) => {
+      // Phase 14A — 60% cap guard: abort strip if it would consume too much.
+      if (match.length > original.length * 0.6) {
+        console.warn(`[thesisSynthesizer] fabricatedBib: ABORT strip on "${sectionHeading}" — match is ${match.length}c of ${original.length}c (>60%); preserving content`);
+        return match;
+      }
+      stripped++;
+      return "\n\n";
+    });
   }
   if (stripped) console.log(`[thesisSynthesizer] fabricatedBib: stripped ${stripped} fabricated bibliography block(s) from "${sectionHeading}"`);
   return out;
@@ -674,6 +837,156 @@ function stripOrphanNumericRefs(text) {
     return prefix;
   });
   if (stripped) console.log(`[thesisSynthesizer] orphanNumericRefs: stripped ${stripped} bracketed numeric ref(s)`);
+  return out;
+}
+
+// ── Phase 15H — no-charts provenance note ─────────────────────────────────
+// When a run retrieves N datasets but all are metadata-only (no parseable
+// rows or files), no charts can be produced. The user wonders why a previous
+// run had a chart and this one didn't. Surface it in the saved file.
+// Exported for smoke testing.
+export function buildNoChartsNote(datasetCount, parseableCount = 0) {
+  if (!datasetCount || datasetCount < 1) return "";
+  if (parseableCount > 0) return "";   // charts present, no note needed
+  return [
+    `> [!note] No charts in this run`,
+    `> ${datasetCount} dataset(s) were retrieved but all were metadata-only (no parseable rows or files).`,
+    `> This is expected variance — different sub-questions route to different providers each run.`,
+    `> Future runs may produce charts when sub-questions hit dataset-rich providers like figshare or dryad.`,
+    "",
+    ""
+  ].join("\n");
+}
+
+// ── Phase 14F — bridge-skip warning callout ────────────────────────────────
+// Renders an Obsidian warning callout for the top of the saved thesis when
+// the manual-bridge gate fired (`OFFER`) but couldn't actually pause the
+// pipeline (missing conversationId). Surfaces the failure to the user the
+// moment they open the note. Exported for smoke testing.
+export function buildBridgeSkipCallout(notice, vaultRel) {
+  if (!notice || !notice.count) return "";
+  const sample = (notice.blocked || []).slice(0, 8).map(b => {
+    const url = (b.url || "").slice(0, 80);
+    const kind = b.kind || "source";
+    return `> - **${kind}**: \`${url}\``;
+  }).join("\n");
+  const more = notice.count > 8 ? `\n> - …and ${notice.count - 8} more` : "";
+  return [
+    `> [!warning] Manual Bridge Skipped — ${notice.count} source(s) unfilled`,
+    `> The pipeline detected ${notice.count} blocked source(s) (paywalls, redirect loops, fetch failures) but could not pause for manual upload because no conversationId was attached to this run.`,
+    `> To recover them: drop PDF/CSV files into \`${vaultRel}/_pending/\` and re-run with`,
+    `> \`[depth:thesis] continue ${vaultRel.split("/").pop()} bridge\`.`,
+    `>`,
+    `> First blocked sources:`,
+    sample + more,
+    "",
+    ""
+  ].join("\n");
+}
+
+// ── Phase 15B — detect LLM-error sentinel strings ─────────────────────────
+// `server/tools/llm.js` returns `{success:false, data:{text:"The language model
+// encountered an error: ${err.message}"}}` on timeout/abort. Without an explicit
+// guard, callers that consume `.data.text` blindly write the error string into
+// the saved markdown (the CBT thesis run had this leak mid-Results).
+const LLM_ERROR_SENTINELS = [
+  /The language model encountered an error[:\s]/i,
+  /LLM request aborted or timed out/i,
+  /\(synthesis failed for this section/i,
+];
+export function looksLikeLlmError(text) {
+  if (!text || typeof text !== "string" || text.length < 20) return false;
+  return LLM_ERROR_SENTINELS.some(re => re.test(text));
+}
+
+// ── Phase 15E — strip model meta-commentary parentheticals ────────────────
+// Patterns like `(given the hypothetical year 2026 reference, likely intended
+// as a placeholder for illustrative examples)` leak from the model talking
+// ABOUT its prompt instead of using it. Strip these without touching legit
+// parentheticals like `(p<.05)` or `(Smith, 2020)`.
+function stripMetaCommentary(text) {
+  if (!text) return text;
+  let stripped = 0;
+  const META_PATTERNS = [
+    // Parenthetical containing a meta-marker word
+    /\([^)]{0,400}\b(?:hypothetical(?:\s+year)?|placeholder|illustrative\s+(?:example|purposes?)|likely\s+intended|note\s+that|disclaimer\b|for\s+the\s+purpose\s+of\s+(?:this\s+)?(?:example|illustration)|in\s+this\s+synthesis|as\s+(?:an?\s+)?(?:example|illustration))\b[^)]{0,400}\)/gi,
+    // Bare "Note: ..." / "Disclaimer: ..." sentence
+    /(?:^|\s)(?:Note|Disclaimer)\s*:\s+[^.\n]{20,300}\.(?=\s|$)/g,
+  ];
+  for (const re of META_PATTERNS) {
+    text = text.replace(re, () => { stripped++; return ""; });
+  }
+  if (stripped) {
+    text = text.replace(/[ \t]{2,}/g, " ").replace(/\s+([.,;:)])/g, "$1");
+    console.log(`[thesisSynthesizer] metaCommentary: stripped ${stripped} meta-commentary block(s)`);
+  }
+  return text;
+}
+
+// ── Phase 14B — detect mid-sentence truncation ────────────────────────────
+// deepseek-r1's <think>...</think> reasoning consumes tokens, so visible
+// output sometimes ends mid-sentence even when word_count looks under-budget.
+// Logs from the CBT thesis run showed Abstract ending "…making strong causal"
+// and Introduction §V ending "* A pilot dataset (N=3" — clearly cut.
+// Healthy endings: . ! ? ) ] " ' or markdown structure (`]]`, `*Figure 1.*`).
+// Truncation tells: trailing comma, lowercase word, conjunction, or open paren+digit.
+function looksTruncated(text) {
+  if (!text || text.length < 80) return false;
+  // Strip trailing whitespace and any markdown artifacts
+  const tail = String(text).replace(/[\s>]+$/, "").slice(-160);
+  if (!tail) return false;
+  // Healthy endings
+  if (/[.!?)\]"'»’”]$/.test(tail)) return false;
+  if (/\]\]$/.test(tail)) return false;            // wikilink
+  if (/\*$|_$/.test(tail)) return false;            // bold/italic close
+  // Truncation tells
+  if (/[a-z,]$/.test(tail)) return true;
+  if (/\b(and|or|the|a|an|in|of|with|that|to|from|by|for|as|on|at|is|are|was|were|but|while|when|which|where|but|though)$/i.test(tail)) return true;
+  if (/\(\s*[NnPpKk]?\s*=?\s*\d*$/.test(tail)) return true;     // "(N=" or "(N=3"
+  if (/&$|\+$|-$/.test(tail)) return true;          // hanging conjunction/operator
+  // Phase 18F — partial-citation-year truncation. The CBT thesis Abstract
+  // ended with "...Cognitive-Behavioral Treatment for Depression in
+  // Adolescents, 20" — a citation year cut mid-digits inside an unclosed
+  // paren. Detect:
+  //   (a) trailing 1-3 digits NOT followed by a closing paren or punctuation
+  //   (b) open paren that hasn't been closed before end-of-tail
+  if (/,\s*\d{1,3}$/.test(tail)) return true;       // "..., 20" (partial year after comma)
+  if (/\b\d{1,3}$/.test(tail) && !/\d{4}$/.test(tail)) return true;   // bare 1-3 digits, but not a full year
+  // Unclosed paren in the tail (open without matching close)
+  const opens = (tail.match(/\(/g) || []).length;
+  const closes = (tail.match(/\)/g) || []).length;
+  if (opens > closes) return true;
+  return false;
+}
+
+// ── Phase 14D — strip alphabetic bracket-tag pseudo-citations ─────────────
+// LLMs (esp. deepseek-r1) invent study labels like `[Cochrane review]`,
+// `[Mexico Trial Data]`, `[Mindset App Analysis]`, `[Evidence from "..." description]`
+// and inject them as if they were citations. Our actual citation system is APA
+// in-text only. Strip any [X] whose content is NOT:
+//   - numeric-only (handled elsewhere by Phase 13C; leave alone)
+//   - APA-shaped (contains a 4-digit year in valid range)
+//   - a wikilink ([[X]]) — guarded by negative lookbehind/ahead
+//   - a markdown link ([text](url)) — guarded by negative lookahead `(?![\]\(])`
+function stripBracketTags(text) {
+  if (!text) return text;
+  let stripped = 0;
+  let out = String(text).replace(/(?<!\[)\[([^\]\n]{3,200})\](?![\]\(])/g, (m, inner) => {
+    const trimmed = inner.trim();
+    // Numeric ref → keep (Phase 13C handles separately)
+    if (/^[\d,\s\-]+$/.test(trimmed)) return m;
+    // APA-style — must contain a plausible year
+    if (/\b(1[7-9]\d{2}|20\d{2}|21\d{2})\b/.test(trimmed)) return m;
+    // Footnote/note marker style ^N or *N — keep
+    if (/^[*^]\d+$/.test(trimmed)) return m;
+    stripped++;
+    return "";
+  });
+  if (stripped) {
+    // Collapse double-spaces and stray spaces before punctuation left behind
+    out = out.replace(/[ \t]{2,}/g, " ").replace(/\s+([.,;:)])/g, "$1");
+    console.log(`[thesisSynthesizer] bracketTags: stripped ${stripped} alphabetic bracket-tag(s)`);
+  }
   return out;
 }
 
@@ -737,6 +1050,228 @@ function demoteSectionH2sToH3(text, sectionHeading) {
   });
   if (demoted) console.log(`[thesisSynthesizer] H2demote: demoted ${demoted} stray H2 → H3 in "${sectionHeading}"`);
   return out;
+}
+
+// ── Phase 19B — strip empty H4 stubs ──────────────────────────────────────
+// LLMs sometimes emit `#### Heading\n\n#### Next Heading` where the first H4
+// has zero body content. The CBT thesis Methodology had:
+//   #### Systematic Review and Meta-Analysis of CBT for Anorexia Nervosa
+//   #### Comparative Analysis with Other Therapies
+// — the first H4 was an empty stub. Strip these.
+function stripEmptyH4Stubs(text) {
+  if (!text) return text;
+  const before = text;
+  // H4 immediately followed by another heading (any level) with no body
+  const out = String(text).replace(
+    /^#### [^\n]+\n\s*(?=^####\s|^###[^#]|^##[^#]|^#[^#])/gm,
+    ""
+  );
+  if (out !== before) console.log(`[thesisSynthesizer] emptyH4Stubs: stripped`);
+  return out;
+}
+
+// ── Phase 19C — strip embedded `### References` section blocks ────────────
+// The LLM treats each section as a complete document and emits its own
+// "### References\n\n1.\n2.\n..." stub at section end. The real bibliography
+// is appended at document level later, so this is always pure leakage and
+// produces the duplicate-References artifact the user spotted in the CBT
+// thesis run.
+function stripEmbeddedReferencesBlock(text) {
+  if (!text) return text;
+  const before = text;
+  // Strip any "### References" / Bibliography / Works Cited / Citations heading
+  // and EVERYTHING that follows within the section.
+  const out = String(text).replace(
+    /^###\s+(?:References?|Bibliography|Citations?|Works\s+Cited)\s*\n[\s\S]*$/im,
+    ""
+  ).trimEnd();
+  if (out !== before) console.log(`[thesisSynthesizer] embeddedRefs: stripped section-level References block`);
+  return out;
+}
+
+// ── Phase 19D — strip embedded `### Conclusion` blocks from non-Conclusion sections ──
+// LLMs sometimes append a self-summarizing `### Conclusion\n\n...summary...`
+// at the end of any section, treating it like a standalone essay. The
+// document already has a top-level `## Conclusion` section so these mini
+// summaries cause repetition and tonal awkwardness.
+function stripEmbeddedConclusionBlock(text, sectionHeading) {
+  if (!text) return text;
+  // Don't strip from the actual Conclusion section
+  if (/^conclusion$/i.test(String(sectionHeading || "").trim())) return text;
+  const before = text;
+  const out = String(text).replace(
+    /^###\s+(?:Conclusion|Summary|Final\s+Thoughts)\s*\n[\s\S]*$/im,
+    ""
+  ).trimEnd();
+  if (out !== before) console.log(`[thesisSynthesizer] embeddedConclusion: stripped from "${sectionHeading}"`);
+  return out;
+}
+
+// ── Phase 19E — strip meta-commentary tail blocks ─────────────────────────
+// The LLM ends sections with self-narrating paragraphs like:
+//   "This expanded section delves deeper into the mechanisms..."
+//   "This structured approach ensures that the introduction covers..."
+//   "...going beyond the initial 610-word draft."
+// These leak when the model is too aware of being asked to expand. Strip
+// them when they appear at the very end of a section, with or without a
+// preceding `---` separator.
+function stripMetaCommentaryTail(text) {
+  if (!text) return text;
+  const before = text;
+  let out = String(text);
+  // Pattern A — separator + meta paragraph at end
+  out = out.replace(
+    /\n+---\s*\n+(?:This (?:expanded |structured |comprehensive )?(?:section|approach|review|analysis)|By integrating|This (?:section|review) (?:provides|delves|covers))[\s\S]+?$/i,
+    ""
+  );
+  // Pattern B — meta paragraph alone at end (no separator)
+  out = out.replace(
+    /\n+(?:This (?:expanded |structured |comprehensive )?(?:section|approach|review|analysis) (?:delves|ensures|provides|underscores|highlights|covers|goes beyond)|By integrating technology[^\n]*?,?\s*(?:CBT|this section|this review))[\s\S]+?(?:draft\.|field\.|innovation\.|conditions\.|disorders\.|outcomes\.)\s*$/i,
+    ""
+  );
+  // Pattern C — "going beyond the initial Nw draft" tail (very specific leak)
+  out = out.replace(/\n+[^\n]*\bgoing beyond the initial \d+\s*-?\s*word draft[^\n]*\.\s*$/i, "");
+  if (out !== before) console.log(`[thesisSynthesizer] metaCommentary: stripped tail self-narration`);
+  return out.trimEnd();
+}
+
+// ── Phase 19F — strip "(unverified study)" placeholder citations ──────────
+// When the prompt demands a citation but the LLM has nothing to cite, it
+// emits literal "(unverified study)", "(hypothetical study)", "(placeholder
+// study)" markers. The CBT Lit Review used "(unverified study)" 11+ times.
+// Strip the parenthetical entirely; the surrounding sentence still reads
+// fine without it.
+function stripUnverifiedStudyMarkers(text) {
+  if (!text) return text;
+  const before = text;
+  let stripped = 0;
+  let out = String(text);
+  // " by (unverified study)" full attribution form first
+  out = out.replace(/\s+by\s+\((?:unverified|hypothetical|placeholder|fictional|illustrative)\s+stud(?:y|ies)\)/gi, () => { stripped++; return ""; });
+
+  // Phase 20H — `(unverified study)` wrapped inside a multi-citation paren.
+  // The May CBT thesis had: `((unverified study), 2012; Williams et al., 2015)`
+  // — the marker is INSIDE the outer citation paren so the bare-paren regex
+  // below doesn't match. Strip the wrapped form + its year, plus the leading
+  // separator if there is one, leaving a clean outer paren.
+  // Form A: `((unverified study), YYYY; <rest>)` → `(<rest>)`
+  out = out.replace(/\(\((?:unverified|hypothetical|placeholder)\s+stud(?:y|ies)\),\s*\d{4}[a-z]?\s*;\s*/gi, () => { stripped++; return "("; });
+  // Form B: `(<other>; (unverified study), YYYY)` → `(<other>)`
+  out = out.replace(/\s*;\s*\((?:unverified|hypothetical|placeholder)\s+stud(?:y|ies)\),\s*\d{4}[a-z]?(?=\s*\))/gi, () => { stripped++; return ""; });
+  // Form C: `((unverified study), YYYY)` only — entire outer paren is bogus
+  out = out.replace(/\s*\(\((?:unverified|hypothetical|placeholder)\s+stud(?:y|ies)\),\s*\d{4}[a-z]?\)\s*/gi, () => { stripped++; return " "; });
+
+  // Bare parenthetical (with optional comma after)
+  out = out.replace(/\s*\((?:unverified|hypothetical|placeholder|fictional|illustrative)\s+(?:stud(?:y|ies)|references?|sources?)\)\s*,?\s*/gi, () => { stripped++; return " "; });
+  // Tidy the resulting double-spaces and orphan commas
+  out = out.replace(/\s{2,}/g, " ").replace(/\s+([.,;:])/g, "$1");
+  if (stripped) console.log(`[thesisSynthesizer] unverifiedStudyMarkers: stripped ${stripped}`);
+  return out;
+}
+
+// ── Phase 19I — split smushed `### heading body` lines ────────────────────
+// LLMs occasionally emit an H3 heading followed on the SAME line by what
+// should be the body's first sentence. The CBT Methodology had:
+//   ### Introduction to Cognitive Behavioral Therapy (CBT) in Mental Health Cognitive Behavioral Therapy (CBT) is a widely recognized...
+// Split at the period+capitalized-word boundary so the heading is short and
+// the body starts on a new paragraph.
+function splitSmushedH3HeadingBody(text) {
+  if (!text) return text;
+  const before = text;
+  let splits = 0;
+  let out = String(text);
+
+  // Heuristic A (Phase 19I): H3 line with `. <Capital body>` boundary.
+  out = out.replace(/^(### [^\n]{30,200}?)\.\s+([A-Z][a-z][^\n]{40,})$/gm, (m, head, body) => {
+    splits++;
+    return `${head}.\n\n${body}`;
+  });
+
+  // Phase 20G — Heuristic B: H3 line without a period boundary. The May CBT
+  // thesis run had headings like:
+  //   ### Efficacy Across Mental Health Conditions The literature supports the efficacy of...
+  // No period between the heading title and the body opener. Detect: H3 line
+  // longer than 80 chars where the title-shaped prefix (Title-Case words) is
+  // followed by an article/preposition/verb that signals body prose.
+  //
+  // Split point: last position where a Title-Case word is immediately followed
+  // by a capitalized word that introduces body prose ("The", "This", "These",
+  // "In", "Despite", "Although", "While", "Several", "Many", "A meta-analysis",
+  // "Cognitive Behavioral Therapy", etc.).
+  //
+  // Conservative: require >= 4 Title-Case heading words AND body opener is one
+  // of a known list of sentence starters AND the body part is >= 40 chars.
+  const BODY_STARTERS_RE = /\b(?:The|This|These|Those|It|A|An|Despite|Although|While|Several|Many|Most|Studies|Research|Evidence|Findings|Recent|Cognitive|However|Furthermore|Moreover|Numerous|One|Two|Three|First|Second|In\s+\w|A\s+meta-analysis|A\s+systematic|For\s+example|Specifically|Although|Yet|Whereas)\b/;
+  out = out.replace(/^(### [^\n]{40,300})$/gm, (line) => {
+    // Already handled by Heuristic A if it has the period boundary
+    if (/^### [^\n]+\.\s/.test(line)) return line;
+    // Length check
+    if (line.length < 90) return line;
+    // Walk forward through Title-Case words; find the last one followed by a
+    // body-starter capital word.
+    const headPart = line.slice(4); // strip "### "
+    const words = headPart.split(/\s+/);
+    if (words.length < 6) return line;
+    // Find a split index: position i where words[0..i] looks heading-shaped
+    // (capitalized or short connectors) AND words[i+1] starts a body sentence.
+    for (let i = words.length - 1; i >= 3; i--) {
+      const next = words.slice(i + 1).join(" ");
+      if (next.length < 40) continue;
+      if (!BODY_STARTERS_RE.test(words.slice(i + 1, i + 4).join(" "))) continue;
+      // Verify the heading part is mostly title-case (allow connectors)
+      const headPartWords = words.slice(0, i + 1);
+      const titleCaseCount = headPartWords.filter(w => /^[A-Z][a-zA-Z'\-]*$/.test(w) || /^(of|and|for|the|in|on|at|to|a|an|with|across|by)$/i.test(w)).length;
+      if (titleCaseCount / headPartWords.length < 0.7) continue;
+      splits++;
+      return `### ${words.slice(0, i + 1).join(" ")}\n\n${next}`;
+    }
+    return line;
+  });
+
+  if (splits > 0) console.log(`[thesisSynthesizer] smushedH3: split ${splits} heading(s) from inline body`);
+  return out;
+}
+
+// ── Phase 18E — normalize Roman-numeral H3 series ─────────────────────────
+// LLMs sometimes emit a section that starts with an unprefixed H3 then jumps
+// to Roman-numbered H3s (the CBT thesis Lit Review had:
+//   ### Overall Efficacy and Standing of CBT
+//   ### II. Key Areas of Application
+//   ### III. Effectiveness, Limitations, and Related Factors
+//   ### IV. Implementation and Future Directions
+// — `I.` is missing). When we detect `II.` AND a preceding non-Roman H3
+// inside the same section, prepend `I.` to the first non-Roman H3 so the
+// numbering is consistent.
+function normalizeRomanH3Series(text, sectionHeading) {
+  if (!text) return text;
+  const lines = String(text).split("\n");
+  // Find all H3 line indices in this section
+  const h3Indices = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^###\s+\S/.test(lines[i])) h3Indices.push(i);
+  }
+  if (h3Indices.length < 2) return text;
+  // Detect a Roman series: at least one ### II. heading
+  const ROMAN_RE = /^###\s+(I{2,3}|IV|VI{0,3}|IX|X)\.\s+/;
+  const hasIIPlus = h3Indices.some(i => ROMAN_RE.test(lines[i]));
+  if (!hasIIPlus) return text;
+  // Already has `### I.`? — series is fine
+  const hasI = h3Indices.some(i => /^###\s+I\.\s+/.test(lines[i]));
+  if (hasI) return text;
+  // Find the first H3 BEFORE the first ### II./III. that doesn't start with a Roman
+  const firstRomanIdx = h3Indices.find(i => ROMAN_RE.test(lines[i]));
+  let prependTarget = -1;
+  for (const i of h3Indices) {
+    if (i >= firstRomanIdx) break;
+    // Skip headings that already have any leading numeral/roman
+    if (/^###\s+(\d+\.|[IVX]+\.)/.test(lines[i])) continue;
+    prependTarget = i;
+    break;
+  }
+  if (prependTarget === -1) return text;
+  lines[prependTarget] = lines[prependTarget].replace(/^###\s+/, "### I. ");
+  console.log(`[thesisSynthesizer] romanH3Series: prepended "I." to first non-Roman H3 in "${sectionHeading}"`);
+  return lines.join("\n");
 }
 
 // ── Phase 10J — strip duplicate `## Heading` mid-body + leading `---` ─────
@@ -832,35 +1367,76 @@ function lintFabricatedAuthorsInProse(draft, citationIndex) {
   // Build whitelist of surnames (first-author + first-two characters of surname-prefix
   // checks for short surnames that might collide).
   const validSurnames = new Set();
+  // Phase 19K — also build a surname+year tuple set. The CBT thesis run had
+  // real "Fairburn" and "Andersson" in the citation index (some year) but the
+  // LLM emitted "Fairburn et al. (2005)" and "Andersson et al. (2018)" with
+  // years that did NOT match any real harvested entry. The old surname-only
+  // check accepted those as valid; the tuple check rejects them.
+  const validSurnameYears = new Set();
   for (const ce of citationIndex) {
     for (const a of (ce?.cite?.authors || [])) {
       const surname = String(a || "").split(",")[0].split(/\s+/).pop().trim();
-      if (surname && surname.length >= 2) validSurnames.add(surname.toLowerCase());
+      if (surname && surname.length >= 2) {
+        const sLower = surname.toLowerCase();
+        validSurnames.add(sLower);
+        if (ce?.year) validSurnameYears.add(`${sLower}|${ce.year}`);
+      }
     }
   }
   if (validSurnames.size === 0) return draft;
 
   let stripped = 0;
   let out = String(draft);
-  // Pattern A: "Smith et al. (2020)" or "Smith et al. (2020) found that..."
+  // Pattern A: "Smith et al. (2020)" — Phase 19K reject when surname+year
+  // tuple isn't in citation index (catches Fairburn et al. 2005, Andersson
+  // et al. 2019 style leaks where the surname is real but the YEAR is fake).
   out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+et\s+al\.?\s*\((\d{4}[a-z]?)\)/g, (match, surname, year) => {
-    if (validSurnames.has(surname.toLowerCase())) return match;
+    const key = `${surname.toLowerCase()}|${year}`;
+    if (validSurnameYears.has(key)) return match;
     stripped++;
     return surname + " et al.";
   });
-  // Pattern B: "Smith and Jones (2020)"
+  // Pattern B: "Smith and Jones (2020)" — same tuple check on EITHER surname
   out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})\s*\((\d{4}[a-z]?)\)/g, (match, s1, s2, year) => {
-    if (validSurnames.has(s1.toLowerCase()) || validSurnames.has(s2.toLowerCase())) return match;
+    const k1 = `${s1.toLowerCase()}|${year}`;
+    const k2 = `${s2.toLowerCase()}|${year}`;
+    if (validSurnameYears.has(k1) || validSurnameYears.has(k2)) return match;
     stripped++;
     return `${s1} and ${s2}`;
   });
-  // Pattern C: "Smith (2020)" — only strip year-paren when surname isn't valid AND
-  // the construction looks like an attribution (preceded by "by", "to", or sentence-start).
+  // Pattern C: "Smith (2020)" — Phase 19K tuple check (surname-year)
   out = out.replace(/(\b(?:by|to|in|from|of|per|via)\s+|^|\n|\.\s+)([A-Z][a-zA-Z'\-]{2,30})\s*\((\d{4}[a-z]?)\)/g, (match, prefix, surname, year) => {
-    if (validSurnames.has(surname.toLowerCase())) return match;
+    const key = `${surname.toLowerCase()}|${year}`;
+    if (validSurnameYears.has(key)) return match;
     stripped++;
     return prefix + surname;
   });
+  // Phase 15C — Pattern D: BARE "Surname et al." mentions WITHOUT year parens.
+  // The CBT thesis abstract had "a study by Hofmann et al. found..." and
+  // "Cuijpers et al. reported..." — neither in citation index, slipped past
+  // patterns A-C because they had no `(YYYY)`. The negative lookahead
+  // `(?!\s*\()` prevents overlap with Pattern A. False-positive risk is very
+  // low — "X et al." essentially never appears in non-citation prose.
+  out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+et\s+al\.?(?!\s*\()/g, (match, surname) => {
+    if (validSurnames.has(surname.toLowerCase())) return match;
+    stripped++;
+    return "(unverified study)";
+  });
+  // Phase 15C — Pattern E: BARE "Surname and Surname" attribution-shaped
+  // mentions WITHOUT year parens, only fire when BOTH surnames are missing
+  // from citation index AND the construction has citation context (preceded
+  // by attribution verbs). The dual-miss requirement protects against
+  // false positives on natural prose like "Black and white" or "China and
+  // India" (one of those would still likely appear in *some* citation but
+  // both never would in a CBT thesis).
+  out = out.replace(
+    /(\b(?:by|to|in|from|per|via|see|by\s+a\s+study\s+by)\s+|study\s+by\s+|research\s+by\s+|work\s+of\s+|paper\s+by\s+)([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})(?!\s*\()/g,
+    (match, prefix, s1, s2) => {
+      if (validSurnames.has(s1.toLowerCase()) || validSurnames.has(s2.toLowerCase())) return match;
+      stripped++;
+      return `${prefix.trim()} (unverified studies)`;
+    }
+  );
   if (stripped > 0) console.log(`[thesisSynthesizer] proseAuthorLint: stripped ${stripped} fabricated author attribution(s)`);
   return out;
 }
@@ -950,7 +1526,7 @@ ${text}
 // If the Methodology section composed as a single wall-of-text paragraph
 // (zero ### subheadings), force a structural rewrite that splits it into
 // the four mandated subsections. One-shot LLM call.
-async function enforceMethodologySubheadings(text, hasEmpiricalData) {
+async function enforceMethodologySubheadings(text, hasEmpiricalData, realCounts = null) {
   if (!text) return text;
   const h3Count = (text.match(/^###\s+/gm) || []).length;
   if (h3Count >= 2) return text;        // already has structure — keep as-is
@@ -960,7 +1536,20 @@ async function enforceMethodologySubheadings(text, hasEmpiricalData) {
     ? `### Literature Search\n### Quantitative Analysis\n### Integration\n### Limitations`
     : `### Literature Search\n### Source Screening\n### Synthesis\n### Limitations`;
 
-  const prompt = `Restructure the following Methodology section to use these four H3 subheadings:
+  // Phase 15D — anchor the LLM to REAL harvest counts so it doesn't invent
+  // numbers like "12 studies met the inclusion criteria" when the actual
+  // harvest was 56 articles. Only used in the rewrite path; if the original
+  // methodology text already had subheadings (h3Count >= 2 above) we don't
+  // get here.
+  const factsBlock = realCounts ? `=== EMPIRICAL FACTS (use these EXACT numbers; do NOT invent counts) ===
+- Total articles harvested across sub-questions: ${realCounts.articles}
+- Total datasets retrieved: ${realCounts.datasets}
+- Total entries in the final bibliography: ${realCounts.sources}
+- Search providers actually used: OpenAlex, CORE, DOAJ, Semantic Scholar, OSF Preprints, Academagic
+- Retrieval was an automated multi-database keyword search (NOT a PRISMA systematic review)
+` : "";
+
+  const prompt = `${factsBlock}Restructure the following Methodology section to use these four H3 subheadings:
 
 ${subsections}
 
@@ -969,6 +1558,7 @@ REQUIREMENTS:
 - Distribute existing material across the subheadings — do NOT invent new facts.
 - ${hasEmpiricalData ? "" : "DO NOT mention datasets, statistical analysis, observations, sample sizes, or quantitative methods. This was a literature review only — no rows analyzed."}
 - Use academic terminology (databases, inclusion criteria, narrative review, descriptive synthesis).
+${realCounts ? `- When mentioning numbers of articles/studies/datasets, use the EXACT counts from the EMPIRICAL FACTS block above. Do NOT invent counts like "12 studies" or "8 open-access" — use the real numbers.` : ""}
 - Output ONLY the restructured Methodology body — no leading "## Methodology" heading.
 
 Original Methodology section:
@@ -988,7 +1578,19 @@ Restructured (with the four ### subheadings):`;
     });
     const out = String(res?.data?.text || "").trim();
     if (out && (out.match(/^###\s+/gm) || []).length >= 2) {
-      console.log(`[thesisSynthesizer] enforceSubheadings: rewrite succeeded`);
+      // Phase 18B — preservation guard. Earlier the rewrite was reducing a
+      // 725-word Methodology to 245 words because qwen2.5:7b interprets
+      // "distribute existing material across the subheadings" as "summarize
+      // and redistribute key points." Reject any rewrite that dropped below
+      // 75% of the original word count — a real subheading injection
+      // shouldn't lose more than a quarter of the prose.
+      const beforeWords = wordCount(text);
+      const afterWords = wordCount(out);
+      if (beforeWords > 200 && afterWords < beforeWords * 0.75) {
+        log(`enforceSubheadings: rewrite shrank from ${beforeWords}w to ${afterWords}w (lost >25%) — keeping original`, "warn");
+        return text;
+      }
+      console.log(`[thesisSynthesizer] enforceSubheadings: rewrite succeeded (${beforeWords}w → ${afterWords}w)`);
       return out;
     }
     log(`enforceSubheadings: LLM didn't produce subheadings — keeping original`, "warn");
@@ -1151,18 +1753,44 @@ async function writeSection({ topic, tier, section, prevSummaries, constraints, 
     : `\n\nNo structured citations available. Write claims as general knowledge — DO NOT invent (Author, Year) parentheticals. NEVER cite databases or repositories like "(openalex)" or "(figshare)" — they are not authors.`;
 
   // Phase 5B: tell the model to avoid its filler openings + previously-used openings.
+  // Phase 20I — also give the model an explicit structural directive when prior
+  // openings have used a particular pattern. The May CBT run had 3 sections
+  // (Methodology, Discussion, Conclusion) trigger the duplicate-opening rewrite
+  // because every section started with "Cognitive Behavioral Therapy (CBT) has
+  // emerged…". Tell the model what STRUCTURE the new opening should take.
   const recentOpenings = (prevSummaries || []).map(p => p?.opening).filter(Boolean).slice(-5);
+  const STRUCTURAL_ALTERNATIVES = [
+    `Open with a SPECIFIC FINDING (e.g., "A meta-analysis of N=42 trials reported a Hedges' g of 0.71...")`,
+    `Open with a CONTRADICTION (e.g., "While early reviews suggested X, more recent work demonstrates Y...")`,
+    `Open with a MECHANISTIC question (e.g., "How does cognitive restructuring translate into long-term remission rates?")`,
+    `Open with a CLINICAL POPULATION (e.g., "Among adolescents with comorbid OCD, treatment-as-usual yields...")`,
+    `Open with a METHODOLOGICAL observation (e.g., "Three core measurement approaches dominate this literature...")`,
+  ];
+  // Rotate which alternatives are emphasized so each section gets a different push.
+  const altsForThisSection = [
+    STRUCTURAL_ALTERNATIVES[(prevSummaries?.length || 0) % STRUCTURAL_ALTERNATIVES.length],
+    STRUCTURAL_ALTERNATIVES[((prevSummaries?.length || 0) + 2) % STRUCTURAL_ALTERNATIVES.length],
+  ];
   const openingGuardrail = `\n\nDO NOT start this section with any of these stock openings:\n${FORBIDDEN_OPENINGS.map(o => `  - "${o}..."`).join("\n")}` +
     (recentOpenings.length > 0
       ? `\nALSO avoid repeating these openings already used in earlier sections:\n${recentOpenings.map(o => `  - "${o.slice(0, 80)}..."`).join("\n")}`
-      : "");
+      : "") +
+    `\n\nINSTEAD, take a DIFFERENT structural angle for this section's opening. Two good options:\n  - ${altsForThisSection[0]}\n  - ${altsForThisSection[1]}\nPick one (or another distinct angle) — do NOT default to "CBT has emerged…" / "CBT continues to be…" / "Cognitive Behavioral Therapy is a widely-used…" patterns.`;
 
   // Phase 6D — bake length floor into FIRST prompt so we don't waste retries.
+  // Phase 19L — qwen2.5:7b consistently undershoots by 30-50% on first attempt
+  // (litreview 562/900, results 688/1050, discussion 610/1200 in the May run).
+  // Add a "self-checkpoint" instruction that asks the model to count and
+  // continue if under the floor. Empirically this halves the retry rate on
+  // small-model runs.
   const wordFloor = Math.floor((section.word_budget || 600) * 0.85);
+  const wordCheckpoint = Math.floor((section.word_budget || 600) * 0.5);
   const expansionDirectives = `\n\n=== LENGTH REQUIREMENT (HARD FLOOR — read carefully) ===
 This section's target is ${section.word_budget} words. You MUST write AT LEAST ${wordFloor} words.
 A draft shorter than ${wordFloor} words is a FAILURE — it will be sent back for revision and waste minutes.
-Track your length as you go. If you find yourself wrapping up before ${wordFloor} words, you have not gone deep enough.
+
+Your default tendency is to UNDERWRITE — to wrap up at ~50-65% of the target. Consciously override this.
+SELF-CHECKPOINT: When you've written approximately ${wordCheckpoint} words, you are HALFWAY done — not nearly done. Continue with the same density and depth.
 
 To reach the floor, EXPAND by:
 - Quoting specific numbers / effect sizes / sample sizes from the cited sources (e.g. "n=240, p<.05")
@@ -1222,7 +1850,19 @@ ${synthesisDirective}
   const isLitReview  = /lit.?review|literature/i.test(section.id || section.heading || "");
   const isDiscussion = /discussion/i.test(section.id || section.heading || "");
   const isLong       = isLitReview || isDiscussion;
-  const numPredict = Math.ceil((section.word_budget || 600) * (isLong ? 2.8 : 2.2));
+  // Phase 14B — bump num_predict for the heavyweight (deepseek-r1) model.
+  // deepseek-r1 spends 30-40% of generated tokens inside <think>...</think>
+  // reasoning blocks, which means visible output is cut at ~60-70% of the
+  // raw num_predict budget. Run logs showed Abstract/Conclusion ending mid-
+  // sentence ("…making strong causal", "(N=3") despite raw word-count being
+  // under budget. Use a heavier multiplier when the section composer is the
+  // reasoning model.
+  const usingReasoningModel = SYNTH_HEAVY_MODEL.includes("deepseek-r1") || SYNTH_HEAVY_MODEL.includes("qwq");
+  // Phase 19L — bumped baseMult 2.2 → 2.6 so qwen2.5:7b has headroom to hit the
+  // 85% floor on first try (was running out of num_predict and stopping short).
+  const baseMult  = usingReasoningModel ? 2.8 : 2.6;
+  const longMult  = usingReasoningModel ? 3.4 : 3.0;
+  const numPredict = Math.ceil((section.word_budget || 600) * (isLong ? longMult : baseMult));
 
   // Phase 9E — section composition uses the heavyweight model when configured.
   // The heavy num_ctx is configurable (default 6144) since 14B-q3 quantized
@@ -1238,7 +1878,21 @@ ${synthesisDirective}
       skipLanguageDetection: true,
       options: { temperature: 0.35, num_ctx: sectionNumCtx, num_predict: numPredict }
     });
-    text = String(res?.data?.text || "").trim();
+    // Phase 15B — guard against LLM error sentinels. When llm() catches an abort/
+    // timeout, it returns { success: false, data: { text: "The language model
+    // encountered an error: ..." } }. Without this check, the error string
+    // becomes section content (the CBT thesis run had this leak in Results).
+    if (res && res.success === false) {
+      log(`section "${section.id}" LLM call failed (success=false): ${res.error || "(no error msg)"}`, "warn");
+      text = "";
+    } else {
+      text = String(res?.data?.text || "").trim();
+      // Defense-in-depth: if the model itself emitted error-shaped prose, strip it
+      if (looksLikeLlmError(text)) {
+        log(`section "${section.id}" output matches LLM-error sentinel — discarding`, "warn");
+        text = "";
+      }
+    }
   } catch (err) {
     log(`section "${section.id}" write failed: ${err.message}`, "warn");
     return `_(synthesis failed for this section: ${err.message})_`;
@@ -1297,19 +1951,32 @@ async function adjustSectionLength(text, section, topic, tier) {
   const target   = section.word_budget || 300;
   const ratio    = current / target;
 
-  if (ratio >= 0.6 && ratio <= 1.5) return text; // within acceptable window
+  // Phase 18B — widened the acceptable upper bound from 1.5 → 1.8. The old
+  // window meant that a section coming back at 165% of budget triggered an
+  // LLM rewrite that, on small models like qwen2.5:7b, regularly compressed
+  // the section down to ~25% of budget (the "raw=1730 → final=251" Results
+  // bug). Better to keep an over-budget section than destroy real content.
+  if (ratio >= 0.6 && ratio <= 1.8) return text;
 
   const action = ratio < 0.6 ? "expand" : "trim";
   const delta  = Math.abs(target - current);
+  const minAcceptableWords = Math.floor(target * 0.6);   // floor for trim sanity check
+  const maxAcceptableWords = Math.ceil(target * 1.5);    // ceiling for expand sanity check
 
   const expandInstr = `The text is too short (${current} words, target ${target}).
 Expand it by approximately ${delta} words. Add depth, examples, technical detail, and analysis.
-Do NOT pad with filler — every added sentence must advance the argument.`;
+Do NOT pad with filler — every added sentence must advance the argument.
+HARD CAP: output must be at most ${maxAcceptableWords} words.`;
 
   const trimInstr = `The text is too long (${current} words, target ${target}).
-Trim approximately ${delta} words. Remove repetition, over-explanation, and weak filler sentences.
-Preserve all key facts, citations, and technical content.`;
+Trim approximately ${delta} words to bring it close to ${target}.
+Remove repetition, over-explanation, and weak filler sentences.
+Preserve ALL key facts, statistics, citations, named studies, and quantitative findings VERBATIM.
+HARD FLOOR: output must be at least ${minAcceptableWords} words. If you cannot reach that floor without losing content, return the input unchanged.`;
 
+  // Phase 18B — removed the .slice(0, 6000) char cap. A 1500-word section is
+  // ~10kc; truncating before the rewrite was losing ~40% of long sections
+  // before the LLM even saw them, which compounded the over-aggressive trim.
   const adjPrompt = `You are editing one section of an academic ${tier} on the topic: "${topic}".
 Section heading: "${section.heading}"
 Core claim: "${section.thesis_claim || "(see heading)"}"
@@ -1324,7 +1991,7 @@ Rules:
 
 Section text to ${action}:
 """
-${text.slice(0, 6000)}
+${text}
 """`;
 
   try {
@@ -1336,7 +2003,21 @@ ${text.slice(0, 6000)}
       options: { temperature: 0.3, num_ctx: 8192, num_predict: Math.ceil((section.word_budget || 600) * 1.8) }
     });
     const adjusted = String(res?.data?.text || "").trim();
-    if (adjusted.length > 50) return adjusted;
+    // Phase 18B — post-rewrite preservation guard. Reject the LLM's output
+    // if it dropped below 60% of the budget on a trim, OR fell below 70% of
+    // the original word count on an expand. Either case means the rewrite
+    // destroyed content; keep the original so the user gets real prose.
+    const adjustedWords = wordCount(adjusted);
+    if (adjusted.length <= 50) return text;
+    if (action === "trim" && adjustedWords < minAcceptableWords) {
+      log(`adjustSectionLength(trim): rewrite dropped to ${adjustedWords}w (floor ${minAcceptableWords}w) for "${section.heading}" — keeping original`, "warn");
+      return text;
+    }
+    if (action === "expand" && adjustedWords < Math.floor(current * 0.7)) {
+      log(`adjustSectionLength(expand): rewrite shrank from ${current}w to ${adjustedWords}w for "${section.heading}" — keeping original`, "warn");
+      return text;
+    }
+    return adjusted;
   } catch (err) {
     log(`adjustSectionLength(${action}) failed for "${section.heading}": ${err.message}`, "warn");
   }
@@ -1347,12 +2028,23 @@ ${text.slice(0, 6000)}
  * Targeted rewrite of a single offending paragraph (third-person violation).
  */
 async function rewriteParagraph(paragraph, reason) {
+  // Phase 20A — strengthened prompt + preservation guard. The first-person
+  // rewrite was the dominant content-loss culprit in the May CBT thesis run
+  // (DRAFT[assembled]: 58541c → DRAFT[first-person-rewrite]: 29507c — a 50%
+  // collapse). qwen2.5:7b was summarizing instead of just changing voice.
+  const originalWords = wordCount(paragraph);
   const prompt = `Rewrite the paragraph below to remove the issue: ${reason}.
-Rules:
-- Keep meaning, length (±20%), and academic tone identical.
-- Use ONLY third-person voice (no I/we/our/my/us).
+
+CRITICAL RULES — read carefully:
+- This is a VOICE rewrite, NOT a summary. Output MUST be the same length as input (±15%).
+- Preserve EVERY sentence, every statistic, every citation, every named study verbatim.
+- Only change: first-person pronouns (I/we/our/my/us) → third-person (this study, the analysis, the data).
+- Keep all [[wikilinks]] intact.
+- Keep all (Author, YYYY) attributions intact.
 - No contractions.
-- Output the rewritten paragraph ONLY, no preamble.
+- Output the rewritten paragraph ONLY, no preamble, no "Here is the rewrite" wrapper.
+
+Original word count: ${originalWords}. Your output should be ${Math.floor(originalWords * 0.85)}-${Math.ceil(originalWords * 1.15)} words.
 
 Paragraph:
 """
@@ -1364,9 +2056,49 @@ ${paragraph}
       model: SYNTH_MODEL,
       skipKnowledge: true,
       skipLanguageDetection: true,
-      options: { temperature: 0.2, num_ctx: 2048, num_predict: 600 }
+      // Phase 20A — bumped num_predict so the model has headroom to actually
+      // preserve length. 600 was occasionally too tight for long paragraphs.
+      options: { temperature: 0.2, num_ctx: 4096, num_predict: Math.ceil(Math.max(originalWords, 200) * 2.2) }
     });
-    return String(res?.data?.text || "").trim() || paragraph;
+    const rewritten = String(res?.data?.text || "").trim();
+    if (!rewritten) return paragraph;
+    // Phase 20A-fix — PROMPT-LEAK GUARD. The CBT thesis-deep run had the LLM
+    // regurgitate the entire rewrite prompt verbatim (including "CRITICAL
+    // RULES", "Original word count:", the `"""` heredoc markers, and the
+    // original paragraph wrapped in those markers). The word-count guard
+    // approved it because the regurgitated prompt + content was LONGER than
+    // the input. Detect this by scanning the output for any of the prompt's
+    // own marker strings — if matched, reject and keep the original.
+    const PROMPT_LEAK_MARKERS = [
+      "CRITICAL RULES",
+      "Original word count:",
+      "Your output should be",
+      "VOICE rewrite, NOT a summary",
+      "no preamble, no \"Here is the rewrite\"",
+      // Standalone `"""` lines indicate the LLM echoed the heredoc wrapper
+      /^\s*"""\s*$/m,
+    ];
+    for (const marker of PROMPT_LEAK_MARKERS) {
+      const hit = typeof marker === "string"
+        ? rewritten.includes(marker)
+        : marker.test(rewritten);
+      if (hit) {
+        log(`rewriteParagraph: LLM regurgitated prompt text (matched "${typeof marker === "string" ? marker.slice(0, 40) : marker.source}") — keeping original`, "warn");
+        return paragraph;
+      }
+    }
+    // Phase 20A — preservation guard. Reject any rewrite that dropped below
+    // 80% of the input word count. The rewrite is supposed to be voice-only;
+    // anything significantly shorter means the LLM summarized instead. Keep
+    // the original first-person prose (the downstream pass will catch
+    // remaining I/we/our markers via the lighter linter) rather than ship a
+    // half-truncated version.
+    const rewrittenWords = wordCount(rewritten);
+    if (originalWords >= 50 && rewrittenWords < originalWords * 0.80) {
+      log(`rewriteParagraph: rewrite shrank from ${originalWords}w to ${rewrittenWords}w (lost >20%) — keeping original`, "warn");
+      return paragraph;
+    }
+    return rewritten;
   } catch {
     return paragraph;
   }
@@ -1505,6 +2237,44 @@ ${excerpt}
   return repaired;
 }
 
+// Phase 20N — render the "Future Directions" section from a deep-followup
+// payload. Lists the open questions that drove the supplementary harvest +
+// summarizes findings from the harvested articles. Plain markdown; no LLM
+// call (the per-article analyzer already extracted facts).
+function buildFutureDirectionsSection(deepFollowup) {
+  if (!deepFollowup || !Array.isArray(deepFollowup.analyses) || deepFollowup.analyses.length === 0) return "";
+  const questions = deepFollowup.rankedQuestions || [];
+  const analyses = deepFollowup.analyses || [];
+  const lines = [];
+  lines.push(`## Future Directions`);
+  lines.push("");
+  lines.push(`> [!info] Open-questions follow-up (\`[depth:thesis-deep]\`)`);
+  lines.push(`> This section is grounded in a supplementary harvest of ${analyses.length} article(s) targeting the highest-recurrence open questions surfaced across the primary literature review. Follow-up search query: *"${(deepFollowup.followupQuery || "(n/a)").replace(/\n/g, " ")}"*.`);
+  lines.push("");
+  if (questions.length > 0) {
+    lines.push(`### Top open questions that drove this follow-up`);
+    questions.forEach((q, i) => {
+      lines.push(`${i + 1}. **${q.question}** — surfaced ${q.occurrences}× across prompt(s) ${q.sourcePrompts.join(", ")} (avg article quality ${q.avgWeight.toFixed(2)})`);
+    });
+    lines.push("");
+  }
+  // Group analyses' top facts as bullet points; one paragraph per article.
+  lines.push(`### Supplementary findings`);
+  for (let i = 0; i < analyses.length; i++) {
+    const a = analyses[i];
+    const title = a?.frontmatter?.title || a?.article?.title || "(untitled)";
+    const facts = (a?.analysis?.facts || []).slice(0, 3).map(f => `  - ${f}`).join("\n");
+    if (facts) {
+      lines.push(`- **${title.replace(/[*_]/g, "")}**`);
+      lines.push(facts);
+    } else if (a?.analysis?.summary) {
+      lines.push(`- **${title.replace(/[*_]/g, "")}** — ${a.analysis.summary}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 /**
  * Top-level synthesis driver.
  *
@@ -1516,7 +2286,16 @@ ${excerpt}
  * @param {object} args.constraints
  * @returns {Promise<{relativePath:string, wordCount:number, lintReport:object, vectorCollection:string}>}
  */
-export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptResults, constraints, onStep }) {
+export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptResults, constraints, onStep, bridgeSkipNotice = null, topicVaultRel = null, signal = null, deepFollowup = null }) {
+  // Phase 16E — abort guard. Used between sections so a long composition
+  // doesn't keep running after the user cancels.
+  const checkAborted = () => {
+    if (signal && signal.aborted) {
+      const e = new Error("Pipeline aborted by user");
+      e.code = "PIPELINE_ABORTED";
+      throw e;
+    }
+  };
   // Phase 6C — progress emitter (no-op when caller didn't supply onStep).
   const emitProgress = typeof onStep === "function" ? onStep : () => {};
   // Final title precedence: caller-supplied cleanTitle (LLM-derived in orchestrator)
@@ -1565,6 +2344,12 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
     articleNotes.flatMap(n => [n.paper_url, n.url].filter(Boolean))
   )];
 
+  // Phase 19A — ORCID rescue pre-pass. For citations with a DOI but a
+  // malformed authors list (the Cochrane "82/88 single-token authors" bug),
+  // ask ORCID for the canonical authors. Mutates allNotesForCitations in
+  // place; no-ops when ORCID env creds aren't configured. Best-effort.
+  await rescueMalformedAuthors(allNotesForCitations);
+
   // Phase 5A — build the structured citation index.
   // Each entry: { id, inText: "(Smith & Jones, 2023)", apa: "<full APA entry>", cite, ... }
   // The synthesizer uses this to ground in-text citations and emit a real
@@ -1581,6 +2366,8 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   const prevSummaries = [];
   const totalSections = outline.sections.length;
   for (let idx = 0; idx < outline.sections.length; idx++) {
+    // Phase 16E — bail if the user has aborted between sections.
+    checkAborted();
     const section = outline.sections[idx];
     console.log(`[thesisSynthesizer] ⏳ composing section ${idx + 1}/${totalSections}: "${section.heading}" (budget=${section.word_budget}w)`);
     emitProgress(`✍️ Composing ${section.heading} (${idx + 1}/${totalSections}, ~${section.word_budget}w)`,
@@ -1658,9 +2445,16 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
       // Phase 8A — strip LLM-pipeline jargon ("semantic-chunk indexing", etc.)
       const dej = dejargonMethodology(text);
       text = dej.text;
-      // Phase 8H — force structural rewrite if no ### subheadings present
+      // Phase 8H — force structural rewrite if no ### subheadings present.
+      // Phase 15D — pass real harvest counts so the rewrite doesn't invent
+      // numbers like "12 studies met inclusion criteria".
       const hasEmpiricalData = (allQuantFindings || []).some(q => !q.metadataOnly && (q.charts?.length || 0) > 0);
-      text = await enforceMethodologySubheadings(text, hasEmpiricalData);
+      const realCounts = {
+        articles: (promptResults || []).reduce((s, p) => s + (p?.analyses?.length || 0), 0),
+        datasets: (allDatasetCites || []).length,
+        sources: (citationIndex || []).length,
+      };
+      text = await enforceMethodologySubheadings(text, hasEmpiricalData, realCounts);
       // Re-run dejargon after the rewrite (the LLM may have re-introduced jargon)
       text = dejargonMethodology(text).text;
     }
@@ -1681,47 +2475,178 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
       text = await ensureResearchQuestion(text, topic);
     }
 
+    // ── Phase 14A — per-helper char-delta instrumentation ─────────────────
+    // Wrap each cleanup helper to log a warning when it removes >30% of the
+    // section's characters in a single pass. This pinpoints which helper is
+    // destroying content (e.g., the Lit Review `raw=1425w → final=283w`
+    // collapse). The 30% threshold is sensitive enough to flag most real
+    // bugs and quiet enough to not spam logs on healthy strips.
+    const _runHelper = (label, fn) => {
+      const before = text.length;
+      text = fn(text);
+      const after = text.length;
+      if (before > 200 && after < before * 0.7) {
+        const removed = before - after;
+        const pct = Math.round(100 * (1 - after / before));
+        console.warn(`[thesisSynthesizer] helper ${label} removed ${removed}c (${pct}%) from "${section.heading}" — investigate if section came back too short`);
+      }
+    };
+
     // Phase 10L — strip deepseek-r1 <think>...</think> blocks
-    text = stripThinkingBlocks(text);
+    _runHelper("stripThinkingBlocks", stripThinkingBlocks);
 
     // Phase 12A — strip ```markdown / ```md fence wrappers (deepseek-r1
     // wraps section output in fences, leaving orphan ``` lines mid-paragraph)
-    text = stripMarkdownFences(text);
+    _runHelper("stripMarkdownFences", stripMarkdownFences);
 
     // Phase 12B — strip """ triple-quote heredoc markers (prompt scaffolding leak)
-    text = stripTripleQuotes(text);
+    _runHelper("stripTripleQuotes", stripTripleQuotes);
 
     // Phase 10I (+ 12D extended patterns) — strip conversational preambles
-    text = stripConversationalPreamble(text);
+    _runHelper("stripConversationalPreamble", stripConversationalPreamble);
 
     // Phase 10J — strip mid-body duplicate `## Heading` + leading `---`
-    text = stripMidBodyDuplicateHeading(text, section.heading);
+    _runHelper("stripMidBodyDuplicateHeading", (t) => stripMidBodyDuplicateHeading(t, section.heading));
 
     // Phase 12E — demote stray `## Heading` inside section body to `### Heading`
     // (the assembler owns the section's H2; LLMs sometimes emit additional H2
     // sub-sections which break the document outline).
-    text = demoteSectionH2sToH3(text, section.heading);
+    _runHelper("demoteSectionH2sToH3", (t) => demoteSectionH2sToH3(t, section.heading));
+
+    // Phase 18E — normalize Roman-numeral H3 series. When the LLM jumps to
+    // `### II.`, `### III.`, ... but leaves the first heading unprefixed,
+    // prepend `### I. ` to that first heading so the series reads correctly.
+    _runHelper("normalizeRomanH3Series", (t) => normalizeRomanH3Series(t, section.heading));
+
+    // Phase 19B — drop empty H4 stubs (heading with no body before next heading)
+    _runHelper("stripEmptyH4Stubs", stripEmptyH4Stubs);
+
+    // Phase 19C — strip section-internal `### References` blocks. The real
+    // bibliography is appended at document level; these are pure leakage
+    // and produced the duplicate-References artifact in the CBT thesis.
+    _runHelper("stripEmbeddedReferencesBlock", stripEmbeddedReferencesBlock);
+
+    // Phase 19D — strip section-internal `### Conclusion`/`### Summary`
+    // self-summary blocks from non-Conclusion sections.
+    _runHelper("stripEmbeddedConclusionBlock", (t) => stripEmbeddedConclusionBlock(t, section.heading));
+
+    // Phase 19E — strip self-narrating meta-commentary tails ("This expanded
+    // section delves deeper..." / "going beyond the initial Nw draft").
+    _runHelper("stripMetaCommentaryTail", stripMetaCommentaryTail);
+
+    // Phase 19F — strip "(unverified study)" placeholder citations.
+    _runHelper("stripUnverifiedStudyMarkers", stripUnverifiedStudyMarkers);
+
+    // Phase 19I — split smushed `### heading body` lines into proper heading
+    // + paragraph break.
+    _runHelper("splitSmushedH3HeadingBody", splitSmushedH3HeadingBody);
 
     // Phase 13A — strip stray `# Heading` inside section body (LLM treating
     // section like a whole document)
-    text = stripSectionH1s(text, section.heading);
+    _runHelper("stripSectionH1s", (t) => stripSectionH1s(t, section.heading));
 
     // Phase 13B — strip fabricated "References:\n- Author..." blocks emitted
-    // by the LLM at section end (the real bibliography is appended later)
-    text = stripFabricatedBibliography(text, section.heading);
+    // by the LLM at section end (the real bibliography is appended later).
+    // Phase 14A: tightened to require real author signatures + 60% cap.
+    _runHelper("stripFabricatedBibliography", (t) => stripFabricatedBibliography(t, section.heading));
 
     // Phase 13C — strip orphan `[N]`, `[N, M]` numeric citation markers
     // (we use APA in-text style; numeric markers are leftover scaffolding)
-    text = stripOrphanNumericRefs(text);
+    _runHelper("stripOrphanNumericRefs", stripOrphanNumericRefs);
 
-    // Phase 8D — strip "Key Findings:" / "Limitations:" stock bullet sections
-    text = stripStockBulletSections(text, section.heading);
+    // Phase 14D — strip alphabetic bracket-tag pseudo-citations like
+    // `[Cochrane review]`, `[Mexico Trial Data]`, `[Mindset App Analysis]`
+    // (LLM-invented study labels; we use APA in-text only)
+    _runHelper("stripBracketTags", stripBracketTags);
+
+    // Phase 15E — strip model meta-commentary parentheticals like
+    // `(given the hypothetical year 2026 reference, likely intended as a
+    // placeholder for illustrative examples)` — model self-talk leak.
+    _runHelper("stripMetaCommentary", stripMetaCommentary);
+
+    // Phase 8D — strip "Key Findings:" / "Limitations:" stock bullet sections.
+    // Phase 14A: tightened with 60% cap.
+    _runHelper("stripStockBulletSections", (t) => stripStockBulletSections(t, section.heading));
 
     // Phase 8F — remove orphan close-quote artifacts
-    text = stripOrphanQuotes(text);
+    _runHelper("stripOrphanQuotes", stripOrphanQuotes);
 
     // Phase 10K — clean malformed wikilinks (run after stripDuplicate to keep order safe)
-    text = lintMalformedWikilinks(text);
+    _runHelper("lintMalformedWikilinks", lintMalformedWikilinks);
+
+    // Phase 14B — mid-sentence truncation detection + one-shot continuation.
+    // If the cleaned section ends mid-sentence (lowercase letter, hanging
+    // conjunction, "(N=", trailing comma, etc.), call the model once for a
+    // short continuation so the user doesn't see "…making strong causal" or
+    // "* A pilot dataset (N=3" as the saved output. Best-effort only — if
+    // the continuation call fails or returns nothing, the original truncated
+    // text is preserved (fail-open, never destructive).
+    if (looksTruncated(text)) {
+      console.warn(`[thesisSynthesizer] section "${section.id}" appears truncated (mid-sentence end) — running continuation pass`);
+      try {
+        const tail = text.slice(-1500);
+        const contPrompt = `The following section ended mid-sentence and needs to be COMPLETED (not rewritten).
+Continue from where it cuts off and finish the thought naturally. 1–3 closing sentences max.
+
+Hard rules:
+- DO NOT repeat any of the existing content
+- DO NOT add new headings or bullet markers
+- DO NOT introduce new claims requiring citations
+- DO NOT start with "Continuing", "In addition", "Furthermore" — pick up mid-sentence
+
+Section ending (the last 1500 chars — note where it cuts off):
+"""
+${tail}
+"""
+
+Output ONLY the continuation text (no preamble, no quotes):`;
+        const contRes = await llm(contPrompt, {
+          timeoutMs: 90000,
+          model: SYNTH_MODEL,                  // use the lighter model — small completion only
+          skipKnowledge: true,
+          skipLanguageDetection: true,
+          options: { temperature: 0.3, num_ctx: 4096, num_predict: 400 }
+        });
+        // Phase 15B — guard: continuation pass must not splice an LLM error
+        // string into the section. The CBT thesis run had this happen — the
+        // continuation timed out and the error sentinel got appended.
+        if (contRes && contRes.success === false) {
+          console.log(`[thesisSynthesizer] continuation pass: LLM call failed (success=false) — keeping truncated text`);
+          // fall through to outer end-of-block; cont stays empty so no splice
+        }
+        let cont = (contRes && contRes.success === false)
+          ? ""
+          : String(contRes?.data?.text || "").trim();
+        // Defense-in-depth: even if success=true, the model may have echoed the
+        // error sentinel from a stale buffer. Discard if matched.
+        if (looksLikeLlmError(cont)) {
+          console.log(`[thesisSynthesizer] continuation pass: output matches LLM-error sentinel — discarding`);
+          cont = "";
+        }
+        // Strip preamble-style scaffolding the model may emit despite instructions
+        cont = cont.replace(/^["'`]+|["'`]+$/g, "").trim();
+        cont = cont.replace(/^(Continuation|Continuing|Here is the continuation)[:.\s]+/i, "").trim();
+        if (cont.length > 15 && cont.length < 1500) {
+          // Splice: remove trailing whitespace/comma from existing text, add space, append continuation.
+          text = text.replace(/[\s,;]+$/, "") + " " + cont;
+          console.log(`[thesisSynthesizer] continuation pass: appended ${cont.length}c to "${section.id}"`);
+        } else {
+          console.log(`[thesisSynthesizer] continuation pass: skipped (got ${cont.length}c, expected 15-1500)`);
+        }
+      } catch (err) {
+        console.log(`[thesisSynthesizer] continuation pass failed: ${err.message} — keeping truncated text`);
+      }
+    }
+
+    // Phase 15B — final safeguard before the saved file: if anywhere in this
+    // chain an LLM error sentinel survived, replace the whole section with a
+    // graceful placeholder. Better an honest "this section couldn't be
+    // generated" than the literal string "The language model encountered an
+    // error: LLM request aborted or timed out" embedded in academic prose.
+    if (looksLikeLlmError(text)) {
+      console.warn(`[thesisSynthesizer] section "${section.id}" still contains LLM-error sentinel after cleanup — replacing with placeholder`);
+      text = `_(this section could not be generated due to an LLM error; please re-run if this persists)_`;
+    }
 
     const finalWords = wordCount(text);
     console.log(`[thesisSynthesizer] ✓ section ${idx + 1}/${totalSections} done: ${finalWords}w (raw=${rawWords}, budget=${section.word_budget})`);
@@ -1802,7 +2727,7 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   //      The model critiques its own draft to surface weak claims, unclear
   //      sentences, and missing transitions, then applies targeted repair.
   //      Not a full rewrite — just a focused patch over rough spots.
-  if (tier === "research" || tier === "thesis") {
+  if (tier === "research" || tier === "thesis" || tier === "thesis-deep") {
     try {
       console.log(`[thesisSynthesizer] ⏳ polish pass (${tier} tier — critique + targeted repair)...`);
       const polished = await polishDraft({ draft, topic, tier });
@@ -1898,6 +2823,13 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   draft = reflowParagraphs(draft);
   snapshotDraft("reflowed", draft);
 
+  // ── Phase 19H — renumber broken ordered lists (LLM-skipped indices) ──
+  // The CBT Conclusion had `1. Depression`, `3. Substance Abuse`, `4. PTSD`
+  // — `2.` was missing entirely. Sequentially renumber contiguous numbered
+  // list blocks so display order matches the explicit numbering.
+  draft = renumberOrderedLists(draft);
+  snapshotDraft("renumbered", draft);
+
   // 11. Persist.
   // 11a. Wikilink enrichment — the synthesizer LLM doesn't generate [[wikilinks]],
   //      so without this pass the article saves with 0 stubs created. Run a small
@@ -1941,9 +2873,72 @@ Output the COMPLETE rewritten section (with new opening + unchanged body):`;
   // in env to wrap every occurrence (heavier link density).
   enrichedDraft = wrapAcronymsAsWikilinks(enrichedDraft);
 
+  // Phase 14F — if the bridge gate offered but couldn't pause (missing
+  // conversationId), prepend a visible warning callout to the saved file
+  // so the user sees it the moment they open the note. This is the only
+  // surface the user has for this failure mode (the warn went to PM2 logs).
+  let bridgeCallout = "";
+  if (bridgeSkipNotice && bridgeSkipNotice.count > 0) {
+    bridgeCallout = buildBridgeSkipCallout(bridgeSkipNotice, topicVaultRel || `Research/${topicSlug}`);
+    console.log(`[thesisSynthesizer] bridgeSkipNotice: prepended Manual-Bridge-Skipped callout for ${bridgeSkipNotice.count} blocked source(s)`);
+  }
+
+  // Phase 15H — when datasets were retrieved but all metadata-only, prepend
+  // a note explaining why no charts appear in this run.
+  // Phase 20J — replace the bare "no charts" message with a structured
+  // metadata summary (repositories, sample sizes, intervention keywords,
+  // conditions, study types) when we have dataset records. Pure-string +
+  // node built-in heuristics; no LLM call.
+  const parseableChartCount = (allQuantFindings || []).reduce((s, q) => s + (q.charts?.length || 0), 0);
+  let chartsNote = "";
+  if ((allQuantFindings || []).length > 0 && parseableChartCount === 0) {
+    try {
+      const { buildDatasetMetadataSummary, renderDatasetMetadataSummary } = await import("./datasetMetadataSummary.js");
+      const summary = buildDatasetMetadataSummary(allDatasetCites || []);
+      if (summary) {
+        chartsNote = renderDatasetMetadataSummary(summary, { topicSlug });
+        console.log(`[thesisSynthesizer] chartsNote: prepended dataset-metadata summary (datasets=${summary.totalCount}, repos=${Object.keys(summary.byRepository).length}, totalN=${summary.totalN ?? "n/a"})`);
+      }
+    } catch (err) {
+      log(`datasetMetadataSummary failed: ${err.message}`, "warn");
+    }
+  }
+  if (!chartsNote) {
+    chartsNote = buildNoChartsNote((allQuantFindings || []).length, parseableChartCount);
+    if (chartsNote) {
+      console.log(`[thesisSynthesizer] chartsNote: prepended no-charts note (datasets=${(allQuantFindings || []).length}, parseable=${parseableChartCount})`);
+    }
+  }
+
+  // Phase 20N — append "Future Directions" section when the thesis-deep
+  // recursive follow-up returned harvested articles. Append BEFORE the final
+  // ## References section, after the main Conclusion.
+  let futureDirectionsBlock = "";
+  if (deepFollowup && Array.isArray(deepFollowup.analyses) && deepFollowup.analyses.length > 0) {
+    futureDirectionsBlock = buildFutureDirectionsSection(deepFollowup);
+    if (futureDirectionsBlock) {
+      console.log(`[thesisSynthesizer] futureDirections: appended (${deepFollowup.analyses.length} follow-up article(s), query="${deepFollowup.followupQuery?.slice(0, 60) || "n/a"}")`);
+    }
+  }
+
   console.log(`[thesisSynthesizer] ⏳ writing final article to disk...`);
   const relativePath = `${VAULT_JOURNAL_ROOT}/Research/${topicSlug}/${topicSlug}.md`;
-  await writeNote(relativePath, headerFm + enrichedDraft);
+  // Phase 19J — strip stray empty `#` line that sometimes appears at the very
+  // top of the assembled draft (LLM emits a bare H1 marker before the first
+  // real heading). The CBT thesis output started with `#\n\n# Abstract`.
+  let finalBody = enrichedDraft.replace(/^\s*#+\s*\n+/, "");
+  // Phase 20N — insert future-directions before References (which is the
+  // last `## References` block); fall back to append-at-end if References
+  // isn't present (defensive).
+  if (futureDirectionsBlock) {
+    const refIdx = finalBody.lastIndexOf("## References");
+    if (refIdx > 0) {
+      finalBody = finalBody.slice(0, refIdx) + futureDirectionsBlock + "\n\n" + finalBody.slice(refIdx);
+    } else {
+      finalBody = finalBody + "\n\n" + futureDirectionsBlock;
+    }
+  }
+  await writeNote(relativePath, headerFm + bridgeCallout + chartsNote + finalBody);
   console.log(`[thesisSynthesizer] ✓ article saved: ${relativePath} (${wordCount(enrichedDraft)}w)`);
 
   // 12. Phase 1D — stub creation for all [[wikilinks]] in the thesis.

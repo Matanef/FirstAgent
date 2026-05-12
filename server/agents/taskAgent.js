@@ -27,11 +27,12 @@ export async function handleTask({
   onChunk,
   onStep,
   signal,
+  resolvedPending = null,           // Phase 17D — bridge-resume payload
 }) {
   let taskMessage = message;
 
   // ── PLANNER SMUGGLER HACK ──
-  // The Planner intercepts words like "analyze" and "sentiment" and splits the 
+  // The Planner intercepts words like "analyze" and "sentiment" and splits the
   // task in half (fetching vs summarizing). We want x.js to handle it natively.
   // We smuggle the intent past the planner by obfuscating the keywords.
   if (/\b(twitter|x)\b/i.test(taskMessage) && /\b(analyze|sentiment)\b/i.test(taskMessage)) {
@@ -50,6 +51,7 @@ export async function handleTask({
     onChunk,
     onStep,
     signal,
+    resolvedPending,                // Phase 17D — forward to coordinator
   });
 
   result.mode = "task";

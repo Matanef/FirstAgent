@@ -552,9 +552,47 @@ const toolKeys = Object.keys(TOOLS);
     
     if (dynamicKey) {
       console.log(`⚙️ [executor] Routing to dynamic skill: ${dynamicKey}`);
-      // Pass the raw message object so the skill can parse it however it wants
+      // Phase 14F — propagate conversationId to dynamic skills so the manual-
+      // bridge gate can call setPendingQuestion(). Was missing for the task
+      // path; CBT thesis run logged "OFFER" but silently skipped pause.
+      // Skills accept either a string or { text, context } — wrap accordingly.
       const _skillStart = Date.now();
-      const result = await dynamicSkills[dynamicKey](message);
+      let skillRequest;
+      // Phase 16E — also propagate the abort signal so dynamic skills can
+      // bail out when the user clicks cancel. Without this, signal stops at
+      // the LLM HTTP layer, but the skill loop keeps marching.
+      if (typeof message === "string") {
+        skillRequest = { text: message, context: { conversationId, signal } };
+      } else if (message && typeof message === "object") {
+        skillRequest = {
+          ...message,
+          context: { conversationId, signal, ...(message.context || {}) }
+        };
+      } else {
+        skillRequest = message;
+      }
+      // Phase 16B + 17E — universal [MODEL:xxx] AND [depth:xxx] strip for
+      // non-imageGen skills. imageGen consumes [MODEL:xxx] at imageGen.js:16-23
+      // BEFORE we reach here. deepResearch's parseTopic strips [depth:xxx]
+      // AFTER tier detection, so the tag must reach the skill body — but other
+      // skills must never see either directive in their topic. Strip both for
+      // every skill EXCEPT imageGen (which reads [MODEL:xxx]) and deepResearch
+      // (which reads [depth:xxx] before stripping internally).
+      if (dynamicKey !== "imageGen" && dynamicKey !== "deepResearch") {
+        if (typeof skillRequest === "string") {
+          skillRequest = skillRequest.replace(/\[(?:MODEL|depth):[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+        } else if (skillRequest && typeof skillRequest === "object" && typeof skillRequest.text === "string") {
+          skillRequest.text = skillRequest.text.replace(/\[(?:MODEL|depth):[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+        }
+      } else if (dynamicKey === "deepResearch") {
+        // deepResearch needs [depth:xxx] for tier detection; only strip [MODEL:xxx].
+        if (typeof skillRequest === "string") {
+          skillRequest = skillRequest.replace(/\[MODEL:[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+        } else if (skillRequest && typeof skillRequest === "object" && typeof skillRequest.text === "string") {
+          skillRequest.text = skillRequest.text.replace(/\[MODEL:[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+        }
+      }
+      const result = await dynamicSkills[dynamicKey](skillRequest);
       logToolCall(dynamicKey, result.success, Date.now() - _skillStart, getMessageText(message));
 
       return {
@@ -577,6 +615,17 @@ const toolKeys = Object.keys(TOOLS);
   }
 
   tool = actualToolKey;
+
+  // Phase 16B + 17E — universal [MODEL:xxx] AND [depth:xxx] strip for built-in
+  // tools. None of the built-in tools listed below consume either directive
+  // (only the imageGen dynamic skill consumes [MODEL:xxx], handled above; only
+  // deepResearch consumes [depth:xxx], also handled above). Strip both leftover
+  // UI directives so the tool's own NLP isn't polluted.
+  if (typeof message === "string") {
+    message = message.replace(/\[(?:MODEL|depth):[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+  } else if (message && typeof message === "object" && typeof message.text === "string") {
+    message.text = message.text.replace(/\[(?:MODEL|depth):[A-Za-z0-9_\-]+\]\s*/gi, "").trim();
+  }
 
   let toolInput;
   if (["weather", "memorytool", "gitLocal", "review", "githubTrending", "webDownload", "applyPatch", "fileReview", "duplicateScanner", "webBrowser", "moltbook", "fileWrite", "email", "calendar", "documentQA", "contacts", "workflow", "folderAccess", "codeReview", "codeTransform", "projectGraph", "projectIndex", "githubScanner", "selfEvolve", "scheduler", "packageManager", "whatsapp", "x", "sheets", "nlp_tool", "news", "smartEvolution", "mcpBridge"].includes(tool)) {

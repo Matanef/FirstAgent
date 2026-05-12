@@ -212,6 +212,19 @@ async function executeScheduledTask(schedule) {
     return null;
   }
 
+  // ── Phase 14G — defer if deepResearch pipeline is mid-run ──
+  // Long-running research (15-50 min) shouldn't share Ollama with scheduled
+  // tasks; doing so forces model swaps and pollutes pipeline logs. Re-fire
+  // this task in 60s and let research finish first.
+  try {
+    const { isDeepResearchInProgress } = await import("../skills/deepResearch/index.js");
+    if (isDeepResearchInProgress()) {
+      console.warn(`[scheduler] Deferring "${schedule.task}" 60s — deepResearch in progress.`);
+      setTimeout(() => { executeScheduledTask(schedule).catch(err => console.warn(`[scheduler] Deferred task error: ${err.message}`)); }, 60_000);
+      return null;
+    }
+  } catch { /* deepResearch module not yet loadable on first import — fine */ }
+
   // ── Debounce guard ──
   // For interval schedules, enforce a minimum gap since last fire. Guards
   // against PM2 restart bursts re-creating timers and firing immediately,

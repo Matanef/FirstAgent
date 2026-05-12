@@ -41,6 +41,22 @@ import { createLogger } from "../../utils/logger.js";
 const TOOL_NAME = "deepResearch";
 const log = createLogger("deepResearch");
 
+// Phase 16F — pin a non-persona model for the title/slug derivation. Same
+// env var that thesisSynthesizer uses; default qwen2.5:7b. Without this,
+// llm() falls through to the chat default (dolphin-llama3) which timed out
+// in the latest CBT run as the first failure of the pipeline.
+const TITLE_SLUG_MODEL = process.env.SYNTHESIZER_MODEL || "qwen2.5:7b";
+
+// ── Phase 14G — research-in-progress flag ──────────────────────────────────
+// The CBT thesis run logs showed three scheduled tasks (X trends, news,
+// weather) firing during the 48-min pipeline. The news task took 194s of
+// CPU/GPU and forced an Ollama model swap (qwen ↔ dolphin), polluting logs
+// and slowing the run. Export a simple module-level flag that the scheduler
+// can consult to defer tasks until research finishes.
+let _inProgress = false;
+export const isDeepResearchInProgress = () => _inProgress;
+export const _markDeepResearchInProgress = (v) => { _inProgress = !!v; };
+
 // ── One-time academic journal RSS seed (runs asynchronously, non-blocking) ──
 // Adds 38 FT50 journal feeds to research-sources.json on first startup.
 // Subsequent calls are no-ops (flag stored in _meta.academicJournalsSeeded).
@@ -117,9 +133,14 @@ Return JSON only:
 
   let parsed = null;
   try {
+    // Phase 16F — explicit model:. Without it, llm() falls through to the
+    // chat default (dolphin-llama3:latest), which is the persona model —
+    // slow, prompt-leaky, not aligned for structured JSON. The user's run
+    // timed out on this very call as the first failure.
     const res = await llm(prompt, {
       timeoutMs: 15000,
       format: "json",
+      model: TITLE_SLUG_MODEL,
       skipKnowledge: true,
       skipLanguageDetection: true,
       options: { temperature: 0.2, num_ctx: 1024 }
@@ -165,10 +186,47 @@ function parseTopic(rawText) {
   return topic;
 }
 
+// Phase 14G — public wrapper that flips the in-progress flag for the
+// duration of the pipeline. Scheduled tasks check this flag and defer until
+// research completes, eliminating mid-run model swaps and log contamination.
 export async function deepResearch(request) {
+  _markDeepResearchInProgress(true);
+  try {
+    return await _deepResearchImpl(request);
+  } catch (err) {
+    // Phase 16E — turn the PIPELINE_ABORTED throw into a clean response.
+    // Other errors bubble (the existing top-level catch in chatAgent handles them).
+    if (err && err.code === "PIPELINE_ABORTED") {
+      return {
+        tool: TOOL_NAME,
+        success: false,
+        final: true,
+        aborted: true,
+        error: err.message,
+        data: { text: "Research aborted by user." }
+      };
+    }
+    throw err;
+  } finally {
+    _markDeepResearchInProgress(false);
+  }
+}
+
+async function _deepResearchImpl(request) {
   const text = typeof request === "string" ? request : (request?.text || "");
   const context = (typeof request === "object" ? request?.context : null) || {};
   const conversationId = context.conversationId || context.convId || null;
+  // Phase 16E — abort signal from chat.js → executor → skill. When the user
+  // clicks cancel, this signal flips. We check it between major pipeline
+  // steps so the pipeline bails out rather than keeping its 2-hour march.
+  const signal = context.signal || null;
+  const checkAborted = () => {
+    if (signal && signal.aborted) {
+      const e = new Error("Pipeline aborted by user");
+      e.code = "PIPELINE_ABORTED";
+      throw e;
+    }
+  };
 
   // Vault is required for everything below; bail early with a useful message.
   const vault = getVaultPath();
@@ -240,6 +298,70 @@ export async function deepResearch(request) {
     log("no tier and no conversationId — defaulting to article", "warn");
   }
   const effectiveTier = tier || "article";
+
+  // Phase 17C — pre-flight Ollama probe.
+  // Before launching a 30+ minute harvest+synthesis pipeline, fire one tiny
+  // call to verify Ollama is alive AND responds within budget. With a slow
+  // GPU-spilled model the analyzer chunks would all timeout at 30s anyway;
+  // surfacing that here aborts in 60s with an actionable message instead of
+  // burning 2 hours on the cascade. Tiny prompt + num_predict=5 + maxRetries=0
+  // keeps the probe cheap.
+  emitProgress(`🔍 Pre-flight: probing Ollama (${TITLE_SLUG_MODEL})…`);
+  checkAborted();
+  const probe = await llm("Reply with the single word OK.", {
+    timeoutMs: 60000,
+    model: TITLE_SLUG_MODEL,
+    maxRetries: 0,
+    skipKnowledge: true,
+    skipLanguageDetection: true,
+    options: { temperature: 0, num_ctx: 512, num_predict: 5 }
+  });
+  if (!probe?.success) {
+    const cat = probe?.errorCategory || "unknown";
+    // Surface the underlying Ollama error message verbatim — it often contains
+    // the exact diagnostic the user needs (e.g. "model requires more system
+    // memory (4.1 GiB) than is available (2.4 GiB)" tells them VRAM is full,
+    // not that Ollama is down).
+    const ollamaMsg = probe?.error || "(no underlying error message)";
+    log(`pre-flight probe FAILED — category=${cat}, model=${TITLE_SLUG_MODEL}, error=${ollamaMsg}`, "error");
+    const userText = [
+      `🛑 **Research aborted before harvest** — Ollama pre-flight probe failed.`,
+      ``,
+      `**Category:** \`${cat}\`  •  **Model:** \`${TITLE_SLUG_MODEL}\``,
+      `**Underlying error:** ${ollamaMsg}`,
+      ``,
+      `**What to try:**`,
+      `1. Run \`ollama ps\` — if other models are loaded, run \`ollama stop <name>\` to free VRAM.`,
+      `2. Reduce GPU layer count: set \`OLLAMA_NUM_GPU=30\` (or lower) in your .env, then \`pm2 restart Lanou --update-env\`. Forces partial CPU offload — slower but works on tight VRAM.`,
+      `3. If VRAM is exhausted by other apps (ComfyUI, browser, games), close them and retry.`,
+      `4. As a last resort, switch to a smaller synthesizer: set \`SYNTHESIZER_MODEL=qwen2.5:3b\` (≈2 GB instead of 4.7 GB).`,
+      ``,
+      `_The pipeline aborted in <60 s instead of running 2 hours of cascading timeouts._`
+    ].join("\n");
+    return {
+      tool: TOOL_NAME,
+      success: false,
+      final: true,
+      aborted: true,                       // signal: terminal, do not synthesize fallback
+      error: `Ollama pre-flight probe failed (${cat}): ${ollamaMsg}`,
+      data: {
+        text: userText,
+        preformatted: true                 // honoured by chatAgent's bypass (Phase 17J)
+      }
+    };
+  }
+  log(`pre-flight probe OK — proceeding with research`, "info");
+
+  // Phase 17F/G — reset per-run network state (dead-domain set, S2 cooldown).
+  // These are module-scoped helpers; resetting at run start prevents stale
+  // state from a previous run leaking into this one.
+  try { articleHarvester.resetDeadDomains?.(); } catch {}
+  try { articleHarvester.resetS2Cooldown?.(); } catch {}
+  // Phase 20F — clear per-run alt-source host cooldown state
+  try {
+    const altMod = await import("./altSourceFinder.js");
+    altMod.resetAltSourceState?.();
+  } catch {}
 
   // Phase 9D — bridge resume detection. When the user replies "continue"/"skip"
   // to a manual-bridge offer, the orchestrator passes the action through
@@ -358,13 +480,20 @@ export async function deepResearch(request) {
     const seenDatasetIds = new Set(); // Phase 7: cross-prompt dataset dedup
     promptResults = [];
     const maxPerPrompt = constraints.research.maxArticlesPerPrompt || 7;
-    const tierLimits = { article: 3, indepth: 4, research: 6, thesis: 7 };
+    // Phase 20N — "thesis-deep" maps to the same main-pipeline limits as
+    // "thesis"; the extra recursion is what makes it deeper, not a higher
+    // per-prompt article count. Missing this entry collapsed runs to the
+    // article-tier fallback (3 articles/prompt) — which is exactly the bug
+    // the user hit: the main pipeline appeared not to run.
+    const tierLimits = { article: 3, indepth: 4, research: 6, thesis: 7, "thesis-deep": 7 };
     const articlesPerPrompt = Math.min(maxPerPrompt, tierLimits[effectiveTier] || 4);
 
     // Pre-create the topic folder.
     try { await createFolder(`${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`); } catch {}
 
     for (const promptSpec of prompts) {
+      // Phase 16E — bail between prompts if the user has aborted.
+      checkAborted();
       const promptIndex = parseInt(promptSpec.id.replace(/\D/g, ""), 10) || (promptResults.length + 1);
 
       // Write the initial prompt.md (will be rewritten later by promptRollup).
@@ -388,7 +517,7 @@ export async function deepResearch(request) {
       emitProgress(`📡 Harvesting ${promptIndex}/${prompts.length}: "${promptSpec.query.slice(0, 60)}"`,
         { current: promptIndex, total: prompts.length });
       log(`step=harvest prompt=${promptIndex} query="${promptSpec.query.slice(0, 80)}"`, "info");
-      const tierDatasetLimit = ({ article: 2, indepth: 3, research: 4, thesis: 5 })[effectiveTier] || 3;
+      const tierDatasetLimit = ({ article: 2, indepth: 3, research: 4, thesis: 5, "thesis-deep": 5 })[effectiveTier] || 3;
       const [articlesSettled, datasetsSettled] = await Promise.allSettled([
         articleHarvester.harvest(promptSpec.query, {
           topic: rawTopic,
@@ -697,7 +826,7 @@ export async function deepResearch(request) {
     // ── Step 8.5: Info sufficiency check ──────────────────────────────────
     // If total harvested articles fall below the tier minimum, do one extra
     // CORE-targeted pass before writing. This avoids thin research on hard topics.
-    const MIN_SOURCES = { article: 4, indepth: 7, research: 10, thesis: 14 };
+    const MIN_SOURCES = { article: 4, indepth: 7, research: 10, thesis: 14, "thesis-deep": 14 };
     const totalAnalyses = promptResults.reduce((s, p) => s + p.analyses.length, 0);
     const minRequired = MIN_SOURCES[effectiveTier] || 6;
     if (totalAnalyses < minRequired) {
@@ -757,13 +886,28 @@ export async function deepResearch(request) {
       // Phase 13J — always log the gate evaluation so we can debug why bridge
       // doesn't fire on runs with obvious fetch failures.
       const willOffer = manualBridge.shouldOfferBridge(blocked, effectiveTier, bridgeOverride);
+      // Phase 20N — surface the actual eligible-tiers list and threshold so
+      // future tier-naming bugs are obvious from the log.
+      const bridgeEligibleTiers = [...manualBridge._internals.BRIDGE_ELIGIBLE_TIERS];
+      const tierEligible = bridgeEligibleTiers.includes(effectiveTier);
       const bridgeReason = willOffer
         ? `OFFER (blocked=${blocked.length}, tier=${effectiveTier}, override=${bridgeOverride})`
-        : `SKIP (blocked=${blocked.length}, threshold=2 for research/thesis, tier=${effectiveTier}, override=${bridgeOverride})`;
+        : `SKIP (blocked=${blocked.length}, tier=${effectiveTier}, tierEligible=${tierEligible}, eligibleTiers=[${bridgeEligibleTiers.join(",")}], threshold=2, override=${bridgeOverride})`;
       console.log(`[manualBridge] gate evaluated: ${bridgeReason}`);
       if (blocked.length > 0 && !willOffer) {
         // Diagnostic: show first blocked source so the user can see what was detected
         console.log(`[manualBridge] would-block sample: kind=${blocked[0].kind}, url=${(blocked[0].url || "").slice(0, 80)}`);
+      }
+      // Phase 14F — loud surfacing when willOffer fires but conversationId is
+      // missing. Without a conversationId, setPendingQuestion() can't pause
+      // the pipeline, so the bridge silently skips. The CBT run had 33 blocked
+      // sources and the user had no idea the bridge was even attempted.
+      let bridgeSkippedDespiteOffer = false;
+      if (willOffer && !conversationId) {
+        console.warn(`[manualBridge] ⚠️ OFFER triggered but conversationId is missing — pipeline will continue without pause. ${blocked.length} sources will go unfilled. Fix: ensure orchestrator/taskAgent passes conversationId to deepResearch.`);
+        bridgeSkippedDespiteOffer = true;
+        // Stash on context so the markdown writer can prepend a TODO callout
+        context._bridgeSkippedDespiteOffer = { count: blocked.length, blocked: blocked.slice(0, 12) };
       }
       if (willOffer && conversationId) {
         const vaultRel = `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`;
@@ -786,7 +930,7 @@ export async function deepResearch(request) {
             skill: TOOL_NAME,
             question: bridgeText,
             expects: "manual_bridge_continue",
-            ttlMs: 60 * 60 * 1000,                    // 60 minutes
+            ttlMs: 0,                                 // Phase 21 — never expire; user may need hours to grab 30+ PDFs by hand
             originalRequest: { text, context: { ...context, _bridgeSlug: activeSlug } }
           });
           emitProgress(`🔒 Paused: ${blocked.length} blocked source(s) — see chat for download instructions`);
@@ -817,13 +961,46 @@ export async function deepResearch(request) {
             if (!a.exists) continue;
             const e = a.entry;
             try {
-              if (e.kind === "article" && a.attachedContent) {
-                // Rebuild article record with new full-text content; re-run analyzer
+              if (e.kind === "article") {
                 const targetPrompt = promptResults.find(p => p.promptIndex === e.promptIndex);
                 if (!targetPrompt) continue;
                 const slot = targetPrompt.analyses[e.articleIndex - 1];
                 if (!slot) continue;
-                const newArticle = { ...slot.article, content: a.attachedContent };
+                // Phase 20B + 20C — when bridge attached a PDF but text
+                // extraction returned empty (scanned/image PDF), don't silently
+                // skip — surface it on the article note so the user knows the
+                // upload was received but the PDF needs OCR. The old code
+                // checked truthiness of attachedContent which evaluated false
+                // on empty string and left the note showing the pre-bridge
+                // "PDF text extraction returned empty" message indefinitely.
+                if (!a.attachedContent || a.attachedContent.length < 200) {
+                  // Empty-or-thin extraction: tag the article as scanned-PDF
+                  // and re-write the note with that note so it stops looking
+                  // like the bridge never happened. We do NOT re-run the
+                  // analyzer (no content to analyze).
+                  slot.article = {
+                    ...slot.article,
+                    _fetch_error: a.attachedContent
+                      ? "thin-extraction-from-pdf"
+                      : "scanned-or-image-pdf-needs-ocr",
+                    _bridge_resolved_but_empty: true,
+                    content: slot.article?.content || ""
+                  };
+                  log(`bridge attached p=${e.promptIndex} i=${e.articleIndex} but extraction returned ${a.attachedContent?.length || 0}c — flagged as scanned/thin`, "warn");
+                  continue;
+                }
+                // Rebuild article record with new full-text content; re-run analyzer
+                const newArticle = {
+                  ...slot.article,
+                  content: a.attachedContent,
+                  _bridge_resolved: true,
+                  _content_provenance: "manual-bridge"
+                };
+                // Clear stale fetch-error flags so the bridge-resolved article
+                // is no longer treated as blocked downstream.
+                delete newArticle._fetch_failed;
+                delete newArticle._fetch_error;
+                delete newArticle._used_libgen_fallback;
                 const r = await articleAnalyzer.analyze({
                   article: newArticle,
                   topic: rawTopic,
@@ -885,7 +1062,39 @@ export async function deepResearch(request) {
       }
     }
 
+    // ── Step 8.5: Phase 20N — thesis-deep open-questions recursion ─────────
+    // For [depth:thesis-deep] only. Picks top 4-5 questions across all prompt
+    // conclusions, generates one follow-up search query, harvests +6-8
+    // articles targeting those questions. Adds ~5-8 minutes to runtime.
+    // Results are stashed on context for the synthesizer to fold into a new
+    // "Future Directions" subsection.
+    let deepFollowup = null;
+    if (effectiveTier === "thesis-deep") {
+      checkAborted();
+      try {
+        const openQuestionRecursion = await import("./openQuestionRecursion.js");
+        emitProgress(`🔁 thesis-deep: running open-questions follow-up harvest…`);
+        deepFollowup = await openQuestionRecursion.runDeepFollowup({
+          promptResults,
+          articleHarvester,
+          articleAnalyzer,
+          topic: rawTopic,
+          topicSlug: activeSlug,
+          constraints,
+          emitProgress,
+          signal,
+        });
+        if (deepFollowup) {
+          log(`step=deepFollowup followupQuery="${deepFollowup.followupQuery}" articles=${deepFollowup.analyses?.length || 0}`, "info");
+        }
+      } catch (err) {
+        log(`deepFollowup error: ${err.message}`, "warn");
+      }
+    }
+
     // ── Step 9: chunked thesis synthesis ───────────────────────────────────
+    // Phase 16E — bail before the most expensive step (thesis synthesis).
+    checkAborted();
     log(`step=thesisSynthesizer tier=${effectiveTier} sections=pending`, "info");
     emitProgress(`🧵 Synthesizing thesis from ${promptResults.length} prompts…`);
     let thesisInfo = null;
@@ -897,7 +1106,17 @@ export async function deepResearch(request) {
         tier: effectiveTier,
         promptResults,
         constraints,
-        onStep: emitProgress
+        onStep: emitProgress,
+        // Phase 14F — pass through any "bridge skipped despite offer" notice
+        // so the saved markdown gets a visible warning callout.
+        bridgeSkipNotice: context._bridgeSkippedDespiteOffer || null,
+        topicVaultRel: `${VAULT_JOURNAL_ROOT}/Research/${activeSlug}`,
+        // Phase 16E — pass abort signal so per-section composition can bail.
+        signal,
+        // Phase 20N — thesis-deep recursive follow-up artifacts (null for
+        // other tiers). When present, synthesizer adds a "Future Directions"
+        // subsection grounded in these extra harvested articles.
+        deepFollowup,
       });
       const stubCount = thesisInfo?.createdStubs?.length ?? 0;
       log(`step=thesisSynthesizer done words=${thesisInfo?.wordCount} stubs=${stubCount}`, "info");

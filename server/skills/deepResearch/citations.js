@@ -6,6 +6,8 @@
 //   2. shortAPA(cite)             → "(Smith & Jones, 2023)" or "(Smith et al., 2023)"
 //   3. buildCitationIndex(notes)  → unified [{ id, inText, apa, ... }] list, ordered alphabetically
 //   4. lintStrayCitations(text, index) → flags fake refs ([5], "Source 1", invented authors)
+
+import { rescueAuthors as _orcidRescueAuthors, isConfigured as _orcidConfigured } from "./orcidClient.js";
 //
 // Citation shape (input):
 //   {
@@ -46,7 +48,13 @@ function isMalformedAuthor(s) {
 
 export function canonicalizeAuthor(name) {
   if (!name || typeof name !== "string") return null;
-  const cleaned = name.trim().replace(/\s+/g, " ");
+  let cleaned = name.trim().replace(/\s+/g, " ");
+  if (!cleaned) return null;
+  // Phase 14I — strip parenthetical figshare/orcid IDs (5+ consecutive digits in parens).
+  // Example: "Lubna Ghazal (21245345)" → "Lubna Ghazal". Without this strip, the
+  // malformedAuthor check rejects the whole entry because of the parens, and the
+  // parseYear path mis-reads the first 4 digits as a year (2124 → > 2100 → drop).
+  cleaned = cleaned.replace(/\s*\(\d{5,}\)/g, "").replace(/\s+/g, " ").trim();
   if (!cleaned) return null;
   // Phase 8E — reject malformed metadata up-front.
   if (isMalformedAuthor(cleaned)) return null;
@@ -202,6 +210,54 @@ function cleanCite(cite) {
     venue: cleanCiteString(cite.venue),
     authors: Array.isArray(cite.authors) ? cite.authors.map(cleanCiteString).filter(Boolean) : cite.authors
   };
+}
+
+/**
+ * Phase 19A — async ORCID-rescue pre-pass for malformed author lists.
+ *
+ * Scans the notes for citations whose authors list looks broken (>60% of
+ * entries are single-token surnames — the Cochrane-review tokenization bug).
+ * For each such cite WITH a DOI, asks ORCID to return the canonical authors
+ * list. Mutates `note.cite.authors` in place when the rescue succeeds.
+ *
+ * Best-effort: failures (no DOI, ORCID unreachable, no match) leave the
+ * original authors list untouched. The downstream buildCitationIndex will
+ * still drop those as malformed, exactly like before — we only ever upgrade
+ * a broken entry, never downgrade a good one.
+ *
+ * No-ops entirely when ORCID isn't configured.
+ *
+ * Returns: { rescued: <count>, attempted: <count> }
+ */
+export async function rescueMalformedAuthors(notes) {
+  if (!_orcidConfigured()) return { rescued: 0, attempted: 0 };
+  let rescued = 0;
+  let attempted = 0;
+  for (const note of notes || []) {
+    const cite = note?.cite;
+    if (!cite || !Array.isArray(cite.authors) || cite.authors.length < 5) continue;
+    const singleWord = cite.authors.filter(a =>
+      typeof a === "string" && !a.includes(",") && !/\s/.test(a.trim()) && a.trim().length < 25
+    ).length;
+    if (singleWord / cite.authors.length <= 0.6) continue;   // not malformed
+    if (!cite.doi) continue;                                 // can't rescue without DOI
+    attempted++;
+    try {
+      const recovered = await _orcidRescueAuthors({
+        doi: cite.doi,
+        malformedAuthors: cite.authors,
+        title: cite.title
+      });
+      if (Array.isArray(recovered) && recovered.length > 0) {
+        cite.authors = recovered;
+        rescued++;
+      }
+    } catch { /* leave authors as-is */ }
+  }
+  if (attempted > 0) {
+    console.log(`[citations] ORCID rescue: ${rescued}/${attempted} malformed author lists recovered`);
+  }
+  return { rescued, attempted };
 }
 
 /**
@@ -368,13 +424,17 @@ export function lintStrayCitations(text, index) {
 }
 
 /** Parse a Crossref-style year from various input formats. */
+// Phase 14I — cap the upper bound at currentYear+1 (was hard-coded 2100).
+// Stops fabricated future-year publications from polluting the bibliography.
+// The lower bound stays at 1700 (covers all actual academic publication history).
 export function parseYear(input) {
   if (!input) return null;
-  if (typeof input === "number") return input >= 1700 && input <= 2100 ? input : null;
+  const maxYear = new Date().getFullYear() + 1;
+  if (typeof input === "number") return input >= 1700 && input <= maxYear ? input : null;
   const m = String(input).match(/(\d{4})/);
   if (!m) return null;
   const y = parseInt(m[1], 10);
-  return y >= 1700 && y <= 2100 ? y : null;
+  return y >= 1700 && y <= maxYear ? y : null;
 }
 
 // Exposed for tests

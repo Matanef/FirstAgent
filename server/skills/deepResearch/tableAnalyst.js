@@ -132,8 +132,24 @@ export function sniffSchema(parsed) {
 }
 
 // ── LLM assessment pass ─────────────────────────────────────────────────────
+// Phase 17H — column-display cap for the LLM prompt. Datasets in the wild
+// (figshare uploads especially) sometimes have 200+ columns; feeding all of
+// them into a chart-spec prompt overflows context and causes the LLM to
+// hallucinate column names. We show only the top 30 most-populated columns
+// and add an explicit constraint in the prompt body.
+const TABLE_PROMPT_COLUMN_CAP = 30;
+
 function buildPrompt(topic, dataset, schema) {
-  const colSummary = schema.columns.map(c => {
+  const allCols = schema.columns;
+  let displayCols = allCols;
+  let truncationNote = "";
+  if (allCols.length > TABLE_PROMPT_COLUMN_CAP) {
+    displayCols = [...allCols]
+      .sort((a, b) => (b.n || 0) - (a.n || 0))   // most-populated first
+      .slice(0, TABLE_PROMPT_COLUMN_CAP);
+    truncationNote = `\n(NOTE: Only the top ${TABLE_PROMPT_COLUMN_CAP} most-populated columns are shown out of ${allCols.length} total. Suggested chart columns MUST come from this shortlist — do not invent or reference columns not listed below.)\n`;
+  }
+  const colSummary = displayCols.map(c => {
     if (c.type === "numeric") {
       return `  - ${c.name} (numeric): n=${c.n}, mean=${c.mean}, median=${c.median}, sd=${c.sd}, range=[${c.min}, ${c.max}], missing=${(c.missing_pct * 100).toFixed(1)}%`;
     }
@@ -158,7 +174,7 @@ DATASET: "${dataset.title}"
 REPOSITORY: ${dataset.repository}
 DESCRIPTION: ${(dataset.description || "(no description)").slice(0, 400)}
 TOTAL ROWS: ${schema.N}
-
+${truncationNote}
 COLUMN SCHEMA + SUMMARY STATISTICS (computed over all rows):
 ${colSummary}
 
@@ -294,6 +310,28 @@ export async function assess({ topic, dataset, parsed }) {
     return null;
   }
   console.log(`[tableAnalyst] ${dataset.id}: schema sniffed — N=${schema.N}, cols=${schema.columns.length}, sampling=${parsed.sampling}`);
+
+  // Phase 17H — bail on extremely wide tables. Above 50 columns the chart-spec
+  // prompt is unreliable: the LLM hallucinates column names that the validator
+  // then drops, ending up with zero useful charts anyway. We still retain the
+  // schema and basic descriptive stats so the synthesizer can cite the dataset
+  // as evidence, but skip the LLM round-trip entirely.
+  if (schema.columns.length > 50) {
+    log(`${dataset.id}: skipping chart generation — table too wide (${schema.columns.length} cols)`, "warn");
+    return {
+      relevant: true,
+      relevance_score: 0.4,
+      schema,
+      key_variables: schema.columns.filter(c => c.type === "numeric").map(c => c.name).slice(0, 3),
+      suggested_charts: [],
+      hypothesis_to_test: "",
+      limitations: `Dataset has ${schema.columns.length} columns — too wide for reliable chart-spec generation. Schema retained for descriptive citation.`,
+      honesty_labels: buildHonestyLabels(schema, dataset),
+      sampling: parsed.sampling,
+      N: schema.N,
+      skipped_reason: "wide_table"
+    };
+  }
 
   const llmResult = await askLLMForAssessment(topic, dataset, schema);
   if (!llmResult) {

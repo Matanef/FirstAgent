@@ -20,7 +20,12 @@ function isExpired(entry) {
   if (!entry?.createdAt) return true;
   const created = Date.parse(entry.createdAt);
   if (isNaN(created)) return true;
-  // Phase 9D — per-entry TTL override (e.g. manual_bridge_continue uses 60 min)
+  // Phase 21 — per-entry TTL override. `ttlMs: 0` or `ttlMs: -1` (or any
+  // non-positive number explicitly set) means "never expire". This is used
+  // by manual_bridge_continue, because downloading 30+ paywalled PDFs by
+  // hand can take hours and the user has been burned by the old 60-min
+  // window auto-canceling a long-running session.
+  if (entry.ttlMs === 0 || entry.ttlMs === -1) return false;
   const ttl = (typeof entry.ttlMs === "number" && entry.ttlMs > 0) ? entry.ttlMs : TTL_MS;
   return Date.now() - created > ttl;
 }
@@ -158,6 +163,12 @@ export function parsePendingAnswer(message, expects) {
     return null;   // unrecognised — leave entry intact (60min TTL gives plenty of room)
   }
 
+  // Global Slot Interceptor (Missing Search Query)
+  if (expects === "missing_slot_search_query") {
+    // Whatever the user types here is the search query.
+    // e.g., if they reply "Friedrich Merz", we return the raw string.
+    return message.trim();
+  }
   // Default: echo back trimmed message — caller decides what to do with it
   return message.trim();
 }

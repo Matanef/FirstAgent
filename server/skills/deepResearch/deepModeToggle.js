@@ -97,7 +97,8 @@ export async function isDeepModeForTier(tier) {
   const ov = await getOverride();
   if (ov === "on")  return true;
   if (ov === "off") return false;
-  return tier === "research" || tier === "thesis";
+  // Phase 20N — thesis-deep inherits thesis's deep-read default
+  return tier === "research" || tier === "thesis" || tier === "thesis-deep";
 }
 
 /**

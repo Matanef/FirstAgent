@@ -946,8 +946,69 @@ export async function harvest(query, opts = {}) {
  *
  * @returns {Promise<{rows: object[], headers: string[], sampling: string, totalBytes: number} | null>}
  */
+// Phase 19G + Phase 21 — Dryad direct-file URLs return HTTP 401 without an
+// authenticated token. Phase 21 wires OAuth2 client_credentials using the
+// DRYAD_CLIENT_ID / DRYAD_CLIENT_SECRET / DRYAD_API_TOKEN env vars supplied
+// by the user. If DRYAD_API_TOKEN is set, we use it directly. Otherwise we
+// exchange the client_id + client_secret for an access token at
+// https://datadryad.org/oauth/token (grant_type=client_credentials) and cache
+// it in-memory for the lifetime of the process.
+const DRYAD_DIRECT_FILE_RE = /datadryad\.org\/api\/v\d+\/files\/\d+\/download/i;
+const DRYAD_API_TOKEN  = process.env.DRYAD_API_TOKEN  || null;
+const DRYAD_CLIENT_ID  = process.env.DRYAD_CLIENT_ID  || null;
+const DRYAD_CLIENT_SECRET = process.env.DRYAD_CLIENT_SECRET || null;
+
+let _dryadCachedToken = null;        // { token, expiresAt }
+async function getDryadAccessToken() {
+  if (DRYAD_API_TOKEN) return DRYAD_API_TOKEN;
+  if (_dryadCachedToken && _dryadCachedToken.expiresAt > Date.now() + 60_000) {
+    return _dryadCachedToken.token;
+  }
+  if (!DRYAD_CLIENT_ID || !DRYAD_CLIENT_SECRET) return null;
+  try {
+    const res = await axios.post(
+      "https://datadryad.org/oauth/token",
+      // Dryad accepts form-encoded client_credentials.
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: DRYAD_CLIENT_ID,
+        client_secret: DRYAD_CLIENT_SECRET
+      }).toString(),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
+        timeout: 15000
+      }
+    );
+    const token = res.data?.access_token;
+    const ttl = (parseInt(res.data?.expires_in, 10) || 3600) * 1000;
+    if (token) {
+      _dryadCachedToken = { token, expiresAt: Date.now() + ttl };
+      console.log(`[datasetHarvester] dryad: OAuth client_credentials → token acquired (expires_in=${Math.round(ttl/1000)}s)`);
+      return token;
+    }
+  } catch (err) {
+    console.log(`[datasetHarvester] dryad: OAuth token exchange failed (${err.message}) — falling back to anonymous`);
+  }
+  return null;
+}
+
+async function dryadAuthHeaders() {
+  const t = await getDryadAccessToken();
+  return t ? { Authorization: `Bearer ${t}` } : null;
+}
+
 export async function downloadAndParse(file) {
   if (!file || !file.downloadUrl) return null;
+  const isDryadDirect = DRYAD_DIRECT_FILE_RE.test(file.downloadUrl);
+  if (isDryadDirect) {
+    const auth = await dryadAuthHeaders();
+    if (!auth) {
+      console.log(`[datasetHarvester] Dryad direct-file URL skipped (no DRYAD_CLIENT_ID/SECRET/TOKEN in env): ${file.downloadUrl}`);
+      return null;
+    }
+    // Hand auth headers down to the download routines via the file record.
+    file = { ...file, _extraHeaders: auth };
+  }
   if (SKIP_FORMATS.has(file.format)) {
     console.log(`[datasetHarvester] format=${file.format} skipped (planned for Phase 7H)`);
     return null;
@@ -961,7 +1022,10 @@ export async function downloadAndParse(file) {
   let sizeBytes = file.sizeBytes || 0;
   if (!sizeBytes) {
     try {
-      const head = await axios.head(file.downloadUrl, { timeout: 10000, headers: BROWSER_HEADERS });
+      const head = await axios.head(file.downloadUrl, {
+        timeout: 10000,
+        headers: { ...BROWSER_HEADERS, ...(file._extraHeaders || {}) }
+      });
       sizeBytes = parseInt(head.headers?.["content-length"] || "0", 10) || 0;
     } catch { /* best-effort only */ }
   }
@@ -976,7 +1040,7 @@ async function downloadFull(file, sizeBytes) {
   try {
     const res = await axios.get(file.downloadUrl, {
       timeout: 60000,
-      headers: BROWSER_HEADERS,
+      headers: { ...BROWSER_HEADERS, ...(file._extraHeaders || {}) },
       maxRedirects: 5,
       responseType: file.format === "xlsx" || file.format === "xls" ? "arraybuffer" : "text",
       maxContentLength: 60 * 1024 * 1024,    // 60MB hard cap on body size
@@ -1010,7 +1074,7 @@ async function downloadStratified(file, sizeBytes) {
       const end = Math.min(start + slabBytes - 1, sizeBytes - 1);
       const res = await axios.get(file.downloadUrl, {
         timeout: 30000,
-        headers: { ...BROWSER_HEADERS, Range: `bytes=${start}-${end}` },
+        headers: { ...BROWSER_HEADERS, ...(file._extraHeaders || {}), Range: `bytes=${start}-${end}` },
         responseType: "text",
         validateStatus: s => s >= 200 && s < 400
       });

@@ -537,7 +537,7 @@ async function runEvolutionPipeline(options = {}) {
 
   await appendAuditLog({ step: 2, action: "research", findingsLength: researchFindings.length });
 
-  // ── STEP 3: THINK ──────────────────────────────────────────────
+// ── STEP 3: THINK ──────────────────────────────────────────────
   output += "**Step 3/10 — Strategic Analysis**\n";
   console.log("[smartEvolution] Step 3: THINK — LLM analyzing gaps and opportunities");
 
@@ -556,13 +556,12 @@ async function runEvolutionPipeline(options = {}) {
     ? `\nCOVERED INTENTS (planner routing):\n${toolScan.plannerIntents}\nThese patterns are already handled. Do NOT suggest tools for intents already covered.\n`
     : "";
 
-  // Build agent interests section
+  // Build agent interests section (Filtered to prevent meta-looping)
   const interestsSection = toolScan.agentInterests
-    ? `\nAGENT'S LEARNED INTERESTS:\n${toolScan.agentInterests}\nThe agent's user is interested in these topics — consider tools that serve these interests.\n`
+    ? `\nAGENT'S LEARNED INTERESTS:\n${toolScan.agentInterests}\nNOTE: Use these interests to guide the direction of your new tool proposal.\n`
     : "";
 
-  // Build unmet-demand section — this is the STRONGEST signal for a new skill.
-  // It lists real messages the agent misrouted or couldn't handle, grouped by type.
+  // Build unmet-demand section
   const demandLines = [];
   if (unmetDemand.unresolvedCorrections.length > 0) {
     demandLines.push("  Requested tools that DO NOT EXIST (user explicitly asked for a capability we lack):");
@@ -592,19 +591,17 @@ async function runEvolutionPipeline(options = {}) {
     ? `\nUNMET USER DEMAND (real past requests with no good routing match — PRIORITIZE THESE):\n${demandLines.join("\n")}\nIf any pattern above points to a clearly missing capability, propose a skill that serves it.\n`
     : "";
 
-  // Build skills inventory section — skills are the preferred extension surface now.
+  // Build skills inventory section
   const existingSkillsList = skillScan.skillDescriptions.length > 0
     ? skillScan.skillDescriptions.map(d => `  - ${d}`).join("\n")
     : "  (no skills yet)";
 
   const thinkPrompt = `You are the strategic planning module of an autonomous AI agent system. Your job is to identify ONE new SKILL (preferred) or a composition of existing skills that would meaningfully extend this system's capabilities.
 
-ARCHITECTURE CONTEXT (READ FIRST):
-- This system is transitioning from a tool-based to a SKILL-based architecture.
-- Skills live in server/skills/ and are the PRIMARY extension surface going forward.
-- Tools (server/tools/) are LEGACY and should not be extended with new additions unless a capability truly cannot be expressed as a skill.
-- When proposing, strongly prefer a new SKILL over a new tool. Only fall back to suggesting a tool if the capability fundamentally requires tool-level primitives (e.g. a new streaming transport).
-- You may also propose a SKILL COMPOSITION — a bundle that combines 2–3 existing skills to solve a larger workflow — instead of building something new.
+ARCHITECTURE CONTEXT:
+- Skills live in server/skills/ and are the PRIMARY extension surface.
+- Tools (server/tools/) are LEGACY.
+- Strongly prefer a new SKILL over a new tool.
 
 CURRENT SKILLS (${skillScan.skillCount} files, ${skillScan.allowedSkills.length} enabled):
 ${existingSkillsList}
@@ -612,108 +609,179 @@ ${existingSkillsList}
 CURRENT TOOLS — LEGACY, FOR OVERLAP-DETECTION ONLY (${toolScan.toolCount} tools):
 ${existingToolsList}
 
-READ BOTH LISTS CAREFULLY. Do NOT suggest anything that overlaps with an existing skill OR an existing tool. For example, if "weather — fetches weather forecasts" already exists, do NOT suggest weatherForecast.
-
 SYSTEM PROFILE:
 - OS: ${systemInfo.os.platform} ${systemInfo.os.arch}
 - CPU: ${systemInfo.cpu.cores} cores, ${systemInfo.cpu.model.substring(0, 50)}
 - RAM: ${systemInfo.ram.total} total, ${systemInfo.ram.free} free
 - GPU: ${systemInfo.gpu}
 - Node.js: ${systemInfo.node}
-- Ollama: v${systemInfo.ollama.version}
-- Local models: ${systemInfo.ollama.models.map(m => `${m.name} (${m.size})`).join(", ") || "none detected"}
 
-INSTALLED NPM DEPENDENCIES (you can ONLY use these + Node.js built-ins):
+INSTALLED NPM DEPENDENCIES:
 ${systemInfo.dependencies.join(", ")}
 ${usageSection}${intentSection}${interestsSection}${unmetDemandSection}
 GITHUB RESEARCH (trending tools and patterns):
 ${researchFindings.substring(0, 5000)}
-${userPrompt ? `\nCRITICAL USER DIRECTIVE:\nThe user explicitly requested: "${userPrompt}"\nYou MUST follow these instructions. If the user forbids a topic, completely ignore that topic. Base your idea on their specific request.` : ""}
+${userPrompt ? `\nCRITICAL USER DIRECTIVE:\nThe user explicitly requested: "${userPrompt}"\nYou MUST follow these instructions.` : ""}
 
-TASK: Propose ONE of the following, in order of preference:
-(A) A new SKILL that fills a real gap (PREFERRED — skills are the forward-looking surface).
-(B) A SKILL COMPOSITION that chains 2–3 existing skills to solve a larger workflow.
-(C) ONLY as a last resort: a new TOOL, if the capability truly cannot be expressed as a skill.
+TASK: Propose ONE of the following:
+(A) A new SKILL that fills a real gap (PREFERRED).
+(B) A SKILL COMPOSITION that chains 2–3 existing skills.
+(C) ONLY as a last resort: a new TOOL.
 
-Requirements (apply to skills AND tools):
+Requirements:
 1. Must fill a REAL gap — read every skill AND tool description above and confirm no overlap.
-2. The name MUST be unique — cannot match any existing skill or tool name, not even partially.
-3. Implementable with ONLY the installed npm dependencies listed above OR Node.js built-in modules (fs, path, os, child_process, http, crypto, etc.).
-4. Compatible with the hardware (consider RAM, GPU, model capabilities).
-5. ES Module pattern (import/export, async functions).
-6. Practically useful — not a demo or toy.
-7. Prioritise gaps near frequently-used surfaces (see usage data).
-8. For compositions, specify the exact skills to chain and the data flowing between them.
-9. triggerExamples MUST be 2–4 concrete user messages this skill would handle — if UNMET USER DEMAND was listed above, copy the actual phrasing from those entries where possible so the new skill is demonstrably tied to real past requests.
+2. Unique Name — cannot match any existing skill or tool name.
+3. DEPENDENCIES: You MUST ONLY use the installed npm dependencies listed above OR Node.js built-ins. Do NOT invent package names. If no external package is needed, return [].
+4. EMBRACE META-TOOLS (BUT BE NOVEL): You are encouraged to build internal "meta-tools" (e.g., workflow optimizers, agent-architecture enhancements, memory managers). HOWEVER, you must strictly respect the codebase. Do not propose a code-writing tool if we have 'codeTransform', and do not propose a basic evolution loop if we have 'selfEvolve'. Think of advanced, missing systemic capabilities.5. ES Module pattern.
+6. Practically useful — not a demo.
+7. Prioritise gaps near frequently-used surfaces.
+8. Specify exactly what data flows if it's a composition.
+9. triggerExamples MUST be 2–4 concrete user messages.
 
-Examples of BAD suggestions: anything duplicating an existing skill or tool, requiring an npm package not in the dependency list, a vague "manager" or "orchestrator" (those are handled by the planner natively).
-
-Return ONLY valid JSON. The "kind" field MUST be "skill", "composition", or "tool":
+Return ONLY valid JSON:
 {
   "kind": "skill",
   "toolName": "camelCaseName",
   "filename": "camelCaseName.js",
-  "description": "One-line description of what this skill does",
-  "rationale": "2-3 sentences explaining why this fills a gap. Reference specific existing skills/tools it complements and specific user workflows it would improve. If kind=composition, list the exact skills being chained.",
-  "capabilities": ["capability1", "capability2", "capability3"],
-  "triggerExamples": ["verbatim example user message this skill would serve", "another real-world trigger phrase"],
+  "description": "One-line description",
+  "rationale": "Why this fills a gap",
+  "capabilities": ["cap1", "cap2"],
+  "triggerExamples": ["example 1", "example 2"],
   "dependsOn": ["npm-package-or-builtin-it-uses"],
-  "risks": ["potential issue 1", "potential issue 2"],
+  "risks": ["risk 1"],
   "complexity": "low|medium|high",
-  "implementationPlan": "Detailed multi-paragraph technical plan. Describe the main function, what APIs it calls, how it handles errors, what it returns. Be specific enough that a code generator could implement it. Reference the actual npm packages from the installed list."
-}
-
-If you genuinely cannot identify a useful new tool, respond with:
-{"toolName": "none", "rationale": "explanation of why no new tool is needed"}`;
+  "implementationPlan": "Detailed technical plan."
+}`;
 
   let proposal = null;
-  try {
-    const thinkResult = await llm(thinkPrompt, { timeoutMs: 60000, format: "json" });
-    if (thinkResult.success && thinkResult.data?.text) {
-      const cleaned = thinkResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      proposal = JSON.parse(cleaned);
+  let thinkAttempt = 0;
+  const MAX_THINK_ATTEMPTS = 3;
+  let collisionFeedback = "";
+
+  while (thinkAttempt < MAX_THINK_ATTEMPTS) {
+    thinkAttempt++;
+    console.log(`[smartEvolution] THINK Attempt ${thinkAttempt}/${MAX_THINK_ATTEMPTS}...`);
+    
+    try {
+      // Inject feedback from previous collisions if any
+      const promptToRun = thinkPrompt + (collisionFeedback ? `\n\n⚠️ PREVIOUS PROPOSAL REJECTED:\n${collisionFeedback}\nYou MUST propose something entirely different and outward-facing.` : "");
+      
+      const thinkResult = await llm(promptToRun, { model: "qwen2.5:7b", timeoutMs: 60000, format: "json", skipKnowledge: true });
+      
+if (thinkResult.success && thinkResult.data?.text) {
+        const cleaned = thinkResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        proposal = JSON.parse(cleaned);
+        
+        // ── SMART DEPENDENCY CORRECTION LOOP ──
+        if (proposal.dependsOn && Array.isArray(proposal.dependsOn)) {
+          const builtIns = ['fs', 'path', 'os', 'child_process', 'crypto', 'http', 'https', 'util'];
+          const rogueDeps = proposal.dependsOn.filter(dep => 
+            !systemInfo.dependencies.includes(dep) && !builtIns.includes(dep)
+          );
+
+          if (rogueDeps.length > 0) {
+            console.log(`[smartEvolution] ⚠️ Rogue dependencies detected: ${rogueDeps.join(", ")}. Initiating correction...`);
+            
+            const correctionPrompt = `You proposed a tool called "${proposal.toolName}" that relies on uninstalled packages: [${rogueDeps.join(", ")}].
+We CANNOT install new packages. 
+How can we achieve the exact same functionality using ONLY native Node.js built-ins (like native 'fetch' instead of 'axios', or basic Regex instead of heavy NLP libraries), OR our currently installed packages: [${systemInfo.dependencies.join(", ")}]?
+
+Rewrite the "implementationPlan" to explain the native/alternative approach, and output the updated JSON.
+Retain all other fields exactly as they were, but remove the invalid packages from the "dependsOn" array.`;
+
+            const correctionResult = await llm(correctionPrompt, { model: "qwen2.5:7b", timeoutMs: 30000, format: "json", skipKnowledge: true });
+            
+            if (correctionResult.success && correctionResult.data?.text) {
+              const cleanedCorrection = correctionResult.data.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+              proposal = JSON.parse(cleanedCorrection);
+              console.log(`[smartEvolution] 🟢 Dependencies successfully corrected via LLM.`);
+            } else {
+              console.warn(`[smartEvolution] 🔴 LLM failed to correct dependencies. Dropping proposal.`);
+              proposal = null;
+              continue; // Force the main while loop to try again
+            }
+          }
+        }
+      }
+
+      if (!proposal || proposal.toolName === "none") break;
+
+      // ── RAG COLLISION CHECK (Pre-Flight Veto) ──
+      console.log(`[smartEvolution] Running RAG collision check for: ${proposal.toolName}`);
+      
+      const ragQuery = `tool skill ${proposal.description} ${proposal.capabilities?.join(" ")}`;
+      const ragCheck = await codeRag({ text: ragQuery, context: { action: "search", topK: 3 } });
+      
+      if (ragCheck.success && ragCheck.data?.results?.length > 0) {
+        // Build a fast context string of the files RAG found
+        const ragContext = ragCheck.data.results.map(r => `File: ${r.file}\nCode Snippet:\n${r.code}`).join("\n\n");
+        
+        // Fast LLM Judge to check for actual semantic overlap
+        const collisionPrompt = `You are a strict code architect. 
+We proposed building a new tool: "${proposal.toolName}" - ${proposal.description}
+Capabilities: ${proposal.capabilities?.join(", ")}
+
+We searched our existing codebase and found these deeply nested files:
+${ragContext}
+
+Does the proposed tool heavily overlap with or duplicate the capabilities of these existing files? 
+Answer EXACTLY with "COLLISION: YES" or "COLLISION: NO". If yes, briefly explain why in one sentence.`;
+
+        const collisionEval = await llm(collisionPrompt, { model: "qwen2.5:7b", timeoutMs: 15000, skipKnowledge: true });
+        const evalText = collisionEval?.data?.text || "";
+        
+        if (evalText.includes("COLLISION: YES")) {
+           console.warn(`[smartEvolution] 🔴 RAG Veto triggered: ${evalText}`);
+           collisionFeedback = `You proposed "${proposal.toolName}", but it collides with existing code: ${evalText}`;
+           proposal = null; // Wipe it and loop again
+           continue; 
+        } else {
+           console.log(`[smartEvolution] 🟢 RAG Check Passed: No deep codebase collision detected.`);
+        }
+      }
+      
+      // Check for exact name conflicts (e.g., matching a legacy file RAG missed)
+      const conflict = await checkToolNameConflict(proposal.toolName);
+      if (conflict.conflict) {
+        console.warn(`[smartEvolution] 🔴 Name Conflict: ${conflict.reason}`);
+        collisionFeedback = `You proposed "${proposal.toolName}", but that filename/tool already exists.`;
+        proposal = null;
+        continue;
+      }
+
+      // If we made it here, the proposal survived the RAG gauntlet!
+      break; 
+      
+    } catch (e) {
+      console.error(`[smartEvolution] THINK attempt ${thinkAttempt} failed:`, e.message);
     }
-  } catch (e) {
-    console.error("[smartEvolution] THINK step failed:", e.message);
   }
 
   if (!proposal || proposal.toolName === "none") {
-    output += `  LLM concluded: ${proposal?.rationale || "No viable tool identified."}\n`;
+    output += `  LLM concluded or failed after ${thinkAttempt} attempts: ${collisionFeedback || "No viable, non-duplicate tool identified."}\n`;
     output += "\n**Pipeline complete — no new tool proposed.**\n";
-    await appendAuditLog({ step: 3, action: "think", result: "no_proposal", rationale: proposal?.rationale });
-    return { tool: "smartEvolution", success: true, final: true, data: { text: output, preformatted: true } };
-  }
-
-  // Validate proposal basics
-  if (!proposal.toolName || !proposal.filename || !proposal.implementationPlan) {
-    output += "  LLM returned an incomplete proposal — missing required fields.\n";
-    output += "\n**Pipeline aborted at Step 3.**\n";
-    return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
-  }
-
-  // Check for conflicts
-  const conflict = await checkToolNameConflict(proposal.toolName);
-  if (conflict.conflict) {
-    output += `  Tool name conflict: ${conflict.reason}\n`;
-    output += "  The LLM suggested a tool that already exists. Run again to get a different suggestion.\n";
-    output += "\n**Pipeline stopped — name collision. Try running again.**\n";
-    await appendAuditLog({ step: 3, action: "think", result: "name_conflict", toolName: proposal.toolName });
+    await appendAuditLog({ step: 3, action: "think", result: "no_proposal", rationale: collisionFeedback || "failed" });
     return { tool: "smartEvolution", success: true, final: true, data: { text: output, preformatted: true } };
   }
 
   output += `  Proposed: **${proposal.toolName}** — ${proposal.description}\n\n`;
-  console.log(`[smartEvolution] Proposal: ${proposal.toolName} — ${proposal.description}`);
+  console.log(`[smartEvolution] Final Approved Proposal: ${proposal.toolName}`);
   await appendAuditLog({ step: 3, action: "think", result: "proposal", toolName: proposal.toolName, description: proposal.description });
 
-  // ── STEP 4: REPORT ─────────────────────────────────────────────
+// ── STEP 4: REPORT ─────────────────────────────────────────────
   output += "**Step 4/10 — Proposal Report**\n\n";
   console.log("[smartEvolution] Step 4: REPORT — building proposal document");
+
+  // NEW: Determine if it's a skill or tool dynamically
+  const isSkill = proposal.kind === "skill";
+  const typeLabel = isSkill ? "Skill" : "Tool";
+  const relativePath = isSkill ? `server/skills/${proposal.filename}` : `server/tools/${proposal.filename}`;
 
   const report = `
 **Smart Evolution Proposal**
 
-**Tool:** ${proposal.toolName}
-**File:** server/tools/${proposal.filename}
+**${typeLabel}:** ${proposal.toolName}
+**File:** ${relativePath}
 **Complexity:** ${proposal.complexity || "medium"}
 
 **Description:** ${proposal.description}
@@ -786,10 +854,25 @@ async function executeApprovedProposal() {
     return { tool: "smartEvolution", success: false, final: true, data: { text: "No pending evolution proposal found. Run `smart evolution` first to generate one." } };
   }
 
-  const { proposal } = pending;
+const { proposal } = pending;
+  
+  const isSkill = proposal.kind === "skill";
+  const typeLabel = isSkill ? "Skill" : "Tool";
+  const baseFilename = proposal.filename.replace(".js", "");
+
+  // NEW: Setup the shim directory structure
+  const targetDir = isSkill ? path.join(SKILLS_DIR, baseFilename) : TOOLS_DIR;
+  const coreFilePath = isSkill ? path.join(targetDir, `${baseFilename}.js`) : path.join(targetDir, `${baseFilename}.js`);
+  const relativeCorePath = isSkill ? `server/skills/${baseFilename}/${baseFilename}.js` : `server/tools/${baseFilename}.js`;
+  
+  const shimFilePath = isSkill ? path.join(SKILLS_DIR, `${baseFilename}.js`) : null;
+  const indexFilePath = isSkill ? path.join(targetDir, "index.js") : null;
+  const entryPathRelative = isSkill ? `server/skills/${baseFilename}.js` : `server/tools/${baseFilename}.js`;
+
   let output = `**Smart Evolution — Building: ${proposal.toolName}**\n\n`;
   const filename = proposal.filename.endsWith(".js") ? proposal.filename : `${proposal.filename}.js`;
-  const toolFilePath = path.join(TOOLS_DIR, filename);
+  const targetFilePath = path.join(targetDir, filename);
+
 // ── STEP 6: USER APPROVAL LOGGING ─────────────
   output += "**Step 6/10 — Plan Validation**\n";
   console.log("[smartEvolution] Step 6: VALIDATE — User approved the plan");
@@ -808,7 +891,7 @@ async function executeApprovedProposal() {
   output += "**Step 7-8/10 — Code Generation + Self-Healing Verification**\n";
   console.log("[smartEvolution] Steps 7-8: BUILD+VERIFY — self-healing code generation loop");
 
-  const buildPrompt = `Generate a complete, production-ready ES Module tool file for an AI agent system.
+const buildPrompt = `Generate a complete, production-ready ES Module tool file for an AI agent system.
 
 TOOL SPECIFICATION:
 Name: ${proposal.toolName}
@@ -819,7 +902,7 @@ Implementation Plan: ${proposal.implementationPlan}
 MANDATORY BOILERPLATE — the exported function MUST match this EXACT signature pattern:
 
 \`\`\`javascript
-// server/tools/${filename}
+// ${relativeCorePath}
 // ${proposal.description}
 
 import { CONFIG } from "../utils/config.js";
@@ -828,7 +911,7 @@ import { CONFIG } from "../utils/config.js";
 /**
  * ${proposal.description}
  * @param {string|object} request - User input (string or {text, context})
- * @returns {object} Standard tool response
+ * @returns {object} Standard ${typeLabel.toLowerCase()} response
  */
 export async function ${proposal.toolName}(request) {
   try {
@@ -900,8 +983,7 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     try {
       const recoveryBlock = lastError ? `\n\n⚠️ CRITICAL: Your previous attempt FAILED validation with this error:\n[ERROR START]\n${lastError}\n[ERROR END]\nYou MUST fix this error. Do NOT repeat the same mistake. Analyze the error carefully.` : "";
 
-      const buildResult = await llm(buildPrompt + recoveryBlock, { timeoutMs: 120000 });
-
+      const buildResult = await llm(buildPrompt + recoveryBlock, { model: "qwen2.5:7b", timeoutMs: 120000 });
       if (buildResult.success && buildResult.data?.text) {
         code = buildResult.data.text;
         const fenceMatch = code.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
@@ -940,11 +1022,11 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     }
 
     // ── 7c. Syntax + ESLint via shared codeValidator (self-healing) ──
-    const validation = await validateStaged(code, toolFilePath);
+    const validation = await validateStaged(code, coreFilePath)
 
     if (validation.valid) {
       generatedCode = code;
-      await cleanupStaging(toolFilePath);
+      await cleanupStaging(coreFilePath);
       output += `  Attempt ${healAttempt}: Code generated + validated (${code.length} chars)`;
       output += validation.warnings?.length ? ` (${validation.warnings.length} warnings)\n` : "\n";
       console.log(`[smartEvolution] 🟢 Validation passed on attempt ${healAttempt}`);
@@ -997,7 +1079,7 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
 
         const fixValidation = await validateStaged(codeValidation.fixedCode, toolFilePath);
         if (!fixValidation.valid) {
-          await cleanupStaging(toolFilePath);
+          await cleanupStaging(coreFilePath)
           await clearPendingProposal();
           output += `  Gemini's fix failed validation (${fixValidation.stage}) — aborting.\n`;
           output += "\n**Pipeline aborted at Step 8.**\n";
@@ -1005,7 +1087,7 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
         }
 
         generatedCode = codeValidation.fixedCode;
-        await cleanupStaging(toolFilePath);
+        await cleanupStaging(coreFilePath);
         output += "  Gemini's corrected code passed security + validation checks.\n";
       } else {
         await clearPendingProposal();
@@ -1023,19 +1105,48 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
 
   await appendAuditLog({ step: 8, action: "all_checks_passed", toolName: proposal.toolName });
 
-  // ── ATOMIC DEPLOY: write validated code to final path ──────────
+// ── ATOMIC DEPLOY: write validated code to final path ──────────
   try {
-    await fs.writeFile(toolFilePath, generatedCode, "utf8");
-    output += "\n  File deployed: server/tools/" + filename + "\n";
+    if (isSkill) {
+      // 1. Create the inner directory
+      await fs.mkdir(targetDir, { recursive: true });
+      
+      // 2. Write the core logic file
+      await fs.writeFile(coreFilePath, generatedCode, "utf8");
+
+      // 3. Auto-generate and write the index.js orchestrator
+      const indexContent = `// Top-level orchestrator for the ${baseFilename} skill module.\n\nexport { ${proposal.toolName} } from "./${baseFilename}.js";\n`;
+      await fs.writeFile(indexFilePath, indexContent, "utf8");
+
+      // 4. Auto-generate and write the outer shim.js
+      const shimContent = `// server/skills/${baseFilename}.js
+// Thin re-export shim. All implementation lives in server/skills/${baseFilename}/.
+
+export { ${proposal.toolName} } from "./${baseFilename}/index.js";
+
+export const ROUTING = {
+  tool: "${proposal.toolName}",
+  description: "${proposal.description}"
+};\n`;
+      await fs.writeFile(shimFilePath, shimContent, "utf8");
+
+      output += `\n  Skill deployed with shim pattern: ${entryPathRelative}\n`;
+      
+    } else {
+      // Legacy tool deployment (single file)
+      await fs.writeFile(coreFilePath, generatedCode, "utf8");
+      output += `\n  File deployed: ${entryPathRelative}\n`;
+    }
   } catch (writeErr) {
     output += `\n  Deploy failed: ${writeErr.message}\n`;
-    output += "\n**Pipeline aborted — could not write final file.**\n";
+    output += "\n**Pipeline aborted — could not write final files.**\n";
     return { tool: "smartEvolution", success: false, final: true, data: { text: output, preformatted: true } };
   }
 
-  // Register the new tool in index.js, planner.js, executor.js
+  // Register the new tool/skill
   try {
-    await registerNewTool(toolFilePath, proposal.description);
+    // We pass the entry point (the shim) to the registrar
+    await registerNewTool(isSkill ? shimFilePath : coreFilePath, proposal.description);
     output += "  Registration: index.js, planner.js, executor.js updated\n";
   } catch (e) {
     output += `  Registration WARNING: ${e.message}\n`;
@@ -1046,16 +1157,16 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
   output += "\n**Step 9/10 — Notification**\n";
   console.log("[smartEvolution] Step 9: NOTIFY — tool creation complete");
 
-  output += `New tool **${proposal.toolName}** has been created and registered.\n`;
-  output += `File: \`server/tools/${filename}\`\n\n`;
+  output += `New ${typeLabel.toLowerCase()} **${proposal.toolName}** has been created and registered.\n`;
+  output += `File: \`${entryPathRelative}\`\n\n`;
 
   // Log to telemetry
   try {
     await logImprovement({
-      type: "new_tool",
+      type: isSkill ? "new_skill" : "new_tool",
       tool: proposal.toolName,
       description: proposal.description,
-      file: `server/tools/${filename}`,
+      file: entryPathRelative,
       source: "smartEvolution"
     });
   } catch { /* non-critical */ }
@@ -1075,7 +1186,7 @@ Generate the COMPLETE file content. Do NOT use placeholder comments like "// imp
     const existingIdx = metadata.findIndex(m => m.name === proposal.toolName);
     const entry = {
       name: proposal.toolName,
-      filename: `server/tools/${filename}`,
+      filename: entryPathRelative,
       description: proposal.description,
       capabilities: proposal.capabilities || [],
       triggerExamples: proposal.triggerExamples || [],

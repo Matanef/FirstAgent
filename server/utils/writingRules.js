@@ -76,6 +76,23 @@ export const TIER_BUDGETS = {
       { id: "conclusion",  heading: "Conclusion",          words: 700 }
     ],
     aiAcknowledgment: "frontmatter"
+  },
+  // Phase 20N — thesis-deep uses the same section structure as thesis. The
+  // depth difference comes from the open-questions follow-up harvest run
+  // before synthesis, which produces additional articles that get folded
+  // into the Future Directions subsection. Section budgets unchanged.
+  "thesis-deep": {
+    total: 5750,
+    sections: [
+      { id: "abstract",    heading: "Abstract",            words: 400 },
+      { id: "intro",       heading: "Introduction",        words: 550 },
+      { id: "litreview",   heading: "Literature Review",   words: 900 },
+      { id: "methodology", heading: "Methodology",         words: 750 },
+      { id: "results",     heading: "Results",             words: 1050 },
+      { id: "discussion",  heading: "Discussion",          words: 1200 },
+      { id: "conclusion",  heading: "Conclusion",          words: 700 }
+    ],
+    aiAcknowledgment: "frontmatter"
   }
 };
 

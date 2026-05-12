@@ -41,6 +41,29 @@ const SCIENCEDAILY_DOI_RE = /(?:doi|DOI)[:\s]+\s*(10\.\d{4,}\/[^\s<"']{4,80})/g;
 // Bare .pdf links in article HTML/text
 const PDF_LINK_RE = /https?:\/\/[^\s"'<>]+\.pdf(?:\?[^\s"'<>]*)?/gi;
 
+// Phase 17F — DOI prefixes for publishers that paywalled their content AND
+// 403 anti-scraping at doi.org redirect time. Once Unpaywall has failed for
+// a DOI in this list, the doi.org HTML-landing-page fallback is guaranteed
+// to fail too — skip the network round-trip. Sources: live thesis-run logs
+// showing repeated `[paperUpgrader] doi.org fallback failed … status 403`
+// for these prefixes. List is conservative — only prefixes confirmed to
+// 403/redirect-loop in the wild.
+const PAYWALLED_DOI_PREFIXES = [
+  "10.1001/",   // JAMA / JAMA Network
+  "10.1016/",   // Elsevier (closed by default)
+  "10.1017/",   // Cambridge University Press
+  "10.1037/",   // APA PsycNET
+  "10.1080/",   // Taylor & Francis
+  "10.1093/",   // Oxford Academic
+  "10.1111/",   // Wiley
+  "10.1176/",   // APA Psychiatric Publishing
+  "10.1186/",   // BMC (redirect-loop fail observed)
+  "10.3389/",   // Frontiers (redirect-fail observed)
+  "10.3390/",   // MDPI (redirect-fail observed)
+  "10.5665/",   // Sleep journal
+  "10.15766/",  // MedEdPortal
+];
+
 // ── Chunk helper (Phase 2E) ───────────────────────────────────────────────
 
 /**
@@ -259,15 +282,24 @@ export async function upgradeArticle(article) {
     // 10G added inside unpaywallLookup.
     const cleanForDoiOrg = sanitizeDoi(rawDoi);
     if (cleanForDoiOrg) {
-      try {
-        const doiUrl = `https://doi.org/${cleanForDoiOrg}`;
-        const html = await downloadText(doiUrl, 15000);
-        const stripped = stripBasicHtml(html);
-        if (stripped.length > 600) {
-          return { content: stripped, pdfUrl: doiUrl, doi: cleanForDoiOrg, source: "html" };
+      // Phase 17F — skip doi.org for known paywalled-publisher prefixes.
+      // After Unpaywall fails (no OA copy), doi.org just redirects to the
+      // publisher's paywalled landing page which 403s anti-scraping. Each
+      // attempt wastes ~1-3s and clutters logs. The user's CBT thesis run
+      // had 12+ such 403 cascades. Skip them — let the harvester move on.
+      if (PAYWALLED_DOI_PREFIXES.some(p => cleanForDoiOrg.startsWith(p))) {
+        log(`doi.org fallback skipped: publisher prefix in blocklist (${cleanForDoiOrg})`, "info");
+      } else {
+        try {
+          const doiUrl = `https://doi.org/${cleanForDoiOrg}`;
+          const html = await downloadText(doiUrl, 15000);
+          const stripped = stripBasicHtml(html);
+          if (stripped.length > 600) {
+            return { content: stripped, pdfUrl: doiUrl, doi: cleanForDoiOrg, source: "html" };
+          }
+        } catch (err) {
+          log(`doi.org fallback failed for ${cleanForDoiOrg}: ${err.message}`, "warn");
         }
-      } catch (err) {
-        log(`doi.org fallback failed for ${cleanForDoiOrg}: ${err.message}`, "warn");
       }
     } else {
       log(`doi.org fallback skipped: malformed DOI "${String(rawDoi).slice(0, 60)}"`, "warn");

@@ -211,9 +211,22 @@ function tripGeminiBreaker(seconds) {
 export { callGemini };
 
 // Replace your existing fetchWithTimeout with this:
+// Phase 16C — categorize errors so callers (and logs) can distinguish:
+//   user_abort       — external signal aborted (user cancelled)
+//   timeout          — internal setTimeout fired (request took longer than timeoutMs)
+//   network          — fetch threw ECONNREFUSED/ECONNRESET/ENOTFOUND (Ollama unreachable)
+//   http_error       — non-2xx HTTP response (Ollama returned an error code)
+//   context_overflow — HTTP 400 with body matching context-length pattern
+//   unknown          — fallback for unrecognized failures
 async function fetchWithTimeout(url, body, timeoutMs = 180_000, externalSignal = null) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  // Phase 16C — track WHICH source aborted (timeout setTimeout vs externalSignal).
+  // Without this flag both paths look identical in the catch block.
+  let abortReason = null;
+  const timeoutId = setTimeout(() => {
+    abortReason = "timeout";
+    controller.abort();
+  }, timeoutMs);
 
   // Watchdog: if the Ollama connection goes silent the user sees nothing for
   // minutes. Emit a progress log every 30s so it's obvious the server is still
@@ -226,8 +239,11 @@ async function fetchWithTimeout(url, body, timeoutMs = 180_000, externalSignal =
 
   // If the user clicks stop, trigger our internal abort controller
   if (externalSignal) {
-    if (externalSignal.aborted) controller.abort();
-    externalSignal.addEventListener("abort", () => controller.abort());
+    if (externalSignal.aborted) { abortReason = "user_abort"; controller.abort(); }
+    externalSignal.addEventListener("abort", () => {
+      abortReason = abortReason || "user_abort";
+      controller.abort();
+    });
   }
 
   try {
@@ -240,10 +256,37 @@ async function fetchWithTimeout(url, body, timeoutMs = 180_000, externalSignal =
 
     if (res.body && typeof res.body.on === 'function') res.body.on('error', () => {});
 
-    if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
+    if (!res.ok) {
+      // Phase 16C — distinguish context_overflow from generic http_error
+      const bodyText = await res.text().catch(() => "");
+      const isContextOverflow = (res.status === 400 || res.status === 422)
+        && /context|num_ctx|too\s+(?:long|large)|exceed/i.test(bodyText);
+      const e = new Error(`LLM HTTP ${res.status}: ${bodyText.slice(0, 200)}`);
+      e.category = isContextOverflow ? "context_overflow" : "http_error";
+      e.httpStatus = res.status;
+      e.duration = Date.now() - startedAt;
+      throw e;
+    }
     return await res.json();
   } catch (err) {
-    if (err.name === "AbortError") throw new Error(`LLM request aborted or timed out`);
+    const duration = Date.now() - startedAt;
+    if (err.category) throw err;          // already categorized (e.g. http_error above)
+    if (err.name === "AbortError") {
+      const cat = abortReason || "unknown_abort";
+      const e = new Error(`LLM request ${cat} after ${duration}ms`);
+      e.category = cat;
+      e.duration = duration;
+      throw e;
+    }
+    if (err.code === "ECONNREFUSED" || err.code === "ECONNRESET" || err.code === "ENOTFOUND" || err.code === "EHOSTUNREACH") {
+      const e = new Error(`LLM network error (${err.code}) after ${duration}ms`);
+      e.category = "network";
+      e.duration = duration;
+      e.networkCode = err.code;
+      throw e;
+    }
+    err.duration = duration;
+    err.category = err.category || "unknown";
     throw err;
   } finally {
     clearTimeout(timeoutId);
@@ -282,7 +325,37 @@ export function pickModelForContent(text) {
   return undefined; // Use default model from CONFIG
 }
 
+// Phase 16D — single retry with exponential backoff for transient timeouts
+// and network errors. The retry fires AFTER the full timeoutMs has elapsed
+// (the user noted that long writes are normal — slow ≠ stuck), not mid-call.
+// User-aborts and context-overflows are NEVER retried.
+const RETRYABLE_CATEGORIES = new Set(["timeout", "network", "http_error"]);
+const NON_RETRYABLE_CATEGORIES = new Set(["user_abort", "context_overflow"]);
+
 export async function llm(prompt, configOptions = {}) {
+  const maxRetries = configOptions.maxRetries ?? 1;
+  let lastResult = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await _llmCore(prompt, configOptions);
+    if (result?.success) return result;
+    lastResult = result;
+    const cat = result?.errorCategory || "unknown";
+    if (NON_RETRYABLE_CATEGORIES.has(cat)) {
+      log(`[retry] not retrying — category=${cat} is non-retryable`, "info");
+      break;
+    }
+    if (attempt < maxRetries && RETRYABLE_CATEGORIES.has(cat)) {
+      const delay = Math.min(2000 * Math.pow(2, attempt), 15000);  // 2s, 4s, 8s, capped 15s
+      log(`[retry] attempt ${attempt + 1}/${maxRetries} after ${delay}ms (category=${cat}, model=${configOptions.model || "default"})`, "warn");
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+    break;
+  }
+  return lastResult;
+}
+
+async function _llmCore(prompt, configOptions = {}) {
   const timeoutMs = configOptions.timeoutMs || 600_000;
   const externalSignal = configOptions.signal;
   const priority = _resolvePriority(configOptions.priority);
@@ -306,8 +379,12 @@ export async function llm(prompt, configOptions = {}) {
     await _llmAcquire({ priority, externalSignal });
   } catch (err) {
     // Aborted while waiting in queue — propagate as a standard LLM failure.
+    // Phase 16D — tag with errorCategory so the retry wrapper can decide
+    // whether to retry (queue-aborts are typically user_abort → no retry).
     return {
       tool: "llm", success: false, final: true,
+      error: err.message,
+      errorCategory: externalSignal?.aborted ? "user_abort" : "queue_aborted",
       data: { text: `The language model encountered an error: ${err.message}` }
     };
   }
@@ -386,6 +463,18 @@ export async function llm(prompt, configOptions = {}) {
     }
     console.log(`------------------------------------------------------------\n`);
 
+    // Phase 17A — KV-cache + GPU-layer hygiene for 8GB VRAM cards.
+    // num_ctx=4096 keeps qwen2.5:7b's KV cache ≈ 1GB, leaving the model itself
+    // (~4.7GB) comfortably resident in VRAM. Synthesis callers that need more
+    // context pass num_ctx via options and override via the spread below.
+    // num_gpu=999 instructs Ollama to load ALL layers to GPU; if it can't, it
+    // errors immediately as HTTP 400 instead of silently spilling layers to
+    // CPU RAM (which causes 30-100x slower inference and the timeout cascade
+    // observed in earlier runs). Override via OLLAMA_NUM_GPU env var to force
+    // partial offload (e.g. OLLAMA_NUM_GPU=35) when a larger model is needed.
+    const numGpu = process.env.OLLAMA_NUM_GPU
+      ? parseInt(process.env.OLLAMA_NUM_GPU, 10)
+      : 999;
     const body = {
       model: ollamaModel,
       prompt: finalPrompt,
@@ -393,8 +482,9 @@ export async function llm(prompt, configOptions = {}) {
       stream: false,
       ...(format ? { format } : {}),
       options: {
-        num_ctx: 8192, // Hard cap to prevent VRAM overflow on 8GB cards
-        ...options
+        num_ctx: 4096,           // was 8192 — KV cache fits in 8GB
+        num_gpu: numGpu,         // 999 = all-GPU; fail loudly if doesn't fit
+        ...options               // caller overrides win via spread
       }
     };
 
@@ -430,15 +520,25 @@ export async function llm(prompt, configOptions = {}) {
     };
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-        log("Request aborted safely", "info");
-        return { success: false, error: "Aborted" };
-      }
-    log(`Error: ${err.message}`, "error");
+    // Phase 16C — surface error category + duration + model + prompt-length
+    // for diagnosis. The previous catch collapsed all failures to a generic
+    // "Error: ..." line; the new line lets us tell at a glance whether the
+    // user cancelled, Ollama crashed, the request timed out, or the input
+    // exceeded the model's context window.
+    const category = err.category || (err.name === "AbortError" ? "unknown_abort" : "unknown");
+    const duration = err.duration || null;
+    const promptLen = (typeof prompt === "string" ? prompt.length : 0);
+    if (err.name === 'AbortError' && category === "user_abort") {
+      log(`Request aborted by user (model=${model}, duration=${duration}ms, promptLen=${promptLen}c)`, "info");
+      return { success: false, error: "Aborted", errorCategory: "user_abort" };
+    }
+    log(`[ERROR] category=${category} model=${model} duration=${duration}ms promptLen=${promptLen}c — ${err.message}`, "error");
     return {
       tool: "llm",
       success: false,
       final: true,
+      error: err.message,
+      errorCategory: category,
       data: { text: `The language model encountered an error: ${err.message}` }
     };
   }
