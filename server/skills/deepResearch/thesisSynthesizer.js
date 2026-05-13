@@ -1186,61 +1186,115 @@ function stripUnverifiedStudyMarkers(text) {
 //   ### Introduction to Cognitive Behavioral Therapy (CBT) in Mental Health Cognitive Behavioral Therapy (CBT) is a widely recognized...
 // Split at the period+capitalized-word boundary so the heading is short and
 // the body starts on a new paragraph.
-function splitSmushedH3HeadingBody(text) {
+function splitSmushedHeadingBody(text) {
   if (!text) return text;
-  const before = text;
   let splits = 0;
   let out = String(text);
 
-  // Heuristic A (Phase 19I): H3 line with `. <Capital body>` boundary.
-  out = out.replace(/^(### [^\n]{30,200}?)\.\s+([A-Z][a-z][^\n]{40,})$/gm, (m, head, body) => {
+  // Phase 23A — extended to all H3-H6 levels (was H3-only). The CBT thesis-deep
+  // output had `#### Title Body sentence...` patterns in Intro, Methodology,
+  // Results, Conclusion — none caught because Phase 19I/20G hardcoded `### `.
+
+  // Heuristic A: heading line with `. <Capital body>` boundary.
+  out = out.replace(/^((#{3,6}) [^\n]{30,200}?)\.\s+([A-Z][a-z][^\n]{40,})$/gm, (m, head, _h, body) => {
     splits++;
     return `${head}.\n\n${body}`;
   });
 
-  // Phase 20G — Heuristic B: H3 line without a period boundary. The May CBT
-  // thesis run had headings like:
+  // Heuristic B: heading line without a period boundary. E.g.
   //   ### Efficacy Across Mental Health Conditions The literature supports the efficacy of...
-  // No period between the heading title and the body opener. Detect: H3 line
-  // longer than 80 chars where the title-shaped prefix (Title-Case words) is
-  // followed by an article/preposition/verb that signals body prose.
-  //
-  // Split point: last position where a Title-Case word is immediately followed
-  // by a capitalized word that introduces body prose ("The", "This", "These",
-  // "In", "Despite", "Although", "While", "Several", "Many", "A meta-analysis",
-  // "Cognitive Behavioral Therapy", etc.).
-  //
-  // Conservative: require >= 4 Title-Case heading words AND body opener is one
-  // of a known list of sentence starters AND the body part is >= 40 chars.
+  // No period between the heading title and the body opener.
   const BODY_STARTERS_RE = /\b(?:The|This|These|Those|It|A|An|Despite|Although|While|Several|Many|Most|Studies|Research|Evidence|Findings|Recent|Cognitive|However|Furthermore|Moreover|Numerous|One|Two|Three|First|Second|In\s+\w|A\s+meta-analysis|A\s+systematic|For\s+example|Specifically|Although|Yet|Whereas)\b/;
-  out = out.replace(/^(### [^\n]{40,300})$/gm, (line) => {
-    // Already handled by Heuristic A if it has the period boundary
-    if (/^### [^\n]+\.\s/.test(line)) return line;
-    // Length check
+  out = out.replace(/^((#{3,6}) [^\n]{40,300})$/gm, (line, _full, hashes) => {
+    if (/^#{3,6} [^\n]+\.\s/.test(line)) return line;   // Already handled by A
     if (line.length < 90) return line;
-    // Walk forward through Title-Case words; find the last one followed by a
-    // body-starter capital word.
-    const headPart = line.slice(4); // strip "### "
+    const headPart = line.slice(hashes.length + 1);     // strip "### "/"#### " etc.
     const words = headPart.split(/\s+/);
     if (words.length < 6) return line;
-    // Find a split index: position i where words[0..i] looks heading-shaped
-    // (capitalized or short connectors) AND words[i+1] starts a body sentence.
     for (let i = words.length - 1; i >= 3; i--) {
       const next = words.slice(i + 1).join(" ");
       if (next.length < 40) continue;
       if (!BODY_STARTERS_RE.test(words.slice(i + 1, i + 4).join(" "))) continue;
-      // Verify the heading part is mostly title-case (allow connectors)
       const headPartWords = words.slice(0, i + 1);
       const titleCaseCount = headPartWords.filter(w => /^[A-Z][a-zA-Z'\-]*$/.test(w) || /^(of|and|for|the|in|on|at|to|a|an|with|across|by)$/i.test(w)).length;
       if (titleCaseCount / headPartWords.length < 0.7) continue;
       splits++;
-      return `### ${words.slice(0, i + 1).join(" ")}\n\n${next}`;
+      return `${hashes} ${words.slice(0, i + 1).join(" ")}\n\n${next}`;
     }
     return line;
   });
 
-  if (splits > 0) console.log(`[thesisSynthesizer] smushedH3: split ${splits} heading(s) from inline body`);
+  if (splits > 0) console.log(`[thesisSynthesizer] smushedHeading: split ${splits} heading(s) from inline body`);
   return out;
+}
+// Phase 23A — backwards-compat alias; old name still referenced by helpers.
+const splitSmushedH3HeadingBody = splitSmushedHeadingBody;
+
+// Phase 23A — paragraph-boundary normaliser. Runs once on the assembled
+// draft before lint() so the lint paragraph splitter (split on `\n{2,}`)
+// actually sees real paragraphs. Without this, the LLM occasionally emits
+// `# Heading body body body body…` (everything on one line) and the lint
+// pass treats the entire section as ONE 1500w paragraph that then sails
+// into rewriteParagraph() and times out.
+//
+// Two patterns inserted:
+//   1. heading line followed directly by a body line (no blank line between)
+//      `#### Title\nProse without leading hash` → `#### Title\n\nProse...`
+//   2. sentence-ending body followed by a heading on the same line
+//      `…sentence. ### Heading` → `…sentence.\n\n### Heading`
+//
+// Both regexes only fire on heading markers `#{1,6} ` to avoid disturbing
+// numbered lists, indented bullets, etc.
+function normaliseParagraphBoundaries(text) {
+  let out = String(text || "");
+  let inserted = 0;
+  out = out.replace(/^(#{1,6} [^\n]+)\n(?!\s*$|#|\s*\n)/gm, (m, head) => {
+    inserted++;
+    return `${head}\n\n`;
+  });
+  out = out.replace(/([.!?])[ \t]+(#{2,6}[ \t]+[A-Z])/g, (m, p, h) => {
+    inserted++;
+    return `${p}\n\n${h}`;
+  });
+  if (inserted > 0) console.log(`[thesisSynthesizer] paragraphBoundaries: inserted ${inserted} \\n\\n boundary marker(s)`);
+  return out;
+}
+
+// Phase 23A — strip leading section-name duplicates. The CBT thesis-deep
+// Introduction body opened with a bare `Introduction:` line right after
+// the assembler-injected `## Introduction` heading. This pattern repeats
+// (Methodology, Results, Discussion, Conclusion). Removing it eliminates
+// the duplicate-title noise and reduces the surface area that the
+// smushed-heading regex has to chew through.
+function stripLeadingSectionLabel(body, heading) {
+  if (!body || !heading) return body;
+  const target = String(heading).trim();
+  if (!target) return body;
+  // Match: optional whitespace, the target text (case-insensitive), optional
+  // `:` or `.`, then a newline. Allows multiple variants like:
+  //   "Introduction:\n", "Introduction\n", " introduction :\n"
+  const re = new RegExp(`^\\s*${escapeRegex(target)}\\s*[:.]?\\s*\\n+`, "i");
+  return body.replace(re, "");
+}
+
+// Phase 23A — continuation-pass overlap dedupe. When the continuation
+// LLM call appends new text, it sometimes restarts mid-sentence and
+// repeats the tail of the prior body. Example from May CBT thesis-deep:
+//   prior: "…This paper examines whether cognitive behavioral"
+//   appended: "This paper examines whether cognitive behavioral therapy …"
+// → reads "…cognitive behavioral This paper examines whether cognitive
+//    behavioral therapy …". Dedupe by finding the longest suffix of the
+// prior tail that also prefixes the continuation, then trimming.
+function dedupeContinuationOverlap(sectionTail, continuation) {
+  if (!sectionTail || !continuation) return continuation;
+  const tail = String(sectionTail).slice(-200);
+  for (let len = Math.min(tail.length, continuation.length); len >= 20; len--) {
+    const candidate = tail.slice(-len);
+    if (continuation.startsWith(candidate)) {
+      return continuation.slice(len).trimStart();
+    }
+  }
+  return continuation;
 }
 
 // ── Phase 18E — normalize Roman-numeral H3 series ─────────────────────────
@@ -2441,11 +2495,16 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
     // "### Literature Review" inside the Literature Review section, on top of
     // the "## Literature Review" the assembler adds.
     text = stripDuplicateLeadingHeading(text, section.heading);
+    // Phase 23A — also strip a plain-text section label like "Introduction:"
+    // or "Methodology:" that the LLM emits as the first body line (no hash
+    // markers). The CBT thesis-deep output had: `## Introduction\n\nIntroduction:\n\n### …`.
+    text = stripLeadingSectionLabel(text, section.heading);
 
     const rawWords = wordCount(text);
     // Phase 1C: one expand/trim pass if section is significantly off budget
     text = await adjustSectionLength(text, section, topic, tier);
     text = stripDuplicateLeadingHeading(text, section.heading); // adjustment pass might re-add it
+    text = stripLeadingSectionLabel(text, section.heading);
 
     // Phase 5B — opening dedup. If this section's first sentence is too similar
     // to any earlier section's opening, force a rewrite of the opening only.
@@ -2678,9 +2737,18 @@ Output ONLY the continuation text (no preamble, no quotes):`;
         cont = cont.replace(/^["'`]+|["'`]+$/g, "").trim();
         cont = cont.replace(/^(Continuation|Continuing|Here is the continuation)[:.\s]+/i, "").trim();
         if (cont.length > 15 && cont.length < 1500) {
+          // Phase 23A — dedupe leading overlap. The LLM sometimes restarts
+          // mid-sentence and repeats the tail of `text`. Without this, the
+          // CBT thesis-deep Intro produced: "...This paper examines whether
+          // cognitive behavioral This paper examines whether cognitive
+          // behavioral therapy (CBT)..."
+          const dedupedCont = dedupeContinuationOverlap(text, cont);
+          if (dedupedCont !== cont) {
+            console.log(`[thesisSynthesizer] continuation pass: dedupe-overlap trimmed ${cont.length - dedupedCont.length}c of repeat-prefix`);
+          }
           // Splice: remove trailing whitespace/comma from existing text, add space, append continuation.
-          text = text.replace(/[\s,;]+$/, "") + " " + cont;
-          console.log(`[thesisSynthesizer] continuation pass: appended ${cont.length}c to "${section.id}"`);
+          text = text.replace(/[\s,;]+$/, "") + " " + dedupedCont;
+          console.log(`[thesisSynthesizer] continuation pass: appended ${dedupedCont.length}c to "${section.id}"`);
         } else {
           console.log(`[thesisSynthesizer] continuation pass: skipped (got ${cont.length}c, expected 15-1500)`);
         }
@@ -2743,6 +2811,15 @@ Output ONLY the continuation text (no preamble, no quotes):`;
   }
 
   snapshotDraft("assembled", draft);
+
+  // Phase 23A — normalise paragraph boundaries BEFORE lint(). The May
+  // CBT thesis-deep run had entire 1503w / 1629w Literature Review and
+  // Results sections smushed onto fewer than 6 lines (heading + body on a
+  // single line). lint() splits on `\n{2,}` so it treated each section as
+  // ONE paragraph, which then hit `rewriteParagraph(1503w)` and timed out
+  // at 30s. Inserting `\n\n` boundaries here breaks that cascade.
+  draft = normaliseParagraphBoundaries(draft);
+  snapshotDraft("paragraph-normalised", draft);
 
   // 8. Lint pass.
   console.log(`[thesisSynthesizer] ⏳ linting draft...`);
@@ -3030,6 +3107,35 @@ Output ONLY the continuation text (no preamble, no quotes):`;
       titledBody = bridgeCallout + chartsNote + finalBody;
     }
   }
+
+  // Phase 23C — claim-verifier pass. The pre-write surface is the right
+  // place: by now all section composition, polish, citation lint, and
+  // wikilink enrichment are done. We scan for numeric claims and
+  // annotate / sentence-strip any that don't have backing in the fact
+  // pool. Default mode is "annotate" (non-destructive); flip with
+  // CLAIM_VERIFY_MODE=strict in .env to drop unverified sentences.
+  try {
+    const { verifyAndAnnotate } = await import("./claimVerifier.js");
+    const factPool = promptResults.flatMap(p => (p.analyses || []).flatMap(a => {
+      const facts = Array.isArray(a?.analysis?.facts) ? a.analysis.facts : [];
+      const sourceTitle = a?.article?.title || "?";
+      const sourceContent = String(a?.article?.content || "");
+      const factEntries = facts.map(f => ({ source: sourceTitle, content: String(f || ""), text: sourceContent }));
+      // Always include the article content slice as a "fact" so numbers
+      // appearing only in the raw text (not extracted as facts) still match.
+      if (sourceContent.length > 0) factEntries.push({ source: sourceTitle, content: sourceContent });
+      return factEntries;
+    }));
+    const verifyMode = process.env.CLAIM_VERIFY_MODE === "strict" ? "strict" : "annotate";
+    const verifyResult = verifyAndAnnotate(titledBody, factPool, { mode: verifyMode });
+    if (verifyResult.totalClaims > 0) {
+      console.log(`[thesisSynthesizer] claimVerifier: ${verifyResult.unverifiedCount}/${verifyResult.totalClaims} numeric claim(s) unverified (mode=${verifyMode})`);
+    }
+    titledBody = verifyResult.text;
+  } catch (err) {
+    log(`claimVerifier failed (non-fatal): ${err.message}`, "warn");
+  }
+
   await writeNote(relativePath, headerFm + titledBody);
   console.log(`[thesisSynthesizer] ✓ article saved: ${relativePath} (${wordCount(enrichedDraft)}w)`);
 
