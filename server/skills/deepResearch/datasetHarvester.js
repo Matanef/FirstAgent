@@ -226,7 +226,8 @@ async function fetchOpenAlexDatasets(query, limit) {
       description: (w.abstract_inverted_index ? reconstructAbstract(w.abstract_inverted_index) : "").slice(0, 600),
       files: [],
       url: doi ? `https://doi.org/${doi}` : (w.id || ""),
-      metadataOnly: true
+      metadataOnly: true,
+      metadataOnlyReason: "catalog-only"
     }));
   }
   console.log(`[datasetHarvester] openalex: got ${out.length} dataset records (metadata-only)${crufted > 0 ? `, dropped ${crufted} catalog-cruft entries` : ""}`);
@@ -367,7 +368,8 @@ async function fetchOsfData(query, limit) {
       description: (a.description || "").slice(0, 600),
       files: [],       // file fetch on OSF is heavy (per-storage); v1 = metadataOnly
       url: node.links?.html || `https://osf.io/${node.id}`,
-      metadataOnly: true
+      metadataOnly: true,
+      metadataOnlyReason: "catalog-only"
     }));
   }
   console.log(`[datasetHarvester] osf: got ${out.length} dataset records (metadata-only)`);
@@ -551,7 +553,8 @@ async function fetchIcpsr(query, limit) {
       description: "",  // study-page scrape would inflate cost; skip in v1
       files: [],
       url: studyUrl,
-      metadataOnly: true
+      metadataOnly: true,
+      metadataOnlyReason: "catalog-only"
     }));
   }
   console.log(`[datasetHarvester] icpsr: got ${out.length} study records (metadata-only)`);
@@ -744,7 +747,14 @@ async function fetchWhoGho(query, limit) {
 }
 
 // ── record + file helpers ───────────────────────────────────────────────────
-function buildRecord({ id, title, doi, repository, authors, year, description, files, url, metadataOnly = false }) {
+// Phase 24D — `metadataOnlyReason` (string) now accompanies `metadataOnly`
+// so renderers can distinguish:
+//   "paywalled"          → file URL returned 401/403
+//   "catalog-only"       → provider doesn't expose rows (OpenAlex, ICPSR)
+//   "format-unsupported" → got a file but format not in ALLOWED_FORMATS
+//   "no-files"           → record has zero downloadable files
+//   ""/null              → unspecified (older code path)
+function buildRecord({ id, title, doi, repository, authors, year, description, files, url, metadataOnly = false, metadataOnlyReason = "" }) {
   return {
     id,
     title: (title || "").replace(/\s+/g, " ").trim(),
@@ -756,6 +766,7 @@ function buildRecord({ id, title, doi, repository, authors, year, description, f
     files: Array.isArray(files) ? files : [],
     url: url || "",
     metadataOnly: !!metadataOnly,
+    metadataOnlyReason: String(metadataOnlyReason || ""),
     topicMatch: null,             // filled in by tableAnalyst
     cite: {
       authors: Array.isArray(authors) ? authors.filter(Boolean) : [],
