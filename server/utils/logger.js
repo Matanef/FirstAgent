@@ -45,12 +45,15 @@ export function createLogger(processName, { silent = false, consoleLevel = "warn
       if (err) console.error(`Failed to write to ${processName} log:`, err);
     });
 
-    // Echo to PM2 console only when not silenced AND level meets the threshold
+    // Echo to PM2 console only when not silenced AND level meets the threshold.
+    // Phase 22 — prepend an HH:MM:SS timestamp so PM2 log streams can be
+    // correlated with the file logs (which already include full ISO timestamps).
     if (!silent) {
       const typeNum = LEVEL_ORDER[type] ?? LEVEL_ORDER.info;
       if (typeNum >= consoleLevelNum) {
         const consoleFn = type === "error" ? console.error : type === "warn" ? console.warn : console.log;
-        consoleFn(`[${processName}] [${type.toUpperCase()}] ${message}`);
+        const hhmmss = timestamp.slice(11, 19);   // "HH:MM:SS" extracted from ISO timestamp
+        consoleFn(`[${hhmmss}] [${processName}] [${type.toUpperCase()}] ${message}`);
       }
     }
   };

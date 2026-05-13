@@ -957,9 +957,17 @@ async function _deepResearchImpl(request) {
         try {
           const attached = await manualBridge.scanAndAttach(activeSlug, manualBridge.collectBlockedSources(promptResults));
           let attachedCount = 0;
+          // Phase 22 — per-file progress emission. The bridge resume can run
+          // 17+ articles × 3-5 analyzer chunks each (~50-85 LLM calls).
+          // Without these markers the user sees one long silent gap.
+          const bridgeTotal = attached.filter(x => x.exists).length;
+          let bridgeIdx = 0;
           for (const a of attached) {
             if (!a.exists) continue;
             const e = a.entry;
+            bridgeIdx++;
+            const bridgeTitleSlice = String(e.title || "").slice(0, 60);
+            emitProgress(`📥 bridge re-analyzing ${bridgeIdx}/${bridgeTotal}: "${bridgeTitleSlice}"`);
             try {
               if (e.kind === "article") {
                 const targetPrompt = promptResults.find(p => p.promptIndex === e.promptIndex);
