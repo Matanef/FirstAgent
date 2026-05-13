@@ -7,6 +7,52 @@ import { getLLMPriority } from "../utils/llmContext.js";
 const log = createLogger("llm", { silent: false, consoleLevel: "warn" });
 
 // ──────────────────────────────────────────────────────────
+// Phase 23B — Ollama health-recovery wait
+// ──────────────────────────────────────────────────────────
+// When an LLM call hits category="timeout", retrying after 2s usually
+// just produces another timeout because the Ollama server is stalled
+// (GPU exhaustion, KV-cache thrash, model swap). The retry attempt is
+// wasted. Instead, ping /api/tags every 5s up to 5 min; if Ollama comes
+// back online, retry the original call. If it doesn't recover within
+// the window, propagate the timeout as a genuine outage so the user
+// sees one clean error instead of compounded waits.
+const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
+const OLLAMA_HEALTH_TIMEOUT_MS = 3000;
+const OLLAMA_HEALTH_POLL_MS = 5000;
+const OLLAMA_HEALTH_MAX_WAIT_MS = 5 * 60 * 1000;
+
+async function pingOllama() {
+  // Use AbortController-based fetch (native; node-fetch v3 supports it).
+  // /api/tags is cheap (<100ms when healthy) and exists on every Ollama version.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OLLAMA_HEALTH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function waitForOllamaHealthy({ maxWaitMs = OLLAMA_HEALTH_MAX_WAIT_MS, pollMs = OLLAMA_HEALTH_POLL_MS } = {}) {
+  const started = Date.now();
+  if (await pingOllama()) return true;
+  log(`Ollama unresponsive — waiting up to ${Math.round(maxWaitMs / 1000)}s for it to come back…`, "warn");
+  while (Date.now() - started < maxWaitMs) {
+    await new Promise(r => setTimeout(r, pollMs));
+    if (await pingOllama()) {
+      log(`Ollama healthy again after ${Math.round((Date.now() - started) / 1000)}s`, "info");
+      return true;
+    }
+    log(`Ollama still unresponsive (${Math.round((Date.now() - started) / 1000)}s elapsed)`, "warn");
+  }
+  log(`Ollama did not recover within ${Math.round(maxWaitMs / 1000)}s — giving up`, "error");
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────
 // LLM CONCURRENCY SEMAPHORE (single-GPU Ollama gate)
 // ──────────────────────────────────────────────────────────
 // Ollama on a single GPU is effectively serial — running two generations at
@@ -345,6 +391,20 @@ export async function llm(prompt, configOptions = {}) {
       break;
     }
     if (attempt < maxRetries && RETRYABLE_CATEGORIES.has(cat)) {
+      // Phase 23B — on `timeout` category, the Ollama server is likely
+      // stalled (GPU exhaustion, model swap, etc.). Burning the retry on
+      // a still-stalled server just produces another timeout. Instead,
+      // ping Ollama's /api/tags until it responds (or 5 min max), THEN
+      // retry the actual call.
+      if (cat === "timeout") {
+        const healthy = await waitForOllamaHealthy();
+        if (!healthy) {
+          log(`[retry] Ollama did not recover — propagating timeout`, "error");
+          break;
+        }
+        log(`[retry] attempt ${attempt + 1}/${maxRetries} after Ollama recovered (category=${cat}, model=${configOptions.model || "default"})`, "warn");
+        continue;
+      }
       const delay = Math.min(2000 * Math.pow(2, attempt), 15000);  // 2s, 4s, 8s, capped 15s
       log(`[retry] attempt ${attempt + 1}/${maxRetries} after ${delay}ms (category=${cat}, model=${configOptions.model || "default"})`, "warn");
       await new Promise(r => setTimeout(r, delay));

@@ -513,5 +513,92 @@ console.log("\nTest 22G: chartsNote placed below H1 + slug-style titles de-hyphe
     !slugRe.test("Cognitive Behavioral Therapy"));
 }
 
+// ── Phase 23: paragraph-boundary repair, Ollama wait, claim verifier, depth UI gate ──
+console.log("\nTest 23A: paragraph-boundary repair");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("splitSmushedHeadingBody handles H3-H6 (was H3-only)",
+    /splitSmushedHeadingBody/.test(src) && /#\{3,6\}/.test(src));
+  check("backward-compat alias kept for splitSmushedH3HeadingBody",
+    /const splitSmushedH3HeadingBody = splitSmushedHeadingBody/.test(src));
+  check("normaliseParagraphBoundaries function defined",
+    /function normaliseParagraphBoundaries\(/.test(src));
+  check("normaliseParagraphBoundaries invoked before lint pass",
+    /draft = normaliseParagraphBoundaries\(draft\)/.test(src) &&
+    /paragraph-normalised/.test(src));
+  check("stripLeadingSectionLabel function defined",
+    /function stripLeadingSectionLabel\(/.test(src));
+  check("stripLeadingSectionLabel called in section composer",
+    /stripLeadingSectionLabel\(text, section\.heading\)/.test(src));
+  check("dedupeContinuationOverlap function defined",
+    /function dedupeContinuationOverlap\(/.test(src));
+  check("continuation pass calls dedupeContinuationOverlap",
+    /dedupeContinuationOverlap\(text, cont\)/.test(src));
+}
+
+console.log("\nTest 23B: waitForOllamaHealthy + retry-on-stall wiring");
+{
+  const src = readFileSync(new URL("../tools/llm.js", import.meta.url), "utf8");
+  check("waitForOllamaHealthy exported",
+    /export async function waitForOllamaHealthy/.test(src));
+  check("pings /api/tags for health check",
+    /\/api\/tags/.test(src));
+  check("retry path branches on category === 'timeout' to call waitForOllamaHealthy",
+    /if \(cat === "timeout"\)[\s\S]{0,300}waitForOllamaHealthy\(\)/.test(src));
+  check("non-timeout retries still use exponential backoff",
+    /Math\.min\(2000\s*\*\s*Math\.pow\(2,\s*attempt\),\s*15000\)/.test(src));
+}
+
+console.log("\nTest 23C: claimVerifier module");
+{
+  const mod = await import("../skills/deepResearch/claimVerifier.js");
+  const { extractClaims, verifyClaim, verifyAndAnnotate } = mod;
+  const sample = "A study found a 63% risk reduction (N=147) with p < 0.05 over 30 minutes.";
+  const claims = extractClaims(sample);
+  check(`extractClaims returns >=3 claims for sample (got ${claims.length})`, claims.length >= 3);
+  // Verify with empty fact pool → all unverified
+  const noPool = verifyAndAnnotate(sample, [], { mode: "annotate" });
+  check(`annotate-mode flags all numeric claims when factPool empty (got ${noPool.unverifiedCount} flagged)`,
+    noPool.unverifiedCount >= 3 && /\[unverified\]/.test(noPool.text));
+  // Verify with matching fact pool
+  const goodPool = [{ source: "Smith2020", content: "The trial demonstrated a 62.5% reduction in symptoms; N was 145.", text: "" }];
+  const claim63 = { raw: "63%", value: 63, kind: "percent", start: 0, end: 3 };
+  const r1 = verifyClaim(claim63, goodPool);
+  check("verifyClaim accepts 63% as matching 62.5% (within ±5%)", r1.verified === true);
+  const claim10 = { raw: "10%", value: 10, kind: "percent", start: 0, end: 3 };
+  const r2 = verifyClaim(claim10, goodPool);
+  check("verifyClaim rejects 10% (outside ±5% of any number in pool)", r2.verified === false);
+  // Strict mode
+  const strict = verifyAndAnnotate("The study reported 99% efficacy.", [], { mode: "strict" });
+  check("strict mode strips the unverified sentence entirely",
+    !strict.text.includes("99%") && strict.unverifiedCount >= 1);
+}
+
+console.log("\nTest 23D: DepthBar gate for thesis-deep");
+{
+  const src = readFileSync(new URL("../../client/local-llm-ui/src/components/DepthBar.jsx", import.meta.url), "utf8");
+  check("TIERS array contains 'thesis-deep' entry",
+    /key:\s*"thesis-deep"/.test(src));
+  check("'thesis-deep' tier declares requires: 'thesis'",
+    /requires:\s*"thesis"/.test(src));
+  check("isGated function present",
+    /function isGated\(/.test(src));
+  check("button disabled prop respects gated state",
+    /disabled=\{disabled \|\| gated\}/.test(src));
+  check("gated tooltip explains the gate",
+    /click "Thesis" first to enable/.test(src));
+}
+
+console.log("\nTest 23E: thesisSynthesizer integrates claimVerifier before writeNote");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("dynamic import of claimVerifier.js",
+    /import\("\.\/claimVerifier\.js"\)/.test(src));
+  check("verifyAndAnnotate invoked with factPool",
+    /verifyAndAnnotate\(titledBody,\s*factPool/.test(src));
+  check("CLAIM_VERIFY_MODE env switches strict/annotate mode",
+    /CLAIM_VERIFY_MODE.*strict.*annotate/.test(src));
+}
+
 console.log(`\n=== ${pass}/${pass + fail} passed ${fail ? `(${fail} FAILED)` : "✓"} ===`);
 process.exit(fail ? 1 : 0);
