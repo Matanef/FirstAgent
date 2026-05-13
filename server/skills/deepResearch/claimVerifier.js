@@ -51,27 +51,60 @@ export function extractClaims(text) {
   return claims;
 }
 
+// Phase 24E — common stopwords used to filter context tokens before noun overlap
+const COMMON_STOPWORDS = new Set([
+  "the","a","an","and","or","but","of","in","on","at","to","for","from","by",
+  "with","without","this","that","these","those","is","are","was","were","be",
+  "been","being","has","have","had","do","does","did","will","would","could",
+  "should","may","might","can","not","no","yes","than","such","also","more",
+  "most","less","fewer","very","much","many","some","any","all","each","every",
+  "study","studies","review","reviews","analysis","analyses","trial","trials",
+  "data","results","findings","participants","patients","group","groups",
+  "method","methods","outcome","outcomes","effect","effects","report","reports",
+  "research","intervention","interventions","treatment","treatments"
+]);
+
 /**
  * Verify a single claim against a fact pool.
  *
- * @param {object} claim   one entry from extractClaims()
- * @param {Array}  factPool [{ source, content, text }, ...]
+ * @param {object} claim       one entry from extractClaims()
+ * @param {Array}  factPool    [{ source, content, text }, ...]
+ * @param {object} [opts]
+ * @param {string} [opts.claimContext]  surrounding text from the synthesis
+ *                                      (used for context-aware noun overlap)
  * @returns {{ verified: boolean, evidence: object|null }}
  */
-export function verifyClaim(claim, factPool) {
+export function verifyClaim(claim, factPool, opts = {}) {
   if (!claim || !Number.isFinite(claim.value)) return { verified: false, evidence: null };
   if (!Array.isArray(factPool) || factPool.length === 0) return { verified: false, evidence: null };
   const tolerance = Math.max(0.5, Math.abs(claim.value) * 0.05);
+  // Phase 24E — context-aware match. If we have a claim context window,
+  // require that a candidate number's nearby words share at least one
+  // meaningful noun with the claim's nearby words. Falls back to pure
+  // numeric match (legacy behaviour) when no context is provided OR no
+  // claim nouns extractable.
+  const claimCtx = String(opts.claimContext || "").toLowerCase();
+  const claimNouns = (claimCtx.match(/\b[a-z]{4,}\b/g) || [])
+    .filter(w => !COMMON_STOPWORDS.has(w));
+  const useContextCheck = claimNouns.length > 0;
   for (const fact of factPool) {
     const haystack = String(fact?.content || fact?.text || "");
     if (haystack.length === 0) continue;
-    const numbersInFact = haystack.match(/-?\d+(?:\.\d+)?/g) || [];
-    for (const n of numbersInFact) {
-      const parsed = parseFloat(n);
+    const re = /-?\d+(?:\.\d+)?/g;
+    let m;
+    while ((m = re.exec(haystack)) !== null) {
+      const parsed = parseFloat(m[0]);
       if (!Number.isFinite(parsed)) continue;
-      if (Math.abs(parsed - claim.value) <= tolerance) {
-        return { verified: true, evidence: { source: fact?.source || "?", hint: n } };
+      if (Math.abs(parsed - claim.value) > tolerance) continue;
+      // Numeric match found. If context-aware enabled, check overlap.
+      if (useContextCheck) {
+        const start = Math.max(0, m.index - 60);
+        const end = Math.min(haystack.length, m.index + m[0].length + 60);
+        const factCtx = haystack.slice(start, end).toLowerCase();
+        const overlap = claimNouns.some(n => factCtx.includes(n));
+        if (!overlap) continue;
       }
+      return { verified: true, evidence: { source: fact?.source || "?", hint: m[0] } };
     }
   }
   return { verified: false, evidence: null };
@@ -91,10 +124,15 @@ export function verifyAndAnnotate(text, factPool, { mode = "annotate" } = {}) {
   if (!text) return { text: "", totalClaims: 0, unverifiedCount: 0, mode };
   const claims = extractClaims(text);
   if (claims.length === 0) return { text, totalClaims: 0, unverifiedCount: 0, mode };
-  // Determine which need editing, in original-order
+  // Determine which need editing, in original-order.
+  // Phase 24E — pass a ±40-char context window from the original synthesis
+  // to verifyClaim so it can check noun overlap with the source fact.
   const flagged = [];
   for (const c of claims) {
-    const { verified } = verifyClaim(c, factPool);
+    const ctxStart = Math.max(0, c.start - 40);
+    const ctxEnd = Math.min(text.length, c.end + 40);
+    const claimContext = text.slice(ctxStart, ctxEnd);
+    const { verified } = verifyClaim(c, factPool, { claimContext });
     if (!verified) flagged.push(c);
   }
   if (flagged.length === 0) return { text, totalClaims: claims.length, unverifiedCount: 0, mode };

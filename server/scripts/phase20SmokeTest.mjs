@@ -600,5 +600,92 @@ console.log("\nTest 23E: thesisSynthesizer integrates claimVerifier before write
     /CLAIM_VERIFY_MODE.*strict.*annotate/.test(src));
 }
 
+// ── Phase 24: bracket-Author leak, smushed-heading regression, H4 consolidator, paywall tagging, claim+citation tightening ──
+console.log("\nTest 24A: rewriteParagraph prompt no longer instructs LLM to keep '(Author, YYYY)' literally");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  // The dangerous instruction "(Author, YYYY) attributions intact" must be gone.
+  check("'(Author, YYYY) attributions intact' instruction removed",
+    !/Keep all \(Author, YYYY\) attributions intact/.test(src));
+  // The new instruction must explicitly forbid emitting the literal placeholder.
+  check("rewriteParagraph prompt explicitly forbids placeholder citations",
+    /DO NOT invent or insert placeholder citation text/i.test(src));
+  // The final-pass stripBracketTags must be wired post-polish.
+  check("finalBracketTags log message defined post-polish",
+    /finalBracketTags: stripped/.test(src));
+}
+
+console.log("\nTest 24B: splitSmushedHeadingBody now handles 2-word headings");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("Heuristic B loop floor lowered from i>=3 to i>=1",
+    /for \(let i = words\.length - 1; i >= 1; i--\)/.test(src));
+  check("body-starter-in-heading guard added",
+    /reject if any heading word \(other than the first\) is/i.test(src) ||
+    /BODY_STARTERS_RE\.test\(headPartWords\.slice\(1\)/.test(src));
+}
+
+console.log("\nTest 24C: consolidateRepeatedH4Sections collapses repeated identical-heading H4 runs");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("consolidateRepeatedH4Sections function defined",
+    /function consolidateRepeatedH4Sections\(/.test(src));
+  check("consolidator runs in post-polish pipeline",
+    /draft = consolidateRepeatedH4Sections\(draft\)/.test(src));
+  check("consolidator threshold is ≥3 repeats",
+    /run\.length >= 3/.test(src));
+  check("consolidator emits 'cited for methodological rigor' intro line",
+    /cited for methodological rigor/.test(src));
+}
+
+console.log("\nTest 24D: metadataOnlyReason tagging + renderer updates");
+{
+  const dh = readFileSync(new URL("../skills/deepResearch/datasetHarvester.js", import.meta.url), "utf8");
+  const ds = readFileSync(new URL("../skills/deepResearch/datasetMetadataSummary.js", import.meta.url), "utf8");
+  const idx = readFileSync(new URL("../skills/deepResearch/index.js", import.meta.url), "utf8");
+  check("buildRecord accepts metadataOnlyReason",
+    /metadataOnlyReason\s*=\s*""/.test(dh));
+  check("OpenAlex datasets tagged 'catalog-only'",
+    /metadataOnlyReason:\s*"catalog-only"/.test(dh));
+  check("datasetMetadataSummary aggregates byReason",
+    /const byReason = \{\}/.test(ds));
+  check("renderDatasetMetadataSummary emits 'Reasons rows not analyzed:'",
+    /Reasons rows not analyzed/.test(ds));
+  check("index.js _data.md uses per-reason text for metadata-only entries",
+    /REASON_TEXTS = \{/.test(idx) && /catalog-only.*provider returns catalog metadata only/.test(idx));
+}
+
+console.log("\nTest 24E: proseAuthorLint Pattern C-bare + context-aware claimVerifier");
+{
+  const ts = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("Pattern C-bare regex present (no preposition prefix required)",
+    /Pattern C-bare:/.test(ts));
+  check("Pattern C-bare strips entire parenthetical when surname not in index",
+    /Surname-only fallback: if the surname appears in the index for ANY/.test(ts));
+
+  const cv = readFileSync(new URL("../skills/deepResearch/claimVerifier.js", import.meta.url), "utf8");
+  check("verifyClaim accepts claimContext via opts",
+    /opts\.claimContext/.test(cv));
+  check("COMMON_STOPWORDS set defined",
+    /COMMON_STOPWORDS\s*=\s*new Set/.test(cv));
+  check("verifyAndAnnotate extracts ±40-char context per claim",
+    /claimContext\s*=\s*text\.slice\(ctxStart, ctxEnd\)/.test(cv));
+
+  // Live exercise — claim should NOT verify when context tokens don't overlap.
+  const mod = await import("../skills/deepResearch/claimVerifier.js");
+  const factPool = [{ source: "test", content: "The team won 63 medals in athletics last year." }];
+  const claim = { raw: "63%", value: 63, kind: "percent", start: 50, end: 53 };
+  const noContext = mod.verifyClaim(claim, factPool);
+  check("verifyClaim still works without claimContext (legacy numeric-only match)",
+    noContext.verified === true);
+  const withContext = mod.verifyClaim(claim, factPool, { claimContext: "depression symptoms decreased by 63% in the trial" });
+  check("verifyClaim rejects when claim context (depression/symptoms) doesn't overlap source context (medals/athletics)",
+    withContext.verified === false);
+  // Positive case — should verify when overlap exists
+  const withGoodContext = mod.verifyClaim(claim, [{ source: "x", content: "The depression group showed 62.5% symptom reduction." }], { claimContext: "depression symptoms decreased by 63% in the trial" });
+  check("verifyClaim accepts when claim and source share 'depression' / 'symptom' overlap",
+    withGoodContext.verified === true);
+}
+
 console.log(`\n=== ${pass}/${pass + fail} passed ${fail ? `(${fail} FAILED)` : "✓"} ===`);
 process.exit(fail ? 1 : 0);

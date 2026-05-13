@@ -767,7 +767,19 @@ async function _deepResearchImpl(request) {
           if (ds.doi) dataLines.push(`- DOI: [${ds.doi}](https://doi.org/${ds.doi})`);
           if (ds.url) dataLines.push(`- URL: <${ds.url}>`);
           if (ds.year) dataLines.push(`- Year: ${ds.year}`);
-          if (ds.metadataOnly) dataLines.push(`- _Metadata-only — rows not retrieved (cited for methodological rigor)._`);
+          if (ds.metadataOnly) {
+            // Phase 24D — surface why rows weren't analyzed (paywalled vs
+            // catalog-only vs unsupported format). Defaults to the legacy
+            // wording when no reason is tagged.
+            const REASON_TEXTS = {
+              "catalog-only": "rows not retrieved (provider returns catalog metadata only, no row data)",
+              "paywalled": "rows not retrieved (file URL behind authentication wall — 401/403)",
+              "format-unsupported": "rows not retrieved (file format not supported by this pipeline)",
+              "no-files": "rows not retrieved (record contains no downloadable files)",
+            };
+            const why = REASON_TEXTS[ds.metadataOnlyReason] || "rows not retrieved (cited for methodological rigor)";
+            dataLines.push(`- _Metadata-only — ${why}._`);
+          }
           else if (ds.files?.length) dataLines.push(`- Files: ${ds.files.map(f => `\`${f.name}\` (${f.format}, ${(f.sizeBytes / 1024).toFixed(0)}KB)`).join(", ")}`);
           const matchingQF = _localQuant.find(q => q.datasetId === ds.id);
           if (matchingQF && !matchingQF.metadataOnly) {

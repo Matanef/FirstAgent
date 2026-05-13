@@ -1210,12 +1210,23 @@ function splitSmushedHeadingBody(text) {
     if (line.length < 90) return line;
     const headPart = line.slice(hashes.length + 1);     // strip "### "/"#### " etc.
     const words = headPart.split(/\s+/);
-    if (words.length < 6) return line;
-    for (let i = words.length - 1; i >= 3; i--) {
+    if (words.length < 4) return line;
+    // Phase 24B — loosened from `i >= 3` (heading ≥ 4 words) to `i >= 1`
+    // (heading ≥ 2 words). The CBT thesis Methodology had:
+    //   `### Literature Search The literature search was conducted using…`
+    // — a 2-word heading. The old floor missed it. Added extra guard:
+    // reject if the heading body (after the first word) contains a
+    // body-starter word — that would mean we're splitting inside a body
+    // sentence, not at the heading/body boundary.
+    for (let i = words.length - 1; i >= 1; i--) {
       const next = words.slice(i + 1).join(" ");
       if (next.length < 40) continue;
       if (!BODY_STARTERS_RE.test(words.slice(i + 1, i + 4).join(" "))) continue;
       const headPartWords = words.slice(0, i + 1);
+      // Phase 24B — reject if any heading word (other than the first) is
+      // itself a body-starter; that signals the loop has overshot the real
+      // heading boundary.
+      if (headPartWords.length > 1 && BODY_STARTERS_RE.test(headPartWords.slice(1).join(" "))) continue;
       const titleCaseCount = headPartWords.filter(w => /^[A-Z][a-zA-Z'\-]*$/.test(w) || /^(of|and|for|the|in|on|at|to|a|an|with|across|by)$/i.test(w)).length;
       if (titleCaseCount / headPartWords.length < 0.7) continue;
       splits++;
@@ -1229,6 +1240,94 @@ function splitSmushedHeadingBody(text) {
 }
 // Phase 23A — backwards-compat alias; old name still referenced by helpers.
 const splitSmushedH3HeadingBody = splitSmushedHeadingBody;
+
+// Phase 24C — consolidate repeated H4 subsections with identical headings.
+// The CBT thesis-deep Conclusion had:
+//   #### Descriptive Analysis from Metadata-Only Entries
+//   **Metadata-Only Entry:** "X" - Honesty Labels: cite for methodological
+//   rigor; rows not analyzed
+//   This metadata entry highlights …
+//   ---
+//   #### Descriptive Analysis from Metadata-Only Entries
+//   **Metadata-Only Entry:** "Y" - Honesty Labels: …
+//   …
+// repeated 13× in a row with the same heading text. The LLM mirrored the
+// per-entry prompt template instead of consolidating. Collapse any run of
+// ≥3 consecutive H4 lines with identical heading text into a single H4 +
+// a numbered list. Conservative: only fires when ≥3 in a row, all with
+// IDENTICAL (case+punct-normalised) heading.
+function consolidateRepeatedH4Sections(text) {
+  if (!text) return text;
+  const lines = String(text).split("\n");
+  const H4_RE = /^####\s+(.+?)\s*$/;
+  const normalise = s => s.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  // Walk forward, find runs.
+  const runs = [];
+  let i = 0;
+  while (i < lines.length) {
+    const m = lines[i].match(H4_RE);
+    if (!m) { i++; continue; }
+    const targetNorm = normalise(m[1]);
+    // Find run of consecutive H4 lines with same normalised heading
+    const run = [{ headingIdx: i, headingText: m[1] }];
+    let scan = i + 1;
+    while (scan < lines.length) {
+      // Skip blank lines / separator lines (---) between H4s
+      while (scan < lines.length && (lines[scan].trim() === "" || lines[scan].trim() === "---")) scan++;
+      const m2 = lines[scan]?.match(H4_RE);
+      if (!m2) break;
+      if (normalise(m2[1]) !== targetNorm) break;
+      // Capture body of the previous H4: lines (i+1 .. scan-1) modulo separators
+      const prevBodyStart = run[run.length - 1].headingIdx + 1;
+      run[run.length - 1].bodyLines = lines.slice(prevBodyStart, scan).filter(l => l.trim() && l.trim() !== "---");
+      run.push({ headingIdx: scan, headingText: m2[1] });
+      scan++;
+    }
+    if (run.length >= 3) {
+      // Capture body of the LAST H4 too (up to next H2/H3 or end of doc)
+      let bodyEnd = scan;
+      while (bodyEnd < lines.length) {
+        const ln = lines[bodyEnd];
+        if (/^#{1,3}\s/.test(ln)) break;
+        bodyEnd++;
+      }
+      run[run.length - 1].bodyLines = lines.slice(run[run.length - 1].headingIdx + 1, bodyEnd).filter(l => l.trim() && l.trim() !== "---");
+      runs.push({ startIdx: run[0].headingIdx, endIdx: bodyEnd - 1, entries: run, heading: run[0].headingText });
+      i = bodyEnd;
+    } else {
+      i = scan;
+    }
+  }
+  if (runs.length === 0) return text;
+  // Apply edits from end → start so indices remain valid.
+  for (const run of [...runs].reverse()) {
+    const replacement = [];
+    replacement.push(`#### ${run.heading}`);
+    replacement.push("");
+    replacement.push("The following entries are cited for methodological rigor (full data not retrievable — typically paywalled, catalog-only API, or unsupported format):");
+    replacement.push("");
+    let n = 0;
+    for (const entry of run.entries) {
+      n++;
+      const bodyText = (entry.bodyLines || []).join(" ").replace(/\s+/g, " ").trim();
+      // Pull "Metadata-Only Entry: <title>" if present, else first line
+      const titleMatch = bodyText.match(/\*\*Metadata-Only Entry:\*\*\s*"([^"]+)"|\*\*[^*]+:\*\*\s*"([^"]+)"/i);
+      const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : bodyText.slice(0, 100);
+      // Pull the short descriptive sentence (everything after Honesty Labels line)
+      const summary = bodyText
+        .replace(/\*\*Metadata-Only Entry:\*\*\s*"[^"]+"\s*(?:\([^)]+\))?/gi, "")
+        .replace(/\*\*Honesty Labels?:\*\*[^.]*\.?/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 220);
+      replacement.push(`${n}. **${title}**${summary ? " — " + summary : ""}`);
+    }
+    replacement.push("");
+    lines.splice(run.startIdx, run.endIdx - run.startIdx + 1, ...replacement);
+  }
+  console.log(`[thesisSynthesizer] consolidateRepeatedH4: collapsed ${runs.length} run(s) of repeated-heading H4 subsections`);
+  return lines.join("\n");
+}
 
 // Phase 23A — paragraph-boundary normaliser. Runs once on the assembled
 // draft before lint() so the lint paragraph splitter (split on `\n{2,}`)
@@ -1476,6 +1575,26 @@ function lintFabricatedAuthorsInProse(draft, citationIndex) {
     stripped++;
     return prefix + surname;
   });
+  // Phase 24E — Pattern C-bare: bare "(Smith, 2020)" or "(Smith et al., 2020)"
+  // attributions WITHOUT a preposition prefix. These are the standard APA
+  // in-text citation shape; if the surname isn't in the citation index,
+  // the LLM hallucinated the citation. Strip the entire parenthetical
+  // (including any preceding space) to avoid leaving floating punctuation.
+  // Examples caught: "(O'Connor, 2013)" in CBT Lit Review where O'Connor
+  // isn't in References; "(Hofmann et al., 2018)" where the year doesn't
+  // match the harvested Hofmann record.
+  out = out.replace(
+    /\s*\(([A-Z][a-zA-Z'\-]{2,30})(\s+et\s+al\.?|\s+and\s+[A-Z][a-zA-Z'\-]{2,30})?,\s*(\d{4}[a-z]?)\)/g,
+    (match, surname, _suffix, year) => {
+      const key = `${surname.toLowerCase()}|${year}`;
+      if (validSurnameYears.has(key)) return match;
+      // Surname-only fallback: if the surname appears in the index for ANY
+      // year, treat as a year-drift typo and keep. Reduces false positives.
+      if (validSurnames.has(surname.toLowerCase())) return match;
+      stripped++;
+      return "";
+    }
+  );
   // Phase 22 — Pattern D rewritten. Previously substituted "(unverified
   // study)" which left the Literature Review reading "A randomized
   // controlled trial by (unverified study) demonstrated…" 5+ times.
@@ -2121,14 +2240,20 @@ async function rewriteParagraph(paragraph, reason) {
   // (DRAFT[assembled]: 58541c → DRAFT[first-person-rewrite]: 29507c — a 50%
   // collapse). qwen2.5:7b was summarizing instead of just changing voice.
   const originalWords = wordCount(paragraph);
+  // Phase 24A — the prompt previously said "Keep all (Author, YYYY)
+  // attributions intact." qwen2.5:7b read that as a template instruction
+  // and emitted literal "(Author, YYYY)" / "[Author, YYYY]" placeholders
+  // verbatim in the rewrite — 13+ instances appeared in the saved CBT
+  // thesis Lit Review. The fix is to explicitly forbid emitting that
+  // literal placeholder.
   const prompt = `Rewrite the paragraph below to remove the issue: ${reason}.
 
 CRITICAL RULES — read carefully:
 - This is a VOICE rewrite, NOT a summary. Output MUST be the same length as input (±15%).
-- Preserve EVERY sentence, every statistic, every citation, every named study verbatim.
+- Preserve EVERY sentence, every statistic, every named study verbatim.
 - Only change: first-person pronouns (I/we/our/my/us) → third-person (this study, the analysis, the data).
 - Keep all [[wikilinks]] intact.
-- Keep all (Author, YYYY) attributions intact.
+- Preserve every existing real citation in the paragraph verbatim. DO NOT invent or insert placeholder citation text such as "(Author, YYYY)", "[Author, YYYY]", or "(Smith, 2020)". If a sentence has no citation, leave it without one.
 - No contractions.
 - Output the rewritten paragraph ONLY, no preamble, no "Here is the rewrite" wrapper.
 
@@ -2867,6 +2992,26 @@ Output ONLY the continuation text (no preamble, no quotes):`;
       } else {
         console.log(`[thesisSynthesizer] ⚠ polish pass produced no usable output — keeping original draft`);
       }
+      // Phase 24A — final-pass stripBracketTags. The first-person rewrite
+      // and polish passes can re-introduce literal `[Author, YYYY]` /
+      // `[Author...]` placeholders that the LLM emits when it tries to
+      // "preserve" citation templates. The per-section stripBracketTags
+      // ran during composition; anything injected by these post-section
+      // LLM calls bypasses that. Wire a final pass here to catch survivors.
+      {
+        const beforeCount = (draft.match(/\[[A-Za-z][^\]\n]{2,200}\]/g) || []).length;
+        draft = stripBracketTags(draft);
+        const afterCount = (draft.match(/\[[A-Za-z][^\]\n]{2,200}\]/g) || []).length;
+        if (beforeCount !== afterCount) {
+          console.log(`[thesisSynthesizer] finalBracketTags: stripped ${beforeCount - afterCount} bracket placeholder(s) post-polish`);
+        }
+      }
+      // Phase 24C — collapse runs of ≥3 H4 subsections that share an
+      // identical heading. Common pattern: the Conclusion of a metadata-
+      // heavy thesis has 13 repeated `#### Descriptive Analysis from
+      // Metadata-Only Entries` blocks — should be one heading + numbered
+      // list.
+      draft = consolidateRepeatedH4Sections(draft);
     } catch (err) {
       console.log(`[thesisSynthesizer] ⚠ polish pass failed (non-fatal): ${err.message}`);
       log(`polishDraft failed: ${err.message}`, "warn");

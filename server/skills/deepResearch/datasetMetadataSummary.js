@@ -36,6 +36,10 @@ export function buildDatasetMetadataSummary(datasetCitations) {
 
   const totalCount = datasetCitations.length;
   const byRepository = {};
+  // Phase 24D — also bucket by the metadataOnlyReason tag so the rendered
+  // callout can distinguish paywalled vs catalog-only vs unsupported-format
+  // sources, rather than lumping them all under "metadata-only".
+  const byReason = {};
   const years = [];
   const titles = [];
   const descriptions = [];
@@ -45,6 +49,10 @@ export function buildDatasetMetadataSummary(datasetCitations) {
   for (const ds of datasetCitations) {
     const repo = String(ds.repository || ds.provider || "unknown").toLowerCase();
     byRepository[repo] = (byRepository[repo] || 0) + 1;
+    if (ds.metadataOnly) {
+      const reason = String(ds.metadataOnlyReason || "unspecified").toLowerCase();
+      byReason[reason] = (byReason[reason] || 0) + 1;
+    }
     if (Number.isFinite(Number(ds.year))) years.push(Number(ds.year));
     if (ds.title) titles.push(String(ds.title));
     if (ds.description) descriptions.push(String(ds.description));
@@ -105,6 +113,7 @@ export function buildDatasetMetadataSummary(datasetCitations) {
   return {
     totalCount,
     byRepository,
+    byReason,                        // Phase 24D — reason breakdown
     yearRange,
     topInterventions,
     topConditions,
@@ -136,6 +145,23 @@ export function renderDatasetMetadataSummary(summary, { topicSlug = "" } = {}) {
     .map(([repo, n]) => `**${repo}** (${n})`);
   if (repoEntries.length > 0) {
     lines.push(`> **Repositories:** ${repoEntries.join(", ")}`);
+  }
+
+  // Phase 24D — why rows weren't analyzed. Splits out catalog-only (provider
+  // never exposes rows) from paywalled (file URL existed but returned 401/403)
+  // from unsupported-format (got a file but format not in allow-list).
+  if (summary.byReason && Object.keys(summary.byReason).length > 0) {
+    const REASON_LABELS = {
+      "catalog-only": "catalog-only (provider returns metadata, not rows)",
+      "paywalled": "paywalled (file URL returned 401/403)",
+      "format-unsupported": "unsupported file format",
+      "no-files": "no downloadable files in the record",
+      "unspecified": "unspecified",
+    };
+    const reasonEntries = Object.entries(summary.byReason)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, n]) => `${REASON_LABELS[reason] || reason} (${n})`);
+    lines.push(`> **Reasons rows not analyzed:** ${reasonEntries.join("; ")}`);
   }
 
   // Year range
