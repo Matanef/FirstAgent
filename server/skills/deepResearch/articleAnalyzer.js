@@ -156,9 +156,15 @@ Return JSON only:
     }
   }
 
-  // Run analysis on each chunk sequentially (respect 7B model limits)
+  // Run analysis on each chunk sequentially (respect 7B model limits).
+  // Phase 22 — emit per-chunk progress when multi-chunk so the user sees
+  // momentum during long bridge-resume runs (17 articles × 3-5 chunks ≈
+  // 70 LLM calls used to scroll past with no per-call indicator).
   const chunkResults = [];
   for (let i = 0; i < chunks.length; i++) {
+    if (multiChunk) {
+      console.log(`[articleAnalyzer] p=${promptIndex} i=${articleIndex} chunk ${i + 1}/${chunks.length} "${String(article.title || "").slice(0, 50)}"`);
+    }
     const r = await analyzeChunk(chunks[i], i);
     if (r && typeof r === "object") chunkResults.push(r);
   }

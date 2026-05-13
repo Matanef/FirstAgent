@@ -182,9 +182,15 @@ export async function runDeepFollowup({
   }
 
   // Analyze each harvested article. We use the same per-article analyzer.
+  // Phase 22 — emit per-article progress so the 8-article follow-up harvest
+  // shows real momentum in PM2 logs + the UI step-stream instead of one
+  // long silent gap.
   const analyses = [];
   for (let i = 0; i < deepArticles.length; i++) {
     const article = deepArticles[i];
+    const titleSlice = String(article?.title || "").slice(0, 60);
+    emitProgress(`🔁 thesis-deep: analyzing follow-up ${i + 1}/${deepArticles.length}: "${titleSlice}"`);
+    console.log(`[openQuestionRecursion] analyzing ${i + 1}/${deepArticles.length}: "${titleSlice}"`);
     try {
       const r = await articleAnalyzer.analyze({
         article,
@@ -199,9 +205,31 @@ export async function runDeepFollowup({
       console.log(`[openQuestionRecursion] analyzer failed for deep-article-${i + 1}: ${err.message}`);
     }
   }
-  emitProgress(`🔁 thesis-deep: ${analyses.length} follow-up articles analyzed`);
 
-  return { rankedQuestions: ranked, followupQuery, deepArticles, analyses };
+  // Phase 22 — relevance gate. The previous CBT thesis-deep run pulled
+  // four off-topic Hebrew Academagic articles (climate change / Iran war /
+  // Caucasus immigrants) into "Future Directions" because they were the
+  // only Academagic results for the follow-up query. The analyzer itself
+  // wrote "does not contain any relevant text or information about
+  // cognitive behavioral therapy" in its summary — and we still included
+  // them. Two gates:
+  //   (a) drop when analyzer-emitted relevance < 0.4
+  //   (b) drop when summary explicitly flags off-topic content
+  const OFFTOPIC_RE = /(not relevant|no relevant|unrelated|does not contain|no.*information about|appears to be a pdf file with|out of (?:the )?scope)/i;
+  const beforeCount = analyses.length;
+  const filtered = analyses.filter(r => {
+    const rel = Number(r?.analysis?.relevance) || 0;
+    const summary = String(r?.analysis?.summary || "");
+    if (rel < 0.4) return false;
+    if (OFFTOPIC_RE.test(summary)) return false;
+    return true;
+  });
+  if (filtered.length < beforeCount) {
+    console.log(`[openQuestionRecursion] dropped ${beforeCount - filtered.length}/${beforeCount} off-topic article(s) (relevance<0.4 or off-topic summary marker)`);
+  }
+  emitProgress(`🔁 thesis-deep: ${filtered.length} relevant follow-up article(s) (${beforeCount - filtered.length} dropped as off-topic)`);
+
+  return { rankedQuestions: ranked, followupQuery, deepArticles, analyses: filtered };
 }
 
 export const _internals = { questionKey, TOP_K };

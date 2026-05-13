@@ -1006,25 +1006,36 @@ const ACRONYM_WIKILINK_LIST = [
 ];
 function wrapAcronymsAsWikilinks(text, alreadyLinked = new Set()) {
   if (!text) return text;
-  let out = String(text);
+  // Phase 22 — skip heading lines so wikilinks never get injected into
+  // `### Foo` or `#### Bar`. The May CBT thesis-deep run had three smushed
+  // headings because the wrapper inserted `[[CBT]]` into heading text, and
+  // markdown reflow then broke the heading line in half.
+  const HEADING_RE = /^\s{0,3}#{1,6}\s/;
+  const lines = String(text).split("\n");
   let wrapped = 0;
-  // Build regex from acronym list. Match whole-word, not inside existing
-  // wikilinks (negative lookbehind/lookahead for `[[` / `]]`).
-  for (const acronym of ACRONYM_WIKILINK_LIST) {
-    if (alreadyLinked.has(acronym.toLowerCase())) continue;
-    // Escape hyphens. Use boundary `\b` for ASCII match (these are all ASCII).
-    const escaped = acronym.replace(/-/g, "\\-");
-    const re = new RegExp(`(?<!\\[\\[)(?<![\\w-])(${escaped})(?![\\w-])(?!\\]\\])`, "g");
-    let firstMatchUsed = false;
-    out = out.replace(re, (m, captured) => {
-      if (firstMatchUsed && process.env.WIKILINK_ALL_OCCURRENCES !== "true") return m;
-      firstMatchUsed = true;
-      wrapped++;
-      return `[[${captured}]]`;
-    });
+  // Track firstMatchUsed across the WHOLE document (not per-line), to keep
+  // the "link only first occurrence" semantics the function had before.
+  const firstMatchUsed = new Map(); // acronym (lowercase) → bool
+  for (let li = 0; li < lines.length; li++) {
+    if (HEADING_RE.test(lines[li])) continue;   // never touch heading lines
+    let line = lines[li];
+    for (const acronym of ACRONYM_WIKILINK_LIST) {
+      if (alreadyLinked.has(acronym.toLowerCase())) continue;
+      const key = acronym.toLowerCase();
+      if (firstMatchUsed.get(key) && process.env.WIKILINK_ALL_OCCURRENCES !== "true") continue;
+      const escaped = acronym.replace(/-/g, "\\-");
+      const re = new RegExp(`(?<!\\[\\[)(?<![\\w-])(${escaped})(?![\\w-])(?!\\]\\])`, "g");
+      line = line.replace(re, (m, captured) => {
+        if (firstMatchUsed.get(key) && process.env.WIKILINK_ALL_OCCURRENCES !== "true") return m;
+        firstMatchUsed.set(key, true);
+        wrapped++;
+        return `[[${captured}]]`;
+      });
+    }
+    lines[li] = line;
   }
-  if (wrapped) console.log(`[thesisSynthesizer] acronymWikilinks: wrapped ${wrapped} acronym occurrence(s)`);
-  return out;
+  if (wrapped) console.log(`[thesisSynthesizer] acronymWikilinks: wrapped ${wrapped} acronym occurrence(s) (headings skipped)`);
+  return lines.join("\n");
 }
 
 // ── Phase 12E — demote section-body H2 headings to H3 ─────────────────────
@@ -1411,32 +1422,55 @@ function lintFabricatedAuthorsInProse(draft, citationIndex) {
     stripped++;
     return prefix + surname;
   });
-  // Phase 15C — Pattern D: BARE "Surname et al." mentions WITHOUT year parens.
-  // The CBT thesis abstract had "a study by Hofmann et al. found..." and
-  // "Cuijpers et al. reported..." — neither in citation index, slipped past
-  // patterns A-C because they had no `(YYYY)`. The negative lookahead
-  // `(?!\s*\()` prevents overlap with Pattern A. False-positive risk is very
-  // low — "X et al." essentially never appears in non-citation prose.
+  // Phase 22 — Pattern D rewritten. Previously substituted "(unverified
+  // study)" which left the Literature Review reading "A randomized
+  // controlled trial by (unverified study) demonstrated…" 5+ times.
+  // New behaviour: DELETE the attribution clause entirely when the surname
+  // isn't in the citation index. Two sub-patterns:
+  //   D1: "<preposition> Surname et al." → delete the clause (preserve
+  //        leading space/comma so we don't smush adjacent words)
+  //   D2: bare "Surname et al." with no preposition → drop the surname
+  //        phrase only
+  out = out.replace(
+    /(^|[\s,])(by|in|from|per|via)\s+([A-Z][a-zA-Z'\-]{2,30})\s+et\s+al\.?(?!\s*\()/g,
+    (match, lead, prep, surname) => {
+      if (validSurnames.has(surname.toLowerCase())) return match;
+      stripped++;
+      // Keep lead char (space/comma/start), drop the rest. Trim a trailing
+      // space if the lead is start-of-string to avoid double-spacing.
+      return lead;
+    }
+  );
   out = out.replace(/\b([A-Z][a-zA-Z'\-]{2,30})\s+et\s+al\.?(?!\s*\()/g, (match, surname) => {
     if (validSurnames.has(surname.toLowerCase())) return match;
     stripped++;
-    return "(unverified study)";
+    return "";
   });
-  // Phase 15C — Pattern E: BARE "Surname and Surname" attribution-shaped
-  // mentions WITHOUT year parens, only fire when BOTH surnames are missing
-  // from citation index AND the construction has citation context (preceded
-  // by attribution verbs). The dual-miss requirement protects against
-  // false positives on natural prose like "Black and white" or "China and
-  // India" (one of those would still likely appear in *some* citation but
-  // both never would in a CBT thesis).
+  // Phase 22 — Pattern E rewritten. Same logic for paired-surname
+  // attributions: delete the full clause (prefix + both surnames) when
+  // both surnames are missing from the citation index. Preserves the lead
+  // char so adjacent prose isn't damaged.
   out = out.replace(
-    /(\b(?:by|to|in|from|per|via|see|by\s+a\s+study\s+by)\s+|study\s+by\s+|research\s+by\s+|work\s+of\s+|paper\s+by\s+)([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})(?!\s*\()/g,
-    (match, prefix, s1, s2) => {
+    /(^|[\s,])(by|in|from|per|via|see)\s+([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})(?!\s*\()/g,
+    (match, lead, prep, s1, s2) => {
       if (validSurnames.has(s1.toLowerCase()) || validSurnames.has(s2.toLowerCase())) return match;
       stripped++;
-      return `${prefix.trim()} (unverified studies)`;
+      return lead;
     }
   );
+  // Also remove standalone "study by"/"research by"/"work of"/"paper by"
+  // attributions where neither named author is in the index.
+  out = out.replace(
+    /\b(?:a\s+)?(?:study|research|work|paper)\s+(?:by|of|from)\s+([A-Z][a-zA-Z'\-]{2,30})\s+and\s+([A-Z][a-zA-Z'\-]{2,30})(?!\s*\()/g,
+    (match, s1, s2) => {
+      if (validSurnames.has(s1.toLowerCase()) || validSurnames.has(s2.toLowerCase())) return match;
+      stripped++;
+      return "a study";   // collapse to a neutral phrase the surrounding sentence can absorb
+    }
+  );
+  // Tidy: collapse any "  " (double space) and " ," / " ." artifacts left
+  // by the deletions above.
+  out = out.replace(/  +/g, " ").replace(/\s+([,.;:])/g, "$1");
   if (stripped > 0) console.log(`[thesisSynthesizer] proseAuthorLint: stripped ${stripped} fabricated author attribution(s)`);
   return out;
 }
@@ -2300,7 +2334,24 @@ export async function synthesize({ topic, topicSlug, cleanTitle, tier, promptRes
   const emitProgress = typeof onStep === "function" ? onStep : () => {};
   // Final title precedence: caller-supplied cleanTitle (LLM-derived in orchestrator)
   // > outline's own title > raw topic. cleanTitle is what users see in the H1 + frontmatter.
-  const finalTitle = (cleanTitle && cleanTitle.trim()) || topic;
+  // Phase 22 — de-slug LLM-supplied titles. The CBT thesis-deep run came
+  // out titled `# Cognitive-Behavioral-Therapy-Efficacy-Analysis` because
+  // the LLM picked a hyphenated kebab-style title. Detect "slug-shaped"
+  // candidates (hyphens between Capitalized words, no spaces) and replace
+  // hyphens with spaces so the heading reads like prose.
+  function deSlugTitle(t) {
+    if (!t || typeof t !== "string") return t;
+    const trimmed = t.trim();
+    if (!trimmed) return trimmed;
+    // If the title has spaces, leave it alone.
+    if (/\s/.test(trimmed)) return trimmed;
+    // Pattern: at least two Capitalised words joined by hyphens
+    if (/^[A-Z][A-Za-z]+(?:-[A-Z][A-Za-z]+){1,}$/.test(trimmed)) {
+      return trimmed.replace(/-/g, " ");
+    }
+    return trimmed;
+  }
+  const finalTitle = deSlugTitle((cleanTitle && cleanTitle.trim()) || topic);
 
   console.log(`[thesisSynthesizer] ▶ starting synthesis: tier=${tier} prompts=${promptResults.length} topic="${String(topic).slice(0, 60)}"`);
   if (SYNTH_HEAVY_MODEL !== SYNTH_MODEL) {
@@ -2860,8 +2911,35 @@ Output ONLY the continuation text (no preamble, no quotes):`;
 
   console.log(`[thesisSynthesizer] ⏳ enriching draft with wikilinks...`);
   let enrichedDraft = draft;
+  // Phase 22 — mask heading lines with sentinels before calling the LLM
+  // enricher, then restore. Without this, `enrichWithWikilinks` happily
+  // inserts `[[Foo Bar]]` into heading text, which then breaks the heading
+  // line because markdown headings are single-line constructs. The May
+  // CBT thesis-deep run had three smushed `###` headings as a result.
+  const HEADING_RE_MASK = /^(\s{0,3}#{1,6}\s.*)$/gm;
+  const savedHeadings = [];
+  const masked = draft.replace(HEADING_RE_MASK, (m) => {
+    savedHeadings.push(m);
+    return `XHDRMARKERX${savedHeadings.length - 1}X`;
+  });
   try {
-    enrichedDraft = await enrichWithWikilinks(draft, { noteTitle: topicSlug, label: "thesisSynthesizer" });
+    let llmEnriched = await enrichWithWikilinks(masked, { noteTitle: topicSlug, label: "thesisSynthesizer" });
+    // Restore the masked headings. If any sentinel was mangled by the LLM,
+    // fall back to the pre-LLM draft for safety — better unchanged than
+    // broken.
+    const expected = savedHeadings.length;
+    let restoredCount = 0;
+    llmEnriched = llmEnriched.replace(/XHDRMARKERX(\d+)X/g, (_, idx) => {
+      const i = parseInt(idx, 10);
+      if (savedHeadings[i] !== undefined) { restoredCount++; return savedHeadings[i]; }
+      return _;
+    });
+    if (restoredCount === expected) {
+      enrichedDraft = llmEnriched;
+    } else {
+      console.log(`[thesisSynthesizer] ⚠ wikilink enrichment heading-restore mismatch (${restoredCount}/${expected}) — keeping un-enriched draft`);
+      enrichedDraft = draft;
+    }
   } catch (err) {
     console.log(`[thesisSynthesizer] ⚠ wikilink enrichment failed (non-fatal): ${err.message}`);
   }
@@ -2938,7 +3016,21 @@ Output ONLY the continuation text (no preamble, no quotes):`;
       finalBody = finalBody + "\n\n" + futureDirectionsBlock;
     }
   }
-  await writeNote(relativePath, headerFm + bridgeCallout + chartsNote + finalBody);
+  // Phase 22 — place the bridge callout + datasets callout BELOW the `# H1`
+  // and above the Abstract. Previously chartsNote sat above the H1 which
+  // made the note open with a callout box instead of the title. We extract
+  // the first heading line of finalBody, then re-assemble.
+  let titledBody = finalBody;
+  if (bridgeCallout || chartsNote) {
+    const m = finalBody.match(/^(\s*#\s+[^\n]+\n+)([\s\S]*)$/);
+    if (m) {
+      titledBody = m[1] + bridgeCallout + chartsNote + m[2];
+    } else {
+      // No H1 detected — fall back to old ordering rather than risk losing the callouts
+      titledBody = bridgeCallout + chartsNote + finalBody;
+    }
+  }
+  await writeNote(relativePath, headerFm + titledBody);
   console.log(`[thesisSynthesizer] ✓ article saved: ${relativePath} (${wordCount(enrichedDraft)}w)`);
 
   // 12. Phase 1D — stub creation for all [[wikilinks]] in the thesis.

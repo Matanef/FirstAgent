@@ -965,30 +965,55 @@ async function getDryadAccessToken() {
     return _dryadCachedToken.token;
   }
   if (!DRYAD_CLIENT_ID || !DRYAD_CLIENT_SECRET) return null;
-  try {
-    const res = await axios.post(
-      "https://datadryad.org/oauth/token",
-      // Dryad accepts form-encoded client_credentials.
-      new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: DRYAD_CLIENT_ID,
-        client_secret: DRYAD_CLIENT_SECRET
-      }).toString(),
-      {
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
-        timeout: 15000
+  // Phase 21-fix — Dryad's OAuth endpoint sits behind Cloudflare/Apache which
+  // rejects requests without a recognised User-Agent with HTML 403 (not 401)
+  // before Rails even sees the request. We also try multiple endpoint paths
+  // and both body-params + HTTP Basic auth variants because Dryad has shipped
+  // both shapes across versions.
+  // Dryad's official docs (api_accounts.md) use:
+  //   POST https://datadryad.org/oauth/token
+  //   Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+  //   body: client_id=...&client_secret=...&grant_type=client_credentials
+  // So the doc-canonical variant is tried FIRST. The other variants stay as
+  // fallbacks for any future Dryad endpoint changes.
+  const headers = {
+    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+    "Accept": "application/json",
+    "User-Agent": "deepResearch/1.0 (compatible; curl/8.0)"
+  };
+  const attempts = [
+    { url: "https://datadryad.org/oauth/token",        mode: "body" },     // doc-canonical
+    { url: "https://datadryad.org/api/v2/oauth/token", mode: "body" },     // versioned alt
+    { url: "https://datadryad.org/oauth/token",        mode: "basic" },    // basic-auth variant
+    { url: "https://datadryad.org/api/v2/oauth/token", mode: "basic" },
+  ];
+  for (const a of attempts) {
+    try {
+      const body = a.mode === "basic"
+        ? new URLSearchParams({ grant_type: "client_credentials" }).toString()
+        : new URLSearchParams({
+            grant_type: "client_credentials",
+            client_id: DRYAD_CLIENT_ID,
+            client_secret: DRYAD_CLIENT_SECRET
+          }).toString();
+      const reqHeaders = a.mode === "basic"
+        ? { ...headers, Authorization: `Basic ${Buffer.from(`${DRYAD_CLIENT_ID}:${DRYAD_CLIENT_SECRET}`).toString("base64")}` }
+        : headers;
+      const res = await axios.post(a.url, body, { headers: reqHeaders, timeout: 15000, validateStatus: s => s < 500 });
+      // Cloudflare/Apache 403 → HTML body, no access_token. Treat as "try next".
+      const token = res.data?.access_token;
+      if (token) {
+        const ttl = (parseInt(res.data?.expires_in, 10) || 3600) * 1000;
+        _dryadCachedToken = { token, expiresAt: Date.now() + ttl };
+        console.log(`[datasetHarvester] dryad: OAuth OK via ${a.url} (${a.mode}) — token TTL=${Math.round(ttl/1000)}s`);
+        return token;
       }
-    );
-    const token = res.data?.access_token;
-    const ttl = (parseInt(res.data?.expires_in, 10) || 3600) * 1000;
-    if (token) {
-      _dryadCachedToken = { token, expiresAt: Date.now() + ttl };
-      console.log(`[datasetHarvester] dryad: OAuth client_credentials → token acquired (expires_in=${Math.round(ttl/1000)}s)`);
-      return token;
+      console.log(`[datasetHarvester] dryad: ${a.url} (${a.mode}) returned status=${res.status} body=${typeof res.data === "string" ? res.data.slice(0, 120) : JSON.stringify(res.data).slice(0, 120)}`);
+    } catch (err) {
+      console.log(`[datasetHarvester] dryad: ${a.url} (${a.mode}) failed: ${err.message}`);
     }
-  } catch (err) {
-    console.log(`[datasetHarvester] dryad: OAuth token exchange failed (${err.message}) — falling back to anonymous`);
   }
+  console.log(`[datasetHarvester] dryad: all 4 OAuth variants failed — falling back to anonymous`);
   return null;
 }
 

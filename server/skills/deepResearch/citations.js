@@ -284,6 +284,21 @@ export function buildCitationIndex(notes) {
       console.log(`[citations] dropped malformed-list entry — ${singleWordAuthors}/${rawCite.authors.length} single-token authors (title="${String(rawCite.title).slice(0, 60)}")`);
       continue;
     }
+    // Phase 22 — tighter guard for MIXED initials-only author lists like
+    //   ["A.", "L.", "M.", "M.", "R.", "R.", "Mausbach, B. T.", …]
+    // These slip past the single-token rule because one of the entries IS
+    // a real surname-plus-initial. The CBT thesis output had two such
+    // entries (refs 37 and 38) leaking through. Heuristic:
+    //   count authors whose alpha content is ≤ 2 chars (e.g. "I.", "A.",
+    //   "L."). If ≥ 60% of the authors are initials-only AND list has ≥ 4
+    //   authors, drop the citation.
+    const initialsOnly = (rawCite.authors || []).filter(a =>
+      typeof a === "string" && a.replace(/[.\s,'-]/g, "").length <= 2
+    ).length;
+    if (rawCite.authors.length >= 4 && initialsOnly / rawCite.authors.length > 0.6) {
+      console.log(`[citations] dropped initials-list entry — ${initialsOnly}/${rawCite.authors.length} initials-only authors (title="${String(rawCite.title).slice(0, 60)}")`);
+      continue;
+    }
     const cite = cleanCite(rawCite); // strip HTML entities + provider branding
     // Dedup by DOI or by surname+year+title-prefix
     const dedupKey = (cite.doi || "").toLowerCase() ||

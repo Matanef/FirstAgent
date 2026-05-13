@@ -1426,7 +1426,11 @@ async function fetchPage(url, opts = {}) {
             "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
             ...extraHeaders
           },
-          maxContentLength: 3 * 1024 * 1024,
+          // Phase 22 — bumped from 3 MB to 12 MB. Three EuropePMC full-text
+          // OA PDFs in the May CBT run failed at exactly the 3 MB ceiling.
+          // The post-extract slice (~8 kc) is the real memory bound, not
+          // the raw download size, so the larger ceiling is safe.
+          maxContentLength: 12 * 1024 * 1024,
           // Track bytes received so the abort can distinguish slow-stream from no-response
           onDownloadProgress: (e) => { receivedBytes = e?.loaded || receivedBytes; }
         });

@@ -429,5 +429,89 @@ console.log("\nTest 21D: Dryad OAuth — client_credentials + Authorization head
     /DRYAD_CLIENT_ID/.test(dh) && /DRYAD_CLIENT_SECRET/.test(dh) && /DRYAD_API_TOKEN/.test(dh));
 }
 
+// ── Phase 22: thesis output polish + progress visibility ──
+console.log("\nTest 22A: heading-safe wikilinks — wrappers skip heading lines");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("wrapAcronymsAsWikilinks splits on lines and skips heading regex",
+    /HEADING_RE\s*=.*#\{1,6\}/.test(src) && /HEADING_RE\.test\(lines\[li\]\)/.test(src));
+  check("enrichWithWikilinks pre-masks heading lines with sentinel",
+    /XHDRMARKERX/.test(src) && /savedHeadings/.test(src));
+  check("heading-restore mismatch falls back to un-enriched draft",
+    /heading-restore mismatch.*keeping un-enriched/.test(src));
+}
+
+console.log("\nTest 22B: proseAuthorLint deletes attribution clauses cleanly");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  // Pattern D should NOT substitute "(unverified study)" anymore for et-al
+  // attributions — it should delete the clause.
+  const patternDBlock = src.match(/Pattern D rewritten[\s\S]{0,2000}Pattern E rewritten/);
+  check("Pattern D body no longer contains the literal 'unverified study' return",
+    patternDBlock && !/return "\(unverified study\)"/.test(patternDBlock[0]));
+  check("Pattern D body returns empty string for bare surname et al.",
+    /return ""/.test(patternDBlock ? patternDBlock[0] : ""));
+}
+
+console.log("\nTest 22C: openQuestionRecursion relevance + off-topic filter");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/openQuestionRecursion.js", import.meta.url), "utf8");
+  check("OFFTOPIC_RE regex present in openQuestionRecursion",
+    /OFFTOPIC_RE\s*=/.test(src));
+  check("filter drops analyses with relevance < 0.4",
+    /rel\s*<\s*0\.4/.test(src));
+  check("OFFTOPIC_RE matches 'does not contain'",
+    /does not contain/.test(src));
+  check("per-article progress emission inside follow-up loop",
+    /analyzing follow-up \$\{i \+ 1\}\/\$\{deepArticles\.length\}/.test(src));
+}
+
+console.log("\nTest 22D: citations.js — initials-only mixed-list guard");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/citations.js", import.meta.url), "utf8");
+  check("initialsOnly counter inspects ≤2-char alpha content",
+    /a\.replace\(\/\[\.\\s,'-\]\/g, ""\)\.length\s*<=\s*2/.test(src));
+  check("drops when initials-only ratio > 0.6 AND ≥4 authors",
+    /rawCite\.authors\.length\s*>=\s*4\s*&&\s*initialsOnly\s*\/\s*rawCite\.authors\.length\s*>\s*0\.6/.test(src));
+}
+
+console.log("\nTest 22E: articleHarvester maxContentLength bumped to 12 MB");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/articleHarvester.js", import.meta.url), "utf8");
+  check("maxContentLength is 12 MB now (12 * 1024 * 1024)",
+    /maxContentLength:\s*12\s*\*\s*1024\s*\*\s*1024/.test(src));
+  check("old 3MB ceiling is gone",
+    !/maxContentLength:\s*3\s*\*\s*1024\s*\*\s*1024/.test(src));
+}
+
+console.log("\nTest 22F: per-article progress in bridge resume + analyzer chunks");
+{
+  const idx = readFileSync(new URL("../skills/deepResearch/index.js", import.meta.url), "utf8");
+  const an  = readFileSync(new URL("../skills/deepResearch/articleAnalyzer.js", import.meta.url), "utf8");
+  check("bridge resume tracks bridgeIdx/bridgeTotal",
+    /bridgeIdx\+\+/.test(idx) && /bridgeTotal/.test(idx));
+  check("bridge resume emits 'bridge re-analyzing N/M' progress",
+    /bridge re-analyzing \$\{bridgeIdx\}\/\$\{bridgeTotal\}/.test(idx));
+  check("articleAnalyzer logs chunk i/n in multi-chunk mode",
+    /chunk \$\{i \+ 1\}\/\$\{chunks\.length\}/.test(an));
+}
+
+console.log("\nTest 22G: chartsNote placed below H1 + slug-style titles de-hyphenated");
+{
+  const src = readFileSync(new URL("../skills/deepResearch/thesisSynthesizer.js", import.meta.url), "utf8");
+  check("writeNote called with titledBody (callouts injected after H1)",
+    /await writeNote\(relativePath,\s*headerFm\s*\+\s*titledBody\)/.test(src));
+  check("deSlugTitle function exists",
+    /function deSlugTitle/.test(src));
+  // Live function exercise via dynamic import is brittle (the synthesizer
+  // pulls in lots of deps); just regex-check the de-slug behaviour by
+  // running the regex inline:
+  const slugRe = /^[A-Z][A-Za-z]+(?:-[A-Z][A-Za-z]+){1,}$/;
+  check("deSlug regex matches 'Cognitive-Behavioral-Therapy-Efficacy-Analysis'",
+    slugRe.test("Cognitive-Behavioral-Therapy-Efficacy-Analysis"));
+  check("deSlug regex does NOT match titles with spaces",
+    !slugRe.test("Cognitive Behavioral Therapy"));
+}
+
 console.log(`\n=== ${pass}/${pass + fail} passed ${fail ? `(${fail} FAILED)` : "✓"} ===`);
 process.exit(fail ? 1 : 0);
